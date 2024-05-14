@@ -1,0 +1,54 @@
+[package]
+name = "faucet"
+version = "1.0.0-alpha"
+authors = ["VenusDev0725 <venus07250000@gmail.com>"]
+edition = "2018"
+description = "Cosmwasm AMM"
+license = "Apache-2.0"
+repository = "https://github.com/superVenus0725"
+
+exclude = [
+  # Those files are rust-optimizer artifacts. You might want to commit them for convenience but they should not be part of the source code publication.
+  "contract.wasm",
+  "hash.txt",
+]
+
+# See more keys and their definitions at https://doc.rust-lang.org/cargo/reference/manifest.html
+
+[lib]
+crate-type = ["cdylib", "rlib"]
+
+[profile.release]
+opt-level = 3
+debug = false
+rpath = false
+lto = true
+debug-assertions = false
+codegen-units = 1
+panic = 'abort'
+incremental = false
+overflow-checks = true
+
+[features]
+# for more explicit tests, cargo test --features=backtraces
+backtraces = ["cosmwasm-std/backtraces"]
+# use library feature to disable all instantiate/execute/query exports
+library = []
+
+[dependencies]
+integer-sqrt = "0.1"
+cw2 = { version = "0.16.0" }
+cw20 = { version = "0.16.0" }
+cw20-base = { version = "0.16.0", features = ["library"] }
+cosmwasm-std = { version = "1.1.0" }
+cosmwasm-storage = { version = "1.1.0" }
+cosmwasm-schema = { version = "1.1.0" }
+cw-storage-plus = { version = "0.15.0" }
+thiserror = { version = "1.0.26" }
+protobuf = { version = "2", features = ["with-bytes"] }
+cw-utils = "0.15"
+
+[dev-dependencies]
+cosmwasm-schema = { version = "1.0.0-beta" }
+cw-multi-test = "0.13.4"
+proptest = "1.0"
