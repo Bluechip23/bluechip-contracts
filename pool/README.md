@@ -1,5 +1,5 @@
-# Roulette
+# BlueChip Subscription Model For Creators 
 
-## Fully Decentralized Gaming
+## Fully Decentralized Subscription Model
 
-## Support several rooms based on specific NFTs
+
