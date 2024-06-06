@@ -1,36 +1,19 @@
-use cosmwasm_std::{to_binary, Binary, Deps, DepsMut, Env, MessageInfo, Response, StdError, StdResult, Uint128};
-use cosmwasm_std::{Addr, Coin, CosmosMsg, BankMsg, BankQuery, QuerierWrapper, QueryRequest, AllBalanceResponse};
+use cosmwasm_std::{
+    to_binary, Binary, Deps, DepsMut, Env, MessageInfo, Response, StdError, StdResult, Uint128,
+};
+use cosmwasm_std::{
+    Addr, AllBalanceResponse, BankMsg, BankQuery, Coin, CosmosMsg, QuerierWrapper, QueryRequest,
+};
 use cw2::set_contract_version;
-use cw_storage_plus::{Map, Item};
+use cw_storage_plus::{Item, Map};
 use serde::{Deserialize, Serialize};
+
+use crate::error::ContractError;
+use crate::msg::{ExecuteMsg, InstantiateMsg};
+use crate::state::{Recipient, State, CLAIMED, REWARDS, STATE};
 
 const CONTRACT_NAME: &str = "crates.io:airdrop";
 const CONTRACT_VERSION: &str = env!("CARGO_PKG_VERSION");
-
-#[derive(Serialize, Deserialize, Clone, Debug, PartialEq, Eq)]
-pub struct InstantiateMsg {}
-
-#[derive(Serialize, Deserialize, Clone, Debug, PartialEq, Eq)]
-#[serde(rename_all = "snake_case")]
-pub enum ExecuteMsg {
-    SetRewards { recipients: Vec<Recipient> },
-    Claim {},
-}
-
-#[derive(Serialize, Deserialize, Clone, Debug, PartialEq, Eq)]
-pub struct Recipient {
-    pub address: String,
-    pub amount: Uint128,
-}
-
-#[derive(Serialize, Deserialize, Clone, Debug, PartialEq, Eq)]
-pub struct State {
-    pub owner: Addr,
-}
-
-const STATE: Item<State> = Item::new("state");
-const REWARDS: Map<&Addr, Uint128> = Map::new("rewards");
-const CLAIMED: Map<&Addr, bool> = Map::new("claimed");
 
 pub fn instantiate(
     deps: DepsMut,
@@ -38,7 +21,9 @@ pub fn instantiate(
     info: MessageInfo,
     _msg: InstantiateMsg,
 ) -> StdResult<Response> {
-    let state = State { owner: info.sender.clone() };
+    let state = State {
+        owner: info.sender.clone(),
+    };
     set_contract_version(deps.storage, CONTRACT_NAME, CONTRACT_VERSION)?;
     STATE.save(deps.storage, &state)?;
 
@@ -50,7 +35,7 @@ pub fn execute(
     env: Env,
     info: MessageInfo,
     msg: ExecuteMsg,
-) -> StdResult<Response> {
+) -> Result<Response, ContractError> {
     match msg {
         ExecuteMsg::SetRewards { recipients } => try_set_rewards(deps, env, info, recipients),
         ExecuteMsg::Claim {} => try_claim(deps, info),
@@ -62,10 +47,10 @@ fn try_set_rewards(
     env: Env,
     info: MessageInfo,
     recipients: Vec<Recipient>,
-) -> StdResult<Response> {
+) -> Result<Response, ContractError> {
     let state = STATE.load(deps.storage)?;
     if info.sender != state.owner {
-        return Err(StdError::unauthorized());
+        return Err(ContractError::Unauthorized {});
     }
 
     // Calculate total rewards
@@ -74,7 +59,7 @@ fn try_set_rewards(
     // Ensure the contract has enough funds
     let balance = get_contract_balance(&deps.querier, env.contract.address)?;
     if balance < total_rewards {
-        return Err(StdError::generic_err("Insufficient funds to cover all rewards"));
+        return Err(ContractError::InsufficientFunds {});
     }
 
     for recipient in recipients {
@@ -82,20 +67,22 @@ fn try_set_rewards(
         REWARDS.save(deps.storage, &addr, &recipient.amount)?;
     }
 
-    Ok(Response::new().add_attribute("method", "set_rewards").add_attribute("total_rewards", total_rewards.to_string()))
+    Ok(Response::new()
+        .add_attribute("method", "set_rewards")
+        .add_attribute("total_rewards", total_rewards.to_string()))
 }
 
-fn try_claim(deps: DepsMut, info: MessageInfo) -> StdResult<Response> {
+fn try_claim(deps: DepsMut, info: MessageInfo) -> Result<Response, ContractError> {
     let addr = info.sender.clone();
     let claimed = CLAIMED.may_load(deps.storage, &addr)?;
 
     if claimed == Some(true) {
-        return Err(StdError::generic_err("Tokens already claimed"));
+        return Err(ContractError::AlreadyClaimed {});
     }
 
     let amount = match REWARDS.may_load(deps.storage, &addr)? {
         Some(amt) => amt,
-        None => return Err(StdError::generic_err("No rewards found for address")),
+        None => return Err(ContractError::NoRewards {}),
     };
 
     let msg = CosmosMsg::Bank(BankMsg::Send {
@@ -116,9 +103,15 @@ fn try_claim(deps: DepsMut, info: MessageInfo) -> StdResult<Response> {
 
 // Helper function to get the contract's balance
 fn get_contract_balance(querier: &QuerierWrapper, contract_addr: Addr) -> StdResult<Uint128> {
-    let balance: AllBalanceResponse = querier.query(&QueryRequest::Bank(BankQuery::AllBalances {
-        address: contract_addr.to_string(),
-    }))?;
+    let balance: AllBalanceResponse =
+        querier.query(&QueryRequest::Bank(BankQuery::AllBalances {
+            address: contract_addr.to_string(),
+        }))?;
     // Assume the token to be used is "bluechip", otherwise adjust accordingly
-    Ok(balance.amount.iter().find(|c| c.denom == "bluechip").map(|c| c.amount).unwrap_or_else(Uint128::zero))
+    Ok(balance
+        .amount
+        .iter()
+        .find(|c| c.denom == "bluechip")
+        .map(|c| c.amount)
+        .unwrap_or_else(Uint128::zero))
 }
