@@ -1,5 +1,3 @@
-# Roulette
+# BlueChip Creator Subsriptions Smart Contract
 
-## Fully Decentralized Gaming
-
-## Support several rooms based on specific NFTs
+## Fully Decentralized Subscription Model
