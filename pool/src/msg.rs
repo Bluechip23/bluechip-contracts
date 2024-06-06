@@ -30,6 +30,8 @@ pub struct InstantiateMsg {
     pub commit_limit: Uint128,
 
     pub token_address: Addr,
+
+    pub available_payment: Vec<Uint128>,
 }
 
 #[cw_serde]
@@ -59,6 +61,7 @@ pub enum ExecuteMsg {
 
     Commit {
         asset: Asset,
+        amount: Uint128,
     },
 }
 

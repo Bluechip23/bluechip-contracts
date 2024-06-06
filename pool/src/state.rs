@@ -31,6 +31,8 @@ pub struct Config {
     pub commit_limit: Uint128,
 
     pub token_address: Addr,
+
+    pub available_payment: Vec<Uint128>,
 }
 
 /// ## Description

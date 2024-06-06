@@ -71,6 +71,7 @@ pub fn instantiate(
         price1_cumulative_last: Uint128::zero(),
         commit_limit: msg.commit_limit,
         token_address: msg.token_address,
+        available_payment: msg.available_payment,
     };
 
     CONFIG.save(deps.storage, &config)?;
@@ -143,7 +144,7 @@ pub fn execute(
                 to_addr,
             )
         }
-        ExecuteMsg::Commit { asset } => commit(deps, env, info, asset),
+        ExecuteMsg::Commit { asset, amount } => commit(deps, env, info, asset, amount),
     }
 }
 
@@ -400,6 +401,7 @@ pub fn commit(
     env: Env,
     info: MessageInfo,
     asset: Asset,
+    amount: Uint128,
 ) -> Result<Response, ContractError> {
     let config: Config = CONFIG.load(deps.storage)?;
     let fee_info = FEEINFO.load(deps.storage)?;
@@ -429,6 +431,10 @@ pub fn commit(
         }
         AssetInfo::NativeToken { denom } => {
             validate_input_amount(&info.funds, asset.amount, &denom)?;
+
+            if !config.available_payment.contains(&asset.amount) {
+                return Err(ContractError::AssetMismatch {});
+            }
             let bluechip_msg = get_bank_transfer_to_msg(
                 &fee_info.bluechip_address,
                 &denom,
