@@ -19,10 +19,14 @@ pub fn instantiate(
     deps: DepsMut,
     _env: Env,
     info: MessageInfo,
-    _msg: InstantiateMsg,
+    msg: InstantiateMsg,
 ) -> StdResult<Response> {
     let state = State {
         owner: info.sender.clone(),
+        eligible_wallets: msg.eligible_wallets, // 60000 wallets can get airdrop
+        claimed_wallets: Uint128::zero(),       // no claimed wallets now
+        airdrop_amount: msg.airdrop_amount,     // airdrop amount each wallets can get.
+        is_opened: false,                       // airdrop is not started
     };
     set_contract_version(deps.storage, CONTRACT_NAME, CONTRACT_VERSION)?;
     STATE.save(deps.storage, &state)?;
