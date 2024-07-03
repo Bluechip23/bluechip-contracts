@@ -9,6 +9,15 @@ pub enum ContractError {
     #[error("Unauthorized")]
     Unauthorized {},
 
+    #[error("Airdrop not started")]
+    NotStarted {},
+
+    #[error("Too many whitelist wallets")]
+    TooManyWhitelist {},
+
+    #[error("Airdrop finished")]
+    AirdropFinished {},
+
     #[error("Insufficient funds to cover all rewards")]
     InsufficientFunds {},
 
