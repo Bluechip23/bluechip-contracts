@@ -1,11 +1,9 @@
 [package]
-name = "wasmswap"
-version = "1.2.0"
-authors = ["ben2x4 <ben2x4@protonmail.com>"]
+name = "airdrop"
+version = "1.1.0"
+authors = ["dragondev93 <dragondev93@gmail.com>"]
 edition = "2018"
-description = "Cosmwasm AMM"
-license = "Apache-2.0"
-repository = "https://github.com/Wasmswap/wasmswap-contracts"
+description = "Bluechip Airdrop"
 
 exclude = [
   # Those files are rust-optimizer artifacts. You might want to commit them for convenience but they should not be part of the source code publication.
@@ -36,17 +34,12 @@ backtraces = ["cosmwasm-std/backtraces"]
 library = []
 
 [dependencies]
-cw0 = {  version = "0.10.0" }
-cw2 = { version = "0.11" }
-cw20 = { version = "0.10.0" }
-cw20-base = { version = "0.10.0", features = ["library"] }
-cosmwasm-std = { version = "1.0.0-beta" }
-cosmwasm-storage = { version = "1.0.0-beta" }
-cw-storage-plus = "0.10"
-schemars = "0.8.3"
-serde = { version = "1.0.127", default-features = false, features = ["derive"] }
+cw2 = { version = "0.16.0" }
+cosmwasm-std = { version = "1.1.0" }
+cw-storage-plus = "0.15.0"
+cosmwasm-schema = { version = "1.1.0" }
 thiserror = { version = "1.0.26" }
 
 [dev-dependencies]
 cosmwasm-schema = { version = "1.0.0-beta" }
-cw-multi-test = {  version = "0.10.3" }
+cw-multi-test = "0.13.4"
