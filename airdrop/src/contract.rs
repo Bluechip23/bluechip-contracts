@@ -162,7 +162,7 @@ fn try_claim(deps: DepsMut, info: MessageInfo) -> Result<Response, ContractError
     let msg = CosmosMsg::Bank(BankMsg::Send {
         to_address: addr.to_string(),
         amount: vec![Coin {
-            denom: "bluechip".to_string(),
+            denom: "ubluechip".to_string(),
             amount,
         }],
     });
@@ -191,7 +191,7 @@ fn get_contract_balance(querier: &QuerierWrapper, contract_addr: Addr) -> StdRes
     Ok(balance
         .amount
         .iter()
-        .find(|c| c.denom == "bluechip")
+        .find(|c| c.denom == "ubluechip")
         .map(|c| c.amount)
         .unwrap_or_else(Uint128::zero))
 }

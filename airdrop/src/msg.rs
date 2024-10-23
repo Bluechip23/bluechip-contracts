@@ -1,3 +1,4 @@
+use crate::state::State;
 use cosmwasm_schema::cw_serde;
 use cosmwasm_std::{Addr, Uint128};
 
@@ -16,4 +17,21 @@ pub enum ExecuteMsg {
     ImportWhitelist { whitelist: Vec<Addr> },
     Claim {},
     Start {},
+}
+
+#[cw_serde]
+pub enum QueryMsg {
+    Config {},
+    IsWhitelisted { address: Addr },
+    IsClaimed { address: Addr },
+}
+
+#[cw_serde]
+pub struct ConfigResponse {
+    pub config: State,
+}
+
+#[cw_serde]
+pub struct StatusResponse {
+    pub status: bool,
 }
