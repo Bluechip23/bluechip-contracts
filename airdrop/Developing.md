@@ -16,6 +16,7 @@ You can check that via:
 rustc --version
 cargo --version
 rustup target list --installed
+rustup update stable
 # if wasm32 is not listed above, run this
 rustup target add wasm32-unknown-unknown
 ```
@@ -27,7 +28,7 @@ making any changes. Go into the repository and do:
 
 ```sh
 # this will produce a wasm build in ./target/wasm32-unknown-unknown/release/YOUR_NAME_HERE.wasm
-cargo wasm
+RUSTFLAGS='-C link-arg=-s' cargo wasm
 
 # this runs unit tests with helpful backtraces
 RUST_BACKTRACE=1 cargo unit-test
@@ -70,9 +71,9 @@ to run it is this:
 
 ```sh
 docker run --rm -v "$(pwd)":/code \
-  --mount type=volume,source="$(basename "$(pwd)")_cache",target=/code/target \
+  --mount type=volume,source="$(basename "$(pwd)")_cache",target=/target \
   --mount type=volume,source=registry_cache,target=/usr/local/cargo/registry \
-  cosmwasm/rust-optimizer:0.11.3
+  cosmwasm/rust-optimizer:0.14.0
 ```
 
 We must mount the contract code to `/code`. You can use a absolute path instead
