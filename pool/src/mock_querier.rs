@@ -1,3 +1,5 @@
+#![cfg(not(target_arch = "wasm32"))]
+
 use cosmwasm_std::testing::{MockApi, MockQuerier, MockStorage, MOCK_CONTRACT_ADDR};
 use cosmwasm_std::{
     from_binary, from_slice, to_binary, Addr, Coin, Decimal, Empty, OwnedDeps, Querier,

@@ -1,1 +1,2 @@
+21fae3ee648016d6c76303f737a4afafb3d925bd90e027ef0a93ba24f92dbc4b  factory.wasm
 e7129757c5e7ce99c39cd0eb33ee6b43d88c87c9de042ad1a2f75ff91e9aab43  wasmswap.wasm

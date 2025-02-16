@@ -1,1 +1,1 @@
-61410d4e91b38c7c8ba44cdaa64481ff67724e7599e4a42719d969d86e5d71d5  ./target/wasm32-unknown-unknown/release/wasmswap.wasm
+f2fee5f1145c22180d4cdb6121a13f8c5060ba27082b483838e61400759e7f63  /target/wasm32-unknown-unknown/release/faucet.wasm
