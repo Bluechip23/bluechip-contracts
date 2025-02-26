@@ -1,14 +1,14 @@
 use cosmwasm_std::entry_point;
-use cosmwasm_std::{to_binary, Addr, Binary, Deps, Env, Order, StdResult, Uint128};
+use cosmwasm_std::{to_json_binary, Addr, Binary, Deps, Env, StdResult};
 
 use crate::msg::{ConfigResponse, QueryMsg, SubscribeInfoResponse};
 use crate::state::{CONFIG, SUBSCRIBE};
 
 #[cfg_attr(not(feature = "library"), entry_point)]
-pub fn query(deps: Deps, env: Env, msg: QueryMsg) -> StdResult<Binary> {
+pub fn query(deps: Deps, _env: Env, msg: QueryMsg) -> StdResult<Binary> {
     match msg {
-        QueryMsg::Config {} => to_binary(&query_config(deps)?),
-        QueryMsg::SubscribeInfo { creator } => to_binary(&query_subscribe_info(deps, creator)?),
+        QueryMsg::Config {} => to_json_binary(&query_config(deps)?),
+        QueryMsg::SubscribeInfo { creator } => to_json_binary(&query_subscribe_info(deps, creator)?),
     }
 }
 
