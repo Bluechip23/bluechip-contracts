@@ -2,7 +2,7 @@ use std::env;
 
 use crate::error::ContractError;
 use crate::msg::{ExecuteMsg, InstantiateMsg, MigrateMsg, TokenInfo, TokenInstantiateMsg};
-use crate::pair::{FeeInfo, InstantiateMsg as PairInstantiateMsg, PoolResponse};
+use crate::pair::{FeeInfo, InstantiateMsg as PairInstantiateMsg};
 use crate::response::MsgInstantiateContractResponse;
 use crate::state::{
     Config, SubscribeInfo, CONFIG, SUBSCRIBE, TEMPCREATOR, TEMPPAIRINFO, TEMPTOKENADDR,
@@ -10,10 +10,10 @@ use crate::state::{
 #[cfg(not(feature = "library"))]
 use cosmwasm_std::entry_point;
 use cosmwasm_std::{
-    to_binary, Addr, Coin, CosmosMsg, Deps, DepsMut, Env, MessageInfo, Reply, ReplyOn, Response,
+    to_json_binary, Addr, Coin, CosmosMsg, Deps, DepsMut, Env, MessageInfo, Reply, ReplyOn, Response,
     StdError, StdResult, SubMsg, Uint128, WasmMsg,
 };
-use cw20::{BalanceResponse, Cw20ExecuteMsg, Cw20QueryMsg, MinterResponse};
+use cw20::{Cw20ExecuteMsg, MinterResponse};
 use protobuf::Message;
 
 const CONTRACT_NAME: &str = "bluechip_factory";
@@ -99,29 +99,30 @@ fn execute_create(
 
     TEMPPAIRINFO.save(deps.storage, &pair_msg)?;
     TEMPCREATOR.save(deps.storage, &sender)?;
+    let msg = WasmMsg::Instantiate {
+        code_id: config.token_id,
+        msg: to_json_binary(&TokenInstantiateMsg {
+            name: token_info.name.clone(),
+            symbol: token_info.symbol.clone(),
+            decimals: 6,
+            initial_balances: vec![],
+            mint: Some(MinterResponse {
+                minter: env.contract.address.to_string(),
+                cap: Some(config.total_token_amount),
+            }),
+            marketing: None,
+        })?,
+        funds: vec![],
+        admin: None,
+        label: token_info.name,
+    };
 
     let sub_msg: Vec<SubMsg> = vec![SubMsg {
-        msg: WasmMsg::Instantiate {
-            code_id: config.token_id,
-            msg: to_binary(&TokenInstantiateMsg {
-                name: token_info.name.clone(),
-                symbol: token_info.symbol.clone(),
-                decimals: 6,
-                initial_balances: vec![],
-                mint: Some(MinterResponse {
-                    minter: env.contract.address.to_string(),
-                    cap: Some(config.total_token_amount),
-                }),
-                marketing: None,
-            })?,
-            funds: vec![],
-            admin: None,
-            label: token_info.name,
-        }
-        .into(),
+        msg: msg.clone().into(),
         id: INSTANTIATE_TOKEN_REPLY_ID,
         gas_limit: None,
         reply_on: ReplyOn::Success,
+        payload: to_json_binary(&msg)?,
     }];
 
     Ok(Response::new()
@@ -145,31 +146,32 @@ pub fn reply(deps: DepsMut, env: Env, msg: Reply) -> Result<Response, ContractEr
 
             let token_address = deps.api.addr_validate(res.get_contract_address())?;
             TEMPTOKENADDR.save(deps.storage, &token_address)?;
+            let msg = WasmMsg::Instantiate {
+                code_id: config.pair_id,
+                msg: to_json_binary(&PairInstantiateMsg {
+                    asset_infos: temp_pool_info.asset_infos,
+                    factory_addr: env.contract.address.to_string(),
+                    token_code_id: config.token_id,
+                    init_params: None,
+                    fee_info: FeeInfo {
+                        bluechip_address: config.bluechip_address,
+                        creator_address: temp_creator,
+                        bluechip_fee: config.bluechipe_fee,
+                        creator_fee: config.creator_fee,
+                    },
+                    commit_limit: config.commit_amount,
+                    token_address: token_address.clone(),
+                })?,
+                funds: vec![],
+                admin: None,
+                label: "Pair".to_string(),
+            };
             let sub_msg: Vec<SubMsg> = vec![SubMsg {
-                msg: WasmMsg::Instantiate {
-                    code_id: config.pair_id,
-                    msg: to_binary(&PairInstantiateMsg {
-                        asset_infos: temp_pool_info.asset_infos,
-                        factory_addr: env.contract.address.to_string(),
-                        token_code_id: config.token_id,
-                        init_params: None,
-                        fee_info: FeeInfo {
-                            bluechip_address: config.bluechip_address,
-                            creator_address: temp_creator,
-                            bluechip_fee: config.bluechipe_fee,
-                            creator_fee: config.creator_fee,
-                        },
-                        commit_limit: config.commit_amount,
-                        token_address: token_address.clone(),
-                    })?,
-                    funds: vec![],
-                    admin: None,
-                    label: "Pair".to_string(),
-                }
-                .into(),
+                msg: msg.clone().into(),
                 id: INSTANTIATE_POOL_REPLY_ID,
                 gas_limit: None,
                 reply_on: ReplyOn::Success,
+                payload: to_json_binary(&msg)?,
             }];
 
             Ok(Response::new()
@@ -235,7 +237,7 @@ pub fn get_cw20_transfer_msg(
 
     let exec_cw20_transfer_msg = WasmMsg::Execute {
         contract_addr: token_addr.into(),
-        msg: to_binary(&transfer_cw20_msg)?,
+        msg: to_json_binary(&transfer_cw20_msg)?,
         funds: vec![],
     };
 
@@ -257,7 +259,7 @@ pub fn get_cw20_transfer_from_msg(
 
     let exec_cw20_transfer_msg = WasmMsg::Execute {
         contract_addr: token_addr.into(),
-        msg: to_binary(&transfer_cw20_msg)?,
+        msg: to_json_binary(&transfer_cw20_msg)?,
         funds: vec![],
     };
 
@@ -276,7 +278,7 @@ pub fn get_cw20_burn_from_msg(
     };
     let exec_cw20_burn_msg = WasmMsg::Execute {
         contract_addr: token_addr.into(),
-        msg: to_binary(&burn_cw20_msg)?,
+        msg: to_json_binary(&burn_cw20_msg)?,
         funds: vec![],
     };
 
@@ -291,7 +293,7 @@ pub fn mint_tokens(token_addr: &Addr, recipient: &Addr, amount: Uint128) -> StdR
     };
     let exec_cw20_burn_msg = WasmMsg::Execute {
         contract_addr: token_addr.into(),
-        msg: to_binary(&burn_cw20_msg)?,
+        msg: to_json_binary(&burn_cw20_msg)?,
         funds: vec![],
     };
 
