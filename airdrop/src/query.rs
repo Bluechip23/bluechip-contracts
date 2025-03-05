@@ -1,5 +1,5 @@
 use cosmwasm_std::entry_point;
-use cosmwasm_std::{to_binary, Addr, Binary, Deps, Env, StdResult};
+use cosmwasm_std::{to_json_binary, Addr, Binary, Deps, Env, StdResult};
 
 use crate::msg::{ConfigResponse, QueryMsg, StatusResponse};
 use crate::state::{CLAIMED, STATE, WHITELISTED};
@@ -7,11 +7,11 @@ use crate::state::{CLAIMED, STATE, WHITELISTED};
 #[cfg_attr(not(feature = "library"), entry_point)]
 pub fn query(deps: Deps, env: Env, msg: QueryMsg) -> StdResult<Binary> {
     match msg {
-        QueryMsg::Config {} => to_binary(&query_config(deps)?),
+        QueryMsg::Config {} => to_json_binary(&query_config(deps)?),
         QueryMsg::IsWhitelisted { address } => {
-            to_binary(&query_is_whitelisted(deps, env, address)?)
+            to_json_binary(&query_is_whitelisted(deps, env, address)?)
         }
-        QueryMsg::IsClaimed { address } => to_binary(&query_is_claimed(deps, env, address)?),
+        QueryMsg::IsClaimed { address } => to_json_binary(&query_is_claimed(deps, env, address)?),
     }
 }
 
