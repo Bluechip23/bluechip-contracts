@@ -1,4 +1,9 @@
-use crate::asset::{pool_info, Asset, AssetInfo, CoinsExt, PairType};
+use cosmwasm_std::{
+    entry_point, from_json_binary, to_json_binary, Addr, Binary, Coin, CosmosMsg, Decimal, Decimal256, Deps,
+    DepsMut, Env, Fraction, MessageInfo, Response, StdError, StdResult, Uint128, Uint256, WasmMsg,
+};
+
+use crate::asset::{pool_info, Asset, AssetInfo, PairType};
 use crate::error::ContractError;
 use crate::msg::{
     ConfigResponse, CumulativePricesResponse, Cw20HookMsg, ExecuteMsg, FeeInfoResponse,
@@ -7,11 +12,6 @@ use crate::msg::{
 };
 use crate::state::{Config, PairInfo, COMMITSTATUS, CONFIG, FEEINFO};
 use std::convert::TryInto;
-
-use cosmwasm_std::{
-    entry_point, from_binary, to_binary, Addr, Binary, Coin, CosmosMsg, Decimal, Decimal256, Deps,
-    DepsMut, Env, Fraction, MessageInfo, Response, StdError, StdResult, Uint128, Uint256, WasmMsg,
-};
 
 use cw2::{get_contract_version, set_contract_version};
 use cw20::{Cw20ExecuteMsg, Cw20ReceiveMsg};
@@ -435,6 +435,7 @@ pub fn commit(
             if !config.available_payment.contains(&asset.amount) {
                 return Err(ContractError::AssetMismatch {});
             }
+            
             let bluechip_msg = get_bank_transfer_to_msg(
                 &fee_info.bluechip_address,
                 &denom,

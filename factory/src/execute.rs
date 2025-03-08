@@ -138,11 +138,11 @@ pub fn reply(deps: DepsMut, env: Env, msg: Reply) -> Result<Response, ContractEr
             let config = CONFIG.load(deps.storage)?;
             let temp_pool_info = TEMPPAIRINFO.load(deps.storage)?;
             let temp_creator = TEMPCREATOR.load(deps.storage)?;
-            let data = msg.result.unwrap().data.unwrap();
-            let res: MsgInstantiateContractResponse = Message::parse_from_bytes(data.as_slice())
-                .map_err(|_| {
-                    StdError::parse_err("MsgInstantiateContractResponse", "failed to parse data")
-                })?;
+            let res: MsgInstantiateContractResponse = Message::parse_from_bytes(
+                msg.result.unwrap().msg_responses[0].value.as_slice()
+            ).map_err(|_| {
+                StdError::parse_err("MsgInstantiateContractResponse", "failed to parse data")
+            })?;
 
             let token_address = deps.api.addr_validate(res.get_contract_address())?;
             TEMPTOKENADDR.save(deps.storage, &token_address)?;
@@ -180,11 +180,11 @@ pub fn reply(deps: DepsMut, env: Env, msg: Reply) -> Result<Response, ContractEr
         }
         INSTANTIATE_POOL_REPLY_ID => {
             let config = CONFIG.load(deps.storage)?;
-            let data = msg.result.unwrap().data.unwrap();
-            let res: MsgInstantiateContractResponse = Message::parse_from_bytes(data.as_slice())
-                .map_err(|_| {
-                    StdError::parse_err("MsgInstantiateContractResponse", "failed to parse data")
-                })?;
+            let res: MsgInstantiateContractResponse = Message::parse_from_bytes(
+                msg.result.unwrap().msg_responses[0].value.as_slice()
+            ).map_err(|_| {
+                StdError::parse_err("MsgInstantiateContractResponse", "failed to parse data")
+            })?;
 
             let pool_address = deps.api.addr_validate(res.get_contract_address())?;
             let temp_creator = TEMPCREATOR.load(deps.storage)?;
