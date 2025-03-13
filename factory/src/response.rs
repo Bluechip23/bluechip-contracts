@@ -8,7 +8,6 @@
 #![allow(unused_attributes)]
 #![cfg_attr(rustfmt, rustfmt::skip)]
 
-#![allow(box_pointers)]
 #![allow(dead_code)]
 #![allow(missing_docs)]
 #![allow(non_camel_case_types)]
@@ -46,7 +45,6 @@ impl MsgInstantiateContractResponse {
 
     // string contract_address = 1;
 
-
     pub fn get_contract_address(&self) -> &str {
         &self.contract_address
     }
@@ -71,7 +69,6 @@ impl MsgInstantiateContractResponse {
     }
 
     // bytes data = 2;
-
 
     pub fn get_data(&self) -> &[u8] {
         &self.data

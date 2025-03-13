@@ -1,20 +1,18 @@
-use std::env;
-
 #[cfg(not(feature = "library"))]
 use cosmwasm_std::entry_point;
 use cosmwasm_std::{
-    Addr, AllBalanceResponse, BankMsg, BankQuery, Coin, CosmosMsg, DepsMut, Env, MessageInfo,
-    QuerierWrapper, QueryRequest, Response, StdResult, Uint128,
+    to_json_binary, Addr, AllBalanceResponse, BalanceResponse, BankMsg, BankQuery, Binary, 
+    Coin, CosmosMsg, Deps, DepsMut, Env, MessageInfo, QuerierWrapper, QueryRequest, 
+    Response, StdResult, Uint128,
 };
 use cw2::set_contract_version;
-// use cw_storage_plus::{Item, Map};
-// use serde::{Deserialize, Serialize};
 
 use crate::error::ContractError;
 use crate::msg::{ExecuteMsg, InstantiateMsg};
 use crate::state::{State, CLAIMED, STATE, WHITELISTED};
 
-const CONTRACT_NAME: &str = "crates.io:airdrop";
+// version info for migration info
+const CONTRACT_NAME: &str = "crates.io:bluechip-airdrop";
 const CONTRACT_VERSION: &str = env!("CARGO_PKG_VERSION");
 
 #[cfg_attr(not(feature = "library"), entry_point)]
@@ -183,15 +181,80 @@ fn try_claim(deps: DepsMut, info: MessageInfo) -> Result<Response, ContractError
 
 // Helper function to get the contract's balance
 fn get_contract_balance(querier: &QuerierWrapper, contract_addr: Addr) -> StdResult<Uint128> {
-    let balance: AllBalanceResponse =
-        querier.query(&QueryRequest::Bank(BankQuery::AllBalances {
-            address: contract_addr.to_string(),
-        }))?;
-    // Assume the token to be used is "bluechip", otherwise adjust accordingly
-    Ok(balance
-        .amount
-        .iter()
-        .find(|c| c.denom == "ubluechip")
-        .map(|c| c.amount)
-        .unwrap_or_else(Uint128::zero))
+    let balance: BalanceResponse = querier.query(&QueryRequest::Bank(BankQuery::Balance {
+        address: contract_addr.to_string(),
+        denom: "ubluechip".to_string(),
+    }))?;
+    Ok(balance.amount.amount)
 }
+
+// #[cfg(test)]
+// mod tests {
+//     use super::*;
+//     use cosmwasm_std::testing::{mock_dependencies, mock_env, mock_info};
+//     use cosmwasm_std::{coins, from_json};
+
+//     #[test]
+//     fn proper_initialization() {
+//         let mut deps = mock_dependencies();
+
+//         let msg = InstantiateMsg { count: 17 };
+//         let info = mock_info("creator", &coins(1000, "earth"));
+
+//         // we can just call .unwrap() to assert this was a success
+//         let res = instantiate(deps.as_mut(), mock_env(), info, msg).unwrap();
+//         assert_eq!(0, res.messages.len());
+
+//         // it worked, let's query the state
+//         let res = query(deps.as_ref(), mock_env(), QueryMsg::GetCount {}).unwrap();
+//         let value: GetCountResponse = from_json(&res).unwrap();
+//         assert_eq!(17, value.count);
+//     }
+
+//     #[test]
+//     fn increment() {
+//         let mut deps = mock_dependencies();
+
+//         let msg = InstantiateMsg { count: 17 };
+//         let info = mock_info("creator", &coins(2, "token"));
+//         let _res = instantiate(deps.as_mut(), mock_env(), info, msg).unwrap();
+
+//         // beneficiary can release it
+//         let info = mock_info("anyone", &coins(2, "token"));
+//         let msg = ExecuteMsg::Increment {};
+//         let _res = execute(deps.as_mut(), mock_env(), info, msg).unwrap();
+
+//         // should increase counter by 1
+//         let res = query(deps.as_ref(), mock_env(), QueryMsg::GetCount {}).unwrap();
+//         let value: GetCountResponse = from_json(&res).unwrap();
+//         assert_eq!(18, value.count);
+//     }
+
+//     #[test]
+//     fn reset() {
+//         let mut deps = mock_dependencies();
+
+//         let msg = InstantiateMsg { count: 17 };
+//         let info = mock_info("creator", &coins(2, "token"));
+//         let _res = instantiate(deps.as_mut(), mock_env(), info, msg).unwrap();
+
+//         // beneficiary can release it
+//         let unauth_info = mock_info("anyone", &coins(2, "token"));
+//         let msg = ExecuteMsg::Reset { count: 5 };
+//         let res = execute(deps.as_mut(), mock_env(), unauth_info, msg);
+//         match res {
+//             Err(ContractError::Unauthorized {}) => {}
+//             _ => panic!("Must return unauthorized error"),
+//         }
+
+//         // only the original creator can reset the counter
+//         let auth_info = mock_info("creator", &coins(2, "token"));
+//         let msg = ExecuteMsg::Reset { count: 5 };
+//         let _res = execute(deps.as_mut(), mock_env(), auth_info, msg).unwrap();
+
+//         // should now be 5
+//         let res = query(deps.as_ref(), mock_env(), QueryMsg::GetCount {}).unwrap();
+//         let value: GetCountResponse = from_json(&res).unwrap();
+//         assert_eq!(5, value.count);
+//     }
+// }

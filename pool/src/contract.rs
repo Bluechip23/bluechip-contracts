@@ -1,4 +1,11 @@
-use crate::asset::{pool_info, Asset, AssetInfo, CoinsExt, PairType};
+#![allow(non_snake_case)]
+
+use cosmwasm_std::{
+    entry_point, from_json, to_json_binary, Addr, Binary, Coin, CosmosMsg, Decimal, Decimal256, Deps,
+    DepsMut, Env, Fraction, MessageInfo, Response, StdError, StdResult, Uint128, Uint256, WasmMsg,
+};
+
+use crate::asset::{pool_info, Asset, AssetInfo, PairType};
 use crate::error::ContractError;
 use crate::msg::{
     ConfigResponse, CumulativePricesResponse, Cw20HookMsg, ExecuteMsg, FeeInfoResponse,
@@ -7,11 +14,6 @@ use crate::msg::{
 };
 use crate::state::{Config, PairInfo, COMMITSTATUS, CONFIG, FEEINFO};
 use std::convert::TryInto;
-
-use cosmwasm_std::{
-    entry_point, from_binary, to_binary, Addr, Binary, Coin, CosmosMsg, Decimal, Decimal256, Deps,
-    DepsMut, Env, Fraction, MessageInfo, Response, StdError, StdResult, Uint128, Uint256, WasmMsg,
-};
 
 use cw2::{get_contract_version, set_contract_version};
 use cw20::{Cw20ExecuteMsg, Cw20ReceiveMsg};
@@ -167,7 +169,7 @@ pub fn receive_cw20(
     cw20_msg: Cw20ReceiveMsg,
 ) -> Result<Response, ContractError> {
     let contract_addr = info.sender.clone();
-    match from_binary(&cw20_msg.msg) {
+    match from_json(&cw20_msg.msg) {
         Ok(Cw20HookMsg::Swap {
             belief_price,
             max_spread,
@@ -235,7 +237,7 @@ pub fn get_share_in_assets(
         .iter()
         .map(|a| Asset {
             info: a.info.clone(),
-            amount: a.amount * share_ratio,
+            amount: a.amount * share_ratio.numerator() / share_ratio.denominator(),
         })
         .collect()
 }
@@ -435,10 +437,11 @@ pub fn commit(
             if !config.available_payment.contains(&asset.amount) {
                 return Err(ContractError::AssetMismatch {});
             }
+            
             let bluechip_msg = get_bank_transfer_to_msg(
                 &fee_info.bluechip_address,
                 &denom,
-                asset.amount * fee_info.bluechip_fee,
+                asset.amount * fee_info.bluechip_fee.numerator() / fee_info.bluechip_fee.denominator(),
             )?;
 
             messages.push(bluechip_msg);
@@ -446,7 +449,7 @@ pub fn commit(
             let creator_msg = get_bank_transfer_to_msg(
                 &fee_info.creator_address,
                 &denom,
-                asset.amount * fee_info.creator_fee,
+                asset.amount * fee_info.creator_fee.numerator() / fee_info.creator_fee.denominator(),
             )?;
 
             messages.push(creator_msg);
@@ -534,12 +537,13 @@ pub fn accumulate_prices(
 /// * **commission_amount** is an object of type [`Env`]. This is the total amount of fees charged for a swap.
 ///
 /// * **maker_commission_rate** is an object of type [`MessageInfo`]. This is the percentage of fees that go to the Maker contract.
+#[allow(non_snake_case)]
 pub fn calculate_maker_fee(
     pool_info: AssetInfo,
     commission_amount: Uint128,
     maker_commission_rate: Decimal,
 ) -> Option<Asset> {
-    let maker_fee: Uint128 = commission_amount * maker_commission_rate;
+    let maker_fee: Uint128 = commission_amount * maker_commission_rate.numerator() / maker_commission_rate.denominator();
     if maker_fee.is_zero() {
         return None;
     }
@@ -580,16 +584,16 @@ pub fn calculate_maker_fee(
 #[cfg_attr(not(feature = "library"), entry_point)]
 pub fn query(deps: Deps, env: Env, msg: QueryMsg) -> StdResult<Binary> {
     match msg {
-        QueryMsg::Pair {} => to_binary(&query_pair_info(deps)?),
-        QueryMsg::Pool {} => to_binary(&query_pool(deps)?),
-        QueryMsg::Simulation { offer_asset } => to_binary(&query_simulation(deps, offer_asset)?),
+        QueryMsg::Pair {} => to_json_binary(&query_pair_info(deps)?),
+        QueryMsg::Pool {} => to_json_binary(&query_pool(deps)?),
+        QueryMsg::Simulation { offer_asset } => to_json_binary(&query_simulation(deps, offer_asset)?),
         QueryMsg::ReverseSimulation { ask_asset } => {
-            to_binary(&query_reverse_simulation(deps, ask_asset)?)
+            to_json_binary(&query_reverse_simulation(deps, ask_asset)?)
         }
-        QueryMsg::CumulativePrices {} => to_binary(&query_cumulative_prices(deps, env)?),
-        QueryMsg::Config {} => to_binary(&query_config(deps)?),
-        QueryMsg::FeeInfo {} => to_binary(&query_fee_info(deps)?),
-        QueryMsg::IsFullyCommited {} => to_binary(&query_check_commit(deps)?),
+        QueryMsg::CumulativePrices {} => to_json_binary(&query_cumulative_prices(deps, env)?),
+        QueryMsg::Config {} => to_json_binary(&query_config(deps)?),
+        QueryMsg::FeeInfo {} => to_json_binary(&query_fee_info(deps)?),
+        QueryMsg::IsFullyCommited {} => to_json_binary(&query_check_commit(deps)?),
     }
 }
 
@@ -814,12 +818,12 @@ pub fn compute_swap(
     let cp: Uint256 = offer_pool * ask_pool;
     let return_amount: Uint256 = (Decimal256::from_ratio(ask_pool, 1u8)
         - Decimal256::from_ratio(cp, offer_pool + offer_amount))
-        * Uint256::from(1u8);
+        .numerator() / Decimal256::one().denominator();
 
     // Calculate spread & commission
     let spread_amount: Uint256 =
-        (offer_amount * Decimal256::from_ratio(ask_pool, offer_pool)) - return_amount;
-    let commission_amount: Uint256 = return_amount * commission_rate;
+        (offer_amount * Decimal256::from_ratio(ask_pool, offer_pool).numerator() / Decimal256::from_ratio(ask_pool, offer_pool).denominator()) - return_amount;
+    let commission_amount: Uint256 = return_amount * commission_rate.numerator() / commission_rate.denominator();
 
     // The commision (minus the part that goes to the Maker contract) will be absorbed by the pool
     let return_amount: Uint256 = return_amount - commission_amount;
@@ -846,30 +850,22 @@ fn compute_offer_amount(
     ask_amount: Uint128,
     commission_rate: Decimal,
 ) -> StdResult<(Uint128, Uint128, Uint128)> {
-    // ask => offer
-    // offer_amount = cp / (ask_pool - ask_amount / (1 - commission_rate)) - offer_pool
     let cp = Uint256::from(offer_pool) * Uint256::from(ask_pool);
     let one_minus_commission = Decimal256::one() - decimal2decimal256(commission_rate)?;
     let inv_one_minus_commission = Decimal256::one() / one_minus_commission;
 
-    let offer_amount: Uint128 = cp
-        .multiply_ratio(
-            Uint256::from(1u8),
-            Uint256::from(
-                ask_pool.checked_sub(
-                    (Uint256::from(ask_amount) * inv_one_minus_commission).try_into()?,
-                )?,
-            ),
-        )
-        .checked_sub(offer_pool.into())?
-        .try_into()?;
+    let ask_amount_256: Uint256 = ask_amount.into();
+    let offer_amount: Uint256 = Uint256::from(
+        ask_pool.checked_sub(
+            (ask_amount_256 * inv_one_minus_commission.numerator() / inv_one_minus_commission.denominator()).try_into()?,
+        )?,
+    );
 
-    let before_commission_deduction = Uint256::from(ask_amount) * inv_one_minus_commission;
-    let spread_amount = (offer_amount * Decimal::from_ratio(ask_pool, offer_pool))
-        .checked_sub(before_commission_deduction.try_into()?)
-        .unwrap_or_else(|_| Uint128::zero());
-    let commission_amount = before_commission_deduction * decimal2decimal256(commission_rate)?;
-    Ok((offer_amount, spread_amount, commission_amount.try_into()?))
+    let spread_amount = (offer_amount * Decimal256::from_ratio(ask_pool, offer_pool).numerator() / Decimal256::from_ratio(ask_pool, offer_pool).denominator())
+        .checked_sub(offer_amount)?
+        .try_into()?;
+    let commission_amount = offer_amount * decimal2decimal256(commission_rate)?.numerator() / decimal2decimal256(commission_rate)?.denominator();
+    Ok((offer_amount.try_into()?, spread_amount, commission_amount.try_into()?))
 }
 
 /// ## Description
@@ -903,7 +899,7 @@ pub fn assert_max_spread(
     }
 
     if let Some(belief_price) = belief_price {
-        let expected_return = offer_amount * belief_price.inv().unwrap();
+        let expected_return = offer_amount * belief_price.inv().unwrap().numerator() / belief_price.inv().unwrap().denominator();
         let spread_amount = expected_return
             .checked_sub(return_amount)
             .unwrap_or_else(|_| Uint128::zero());
@@ -1062,7 +1058,7 @@ pub fn get_cw20_transfer_msg(
 
     let exec_cw20_transfer_msg = WasmMsg::Execute {
         contract_addr: token_addr.into(),
-        msg: to_binary(&transfer_cw20_msg)?,
+        msg: to_json_binary(&transfer_cw20_msg)?,
         funds: vec![],
     };
 

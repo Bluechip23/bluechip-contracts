@@ -10,15 +10,16 @@ use crate::msg::{Cw20HookMsg, ExecuteMsg, FeeInfo, InstantiateMsg};
 use crate::response::MsgInstantiateContractResponse;
 use crate::state::Config;
 
-use cosmwasm_std::testing::{mock_env, mock_info, MOCK_CONTRACT_ADDR};
+use cosmwasm_std::testing::{message_info, mock_env, MOCK_CONTRACT_ADDR};
 use cosmwasm_std::{
-    attr, to_binary, Addr, BankMsg, BlockInfo, Coin, CosmosMsg, Decimal, DepsMut, Env, Reply,
+    attr, to_json_binary, Addr, BankMsg, Binary, BlockInfo, Coin, CosmosMsg, Decimal, DepsMut, Env, Fraction, Reply,
     ReplyOn, Response, StdError, SubMsg, SubMsgResponse, SubMsgResult, Timestamp, Uint128, WasmMsg,
 };
 use cw20::{Cw20ExecuteMsg, Cw20ReceiveMsg, MinterResponse};
 use proptest::prelude::*;
 use protobuf::Message;
 
+#[allow(deprecated)]
 fn store_liquidity_token(deps: DepsMut, msg_id: u64, contract_addr: String) {
     let data = MsgInstantiateContractResponse {
         contract_address: contract_addr,
@@ -34,7 +35,10 @@ fn store_liquidity_token(deps: DepsMut, msg_id: u64, contract_addr: String) {
         result: SubMsgResult::Ok(SubMsgResponse {
             events: vec![],
             data: Some(data.into()),
+            msg_responses: vec![],
         }),
+        gas_used: 0,
+        payload: Binary::default(),
     };
 }
 
@@ -73,7 +77,7 @@ fn proper_initialization() {
     let sender = "addr0000";
     // We can just call .unwrap() to assert this was a success
     let env = mock_env();
-    let info = mock_info(sender, &[]);
+    let info = message_info(&Addr::unchecked(sender), &[]);
     let res = instantiate(deps.as_mut(), env, info, msg).unwrap();
 
     // Store liquidity token
@@ -124,7 +128,7 @@ fn provide_liquidity() {
     };
 
     let env = mock_env();
-    let info = mock_info("addr0000", &[]);
+    let info = message_info(&Addr::unchecked("addr0000"), &[]);
     // We can just call .unwrap() to assert this was a success
     let _res = instantiate(deps.as_mut(), env, info, msg).unwrap();
 
@@ -204,7 +208,7 @@ fn withdraw_liquidity() {
     };
 
     let env = mock_env();
-    let info = mock_info("addr0000", &[]);
+    let info = message_info(&Addr::unchecked("addr0000"), &[]);
     // We can just call .unwrap() to assert this was a success
     let _res = instantiate(deps.as_mut(), env, info, msg).unwrap();
 
@@ -268,7 +272,7 @@ fn try_native_to_token() {
     };
 
     let env = mock_env();
-    let info = mock_info("addr0000", &[]);
+    let info = message_info(&Addr::unchecked("addr0000"), &[]);
     // we can just call .unwrap() to assert this was a success
     let _res = instantiate(deps.as_mut(), env.clone(), info, msg).unwrap();
 
@@ -288,13 +292,10 @@ fn try_native_to_token() {
         to: None,
     };
 
-    let info = mock_info(
-        "addr0000",
-        &[Coin {
-            denom: "uusd".to_string(),
-            amount: offer_amount,
-        }],
-    );
+    let info = message_info(&Addr::unchecked("addr0000"), &[Coin {
+        denom: "uusd".to_string(),
+        amount: offer_amount,
+    }]);
 
     let res = execute(deps.as_mut(), env.clone(), info, msg).unwrap();
     let msg_transfer = res.messages.get(0).expect("no message");
@@ -377,7 +378,7 @@ fn try_token_to_native() {
     };
 
     let env = mock_env();
-    let info = mock_info("addr0000", &[]);
+    let info = message_info(&Addr::unchecked("addr0000"), &[]);
     // We can just call .unwrap() to assert this was a success
     let _res = instantiate(deps.as_mut(), env.clone(), info, msg).unwrap();
 
@@ -397,7 +398,7 @@ fn try_token_to_native() {
         to: None,
     };
 
-    let info = mock_info("addr0000", &[]);
+    let info = message_info(&Addr::unchecked("addr0000"), &[]);
     let res = execute(deps.as_mut(), env.clone(), info, msg).unwrap_err();
     assert_eq!(res, ContractError::Cw20DirectSwap {});
 
@@ -405,7 +406,7 @@ fn try_token_to_native() {
     let msg = ExecuteMsg::Receive(Cw20ReceiveMsg {
         sender: String::from("addr0000"),
         amount: offer_amount,
-        msg: to_binary(&Cw20HookMsg::Swap {
+        msg: to_json_binary(&Cw20HookMsg::Swap {
             belief_price: None,
             max_spread: Some(Decimal::percent(50)),
             to: None,
@@ -413,7 +414,7 @@ fn try_token_to_native() {
         .unwrap(),
     });
 
-    let info = mock_info("asset0000", &[]);
+    let info = message_info(&Addr::unchecked("asset0000"), &[]);
 
     let res = execute(deps.as_mut(), env, info, msg).unwrap();
     let msg_transfer = res.messages.get(0).expect("no message");
@@ -499,7 +500,7 @@ fn test_deduct() {
 
     let amount = Uint128::new(1000_000_000u128);
     let expected_after_amount = std::cmp::max(
-        amount.checked_sub(amount * tax_rate).unwrap(),
+        amount.checked_sub(amount * tax_rate.numerator() / tax_rate.denominator()).unwrap(),
         amount.checked_sub(tax_cap).unwrap(),
     );
 
@@ -560,7 +561,7 @@ fn test_query_pool() {
     };
 
     let env = mock_env();
-    let info = mock_info("addr0000", &[]);
+    let info = message_info(&Addr::unchecked("addr0000"), &[]);
     // We can just call .unwrap() to assert this was a success
     let _res = instantiate(deps.as_mut(), env, info, msg).unwrap();
 
@@ -613,7 +614,7 @@ fn test_query_share() {
     };
 
     let env = mock_env();
-    let info = mock_info("addr0000", &[]);
+    let info = message_info(&Addr::unchecked("addr0000"), &[]);
     // We can just call .unwrap() to assert this was a success
     let _res = instantiate(deps.as_mut(), env, info, msg).unwrap();
 
