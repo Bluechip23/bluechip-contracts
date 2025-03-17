@@ -51,8 +51,9 @@ pub fn instantiate(
     _info: MessageInfo,
     msg: InstantiateMsg,
 ) -> Result<Response, ContractError> {
-    msg.asset_infos[0].check(deps.api)?;
-    msg.asset_infos[1].check(deps.api)?;
+    //++++++++++++++++++++++++++++++++++++++++++++++need to check if the asset info is valid++++++++++++++++++++++++++++++++++++++++++++++++++++++++
+    // msg.asset_infos[0].check(deps.api)?;
+    // msg.asset_infos[1].check(deps.api)?;
 
     if msg.asset_infos[0] == msg.asset_infos[1] {
         return Err(ContractError::DoublingAssets {});
@@ -67,13 +68,15 @@ pub fn instantiate(
             asset_infos: msg.asset_infos.clone(),
             pair_type: PairType::Xyk {},
         },
-        factory_addr: deps.api.addr_validate(msg.factory_addr.as_str())?,
+        //++++++++++++++++++++++++++++++++++++++++++++++need to check if the factory is valid++++++++++++++++++++++++++++++++++++++++++++++++++++++++
+        // factory_addr: deps.api.addr_validate(msg.factory_addr.as_str())?,
+        factory_addr: msg.factory_addr.clone(),
         block_time_last: 0,
         price0_cumulative_last: Uint128::zero(),
         price1_cumulative_last: Uint128::zero(),
         commit_limit: msg.commit_limit,
-        token_address: msg.token_address,
-        available_payment: msg.available_payment,
+        token_address: msg.token_address.clone(),
+        available_payment: msg.available_payment.clone(),
     };
 
     CONFIG.save(deps.storage, &config)?;
@@ -125,7 +128,8 @@ pub fn execute(
             max_spread,
             to,
         } => {
-            offer_asset.info.check(deps.api)?;
+            //++++++++++++++++++++++++++++++++++++++++++++++need to check if the offer asset  is valid++++++++++++++++++++++++++++++++++++++++++++++++++++++++
+            // offer_asset.info.check(deps.api)?;
             if !offer_asset.is_native_token() {
                 return Err(ContractError::Cw20DirectSwap {});
             }

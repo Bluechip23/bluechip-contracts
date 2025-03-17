@@ -52,7 +52,7 @@ fn proper_initialization() {
     )]);
 
     let msg = InstantiateMsg {
-        factory_addr: String::from("factory"),
+        factory_addr: Addr::unchecked("factory"),
         asset_infos: [
             AssetInfo::NativeToken {
                 denom: "uusd".to_string(),
@@ -66,24 +66,24 @@ fn proper_initialization() {
         fee_info: FeeInfo {
             bluechip_address: Addr::unchecked("bluechip".to_string()),
             creator_address: Addr::unchecked("creator".to_string()),
-            bluechip_fee: Decimal::from_ratio(10 as u128, 100 as u128),
-            creator_fee: Decimal::from_ratio(10 as u128, 100 as u128),
+            bluechip_fee: Decimal::from_ratio(10u128, 100u128),
+            creator_fee: Decimal::from_ratio(10u128, 100u128),
         },
         commit_limit: Uint128::new(5000),
-        token_address: Addr::unchecked("token_address".to_string()),
+        token_address: Addr::unchecked("token".to_string()),
         available_payment: vec![Uint128::new(100)],
     };
 
     let sender = "addr0000";
-    // We can just call .unwrap() to assert this was a success
     let env = mock_env();
     let info = message_info(&Addr::unchecked(sender), &[]);
-    let res = instantiate(deps.as_mut(), env, info, msg).unwrap();
+    
+    let _res = instantiate(deps.as_mut(), env, info, msg).unwrap();
+
+    println!("Instantiated");
 
     // Store liquidity token
     store_liquidity_token(deps.as_mut(), 1, "liquidity0000".to_string());
-
-    // It worked, let's query the state
 }
 
 #[test]
@@ -105,7 +105,7 @@ fn provide_liquidity() {
     ]);
 
     let msg = InstantiateMsg {
-        factory_addr: String::from("factory"),
+        factory_addr: Addr::unchecked("factory"),
         asset_infos: [
             AssetInfo::NativeToken {
                 denom: "uusd".to_string(),
@@ -185,7 +185,7 @@ fn withdraw_liquidity() {
     ]);
 
     let msg = InstantiateMsg {
-        factory_addr: String::from("factory"),
+        factory_addr: Addr::unchecked("factory"),
         asset_infos: [
             AssetInfo::NativeToken {
                 denom: "uusd".to_string(),
@@ -249,7 +249,7 @@ fn try_native_to_token() {
     ]);
 
     let msg = InstantiateMsg {
-        factory_addr: String::from("factory"),
+        factory_addr: Addr::unchecked("factory"),
         asset_infos: [
             AssetInfo::NativeToken {
                 denom: "uusd".to_string(),
@@ -355,7 +355,7 @@ fn try_token_to_native() {
     ]);
 
     let msg = InstantiateMsg {
-        factory_addr: String::from("factory"),
+        factory_addr: Addr::unchecked("factory"),
         asset_infos: [
             AssetInfo::NativeToken {
                 denom: "uusd".to_string(),
@@ -389,7 +389,7 @@ fn try_token_to_native() {
     let msg = ExecuteMsg::Swap {
         offer_asset: Asset {
             info: AssetInfo::Token {
-                contract_addr: Addr::unchecked("asset0000"),
+                contract_addr: Addr::unchecked("asset0000".to_string()),
             },
             amount: offer_amount,
         },
@@ -538,7 +538,7 @@ fn test_query_pool() {
     ]);
 
     let msg = InstantiateMsg {
-        factory_addr: String::from("factory"),
+        factory_addr: Addr::unchecked("factory"),
         asset_infos: [
             AssetInfo::NativeToken {
                 denom: "uusd".to_string(),
@@ -591,7 +591,7 @@ fn test_query_share() {
     ]);
 
     let msg = InstantiateMsg {
-        factory_addr: String::from("factory"),
+        factory_addr: Addr::unchecked("factory"),
         asset_infos: [
             AssetInfo::NativeToken {
                 denom: "uusd".to_string(),
