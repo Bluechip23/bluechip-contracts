@@ -1,9 +1,9 @@
 [package]
 name = "factory"
-version = "1.0.0-alpha"
+version.workspace = true
 authors = ["bestselection18 <noahsflood908@gmail.com>"]
-edition = "2018"
-description = "Cosmwasm Factory"
+edition = "2021"
+description = "Bluechip Factory"
 license = "Apache-2.0"
 repository = "https://github.com/bestselection18"
 
@@ -18,42 +18,26 @@ exclude = [
 [lib]
 crate-type = ["cdylib", "rlib"]
 
-[profile.release]
-opt-level = 3
-debug = false
-rpath = false
-lto = true
-debug-assertions = false
-codegen-units = 1
-panic = 'abort'
-incremental = false
-overflow-checks = true
-
 [features]
 default = []        # Default features
 mock = [] # Optional feature for mock code
-
-# use library feature to disable all instantiate/execute/query exports
 library = []
 
+[package.metadata.scripts]
+optimize = { workspace = true }
+
 [dependencies]
-cw2 = { version = "2.0.0" }
-cw20 = { version = "2.0.0" }
-cw20-base = { version = "2.0.0", features = ["library"] }
-cosmwasm-std = { version = "2.2.0", features = [
-  "cosmwasm_1_4",
-  # Enable this if you only deploy to chains that have CosmWasm 2.0 or higher
-  # "cosmwasm_2_0",
-  # Or this if you only deploy to chains that have CosmWasm 2.1 or higher
-  # "cosmwasm_2_1",
-] }
-cosmwasm-storage = { version = "1.1.0" }
-cosmwasm-schema = { version = "2.2.0" }
-cw-storage-plus = { version = "2.0.0" }
-thiserror = { version = "2.0.2" }
-cw-utils = "2.0.0"
-protobuf = { version = "2", features = ["with-bytes"] }
+cosmwasm-schema = { workspace = true }
+integer-sqrt = { workspace = true }
+cw2 = { workspace = true }
+cw20 = { workspace = true }
+cw20-base = { workspace = true }
+cosmwasm-std = { workspace = true }
+cosmwasm-storage = { workspace = true }
+cw-storage-plus = { workspace = true }
+thiserror = { workspace = true }
+protobuf = { workspace = true }
+cw-utils = { workspace = true }
 
 [dev-dependencies]
-cosmwasm-schema = { version = "2.2.0" }
-cw-multi-test = "2.0.0"
+cw-multi-test = { workspace = true }

@@ -12,6 +12,7 @@ use crate::msg::{
     InstantiateMsg, MigrateMsg, PoolResponse, QueryMsg, ReverseSimulationResponse,
     SimulationResponse,
 };
+use cw_utils::{maybe_addr, NativeBalance};
 use crate::state::{Config, PairInfo, COMMITSTATUS, CONFIG, FEEINFO};
 use std::convert::TryInto;
 
