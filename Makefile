@@ -1,5 +1,3 @@
-.PHONY: optimize-pool optimize-factory optimize-airdrops optimize-all check-pool check-factory check-airdrops deploy-pool deploy-factory deploy-airdrops
-
 # Test upgrade function
 optimize-pool:
 	docker run --rm -v ${CURDIR}:/code \
@@ -42,7 +40,7 @@ deploy-pool: optimize-pool
 		-b block \
 		--gas 5000000 \
 		--fees 300000usei \
-		-y
+		-y | tee ./config/pool_deploy_result.txt
 
 
 deploy-factory: optimize-factory
@@ -54,7 +52,7 @@ deploy-factory: optimize-factory
 		-b block \
 		--gas 5000000 \
 		--fees 300000usei \
-		-y
+		-y | tee ./config/factory_deploy_result.txt
 
 deploy-airdrops: optimize-airdrops
 	@echo "Deploying airdrops contract..."
@@ -67,4 +65,26 @@ deploy-airdrops: optimize-airdrops
 		--fees 300000usei \
 		-y
 
+init-factory:
+	seid tx wasm instantiate 10234 "$$(cat ./config/factory_init.json)" \
+		--from taku \
+		--label "bluechip_factory" \
+		--admin $$(seid keys show taku -a) \
+		--node https://rpc-testnet.sei-apis.com \
+		--chain-id atlantic-2 \
+		--gas 5000000 \
+		--fees 300000usei \
+		-b block \
+		-y | tee ./config/factory_init_result.txt
 
+init-pool:
+	seid tx wasm instantiate 10236 "$$(cat ./config/pool_init.json)" \
+		--from taku \
+		--label "bluechip_pool" \
+		--admin $$(seid keys show taku -a) \
+		--node https://rpc-testnet.sei-apis.com \
+		--chain-id atlantic-2 \
+		--gas 5000000 \
+		--fees 300000usei \
+		-b block \
+		-y | tee ./config/pool_init_result.txt

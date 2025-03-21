@@ -1,0 +1,26 @@
+{
+  "factory_addr": "sei1fjvnfelx9unxg4dpzytcss705up9je389hq5c6lyvk03p0mfs9nqngst6y",
+  "asset_infos": [
+    {
+      "native_token": {
+        "denom": "usei"
+      }
+    },
+    {
+      "token": {
+        "contract_addr": "sei18ytjd80hsrwfwu53ape7nxk02hhg70a9lzwg6z"
+      }
+    }
+  ],
+  "token_code_id": 10231,
+  "init_params": null,
+  "fee_info": {
+    "bluechip_address": "sei18ytjd80hsrwfwu53ape7nxk02hhg70a9lzwg6z",
+    "creator_address": "sei18ytjd80hsrwfwu53ape7nxk02hhg70a9lzwg6z",
+    "bluechip_fee": "0.1",
+    "creator_fee": "0.1"
+  },
+  "commit_limit": "5000",
+  "token_address": "sei18ytjd80hsrwfwu53ape7nxk02hhg70a9lzwg6z",
+  "available_payment": ["100"]
+}
