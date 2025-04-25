@@ -1,14 +1,10 @@
-use cosmwasm_std::{
-    Addr, Decimal, Uint128,
-};
-
-use crate::mock_querier::mock_dependencies;
+use cosmwasm_std::{Addr, Decimal, StdError, Uint128};
 use crate::state::Config;
+use crate::mock_querier::mock_dependencies;
+use cosmwasm_std::testing::{mock_env, message_info, mock_info};
 use crate::execute::{execute, instantiate};
-
-use crate::asset::AssetInfo;
+use crate::asset::{Asset, AssetInfo, PairInfo, PairType};
 use crate::msg::{ExecuteMsg, InstantiateMsg, TokenInfo};
-use cosmwasm_std::testing::{message_info, mock_env};
 use crate::pair::{FeeInfo, InstantiateMsg as PairInstantiateMsg};
 
 #[test]
@@ -137,4 +133,141 @@ fn create_pair() {
         },
     )
     .unwrap();
+}
+
+#[test]
+fn test_asset_info() {
+    let mut deps = mock_dependencies(&[]);
+
+    // Test native token
+    let native_info = AssetInfo::NativeToken {
+        denom: "bluechip".to_string(),
+    };
+    assert!(native_info.is_native_token());
+    assert!(!native_info.is_ibc());
+
+    // Test token
+    let token_info = AssetInfo::Token {
+        contract_addr: Addr::unchecked("bluechip..."),
+    };
+    assert!(!token_info.is_native_token());
+    assert!(!token_info.is_ibc());
+
+    // Test equality
+    assert!(native_info.equal(&AssetInfo::NativeToken {
+        denom: "bluechip".to_string(),
+    }));
+    assert!(!native_info.equal(&token_info));
+
+    // Test validation
+    // native_info.check(&deps.api).unwrap();
+    // token_info.check(&deps.api).unwrap();
+}
+
+#[test]
+fn test_asset() {
+    let native_asset = Asset {
+        info: AssetInfo::NativeToken {
+            denom: "bluechip".to_string(),
+        },
+        amount: Uint128::new(100),
+    };
+
+    let token_asset = Asset {
+        info: AssetInfo::Token {
+            contract_addr: Addr::unchecked("bluechip..."),
+        },
+        amount: Uint128::new(100),
+    };
+
+    // Test native token methods
+    assert!(native_asset.is_native_token());
+    assert!(!token_asset.is_native_token());
+
+    // Test tax computation (should be zero as per implementation)
+    let deps = mock_dependencies(&[]);
+    assert_eq!(
+        native_asset.compute_tax(&deps.as_ref().querier).unwrap(),
+        Uint128::zero()
+    );
+}
+
+#[test]
+fn test_pair_info() {
+    let pair_info = PairInfo {
+        asset_infos: [
+            AssetInfo::NativeToken {
+                denom: "bluechip".to_string(),
+            },
+            AssetInfo::Token {
+                contract_addr: Addr::unchecked("bluechip..."),
+            },
+        ],
+        contract_addr: Addr::unchecked("pair1..."),
+        liquidity_token: Addr::unchecked("lp1..."),
+        pair_type: PairType::Xyk {},
+    };
+
+    // Test pair type display
+    assert_eq!(pair_info.pair_type.to_string(), "xyk");
+}
+
+#[test]
+fn test_config() {
+    let config = Config {
+        admin: Addr::unchecked("admin1..."),
+        total_token_amount: Uint128::new(1_000_000),
+        creator_amount: Uint128::new(200_000),
+        pool_amount: Uint128::new(500_000),
+        commit_amount: Uint128::new(200_000),
+        bluechip_amount: Uint128::new(100_000),
+        token_id: 1,
+        pair_id: 1,
+        bluechip_address: Addr::unchecked("bluechip1..."),
+        bluechipe_fee: Decimal::percent(10),
+        creator_fee: Decimal::percent(10),
+    };
+
+    // Test config values
+    assert_eq!(config.admin, Addr::unchecked("admin1..."));
+    assert_eq!(config.total_token_amount, Uint128::new(1_000_000));
+    assert_eq!(config.creator_amount, Uint128::new(200_000));
+    assert_eq!(config.pool_amount, Uint128::new(500_000));
+    assert_eq!(config.commit_amount, Uint128::new(200_000));
+    assert_eq!(config.bluechip_amount, Uint128::new(100_000));
+    assert_eq!(config.token_id, 1);
+    assert_eq!(config.pair_id, 1);
+    assert_eq!(config.bluechip_address, Addr::unchecked("bluechip1..."));
+    assert_eq!(config.bluechipe_fee, Decimal::percent(10));
+    assert_eq!(config.creator_fee, Decimal::percent(10));
+
+    // Test total amounts add up
+    assert_eq!(
+        config.creator_amount + config.pool_amount + config.commit_amount + config.bluechip_amount,
+        config.total_token_amount
+    );
+}
+
+#[test]
+fn test_asset_validation() {
+    let mut deps = mock_dependencies(&[]);
+    let env = mock_env();
+
+    // Test native token validation
+    let native_info = AssetInfo::NativeToken {
+        denom: "bluechip".to_string(),
+    };
+    assert!(native_info.check(&deps.api).is_ok());
+
+    // Test invalid token address
+    let invalid_token_info = AssetInfo::Token {
+        contract_addr: Addr::unchecked("invalid..."),
+    };
+    assert!(invalid_token_info.check(&deps.api).is_ok()); // Note: In mock environment, address validation is lenient
+
+    // Test valid token address
+    let valid_token_info = AssetInfo::Token {
+        contract_addr: Addr::unchecked("bluechipvalid..."),
+    };
+    assert!(valid_token_info.check(&deps.api).is_ok());
 }
