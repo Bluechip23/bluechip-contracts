@@ -1,4 +1,4 @@
-use crate::asset::{Asset, AssetInfo, PairInfo};
+use crate::asset::{Asset, AssetInfo, CoinsExt, PairInfo, PairType};
 
 use crate::contract::{
     accumulate_prices, assert_max_spread, compute_swap, execute, instantiate, query_pair_info,
@@ -620,4 +620,406 @@ fn test_query_share() {
 
     // Store liquidity token
     store_liquidity_token(deps.as_mut(), 1, "liquidity0000".to_string());
+}
+
+#[test]
+fn test_commit() {
+    let mut deps = mock_dependencies(&[Coin {
+        denom: "uusd".to_string(),
+        amount: Uint128::new(100u128),
+    }]);
+
+    deps.querier.with_token_balances(&[
+        (
+            &String::from("asset0000"),
+            &[(&String::from(MOCK_CONTRACT_ADDR), &Uint128::new(100u128))],
+        ),
+    ]);
+
+    let msg = InstantiateMsg {
+        factory_addr: Addr::unchecked("factory"),
+        asset_infos: [
+            AssetInfo::NativeToken {
+                denom: "uusd".to_string(),
+            },
+            AssetInfo::Token {
+                contract_addr: Addr::unchecked("asset0000"),
+            },
+        ],
+        token_code_id: 10u64,
+        init_params: None,
+        fee_info: FeeInfo {
+            bluechip_address: Addr::unchecked("bluechip".to_string()),
+            creator_address: Addr::unchecked("creator".to_string()),
+            bluechip_fee: Decimal::from_ratio(10u128, 100u128),
+            creator_fee: Decimal::from_ratio(10u128, 100u128),
+        },
+        commit_limit: Uint128::new(5000),
+        token_address: Addr::unchecked("token_address".to_string()),
+        available_payment: vec![Uint128::new(100)],
+    };
+
+    let env = mock_env();
+    let info = message_info(&Addr::unchecked("addr0000"), &[]);
+    let _res = instantiate(deps.as_mut(), env.clone(), info, msg).unwrap();
+
+    // Store liquidity token
+    store_liquidity_token(deps.as_mut(), 1, "liquidity0000".to_string());
+
+    // Try commit with insufficient funds
+    let commit_msg = ExecuteMsg::Commit {
+        asset: Asset {
+            info: AssetInfo::NativeToken {
+                denom: "uusd".to_string(),
+            },
+            amount: Uint128::new(100),
+        },
+        amount: Uint128::new(100),
+    };
+
+    let info = message_info(&Addr::unchecked("addr0000"), &[]);
+    let err = execute(deps.as_mut(), env.clone(), info, commit_msg.clone()).unwrap_err();
+    assert_eq!(err, ContractError::InsufficientFunds {});
+
+    // Try commit with correct funds
+    let info = message_info(
+        &Addr::unchecked("addr0000"),
+        &[Coin {
+            denom: "uusd".to_string(),
+            amount: Uint128::new(100),
+        }],
+    );
+
+    let res = execute(deps.as_mut(), env.clone(), info, commit_msg).unwrap();
+    assert_eq!(3, res.messages.len()); // Should have 3 messages: bluechip fee, creator fee, and token transfer
+}
+
+#[test]
+fn test_commit_validation() {
+    let mut deps = mock_dependencies(&[Coin {
+        denom: "uusd".to_string(),
+        amount: Uint128::new(100u128),
+    }]);
+
+    let msg = InstantiateMsg {
+        factory_addr: Addr::unchecked("factory"),
+        asset_infos: [
+            AssetInfo::NativeToken {
+                denom: "uusd".to_string(),
+            },
+            AssetInfo::Token {
+                contract_addr: Addr::unchecked("asset0000"),
+            },
+        ],
+        token_code_id: 10u64,
+        init_params: None,
+        fee_info: FeeInfo {
+            bluechip_address: Addr::unchecked("bluechip".to_string()),
+            creator_address: Addr::unchecked("creator".to_string()),
+            bluechip_fee: Decimal::from_ratio(10u128, 100u128),
+            creator_fee: Decimal::from_ratio(10u128, 100u128),
+        },
+        commit_limit: Uint128::new(5000),
+        token_address: Addr::unchecked("token_address".to_string()),
+        available_payment: vec![Uint128::new(100)],
+    };
+
+    let env = mock_env();
+    let info = message_info(&Addr::unchecked("addr0000"), &[]);
+    let _res = instantiate(deps.as_mut(), env.clone(), info, msg).unwrap();
+
+    // Try commit with wrong denom
+    let commit_msg = ExecuteMsg::Commit {
+        asset: Asset {
+            info: AssetInfo::NativeToken {
+                denom: "uusd".to_string(),
+            },
+            amount: Uint128::new(100),
+        },
+        amount: Uint128::new(100),
+    };
+
+    let info = message_info(
+        &Addr::unchecked("addr0000"),
+        &[Coin {
+            denom: "wrong".to_string(),
+            amount: Uint128::new(100),
+        }],
+    );
+
+    let err = execute(deps.as_mut(), env.clone(), info, commit_msg).unwrap_err();
+    assert_eq!(
+        err,
+        ContractError::IncorrectNativeDenom {
+            provided: "wrong".to_string(),
+            required: "uusd".to_string(),
+        }
+    );
+}
+
+#[test]
+fn test_commit_with_token() {
+    let mut deps = mock_dependencies(&[]);
+
+    let msg = InstantiateMsg {
+        factory_addr: Addr::unchecked("factory"),
+        asset_infos: [
+            AssetInfo::NativeToken {
+                denom: "uusd".to_string(),
+            },
+            AssetInfo::Token {
+                contract_addr: Addr::unchecked("asset0000"),
+            },
+        ],
+        token_code_id: 10u64,
+        init_params: None,
+        fee_info: FeeInfo {
+            bluechip_address: Addr::unchecked("bluechip".to_string()),
+            creator_address: Addr::unchecked("creator".to_string()),
+            bluechip_fee: Decimal::from_ratio(10u128, 100u128),
+            creator_fee: Decimal::from_ratio(10u128, 100u128),
+        },
+        commit_limit: Uint128::new(5000),
+        token_address: Addr::unchecked("token_address".to_string()),
+        available_payment: vec![Uint128::new(100)],
+    };
+
+    let env = mock_env();
+    let info = message_info(&Addr::unchecked("addr0000"), &[]);
+    let _res = instantiate(deps.as_mut(), env.clone(), info, msg).unwrap();
+
+    // Try commit with token (should fail)
+    let commit_msg = ExecuteMsg::Commit {
+        asset: Asset {
+            info: AssetInfo::Token {
+                contract_addr: Addr::unchecked("asset0000"),
+            },
+            amount: Uint128::new(100),
+        },
+        amount: Uint128::new(100),
+    };
+
+    let info = message_info(&Addr::unchecked("addr0000"), &[]);
+    let err = execute(deps.as_mut(), env.clone(), info, commit_msg).unwrap_err();
+    assert_eq!(err, ContractError::AssetMismatch {});
+}
+
+#[test]
+fn test_asset_info() {
+    // Test native token
+    let native_info = AssetInfo::NativeToken {
+        denom: "uusd".to_string(),
+    };
+    assert!(native_info.is_native_token());
+    assert!(!native_info.is_ibc());
+
+    // Test IBC token
+    let ibc_info = AssetInfo::NativeToken {
+        denom: "ibc/27394FB092D2ECCD56123C74F36E4C1F926001CEADA9CA97EA622B25F41E5EB2".to_string(),
+    };
+    assert!(ibc_info.is_native_token());
+    assert!(ibc_info.is_ibc());
+
+    // Test token contract
+    let token_info = AssetInfo::Token {
+        contract_addr: Addr::unchecked("asset0000"),
+    };
+    assert!(!token_info.is_native_token());
+    assert!(!token_info.is_ibc());
+
+    // Test equality
+    assert!(native_info.equal(&AssetInfo::NativeToken {
+        denom: "uusd".to_string(),
+    }));
+    assert!(!native_info.equal(&token_info));
+}
+
+#[test]
+fn test_asset() {
+    let mut deps = mock_dependencies(&[Coin {
+        denom: "uusd".to_string(),
+        amount: Uint128::new(100u128),
+    }]);
+
+    // Test native token asset
+    let native_asset = Asset {
+        info: AssetInfo::NativeToken {
+            denom: "uusd".to_string(),
+        },
+        amount: Uint128::new(100u128),
+    };
+
+    // Test compute_tax (should be zero as per Terra 2.0)
+    let tax = native_asset.compute_tax(&deps.as_ref().querier).unwrap();
+    assert_eq!(tax, Uint128::zero());
+
+    // Test deduct_tax
+    let coin = native_asset.deduct_tax(&deps.as_ref().querier).unwrap();
+    assert_eq!(
+        coin,
+        Coin {
+            denom: "uusd".to_string(),
+            amount: Uint128::new(100u128)
+        }
+    );
+
+    // Test token asset
+    let token_asset = Asset {
+        info: AssetInfo::Token {
+            contract_addr: Addr::unchecked("asset0000"),
+        },
+        amount: Uint128::new(100u128),
+    };
+
+    // Test deduct_tax error for token asset
+    let err = token_asset.deduct_tax(&deps.as_ref().querier).unwrap_err();
+    assert_eq!(
+        err,
+        StdError::generic_err("cannot deduct tax from token asset")
+    );
+}
+
+#[test]
+fn test_pair_info() {
+    let pair_info = PairInfo {
+        asset_infos: [
+            AssetInfo::NativeToken {
+                denom: "uusd".to_string(),
+            },
+            AssetInfo::Token {
+                contract_addr: Addr::unchecked("asset0000"),
+            },
+        ],
+        contract_addr: Addr::unchecked("pair0000"),
+        liquidity_token: Addr::unchecked("liquidity0000"),
+        pair_type: PairType::Xyk {},
+    };
+
+    // Test pair type display
+    assert_eq!(pair_info.pair_type.to_string(), "xyk");
+    assert_eq!(
+        PairType::Custom("custom_type".to_string()).to_string(),
+        "custom-custom_type"
+    );
+}
+
+#[test]
+fn test_asset_validation() {
+    let mut deps = mock_dependencies(&[]);
+
+    // Test valid native token
+    let native_info = AssetInfo::NativeToken {
+        denom: "uusd".to_string(),
+    };
+    native_info.check(&deps.api).unwrap();
+
+    // Test valid token contract
+    let token_info = AssetInfo::Token {
+        contract_addr: Addr::unchecked("asset0000"),
+    };
+    token_info.check(&deps.api).unwrap();
+
+    // Test assert_sent_native_token_balance
+    let asset = Asset {
+        info: native_info,
+        amount: Uint128::new(100u128),
+    };
+
+    // Test with correct amount
+    let info = message_info(
+        &Addr::unchecked("sender"),
+        &[Coin {
+            denom: "uusd".to_string(),
+            amount: Uint128::new(100u128),
+        }],
+    );
+    asset.assert_sent_native_token_balance(&info).unwrap();
+
+    // Test with incorrect amount
+    let info = message_info(
+        &Addr::unchecked("sender"),
+        &[Coin {
+            denom: "uusd".to_string(),
+            amount: Uint128::new(50u128),
+        }],
+    );
+    let err = asset.assert_sent_native_token_balance(&info).unwrap_err();
+    assert_eq!(
+        err,
+        StdError::generic_err("Native token balance mismatch between the argument and the transferred")
+    );
+}
+
+#[test]
+fn test_coins_ext() {
+    let pool_assets = [
+        AssetInfo::NativeToken {
+            denom: "uusd".to_string(),
+        },
+        AssetInfo::NativeToken {
+            denom: "uluna".to_string(),
+        },
+    ];
+
+    let assets = [
+        Asset {
+            info: pool_assets[0].clone(),
+            amount: Uint128::new(100u128),
+        },
+        Asset {
+            info: pool_assets[1].clone(),
+            amount: Uint128::new(200u128),
+        },
+    ];
+
+    // Test correct coins
+    let coins = vec![
+        Coin {
+            denom: "uusd".to_string(),
+            amount: Uint128::new(100u128),
+        },
+        Coin {
+            denom: "uluna".to_string(),
+            amount: Uint128::new(200u128),
+        },
+    ];
+    coins.assert_coins_properly_sent(&assets, &pool_assets).unwrap();
+
+    // Test incorrect amount
+    let coins = vec![
+        Coin {
+            denom: "uusd".to_string(),
+            amount: Uint128::new(50u128),
+        },
+        Coin {
+            denom: "uluna".to_string(),
+            amount: Uint128::new(200u128),
+        },
+    ];
+    let err = coins
+        .assert_coins_properly_sent(&assets, &pool_assets)
+        .unwrap_err();
+    assert_eq!(
+        err,
+        StdError::generic_err("Native token balance mismatch between the argument and the transferred")
+    );
+
+    // Test invalid coin
+    let coins = vec![
+        Coin {
+            denom: "invalid".to_string(),
+            amount: Uint128::new(100u128),
+        },
+        Coin {
+            denom: "uluna".to_string(),
+            amount: Uint128::new(200u128),
+        },
+    ];
+    let err = coins
+        .assert_coins_properly_sent(&assets, &pool_assets)
+        .unwrap_err();
+    assert_eq!(
+        err,
+        StdError::generic_err("Supplied coins contain invalid that is not in the input asset vector")
+    );
 }

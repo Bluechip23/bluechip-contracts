@@ -190,7 +190,7 @@ impl CoinsExt for Vec<Coin> {
 /// ## Examples
 /// ```
 /// # use cosmwasm_std::Addr;
-/// # use betfi::asset::AssetInfo::{NativeToken, Token};
+/// # use pool::asset::AssetInfo::{NativeToken, Token};
 /// Token { contract_addr: Addr::unchecked("stake...") };
 /// NativeToken { denom: String::from("uluna") };
 /// ```
