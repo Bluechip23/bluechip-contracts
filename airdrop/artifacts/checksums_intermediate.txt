@@ -1,1 +1,0 @@
-18276eec54212431680e7e6ca8ed5bdd6310bf523e2746d6d05885416bbff9f2  /target/wasm32-unknown-unknown/release/airdrop.wasm

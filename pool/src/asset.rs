@@ -6,7 +6,7 @@ use crate::msg::QueryMsg;
 use crate::state::Config;
 
 use cosmwasm_std::{
-    to_binary, Addr, Api, BalanceResponse, BankMsg, BankQuery, Coin, CosmosMsg, Deps, MessageInfo,
+    to_json_binary, Addr, Api, BalanceResponse, BankMsg, BankQuery, Coin, CosmosMsg, Deps, MessageInfo,
     QuerierWrapper, QueryRequest, StdError, StdResult, Uint128, WasmMsg, WasmQuery,
 };
 
@@ -92,7 +92,7 @@ impl Asset {
         match &self.info {
             AssetInfo::Token { contract_addr } => Ok(CosmosMsg::Wasm(WasmMsg::Execute {
                 contract_addr: contract_addr.to_string(),
-                msg: to_binary(&Cw20ExecuteMsg::Transfer {
+                msg: to_json_binary(&Cw20ExecuteMsg::Transfer {
                     recipient: recipient.to_string(),
                     amount,
                 })?,
@@ -438,18 +438,19 @@ impl AssetInfoExt for AssetInfo {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use cosmwasm_std::testing::mock_info;
+    use cosmwasm_std::testing::message_info;
     use cosmwasm_std::{coin, coins};
 
     #[test]
     fn test_native_coins_sent() {
         let asset = native_asset_info("uusd".to_string()).with_balance(1000u16);
+        let addr = Addr::unchecked("addr0000");
 
-        let info = mock_info("addr0000", &coins(1000, "random"));
+        let info = message_info(&addr, &coins(1000, "random"));
         let err = asset.assert_sent_native_token_balance(&info).unwrap_err();
         assert_eq!(err, StdError::generic_err("Must send reserve token 'uusd'"));
 
-        let info = mock_info("addr0000", &coins(100, "uusd"));
+        let info = message_info(&addr, &coins(100, "uusd"));
         let err = asset.assert_sent_native_token_balance(&info).unwrap_err();
         assert_eq!(
             err,
@@ -458,7 +459,7 @@ mod tests {
             )
         );
 
-        let info = mock_info("addr0000", &coins(1000, "uusd"));
+        let info = message_info(&addr, &coins(1000, "uusd"));
         asset.assert_sent_native_token_balance(&info).unwrap();
     }
 
@@ -567,7 +568,7 @@ pub fn query_token_balance(
     let res: Cw20BalanceResponse = querier
         .query(&QueryRequest::Wasm(WasmQuery::Smart {
             contract_addr: String::from(contract_addr),
-            msg: to_binary(&Cw20QueryMsg::Balance {
+            msg: to_json_binary(&Cw20QueryMsg::Balance {
                 address: String::from(account_addr),
             })?,
         }))
@@ -586,7 +587,7 @@ pub fn query_token_balance(
 pub fn query_token_symbol(querier: &QuerierWrapper, contract_addr: Addr) -> StdResult<String> {
     let res: TokenInfoResponse = querier.query(&QueryRequest::Wasm(WasmQuery::Smart {
         contract_addr: String::from(contract_addr),
-        msg: to_binary(&Cw20QueryMsg::TokenInfo {})?,
+        msg: to_json_binary(&Cw20QueryMsg::TokenInfo {})?,
     }))?;
 
     Ok(res.symbol)

@@ -1,15 +1,8 @@
 [package]
-name = "airdrop"
-version = "1.1.0"
-authors = ["dragondev93 <dragondev93@gmail.com>"]
-edition = "2018"
-description = "Bluechip Airdrop"
-
-exclude = [
-  # Those files are rust-optimizer artifacts. You might want to commit them for convenience but they should not be part of the source code publication.
-  "contract.wasm",
-  "hash.txt",
-]
+name = "bluechip-airdrop"
+version = "0.1.0"
+authors = ["bestselection18 <noahsflood908@gmail.com>"]
+edition = "2021"
 
 # See more keys and their definitions at https://doc.rust-lang.org/cargo/reference/manifest.html
 
@@ -28,18 +21,30 @@ incremental = false
 overflow-checks = true
 
 [features]
-# for more explicit tests, cargo test --features=backtraces
-backtraces = ["cosmwasm-std/backtraces"]
 # use library feature to disable all instantiate/execute/query exports
 library = []
 
+[package.metadata.scripts]
+optimize = """docker run --rm -v "$(pwd)":/code \
+  --mount type=volume,source="$(basename "$(pwd)")_cache",target=/target \
+  --mount type=volume,source=registry_cache,target=/usr/local/cargo/registry \
+  cosmwasm/optimizer:0.16.0
+"""
+
 [dependencies]
-cw2 = { version = "0.16.0" }
-cosmwasm-std = { version = "1.1.0" }
-cw-storage-plus = "0.15.0"
-cosmwasm-schema = { version = "1.1.0" }
-thiserror = { version = "1.0.26" }
+cosmwasm-schema = "2.2.0"
+cosmwasm-std = { version = "2.2.0", features = [
+  "cosmwasm_1_4",
+  # Enable this if you only deploy to chains that have CosmWasm 2.0 or higher
+  # "cosmwasm_2_0",
+  # Or this if you only deploy to chains that have CosmWasm 2.1 or higher
+  # "cosmwasm_2_1",
+] }
+cw-storage-plus = "2.0.0"
+cw2 = "2.0.0"
+schemars = "0.8.16"
+serde = { version = "1.0.197", default-features = false, features = ["derive"] }
+thiserror = { version = "1.0.58" }
 
 [dev-dependencies]
-cosmwasm-schema = { version = "1.0.0-beta" }
-cw-multi-test = "0.13.4"
+cw-multi-test = "2.0.0"

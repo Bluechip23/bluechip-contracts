@@ -1,14 +1,15 @@
-use cosmwasm_schema::cw_serde;
+use serde::{Deserialize, Serialize};
+use schemars::JsonSchema;
 use cosmwasm_std::{Addr, Uint128};
 use cw_storage_plus::{Item, Map};
 
-#[cw_serde]
+#[derive(Serialize, Deserialize, Clone, Debug, PartialEq, Eq, JsonSchema)]
 pub struct Recipient {
     pub address: String,
     pub amount: Uint128,
 }
 
-#[cw_serde]
+#[derive(Serialize, Deserialize, Clone, Debug, PartialEq, Eq, JsonSchema)]
 pub struct State {
     pub owner: Addr,
     pub total_whitelist_wallets: Uint128,
