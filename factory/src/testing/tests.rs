@@ -1,12 +1,16 @@
+
 use cosmwasm_std::{from_json, to_json_binary, Addr, Decimal, DepsMut, Reply, SubMsgResponse, SubMsgResult, Uint128};
 use crate::state::{Config, TEMPPAIRINFO, TEMPCREATOR};
+
 use crate::mock_querier::mock_dependencies;
 use cosmwasm_std::testing::{mock_env, message_info, mock_info, MockApi, MockQuerier, MockStorage};
 use crate::execute::{execute, instantiate, reply};
 use crate::asset::{Asset, AssetInfo, PairInfo, PairType};
 use crate::msg::{ExecuteMsg, InstantiateMsg, TokenInfo};
 use crate::pair::{FeeInfo, InstantiateMsg as PairInstantiateMsg};
+
 use crate::error::ContractError;
+
 use protobuf::Message;
 use crate::response::MsgInstantiateContractResponse;
 
@@ -39,8 +43,10 @@ fn proper_initialization() {
     let addr = Addr::unchecked("addr0000");
     let info = message_info(&addr, &[]);
 
+
     println!("addr: {:?}", addr);
     println!("info: {:?}", info);
+
 
     let _res0 = instantiate(deps.as_mut(), env.clone(), info, msg.clone()).unwrap_or_else(|e| {
         println!("error: {:?}", e);
@@ -50,7 +56,9 @@ fn proper_initialization() {
     println!("result: {:?}", _res0);
 
     let env = mock_env();
+
     let addr = Addr::unchecked("addr0001");
+
     let info = message_info(&addr, &[]);
 
     let _res1 = instantiate(deps.as_mut(), env.clone(), info, msg.clone()).unwrap_or_else(|e| {
@@ -61,13 +69,17 @@ fn proper_initialization() {
     let mut deps = mock_dependencies(&[]);
 
     let env = mock_env();
+
     let addr = Addr::unchecked("addr0002");
+
     let info = message_info(&addr, &[]);
 
     instantiate(deps.as_mut(), env.clone(), info, msg.clone()).unwrap();
 
+
     // let query_res = query(deps.as_ref(), env, QueryMsg::Config {}).unwrap();
     // let config_res: ConfigResponse = from_binary(&query_res).unwrap();
+
 }
 
 #[test]

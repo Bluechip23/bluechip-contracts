@@ -1,9 +1,11 @@
 [package]
 name = "factory"
+
 version.workspace = true
 authors = ["bestselection18 <noahsflood908@gmail.com>"]
 edition = "2021"
 description = "Bluechip Factory"
+
 license = "Apache-2.0"
 repository = "https://github.com/bestselection18"
 
@@ -27,6 +29,7 @@ library = []
 optimize = { workspace = true }
 
 [dependencies]
+
 cosmwasm-schema = { workspace = true }
 integer-sqrt = { workspace = true }
 cw2 = { workspace = true }
@@ -41,3 +44,4 @@ cw-utils = { workspace = true }
 
 [dev-dependencies]
 cw-multi-test = { workspace = true }
+
