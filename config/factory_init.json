@@ -1,0 +1,15 @@
+{
+  "config": {
+    "admin": "sei18ytjd80hsrwfwu53ape7nxk02hhg70a9lzwg6z",
+    "total_token_amount": "1000000000",
+    "creator_amount": "200000000",
+    "pool_amount": "500000000",
+    "commit_amount": "200000000",
+    "bluechip_amount": "100000000",
+    "token_id": 1,
+    "pair_id": 1,
+    "bluechip_address": "sei18ytjd80hsrwfwu53ape7nxk02hhg70a9lzwg6z",
+    "bluechipe_fee": "0.1",
+    "creator_fee": "0.1"
+  }
+}

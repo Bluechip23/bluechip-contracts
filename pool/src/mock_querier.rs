@@ -1,6 +1,11 @@
+#![cfg(not(target_arch = "wasm32"))]
+#![allow(non_snake_case)]
+
 use cosmwasm_std::testing::{MockApi, MockQuerier, MockStorage, MOCK_CONTRACT_ADDR};
 use cosmwasm_std::{
-    from_json, from_json_binary, to_json_binary, Addr, Coin, Decimal, Empty, OwnedDeps, Querier,
+
+    from_json, to_json_binary, Addr, Coin, Decimal, Empty, OwnedDeps, Querier,
+
     QuerierResult, QueryRequest, SystemError, SystemResult, Uint128, WasmQuery,
 };
 use std::collections::HashMap;
@@ -79,9 +84,9 @@ impl WasmMockQuerier {
         match &request {
             QueryRequest::Wasm(WasmQuery::Smart { contract_addr, msg }) => {
                 if contract_addr == "factory" {
-                    match from_binary(&msg).unwrap() {
+                    match from_json(&msg).unwrap() {
                         FeeInfo { .. } => SystemResult::Ok(
-                            to_binary(&FeeInfoResponse {
+                            to_json_binary(&FeeInfoResponse {
                                 fee_info: FeeInfo {
                                     bluechip_address: Addr::unchecked("bluechip".to_string()),
                                     creator_address: Addr::unchecked("creator".to_string()),
@@ -94,7 +99,7 @@ impl WasmMockQuerier {
                         _ => panic!("DO NOT ENTER HERE"),
                     }
                 } else {
-                    match from_binary(&msg).unwrap() {
+                    match from_json(&msg).unwrap() {
                         Cw20QueryMsg::TokenInfo {} => {
                             let balances: &HashMap<String, Uint128> =
                                 match self.token_querier.balances.get(contract_addr) {
@@ -111,7 +116,7 @@ impl WasmMockQuerier {
                             }
 
                             SystemResult::Ok(
-                                to_binary(&TokenInfoResponse {
+                                to_json_binary(&TokenInfoResponse {
                                     name: "mAPPL".to_string(),
                                     symbol: "mAPPL".to_string(),
                                     decimals: 6,
@@ -137,7 +142,7 @@ impl WasmMockQuerier {
                             };
 
                             SystemResult::Ok(
-                                to_binary(&BalanceResponse { balance: *balance }).into(),
+                                to_json_binary(&BalanceResponse { balance: *balance }).into(),
                             )
                         }
                         _ => panic!("DO NOT ENTER HERE"),
@@ -146,7 +151,7 @@ impl WasmMockQuerier {
             }
             QueryRequest::Wasm(WasmQuery::Raw { contract_addr, .. }) => {
                 if contract_addr == "factory" {
-                    SystemResult::Ok(to_binary(&Vec::<Addr>::new()).into())
+                    SystemResult::Ok(to_json_binary(&Vec::<Addr>::new()).into())
                 } else {
                     panic!("DO NOT ENTER HERE");
                 }
@@ -164,14 +169,14 @@ impl WasmMockQuerier {
         }
     }
 
-    // Configure the mint whitelist mock querier
+    // Configure the token balances mock querier
     pub fn with_token_balances(&mut self, balances: &[(&String, &[(&String, &Uint128)])]) {
         self.token_querier = TokenQuerier::new(balances);
     }
 
     pub fn with_balance(&mut self, balances: &[(&String, &[Coin])]) {
         for (addr, balance) in balances {
-            self.base.update_balance(addr.to_string(), balance.to_vec());
+            self.base.bank.update_balance(addr.to_string(), balance.to_vec());
         }
     }
 }

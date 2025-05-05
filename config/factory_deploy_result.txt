@@ -1,0 +1,80 @@
+code: 0
+codespace: ""
+data: 0A250A1E2F636F736D7761736D2E7761736D2E76312E4D736753746F7265436F6465120308FB4F
+events:
+- attributes:
+  - index: true
+    key: c3BlbmRlcg==
+    value: c2VpMTh5dGpkODBoc3J3Znd1NTNhcGU3bnhrMDJoaGc3MGE5bHp3ZzZ6
+  - index: true
+    key: YW1vdW50
+    value: MzAwMDAwdXNlaQ==
+  type: coin_spent
+- attributes:
+  - index: true
+    key: ZmVl
+    value: MzAwMDAwdXNlaQ==
+  - index: true
+    key: ZmVlX3BheWVy
+    value: c2VpMTh5dGpkODBoc3J3Znd1NTNhcGU3bnhrMDJoaGc3MGE5bHp3ZzZ6
+  type: tx
+- attributes:
+  - index: true
+    key: YWNjX3NlcQ==
+    value: c2VpMTh5dGpkODBoc3J3Znd1NTNhcGU3bnhrMDJoaGc3MGE5bHp3ZzZ6LzEx
+  type: tx
+- attributes:
+  - index: true
+    key: c2lnbmF0dXJl
+    value: M0xwTEtaajA0Rm9wU3N0QWpjYnR5UWJrWjY2MlVZWTRmTDFVR1RIRWx1OEpNVUpuc3g0T3Q4OGFjR213ZGRmMWpKRHR5alRSekxOQ2xsRHQrdnFPQWc9PQ==
+  type: tx
+- attributes:
+  - index: true
+    key: ZXZtX2FkZHI=
+    value: MHhiNjg3NzE4QUI1QjkzM2JFMzE3QjY0NzE4MTAwOTU5MjNBY0I1MmM2
+  - index: true
+    key: c2VpX2FkZHI=
+    value: c2VpMTh5dGpkODBoc3J3Znd1NTNhcGU3bnhrMDJoaGc3MGE5bHp3ZzZ6
+  type: signer
+- attributes:
+  - index: true
+    key: YWN0aW9u
+    value: L2Nvc213YXNtLndhc20udjEuTXNnU3RvcmVDb2Rl
+  type: message
+- attributes:
+  - index: true
+    key: bW9kdWxl
+    value: d2FzbQ==
+  - index: true
+    key: c2VuZGVy
+    value: c2VpMTh5dGpkODBoc3J3Znd1NTNhcGU3bnhrMDJoaGc3MGE5bHp3ZzZ6
+  type: message
+- attributes:
+  - index: true
+    key: Y29kZV9pZA==
+    value: MTAyMzU=
+  type: store_code
+gas_used: "2174947"
+gas_wanted: "5000000"
+height: "159520196"
+info: ""
+logs:
+- events:
+  - attributes:
+    - key: action
+      value: /cosmwasm.wasm.v1.MsgStoreCode
+    - key: module
+      value: wasm
+    - key: sender
+      value: sei18ytjd80hsrwfwu53ape7nxk02hhg70a9lzwg6z
+    type: message
+  - attributes:
+    - key: code_id
+      value: "10235"
+    type: store_code
+  log: ""
+  msg_index: 0
+raw_log: '[{"events":[{"type":"message","attributes":[{"key":"action","value":"/cosmwasm.wasm.v1.MsgStoreCode"},{"key":"module","value":"wasm"},{"key":"sender","value":"sei18ytjd80hsrwfwu53ape7nxk02hhg70a9lzwg6z"}]},{"type":"store_code","attributes":[{"key":"code_id","value":"10235"}]}]}]'
+timestamp: ""
+tx: null
+txhash: F8C8930BC02F4AA4B99F19BB04C3E2BD6C01A4065A18B12DD340D91F1C9017ED

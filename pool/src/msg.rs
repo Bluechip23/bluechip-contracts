@@ -21,7 +21,7 @@ pub struct InstantiateMsg {
     /// The token contract code ID used for the tokens in the pool
     pub token_code_id: u64,
     /// The factory contract address
-    pub factory_addr: String,
+    pub factory_addr: Addr,
     /// Optional binary serialised parameters for custom pool types
     pub init_params: Option<Binary>,
 
