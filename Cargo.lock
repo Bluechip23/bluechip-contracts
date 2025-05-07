@@ -240,20 +240,6 @@ dependencies = [
 ]
 
 [[package]]
-name = "bluechip-airdrop"
-version = "0.1.0"
-dependencies = [
- "cosmwasm-schema",
- "cosmwasm-std 2.2.2",
- "cw-multi-test",
- "cw-storage-plus",
- "cw2",
- "schemars",
- "serde",
- "thiserror 1.0.69",
-]
-
-[[package]]
 name = "bnum"
 version = "0.10.0"
 source = "registry+https://github.com/rust-lang/crates.io-index"

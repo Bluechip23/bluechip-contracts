@@ -4,25 +4,26 @@
 use cosmwasm_std::{
     entry_point, from_json, to_json_binary, Addr, Binary, Coin, CosmosMsg, Decimal, Decimal256, Deps,
 
-    DepsMut, Env, Fraction, MessageInfo, Response, StdError, StdResult, Uint128, Uint256, WasmMsg,
+    DepsMut, Env, QuerierWrapper, Fraction, MessageInfo, Response, Order, StdError, Storage, StdResult, Uint128, Uint256, WasmMsg, Reply, SubMsg
 };
-
-use crate::asset::{pool_info, Asset, AssetInfo, PairType};
+use crate::oracle::{PriceResponse, PythQueryMsg};
+use protobuf::Message;
+use crate::response::MsgInstantiateContractResponse;
+use crate::asset::{pool_info, Asset, AssetInfo, PairType, format_lp_token_name};
 use crate::error::ContractError;
 use crate::msg::{
     ConfigResponse, CumulativePricesResponse, Cw20HookMsg, ExecuteMsg, FeeInfoResponse,
     InstantiateMsg, MigrateMsg, PoolResponse, QueryMsg, ReverseSimulationResponse,
-    SimulationResponse,
+    SimulationResponse, FeeInfo
 };
-use cw_utils::{maybe_addr, NativeBalance};
-use crate::state::{Config, PairInfo, COMMITSTATUS, CONFIG, FEEINFO};
+use crate::state::{Config, PairInfo, COMMITSTATUS, CONFIG, FEEINFO, NATIVE_RAISED, THRESHOLD_HIT, USD_RAISED, COMMIT_LEDGER};
 use std::convert::TryInto;
-
 use cw2::{get_contract_version, set_contract_version};
-use cw20::{Cw20ExecuteMsg, Cw20ReceiveMsg};
+use cw20::{Cw20ExecuteMsg, Cw20ReceiveMsg, MinterResponse};
 use std::str::FromStr;
 use std::vec;
-
+use cw_storage_plus::Map;
+use cosmwasm_storage::bucket;
 /// The default swap slippage
 pub const DEFAULT_SLIPPAGE: &str = "0.005";
 /// The maximum allowed swap slippage
@@ -62,6 +63,10 @@ pub fn instantiate(
         return Err(ContractError::DoublingAssets {});
     }
 
+    if (msg.fee_info.bluechip_fee + msg.fee_info.creator_fee) > Decimal::one() {
+        return Err(ContractError::InvalidFee {});
+    }
+
     set_contract_version(deps.storage, CONTRACT_NAME, CONTRACT_VERSION)?;
 
     let config = Config {
@@ -77,20 +82,68 @@ pub fn instantiate(
         block_time_last: 0,
         price0_cumulative_last: Uint128::zero(),
         price1_cumulative_last: Uint128::zero(),
+        commit_limit_usd: msg.commit_limit_usd,
+        oracle_addr: msg.oracle_addr.clone(),
+        oracle_symbol: msg.oracle_symbol.clone(),
         commit_limit: msg.commit_limit,
+        commit_amount: msg.commit_amount,
+        creator_amount:   msg.creator_amount,     
+        bluechip_amount:  msg.bluechip_amount,
+        pool_amount:      msg.pool_amount,
         token_address: msg.token_address.clone(),
         available_payment: msg.available_payment.clone(),
     };
-
+    USD_RAISED.save(deps.storage, &Uint128::zero())?;
     CONFIG.save(deps.storage, &config)?;
     FEEINFO.save(deps.storage, &msg.fee_info)?;
     COMMITSTATUS.save(deps.storage, &Uint128::zero())?;
-
+    NATIVE_RAISED.save(deps.storage, &Uint128::zero())?; 
+    THRESHOLD_HIT.save(deps.storage, &false)?; 
     // Create the LP token contract
-
-    Ok(Response::new())
+    let lp_init = cw20_base::msg::InstantiateMsg {
+        name: format_lp_token_name(msg.asset_infos.clone(), &deps.querier)?,
+        symbol: "CLP".into(),
+        decimals: 6,
+        initial_balances: vec![],
+        mint: Some(MinterResponse {
+            minter: env.contract.address.to_string(),
+            cap: None,
+        }),
+        marketing: None,
+    };
+    
+    let sub = SubMsg::reply_on_success(
+        WasmMsg::Instantiate {
+            code_id: msg.token_code_id,
+            msg: to_json_binary(&lp_init)?,
+            funds: vec![],
+            label: "LP token".into(),
+            admin: None,
+        },
+        42, // reply id
+    );
+   Ok(Response::new().add_submessage(sub))
 }
 
+#[cfg_attr(not(feature = "library"), entry_point)]
+pub fn reply(deps: DepsMut, _env: Env, msg: Reply) -> Result<Response, ContractError> {
+    if msg.id == 42 {
+        let res: MsgInstantiateContractResponse = Message::parse_from_bytes(
+            msg.result.unwrap().msg_responses[0].value.as_slice(),
+        ).map_err(|_| StdError::parse_err(
+            "MsgInstantiateContractResponse",
+            "invalid",
+        ))?;
+
+        let lp = deps.api.addr_validate(res.get_contract_address())?;
+        CONFIG.update(deps.storage, |mut c| {
+            c.pair_info.liquidity_token = lp.clone();
+            Ok::<_, StdError>(c)
+        })?;
+        return Ok(Response::new().add_attribute("lp_token", lp));
+    }
+    Err(StdError::generic_err("unknown reply id").into())
+}
 /// ## Description
 /// Exposes all the execute functions available in the contract.
 /// ## Params
@@ -430,6 +483,8 @@ pub fn commit(
         return Err(ContractError::AssetMismatch {});
     }
 
+    if amount != asset.amount { return Err(ContractError::MismatchAmount {}); }
+
     let mut messages: Vec<CosmosMsg> = Vec::new();
 
     match asset.info {
@@ -444,7 +499,33 @@ pub fn commit(
             if !config.available_payment.contains(&asset.amount) {
                 return Err(ContractError::AssetMismatch {});
             }
+            let usd_value = native_to_usd(
+                &deps.querier,
+                &config.oracle_addr,
+                &config.oracle_symbol,
+                asset.amount,
+            )?;                
+                               // micro-USD
+            COMMIT_LEDGER.update(deps.storage, &sender, |v| -> StdResult<_> {
+                Ok(v.unwrap_or_default() + usd_value)
+            })?;
+
+            let usd_total = USD_RAISED.update(deps.storage, |r| -> StdResult<_> {
+                Ok(r + usd_value)
+            })?;
             
+            let crossed = !THRESHOLD_HIT.load(deps.storage)?
+                && usd_total >= config.commit_limit_usd;
+        
+            if crossed {
+                THRESHOLD_HIT.save(deps.storage, &true)?;
+                messages.extend(trigger_threshold_payout(
+                    deps.storage,
+                    &config,
+                    &fee_info,
+                    &env,
+                )?);
+            }
             let bluechip_msg = get_bank_transfer_to_msg(
                 &fee_info.bluechip_address,
                 &denom,
@@ -460,24 +541,37 @@ pub fn commit(
             )?;
 
             messages.push(creator_msg);
+            
+            if THRESHOLD_HIT.load(deps.storage)? {
+                // amount remaining in the contract after fees
+                let net_amount = asset.amount
+                    * Decimal::percent(94).numerator()
+                    / Decimal::percent(94).denominator();
 
-            let token_amount = get_token_amount(asset.amount);
-            COMMITSTATUS.update(deps.storage, |mut commit_amount| -> StdResult<_> {
-                commit_amount = commit_amount + token_amount;
-                Ok(commit_amount)
-            })?;
+                let offer_asset = Asset {
+                    info: AssetInfo::NativeToken { denom: denom.clone() },
+                    amount: net_amount,
+                };
 
-            let token_transfer_msg =
-                get_cw20_transfer_msg(&config.token_address, &sender, token_amount)?;
+                let swap_msg = CosmosMsg::Wasm(WasmMsg::Execute {
+                    contract_addr: env.contract.address.to_string(),
+                    msg: to_json_binary(&ExecuteMsg::Swap {
+                        offer_asset,
+                        belief_price: None,
+                        max_spread: None,
+                        to: Some(sender.to_string()),
+                    })?,
+                    funds: vec![Coin { denom, amount: net_amount }],
+                });
 
-            messages.push(token_transfer_msg);
+                messages.push(swap_msg);
+            }
+
         }
     }
 
     Ok(Response::new()
         .add_messages(
-            // 1. send collateral tokens from the contract to a user
-            // 2. send inactive commission fees to the Maker contract
             messages,
         )
         .add_attribute("action", "commit")
@@ -486,9 +580,32 @@ pub fn commit(
 }
 
 fn get_token_amount(native_amount: Uint128) -> Uint128 {
-    Uint128::new(2)
+    // example: 1 native unit (10^6) → 20 creator tokens
+    const TOKENS_PER_NATIVE: u128 = 20;
+    Uint128::from(native_amount.u128() * TOKENS_PER_NATIVE)
 }
+fn native_to_usd(
+    querier: &QuerierWrapper,
+    oracle_addr: &Addr,
+    symbol: &str,
+    native_amount: Uint128,          // micro-native
+) -> StdResult<Uint128> {
+    // 1. query oracle
+    let resp: PriceResponse = querier.query_wasm_smart(
+        oracle_addr.clone(),
+        &PythQueryMsg::GetPrice { price_id: symbol.into() },
+    )?;
+    let price_8dec = resp.price;     // e.g. 1.25 USD = 125_000_000
 
+    // 2. convert: (µnative × price) / 10^(8-6) = µUSD
+    // pool/src/contract.rs  – helper native_to_usd
+    let usd_micro_u256 = (Uint256::from(native_amount) * Uint256::from(price_8dec))
+    / Uint256::from(100u128);      // 10^(8-6) = 100
+
+    let usd_micro = Uint128::try_from(usd_micro_u256)?;
+    Ok(usd_micro)
+
+}
 /// ## Description
 /// Accumulate token prices for the assets in the pool.
 /// Note that this function shifts **block_time** when any of the token prices is zero in order to not
@@ -875,6 +992,66 @@ fn compute_offer_amount(
     Ok((offer_amount.try_into()?, spread_amount, commission_amount.try_into()?))
 }
 
+fn trigger_threshold_payout(
+    storage: &mut dyn Storage, 
+    config: &Config,
+    fee_info: &FeeInfo,
+    env: &Env,
+) -> StdResult<Vec<CosmosMsg>> {
+    let mut msgs = Vec::<CosmosMsg>::new();
+
+    // 1. creator tokens
+    msgs.push(mint_tokens(
+        &config.token_address,
+        &fee_info.creator_address,
+        config.creator_amount,
+    )?);
+
+    // 2. bluechip tokens
+    msgs.push(mint_tokens(
+        &config.token_address,
+        &fee_info.bluechip_address,
+        config.bluechip_amount,
+    )?);
+
+    // 3. pool + committed tokens to the pair contract itself
+    msgs.push(mint_tokens(
+        &config.token_address,
+        &env.contract.address,
+        config.pool_amount + config.commit_limit,
+    )?);
+    let held_amount = config.commit_amount;
+    for payer_res in COMMIT_LEDGER.keys(storage, None, None, Order::Ascending) {
+        // unwrap the StdResult<Addr> into an Addr
+        let payer: Addr = payer_res?;
+    
+        let usd_paid = COMMIT_LEDGER.load(storage, &payer)?;
+        let reward = Uint128::try_from(
+            (Uint256::from(usd_paid) * Uint256::from(held_amount))
+                / Uint256::from(config.commit_limit_usd),
+        )?;
+    
+        if !reward.is_zero() {
+            // now &payer is a &Addr
+            msgs.push(mint_tokens(&config.token_address, &payer, reward)?);
+        }
+    }
+    COMMIT_LEDGER.clear(storage);
+    
+    // 4. seed the pool with 23 500 native units
+    let denom = match &config.pair_info.asset_infos[0] {
+        AssetInfo::NativeToken { denom, .. } => denom,
+        _ => "ubluechip", // fallback if first asset isn’t native
+    };
+    let native_seed = Uint128::new(23_500_000_000); // 23 500 × 10^6
+    msgs.push(get_bank_transfer_to_msg(
+        &env.contract.address,
+        denom,
+        native_seed,
+    )?);
+
+    Ok(msgs)
+}
 /// ## Description
 /// Returns a [`ContractError`] on failure.
 /// If `belief_price` and `max_spread` are both specified, we compute a new spread,
@@ -901,6 +1078,9 @@ pub fn assert_max_spread(
     let max_allowed_spread = Decimal::from_str(MAX_ALLOWED_SLIPPAGE)?;
 
     let max_spread = max_spread.unwrap_or(default_spread);
+    if belief_price == Some(Decimal::zero()) {
+        return Err(ContractError::InvalidBeliefPrice {});
+    }
     if max_spread.gt(&max_allowed_spread) {
         return Err(ContractError::AllowedSpreadAssertion {});
     }
@@ -1052,7 +1232,22 @@ pub fn get_bank_transfer_to_msg(
     let transfer_bank_cosmos_msg: CosmosMsg = transfer_bank_msg.into();
     Ok(transfer_bank_cosmos_msg)
 }
+fn mint_tokens(token_addr: &Addr, recipient: &Addr, amount: Uint128) -> StdResult<CosmosMsg> {
+    // CW20 mint message
+    let mint_msg = Cw20ExecuteMsg::Mint {
+        recipient: recipient.to_string(),
+        amount,
+    };
 
+    // wrap in a Wasm execute
+    let exec = WasmMsg::Execute {
+        contract_addr: token_addr.to_string(),
+        msg: to_json_binary(&mint_msg)?,
+        funds: vec![],
+    };
+
+    Ok(exec.into())
+}
 pub fn get_cw20_transfer_msg(
     token_addr: &Addr,
     recipient: &Addr,

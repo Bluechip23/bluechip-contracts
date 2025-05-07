@@ -17,8 +17,8 @@
   "fee_info": {
     "bluechip_address": "sei18ytjd80hsrwfwu53ape7nxk02hhg70a9lzwg6z",
     "creator_address": "sei18ytjd80hsrwfwu53ape7nxk02hhg70a9lzwg6z",
-    "bluechip_fee": "0.1",
-    "creator_fee": "0.1"
+    "bluechip_fee": "0.01",
+    "creator_fee": "0.05"
   },
   "commit_limit": "5000",
   "token_address": "sei18ytjd80hsrwfwu53ape7nxk02hhg70a9lzwg6z",

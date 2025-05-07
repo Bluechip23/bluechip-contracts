@@ -26,9 +26,14 @@ pub struct InstantiateMsg {
     pub init_params: Option<Binary>,
 
     pub fee_info: FeeInfo,
-
+    pub commit_amount: Uint128,
     pub commit_limit: Uint128,
-
+    pub commit_limit_usd: Uint128,
+    pub oracle_addr: Addr,
+    pub oracle_symbol: String,
+    pub creator_amount: Uint128,
+    pub bluechip_amount: Uint128,
+    pub pool_amount: Uint128,
     pub token_address: Addr,
 
     pub available_payment: Vec<Uint128>,

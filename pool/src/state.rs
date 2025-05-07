@@ -1,14 +1,9 @@
-use std::fmt::{Display, Formatter, Result};
-
 use cosmwasm_schema::cw_serde;
 use cosmwasm_std::{
-    to_binary, Addr, Api, BalanceResponse, BankQuery, QuerierWrapper, QueryRequest, StdResult,
-    Uint128, WasmQuery,
+    Addr, QuerierWrapper, StdResult,
+    Uint128
 };
 use cw_storage_plus::Item;
-
-use cw20::{BalanceResponse as Cw20BalanceResponse, Cw20QueryMsg, TokenInfoResponse};
-
 use crate::{
     asset::{Asset, AssetInfo, PairType},
     msg::FeeInfo,
@@ -27,19 +22,27 @@ pub struct Config {
     pub price0_cumulative_last: Uint128,
     /// The last cumulative price for asset 1
     pub price1_cumulative_last: Uint128,
-
     pub commit_limit: Uint128,
-
+    pub commit_amount: Uint128,
+    pub commit_limit_usd: Uint128,
+    pub oracle_addr: Addr,
+    pub oracle_symbol: String,
     pub token_address: Addr,
-
+    pub creator_amount: Uint128,
+    pub bluechip_amount: Uint128,
+    pub pool_amount: Uint128,
     pub available_payment: Vec<Uint128>,
 }
-
 /// ## Description
 /// Stores the config struct at the given key
+pub const USD_RAISED: Item<Uint128> = Item::new("usd_raised");
 pub const CONFIG: Item<Config> = Item::new("config");
 pub const FEEINFO: Item<FeeInfo> = Item::new("fee_info");
 pub const COMMITSTATUS: Item<Uint128> = Item::new("commit_status");
+pub const NATIVE_RAISED: Item<Uint128> = Item::new("native_raised");
+pub const THRESHOLD_HIT: Item<bool>    = Item::new("threshold_hit");
+pub const COMMIT_LEDGER: cw_storage_plus::Map<&Addr, Uint128> = cw_storage_plus::Map::new("commit_usd");
+
 
 /// This structure stores the main parameters for an BETFI pair
 #[cw_serde]

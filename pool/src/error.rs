@@ -12,6 +12,15 @@ pub enum ContractError {
     #[error("Unauthorized")]
     Unauthorized {},
 
+    #[error("amount field does not match asset.amount")]
+    MismatchAmount {},
+
+    #[error("Fee is to great or to small for this transaction")]
+    InvalidFee {},                          
+
+    #[error("belief_price cannot be zero")]
+    InvalidBeliefPrice {},   
+
     #[error("CW20 tokens can be swapped via Cw20::Send message only")]
     Cw20DirectSwap {},
 

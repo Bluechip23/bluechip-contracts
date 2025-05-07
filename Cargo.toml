@@ -3,7 +3,7 @@ members = [
     "packages/*",
     "pool",
     "factory",
-    "airdrop"
+   
 ]
 
 # Resolver has to be set explicitely in workspaces, see https://github.com/rust-lang/cargo/issues/9956

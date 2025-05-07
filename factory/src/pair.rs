@@ -24,12 +24,16 @@ pub struct InstantiateMsg {
     pub factory_addr: String,
     /// Optional binary serialised parameters for custom pool types
     pub init_params: Option<Binary>,
-
     pub fee_info: FeeInfo,
-
     pub commit_limit: Uint128,
-
+    pub commit_amount: Uint128,
     pub token_address: Addr,
+    pub commit_limit_usd: Uint128,
+    pub creator_amount: Uint128,
+    pub bluechip_amount: Uint128,
+    pub pool_amount: Uint128,
+    pub oracle_addr: Addr,     
+    pub oracle_symbol: String,  
 }
 
 #[cw_serde]
