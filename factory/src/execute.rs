@@ -65,6 +65,7 @@ pub fn execute(
     }
 }
 
+
 fn execute_update_config(
     deps: DepsMut,
     info: MessageInfo,

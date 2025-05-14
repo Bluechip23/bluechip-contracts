@@ -8,6 +8,7 @@ use cosmwasm_std::{
 };
 use crate::oracle::{PriceResponse, PythQueryMsg};
 use protobuf::Message;
+use crate::state::{SUB_INFO, Subscription};
 use crate::response::MsgInstantiateContractResponse;
 use crate::asset::{pool_info, Asset, AssetInfo, PairType, format_lp_token_name};
 use crate::error::ContractError;
@@ -82,6 +83,8 @@ pub fn instantiate(
         block_time_last: 0,
         price0_cumulative_last: Uint128::zero(),
         price1_cumulative_last: Uint128::zero(),
+        subscription_period: 2592000,
+        lp_fee: Decimal::permille(3),
         commit_limit_usd: msg.commit_limit_usd,
         oracle_addr: msg.oracle_addr.clone(),
         oracle_symbol: msg.oracle_symbol.clone(),
@@ -124,6 +127,37 @@ pub fn instantiate(
     );
    Ok(Response::new().add_submessage(sub))
 }
+#[cfg_attr(not(feature = "library"), entry_point)]
+pub fn execute(
+    deps: DepsMut,
+    env: Env,
+    info: MessageInfo,
+    msg: ExecuteMsg,
+) -> Result<Response, ContractError> {
+    match msg { 
+        ExecuteMsg::UpdateConfig { .. } =>
+        Err(ContractError::NonSupported{}),
+        ExecuteMsg::Commit { asset, amount } =>
+            commit(deps, env, info, asset, amount),
+        // ── standard swap via native coin ──────────────────
+        ExecuteMsg::SimpleSwap { offer_asset, belief_price, max_spread, to } => {
+             // only allow swap once commit_limit_usd has been reached
+           if !query_check_commit(deps.as_ref())? {
+               return Err(ContractError::ShortOfThreshold {});
+          }
+            // ensure they sent the native coin
+            offer_asset.assert_sent_native_token_balance(&info)?;
+                let sender_addr = info.sender.clone();
+                let to_addr: Option<Addr> = to
+                .map(|to_str| deps.api.addr_validate(&to_str))
+                .transpose()?;
+            // call the shared AMM logic
+             simple_swap(deps, env, info, sender_addr, offer_asset, belief_price, max_spread, to_addr,)
+        }
+        ExecuteMsg::Receive(cw20_msg) =>
+            receive_cw20(deps, env, info, cw20_msg),
+    }
+}
 
 #[cfg_attr(not(feature = "library"), entry_point)]
 pub fn reply(deps: DepsMut, _env: Env, msg: Reply) -> Result<Response, ContractError> {
@@ -143,71 +177,6 @@ pub fn reply(deps: DepsMut, _env: Env, msg: Reply) -> Result<Response, ContractE
         return Ok(Response::new().add_attribute("lp_token", lp));
     }
     Err(StdError::generic_err("unknown reply id").into())
-}
-/// ## Description
-/// Exposes all the execute functions available in the contract.
-/// ## Params
-/// * **deps** is an object of type [`Deps`].
-///
-/// * **env** is an object of type [`Env`].
-///
-/// * **info** is an object of type [`MessageInfo`].
-///
-/// * **msg** is an object of type [`ExecuteMsg`].
-///
-/// ## Queries
-/// * **ExecuteMsg::UpdateConfig { params: Binary }** Not supported.
-///
-/// * **ExecuteMsg::Receive(msg)** Receives a message of type [`Cw20ReceiveMsg`] and processes
-/// it depending on the received template.
-///
-
-/// * **ExecuteMsg::Swap {
-///             offer_asset,
-///             belief_price,
-///             max_spread,
-///             to,
-///         }** Performs a swap operation with the specified parameters.
-#[cfg_attr(not(feature = "library"), entry_point)]
-pub fn execute(
-    deps: DepsMut,
-    env: Env,
-    info: MessageInfo,
-    msg: ExecuteMsg,
-) -> Result<Response, ContractError> {
-    match msg {
-        ExecuteMsg::UpdateConfig { .. } => Err(ContractError::NonSupported {}),
-        ExecuteMsg::Receive(msg) => receive_cw20(deps, env, info, msg),
-        ExecuteMsg::Swap {
-            offer_asset,
-            belief_price,
-            max_spread,
-            to,
-        } => {
-            //++++++++++++++++++++++++++++++++++++++++++++++need to check if the offer asset  is valid++++++++++++++++++++++++++++++++++++++++++++++++++++++++
-            // offer_asset.info.check(deps.api)?;
-            if !offer_asset.is_native_token() {
-                return Err(ContractError::Cw20DirectSwap {});
-            }
-
-            let to_addr = if let Some(to_addr) = to {
-                Some(deps.api.addr_validate(&to_addr)?)
-            } else {
-                None
-            };
-            swap(
-                deps,
-                env,
-                info.clone(),
-                info.sender,
-                offer_asset,
-                belief_price,
-                max_spread,
-                to_addr,
-            )
-        }
-        ExecuteMsg::Commit { asset, amount } => commit(deps, env, info, asset, amount),
-    }
 }
 
 /// ## Description
@@ -246,18 +215,15 @@ pub fn receive_cw20(
                     }
                 }
             }
-
             if !authorized {
                 return Err(ContractError::Unauthorized {});
             }
-
             let to_addr = if let Some(to_addr) = to {
                 Some(deps.api.addr_validate(to_addr.as_str())?)
             } else {
                 None
             };
-
-            swap(
+           simple_swap(
                 deps,
                 env,
                 info,
@@ -324,7 +290,7 @@ pub fn get_share_in_assets(
 /// * **to** is an object of type [`Option<Addr>`]. Sets the recipient of the swap operation.
 /// NOTE - the address that wants to swap should approve the pair contract to pull the offer token.
 #[allow(clippy::too_many_arguments)]
-pub fn swap(
+pub fn simple_swap(
     deps: DepsMut,
     env: Env,
     info: MessageInfo,
@@ -334,11 +300,7 @@ pub fn swap(
     max_spread: Option<Decimal>,
     to: Option<Addr>,
 ) -> Result<Response, ContractError> {
-    offer_asset.assert_sent_native_token_balance(&info)?;
-
     let mut config: Config = CONFIG.load(deps.storage)?;
-
-    // If the asset balance is already increased, we should subtract the user deposit from the pool amount
     let pools: Vec<Asset> = config
         .pair_info
         .query_pools(&deps.querier, env.clone().contract.address)?
@@ -346,236 +308,193 @@ pub fn swap(
         .map(|p| {
             let mut p = p.clone();
             if p.info.equal(&offer_asset.info) {
-                p.amount = p.amount.checked_sub(offer_asset.amount).unwrap();
+              p.amount = p
+              .amount
+              .checked_sub(offer_asset.amount)
+              .map_err(|_| ContractError::ShortOfThreshold {})?;
             }
-
-            p
+            Ok::<_, ContractError>(p)
         })
-        .collect();
+        .collect::<Result<_, _>>()?;
 
-    let offer_pool: Asset;
-    let ask_pool: Asset;
-
-    if offer_asset.info.equal(&pools[0].info) {
-        offer_pool = pools[0].clone();
-        ask_pool = pools[1].clone();
+    let (offer_pool, ask_pool) = if offer_asset.info.equal(&pools[0].info) {
+        (pools[0].clone(), pools[1].clone())
     } else if offer_asset.info.equal(&pools[1].info) {
-        offer_pool = pools[1].clone();
-        ask_pool = pools[0].clone();
+        (pools[1].clone(), pools[0].clone())
     } else {
         return Err(ContractError::AssetMismatch {});
-    }
+    };
 
-    // Get fee info from the factory
+    
+    let commission_rate = config.lp_fee;                
 
-    let fee_info = FEEINFO.load(deps.storage)?;
-    let commission_rate = fee_info.bluechip_fee + fee_info.creator_fee;
-
-    let offer_amount = offer_asset.amount;
-    let (return_amount, spread_amount, commission_amount) = compute_swap(
+    let offer_amount  = offer_asset.amount;
+    let (return_amt, spread_amt, commission_amt) = compute_swap(
         offer_pool.amount,
         ask_pool.amount,
         offer_amount,
         commission_rate,
     )?;
 
-    // Check the max spread limit (if it was specified)
+ //guard for slippage
     assert_max_spread(
         belief_price,
         max_spread,
         offer_amount,
-        return_amount + commission_amount,
-        spread_amount,
+        return_amt + commission_amt,
+        spread_amt,
     )?;
 
-    // Compute the tax for the receiving asset (if it is a native one)
-    let return_asset = Asset {
-        info: ask_pool.info.clone(),
-        amount: return_amount,
-    };
-
-    let tax_amount = return_asset.compute_tax(&deps.querier)?;
-    let receiver = to.unwrap_or_else(|| sender.clone());
-
-    let mut messages = vec![];
-    if !return_amount.is_zero() {
-        messages.push(return_asset.into_msg(&deps.querier, receiver.clone())?)
-    }
-    // Compute the Maker fee
-    let mut maker_fee_amount = Uint128::new(0);
-
-    if let Some(f) = calculate_maker_fee(
-        ask_pool.info.clone(),
-        commission_amount,
-        fee_info.bluechip_fee,
-    ) {
-        messages.push(
-            f.clone()
-                .into_msg(&deps.querier, fee_info.bluechip_address)?,
-        );
-        maker_fee_amount = f.amount;
+    let mut msgs = vec![];
+    if !return_amt.is_zero() {
+        let return_asset = Asset {
+            info: ask_pool.info.clone(),
+            amount: return_amt,
+        };
+        msgs.push(return_asset.into_msg(&deps.querier, to.unwrap_or_else(|| sender.clone()))?);
     }
 
-    if let Some(f) = calculate_maker_fee(
-        ask_pool.info.clone(),
-        commission_amount,
-        fee_info.creator_fee,
-    ) {
-        messages.push(
-            f.clone()
-                .into_msg(&deps.querier, fee_info.creator_address)?,
-        );
-        maker_fee_amount = f.amount;
-    }
-
-    // Accumulate prices for the assets in the pool
-    if let Some((price0_cumulative_new, price1_cumulative_new, block_time)) =
+    if let Some((p0_new, p1_new, block_time)) =
         accumulate_prices(env, &config, pools[0].amount, pools[1].amount)?
     {
-        config.price0_cumulative_last = price0_cumulative_new;
-        config.price1_cumulative_last = price1_cumulative_new;
-        config.block_time_last = block_time;
+        config.price0_cumulative_last = p0_new;
+        config.price1_cumulative_last = p1_new;
+        config.block_time_last        = block_time;
         CONFIG.save(deps.storage, &config)?;
     }
 
     Ok(Response::new()
-        .add_messages(
-            // 1. send collateral tokens from the contract to a user
-            // 2. send inactive commission fees to the Maker contract
-            messages,
-        )
+        .add_messages(msgs)
         .add_attribute("action", "swap")
-        .add_attribute("sender", sender.as_str())
-        .add_attribute("receiver", receiver.as_str())
+        .add_attribute("sender", sender)
         .add_attribute("offer_asset", offer_asset.info.to_string())
         .add_attribute("ask_asset", ask_pool.info.to_string())
-        .add_attribute("offer_amount", offer_amount.to_string())
-        .add_attribute("return_amount", return_amount.to_string())
-        .add_attribute("tax_amount", tax_amount.to_string())
-        .add_attribute("spread_amount", spread_amount.to_string())
-        .add_attribute("commission_amount", commission_amount.to_string())
-        .add_attribute("maker_fee_amount", maker_fee_amount.to_string()))
+        .add_attribute("offer_amount",  offer_amount.to_string())
+        .add_attribute("return_amount", return_amt.to_string())
+        .add_attribute("spread_amount", spread_amt.to_string())
+        .add_attribute("commission_amount_retained", commission_amt.to_string()))
 }
 
 #[allow(clippy::too_many_arguments)]
 pub fn commit(
-    deps: DepsMut,
-    env: Env,
-    info: MessageInfo,
-    asset: Asset,
+    deps  : DepsMut,
+    env   : Env,
+    info  : MessageInfo,
+    asset : Asset,
     amount: Uint128,
 ) -> Result<Response, ContractError> {
-    let config: Config = CONFIG.load(deps.storage)?;
-    let fee_info = FEEINFO.load(deps.storage)?;
-    let sender = info.sender;
+
+    let config   : Config  = CONFIG.load(deps.storage)?;
+    let fee_info : FeeInfo = FEEINFO.load(deps.storage)?;
+    let sender              = info.sender.clone();
 
     let pools: Vec<Asset> = config
         .pair_info
         .query_pools(&deps.querier, env.clone().contract.address)?
         .iter()
-        .map(|p| {
-            let p = p.clone();
-            p
-        })
+        .map(Clone::clone)
         .collect();
 
     if !asset.info.equal(&pools[0].info) && !asset.info.equal(&pools[1].info) {
         return Err(ContractError::AssetMismatch {});
     }
-
-    if amount != asset.amount { return Err(ContractError::MismatchAmount {}); }
+    if amount != asset.amount {
+        return Err(ContractError::MismatchAmount {});
+    }
 
     let mut messages: Vec<CosmosMsg> = Vec::new();
 
     match asset.info {
-        AssetInfo::Token {
-            contract_addr: _contract_address,
-        } => {
-            return Err(ContractError::AssetMismatch {});
-        }
-        AssetInfo::NativeToken { denom } => {
-            validate_input_amount(&info.funds, asset.amount, &denom)?;
+        // we never accept CW20 for commit
+        AssetInfo::NativeToken { denom } if denom == "ubluechip" => {
 
-            if !config.available_payment.contains(&asset.amount) {
-                return Err(ContractError::AssetMismatch {});
-            }
-            let usd_value = native_to_usd(
-                &deps.querier,
-                &config.oracle_addr,
-                &config.oracle_symbol,
-                asset.amount,
-            )?;                
-                               // micro-USD
-            COMMIT_LEDGER.update(deps.storage, &sender, |v| -> StdResult<_> {
-                Ok(v.unwrap_or_default() + usd_value)
-            })?;
+            //fees upfront - can 
+            let bluechip_fee_amt = amount
+                * fee_info.bluechip_fee.numerator()
+                / fee_info.bluechip_fee.denominator();
+            let creator_fee_amt = amount
+                * fee_info.creator_fee.numerator()
+                / fee_info.creator_fee.denominator();
 
-            let usd_total = USD_RAISED.update(deps.storage, |r| -> StdResult<_> {
-                Ok(r + usd_value)
-            })?;
-            
-            let crossed = !THRESHOLD_HIT.load(deps.storage)?
-                && usd_total >= config.commit_limit_usd;
-        
-            if crossed {
-                THRESHOLD_HIT.save(deps.storage, &true)?;
-                messages.extend(trigger_threshold_payout(
-                    deps.storage,
-                    &config,
-                    &fee_info,
-                    &env,
-                )?);
-            }
-            let bluechip_msg = get_bank_transfer_to_msg(
+            messages.push(get_bank_transfer_to_msg(
                 &fee_info.bluechip_address,
                 &denom,
-                asset.amount * fee_info.bluechip_fee.numerator() / fee_info.bluechip_fee.denominator(),
-            )?;
-
-            messages.push(bluechip_msg);
-
-            let creator_msg = get_bank_transfer_to_msg(
+                bluechip_fee_amt,
+            )?);
+            messages.push(get_bank_transfer_to_msg(
                 &fee_info.creator_address,
                 &denom,
-                asset.amount * fee_info.creator_fee.numerator() / fee_info.creator_fee.denominator(),
-            )?;
+                creator_fee_amt,
+            )?);
 
-            messages.push(creator_msg);
-            
-            if THRESHOLD_HIT.load(deps.storage)? {
-                // amount remaining in the contract after fees
-                let net_amount = asset.amount
-                    * Decimal::percent(94).numerator()
-                    / Decimal::percent(94).denominator();
+           //funding contract
+            if !THRESHOLD_HIT.load(deps.storage)? {
+                if !config.available_payment.contains(&asset.amount) {
+                    return Err(ContractError::AssetMismatch {});
+                }
+                // oracle → micro-USD
+                let usd_value = native_to_usd(
+                    &deps.querier,
+                    &config.oracle_addr,
+                    &config.oracle_symbol,
+                    asset.amount,
+                )?;
 
-                let offer_asset = Asset {
-                    info: AssetInfo::NativeToken { denom: denom.clone() },
-                    amount: net_amount,
-                };
+                COMMIT_LEDGER.update::<_, ContractError>(deps.storage, &sender, |v| {
+                    Ok(v.unwrap_or_default() + usd_value)
+                })?;
+                let usd_total = USD_RAISED.update::<_, ContractError>(deps.storage, |r| Ok(r + usd_value))?;
+                COMMITSTATUS.save(deps.storage, &usd_total)?;
 
-                let swap_msg = CosmosMsg::Wasm(WasmMsg::Execute {
-                    contract_addr: env.contract.address.to_string(),
-                    msg: to_json_binary(&ExecuteMsg::Swap {
-                        offer_asset,
-                        belief_price: None,
-                        max_spread: None,
-                        to: Some(sender.to_string()),
-                    })?,
-                    funds: vec![Coin { denom, amount: net_amount }],
-                });
+                // one-time threshold crossing
+                if usd_total >= config.commit_limit_usd {
+                    THRESHOLD_HIT.save(deps.storage, &true)?;
+                    messages.extend(trigger_threshold_payout(
+                        deps.storage,
+                        &config,
+                        &fee_info,
+                        &env,
+                    )?);
+                }
 
-                messages.push(swap_msg);
+                // emit & exit
+                return Ok(Response::new()
+                    .add_messages(messages)
+                    //platform calls for subscriptions
+                    .add_attribute("action", "subscribe") 
+                    .add_attribute("subscriber", sender)
+                    .add_attribute("commit_amount", asset.amount.to_string()));
             }
 
+           //after threshold - still accounts for the 6% fees.
+            let net_amount = asset.amount.checked_sub(bluechip_fee_amt + creator_fee_amt)?;
+            let offer_asset = Asset {
+                info: AssetInfo::NativeToken { denom: denom.clone() },
+                amount: net_amount,
+            };
+            messages.push(CosmosMsg::Wasm(WasmMsg::Execute {
+                contract_addr: env.contract.address.to_string(),   
+                msg: to_json_binary(&ExecuteMsg::SimpleSwap {      
+                    offer_asset,
+                    belief_price: None,
+                    max_spread: None,
+                    to: Some(sender.to_string()),
+                })?,
+                funds: vec![],
+            }));
+
+            // record / extend 30-day expiry
+            let new_expiry = env.block.time.plus_seconds(config.subscription_period);
+            SUB_INFO.save(deps.storage, &sender, &Subscription { expires: new_expiry, total_paid: asset.amount })?;
         }
+         _ => return Err(ContractError::AssetMismatch {}),
     }
 
     Ok(Response::new()
-        .add_messages(
-            messages,
-        )
-        .add_attribute("action", "commit")
-        .add_attribute("sender", sender.as_str())
+        .add_messages(messages)
+        //what platform calls
+        .add_attribute("action", "subscribe")  
+        .add_attribute("subscriber", sender)
         .add_attribute("commit_amount", asset.amount.to_string()))
 }
 
@@ -718,6 +637,18 @@ pub fn query(deps: Deps, env: Env, msg: QueryMsg) -> StdResult<Binary> {
         QueryMsg::Config {} => to_json_binary(&query_config(deps)?),
         QueryMsg::FeeInfo {} => to_json_binary(&query_fee_info(deps)?),
         QueryMsg::IsFullyCommited {} => to_json_binary(&query_check_commit(deps)?),
+          QueryMsg::IsSubscribed { wallet } => {
+            let addr   = deps.api.addr_validate(&wallet)?;
+            let active = SUB_INFO
+                .may_load(deps.storage, &addr)?
+                .map_or(false, |sub| sub.expires > env.block.time);
+            to_json_binary(&active)
+        },
+        QueryMsg::SubscriptionInfo { wallet } => {
+            let addr = deps.api.addr_validate(&wallet)?;
+            let info = SUB_INFO.may_load(deps.storage, &addr)?;   // Option<Subscription>
+            to_json_binary(&info)
+        }
     }
 }
 
@@ -893,13 +824,10 @@ pub fn query_fee_info(deps: Deps) -> StdResult<FeeInfoResponse> {
 /// ## Params
 /// * **deps** is an object of type [`Deps`].
 pub fn query_check_commit(deps: Deps) -> StdResult<bool> {
-    let config = CONFIG.load(deps.storage)?;
-    let commit_amount = COMMITSTATUS.load(deps.storage)?;
-    if config.commit_limit < commit_amount {
-        Ok(true)
-    } else {
-        Ok(false)
-    }
+    let config        = CONFIG.load(deps.storage)?;
+    let usd_raised    = COMMITSTATUS.load(deps.storage)?;
+    // true once we've raised at least the USD threshold
+    Ok(usd_raised >= config.commit_limit_usd)
 }
 
 /// ## Description

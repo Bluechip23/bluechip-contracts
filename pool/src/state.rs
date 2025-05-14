@@ -1,13 +1,14 @@
 use cosmwasm_schema::cw_serde;
 use cosmwasm_std::{
     Addr, QuerierWrapper, StdResult,
-    Uint128
+    Uint128, Timestamp, Decimal,
 };
 use cw_storage_plus::Item;
 use crate::{
     asset::{Asset, AssetInfo, PairType},
     msg::FeeInfo,
 };
+use cw_storage_plus::Map;
 /// ## Description
 /// This structure stores the main config parameters for a constant product pair contract.
 #[cw_serde]
@@ -22,6 +23,8 @@ pub struct Config {
     pub price0_cumulative_last: Uint128,
     /// The last cumulative price for asset 1
     pub price1_cumulative_last: Uint128,
+    pub subscription_period: u64,
+    pub lp_fee: Decimal,
     pub commit_limit: Uint128,
     pub commit_amount: Uint128,
     pub commit_limit_usd: Uint128,
@@ -33,17 +36,25 @@ pub struct Config {
     pub pool_amount: Uint128,
     pub available_payment: Vec<Uint128>,
 }
+
+
 /// ## Description
 /// Stores the config struct at the given key
 pub const USD_RAISED: Item<Uint128> = Item::new("usd_raised");
-pub const CONFIG: Item<Config> = Item::new("config");
+pub const CONFIG: Item<Config> = Item::new("c   onfig");
 pub const FEEINFO: Item<FeeInfo> = Item::new("fee_info");
 pub const COMMITSTATUS: Item<Uint128> = Item::new("commit_status");
 pub const NATIVE_RAISED: Item<Uint128> = Item::new("native_raised");
 pub const THRESHOLD_HIT: Item<bool>    = Item::new("threshold_hit");
 pub const COMMIT_LEDGER: cw_storage_plus::Map<&Addr, Uint128> = cw_storage_plus::Map::new("commit_usd");
+pub const SUB_INFO: Map<&Addr, Subscription> = Map::new("sub_info");
 
 
+#[cw_serde]
+pub struct Subscription {
+    pub expires: Timestamp,   
+    pub total_paid: Uint128,  
+}
 /// This structure stores the main parameters for an BETFI pair
 #[cw_serde]
 pub struct PairInfo {

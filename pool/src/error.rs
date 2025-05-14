@@ -12,6 +12,9 @@ pub enum ContractError {
     #[error("Unauthorized")]
     Unauthorized {},
 
+     #[error("You can not swap until the threshold is crossed. You must subscribe to transact with this pool")]
+    ShortOfThreshold {},
+
     #[error("amount field does not match asset.amount")]
     MismatchAmount {},
 

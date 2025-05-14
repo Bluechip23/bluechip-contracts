@@ -81,7 +81,7 @@ pub enum Cw20HookMsg {
 #[cw_serde]
 #[derive(QueryResponses)]
 pub enum QueryMsg {
-    /// Returns information about a pair in an object of type [`super::asset::PairInfo`].
+    
     #[returns(PairInfo)]
     Pair {},
     /// Returns information about a pool in an object of type [`PoolResponse`].

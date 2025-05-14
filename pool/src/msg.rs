@@ -1,7 +1,7 @@
 use cosmwasm_schema::{cw_serde, QueryResponses};
 
 use crate::asset::{Asset, AssetInfo, PairInfo};
-
+use crate::state::Subscription;
 use cosmwasm_std::{Addr, Binary, Decimal, Uint128};
 use cw20::Cw20ReceiveMsg;
 
@@ -46,14 +46,13 @@ pub struct FeeInfo {
     pub bluechip_fee: Decimal,
     pub creator_fee: Decimal,
 }
-
 /// This structure describes the execute messages available in the contract.
 #[cw_serde]
 pub enum ExecuteMsg {
     /// Receives a message of type [`Cw20ReceiveMsg`]
     Receive(Cw20ReceiveMsg),
     /// Swap performs a swap in the pool
-    Swap {
+    SimpleSwap {
         offer_asset: Asset,
         belief_price: Option<Decimal>,
         max_spread: Option<Decimal>,
@@ -94,7 +93,6 @@ pub enum QueryMsg {
     /// Returns contract configuration settings in a custom [`ConfigResponse`] structure.
     #[returns(ConfigResponse)]
     Config {},
-
     /// Returns information about a swap simulation in a [`SimulationResponse`] object.
     #[returns(SimulationResponse)]
     Simulation { offer_asset: Asset },
@@ -110,6 +108,13 @@ pub enum QueryMsg {
 
     #[returns(bool)]
     IsFullyCommited {},
+
+    #[returns(Option<Subscription>)]
+    SubscriptionInfo { wallet: String },
+    
+    #[returns(bool)]
+    IsSubscribed { wallet: String },
+
 }
 
 /// This struct is used to return a query result with the total amount of LP tokens and the two assets in a specific pool.
@@ -127,7 +132,9 @@ pub struct ConfigResponse {
     /// The pool's parameters
     pub params: Option<Binary>,
 }
-
+#[cw_serde]
+pub struct SubscriptionResponse {
+}
 /// This structure holds the parameters that are returned from a swap simulation response
 #[cw_serde]
 pub struct SimulationResponse {

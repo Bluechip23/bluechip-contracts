@@ -4,7 +4,7 @@ use cw20::{Cw20Coin, MinterResponse};
 use cw20_base::msg::InstantiateMarketingInfo;
 
 use crate::pair::InstantiateMsg as PairInitMsg;
-use crate::state::{Config, SubscribeInfo};
+use crate::state::{Config};
 
 #[cw_serde]
 pub struct InstantiateMsg {
@@ -23,12 +23,6 @@ pub enum ExecuteMsg {
 }
 
 #[cw_serde]
-pub enum QueryMsg {
-    Config {},
-    SubscribeInfo { creator: Addr },
-}
-
-#[cw_serde]
 pub struct MigrateMsg {}
 
 #[cw_serde]
@@ -36,10 +30,7 @@ pub struct ConfigResponse {
     pub config: Config,
 }
 
-#[cw_serde]
-pub struct SubscribeInfoResponse {
-    pub subscribe_info: SubscribeInfo,
-}
+
 
 #[cw_serde]
 pub struct TokenInstantiateMsg {
