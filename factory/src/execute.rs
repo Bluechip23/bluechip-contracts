@@ -139,13 +139,15 @@ pub fn reply(deps: DepsMut, env: Env, msg: Reply) -> Result<Response, ContractEr
             let config = CONFIG.load(deps.storage)?;
             let temp_pool_info = TEMPPAIRINFO.load(deps.storage)?;
             let temp_creator = TEMPCREATOR.load(deps.storage)?;
-            let res: MsgInstantiateContractResponse = Message::parse_from_bytes(
-                msg.result.unwrap().msg_responses[0].value.as_slice()
-            ).map_err(|_| {
-                StdError::parse_err("MsgInstantiateContractResponse", "failed to parse data")
-            })?;
+            let result = msg.result.unwrap();
+            let raw_bytes = result
+                .data
+                .or_else(|| result.msg_responses.get(0).map(|r| r.value.clone()))
+                .ok_or_else(|| StdError::generic_err("reply has no data"))?;
+            let res: MsgInstantiateContractResponse =  Message::parse_from_bytes(raw_bytes.as_slice())
+                    .map_err(|_| StdError::parse_err("MsgInstantiateContractResponse", "failed to parse"))?;
 
-            let token_address = deps.api.addr_validate(res.get_contract_address())?;
+            let token_address = deps.api.addr_validate(res.get_contract_address())?;    
             TEMPTOKENADDR.save(deps.storage, &token_address)?;
             let msg = WasmMsg::Instantiate {
                 code_id: config.pair_id,

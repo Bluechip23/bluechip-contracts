@@ -1,18 +1,17 @@
 #![cfg(not(target_arch = "wasm32"))]
 #![allow(non_snake_case)]
-
+use crate::oracle::{PriceResponse, PythQueryMsg};
 use cosmwasm_std::testing::{MockApi, MockQuerier, MockStorage, MOCK_CONTRACT_ADDR};
 use cosmwasm_std::{
 
     from_json, to_json_binary, Addr, Coin, Decimal, Empty, OwnedDeps, Querier,
 
-    QuerierResult, QueryRequest, SystemError, SystemResult, Uint128, WasmQuery,
+    QuerierResult, QueryRequest, SystemError, SystemResult, Uint128, WasmQuery, QuerierWrapper,
 };
 use std::collections::HashMap;
-
 use cw20::{BalanceResponse, Cw20QueryMsg, TokenInfoResponse};
 
-use crate::msg::{FeeInfo, FeeInfoResponse};
+use crate::msg::{FeeInfo, QueryMsg, PoolResponse, FeeInfoResponse};
 
 /// mock_dependencies is a drop-in replacement for cosmwasm_std::testing::mock_dependencies.
 /// This uses the BETFI CustomQuerier.
@@ -80,73 +79,105 @@ impl Querier for WasmMockQuerier {
 }
 
 impl WasmMockQuerier {
-    pub fn handle_query(&self, request: &QueryRequest<Empty>) -> QuerierResult {
-        match &request {
+    pub fn new(base: MockQuerier<Empty>) -> Self {
+        WasmMockQuerier {
+            base,
+            token_querier: TokenQuerier::default(),
+        }
+    }
+
+    /// Seed CW20 balances for `contract_addr`
+    pub fn with_token_balances(&mut self, balances: &[(&String, &[(&String, &Uint128)])]) {
+        self.token_querier = TokenQuerier::new(balances);
+    }
+
+    /// Seed native bank balances
+    pub fn with_balance(&mut self, balances: &[(&String, &[Coin])]) {
+        for (addr, coins) in balances {
+            self.base.bank.update_balance(addr.to_string(), coins.to_vec());
+        }
+    }
+
+    fn handle_query(&self, request: &QueryRequest<Empty>) -> QuerierResult {
+        match request {
             QueryRequest::Wasm(WasmQuery::Smart { contract_addr, msg }) => {
+                // 1) factory fee-info
                 if contract_addr == "factory" {
-                    match from_json(&msg).unwrap() {
-                        FeeInfo { .. } => SystemResult::Ok(
-                            to_json_binary(&FeeInfoResponse {
-                                fee_info: FeeInfo {
-                                    bluechip_address: Addr::unchecked("bluechip".to_string()),
-                                    creator_address: Addr::unchecked("creator".to_string()),
-                                    bluechip_fee: Decimal::from_ratio(10 as u128, 100 as u128),
-                                    creator_fee: Decimal::from_ratio(10 as u128, 100 as u128),
-                                },
-                            })
-                            .into(),
-                        ),
-                        _ => panic!("DO NOT ENTER HERE"),
+                    if let Ok(QueryMsg::FeeInfo {}) = from_json(&msg) {
+                        let fee_info = FeeInfo {
+                            bluechip_address: Addr::unchecked("bluechip"),
+                            creator_address: Addr::unchecked("creator"),
+                            bluechip_fee: Decimal::percent(10),
+                            creator_fee: Decimal::percent(10),
+                        };
+                        let resp = FeeInfoResponse { fee_info };
+                        let bin = to_json_binary(&resp).unwrap();
+                        return SystemResult::Ok(cosmwasm_std::ContractResult::Ok(bin));
                     }
-                } else {
-                    match from_json(&msg).unwrap() {
-                        Cw20QueryMsg::TokenInfo {} => {
-                            let balances: &HashMap<String, Uint128> =
-                                match self.token_querier.balances.get(contract_addr) {
-                                    Some(balances) => balances,
-                                    None => {
-                                        return SystemResult::Err(SystemError::Unknown {});
-                                    }
-                                };
+                    panic!("Unexpected query to factory: {}", String::from_utf8_lossy(msg));
+                }
 
-                            let mut total_supply = Uint128::zero();
-
-                            for balance in balances {
-                                total_supply += *balance.1;
-                            }
-
-                            SystemResult::Ok(
-                                to_json_binary(&TokenInfoResponse {
-                                    name: "mAPPL".to_string(),
-                                    symbol: "mAPPL".to_string(),
-                                    decimals: 6,
-                                    total_supply: total_supply,
-                                })
-                                .into(),
-                            )
-                        }
-                        Cw20QueryMsg::Balance { address } => {
-                            let balances: &HashMap<String, Uint128> =
-                                match self.token_querier.balances.get(contract_addr) {
-                                    Some(balances) => balances,
-                                    None => {
-                                        return SystemResult::Err(SystemError::Unknown {});
-                                    }
-                                };
-
-                            let balance = match balances.get(&address) {
-                                Some(v) => v,
-                                None => {
-                                    return SystemResult::Err(SystemError::Unknown {});
-                                }
-                            };
-
-                            SystemResult::Ok(
-                                to_json_binary(&BalanceResponse { balance: *balance }).into(),
-                            )
-                        }
-                        _ => panic!("DO NOT ENTER HERE"),
+                // 2) pool reserves
+                if let Ok(QueryMsg::Pool {}) = from_json(&msg) {
+                    // native balance from bank
+                    let native = QuerierWrapper::<Empty>::new(&self.base)
+                        .query_balance(contract_addr.clone(), "ubluechip".to_string())
+                        .unwrap();
+                    // cw20 balance via smart query
+                  let wrapper = QuerierWrapper::<Empty>::new(&self.base);
+                  let raw: BalanceResponse = wrapper
+                        .query_wasm_smart(contract_addr.clone(),&Cw20QueryMsg::Balance { address: contract_addr.clone() },)
+                        .unwrap();
+                        let cw20_amount = raw.balance;
+                    let resp = PoolResponse {
+                        assets: [
+                            crate::asset::native_asset("ubluechip".to_string(), native.amount),
+                            crate::asset::token_asset(Addr::unchecked(contract_addr.clone()), cw20_amount),
+                        ],
+                    };
+                    let bin = to_json_binary(&resp).unwrap();
+                    return SystemResult::Ok(cosmwasm_std::ContractResult::Ok(bin));
+                }
+            else if contract_addr == "oracle0000" {
+                  match from_json(&msg).unwrap() {
+                    PythQueryMsg::GetPrice { price_id: _ } => {
+                      let resp = PriceResponse {
+                        // e.g. 1.00 USD == 100_000_000 (8 decimals)
+                        price: Uint128::new(100_000_000),
+                      };
+                     return SystemResult::Ok(cosmwasm_std::ContractResult::Ok(to_json_binary(&resp).unwrap()));
                     }
+                  }
+                }
+                // 3) CW20 canonical queries
+                match from_json(&msg).unwrap() {
+                    Cw20QueryMsg::TokenInfo {} => {
+                        let supply = self.token_querier
+                            .balances
+                            .get(contract_addr)
+                            .map(|m| m.values().copied().sum())
+                            .unwrap_or_default();
+                        let info = TokenInfoResponse {
+                            name: "TOKEN".to_string(),
+                            symbol: "TKN".to_string(),
+                            decimals: 6,
+                            total_supply: supply,
+                        };
+                        let bin = to_json_binary(&info).unwrap();
+                        SystemResult::Ok(cosmwasm_std::ContractResult::Ok(bin))
+                    }
+                    Cw20QueryMsg::Balance { address } => {
+                        let bal = self.token_querier
+                            .balances
+                            .get(contract_addr)
+                            .and_then(|m| m.get(&address))
+                            .copied()
+                            .unwrap_or_default();
+                        let resp = BalanceResponse { balance: bal };
+                        let bin = to_json_binary(&resp).unwrap();
+                        SystemResult::Ok(cosmwasm_std::ContractResult::Ok(bin))
+                    }
+                    _ => panic!("Unexpected CW20 query: {:?}", msg),
                 }
             }
             QueryRequest::Wasm(WasmQuery::Raw { contract_addr, .. }) => {
@@ -161,22 +192,5 @@ impl WasmMockQuerier {
     }
 }
 
-impl WasmMockQuerier {
-    pub fn new(base: MockQuerier<Empty>) -> Self {
-        WasmMockQuerier {
-            base,
-            token_querier: TokenQuerier::default(),
-        }
-    }
 
-    // Configure the token balances mock querier
-    pub fn with_token_balances(&mut self, balances: &[(&String, &[(&String, &Uint128)])]) {
-        self.token_querier = TokenQuerier::new(balances);
-    }
 
-    pub fn with_balance(&mut self, balances: &[(&String, &[Coin])]) {
-        for (addr, balance) in balances {
-            self.base.bank.update_balance(addr.to_string(), balance.to_vec());
-        }
-    }
-}

@@ -23,8 +23,6 @@ use cw2::{get_contract_version, set_contract_version};
 use cw20::{Cw20ExecuteMsg, Cw20ReceiveMsg, MinterResponse};
 use std::str::FromStr;
 use std::vec;
-use cw_storage_plus::Map;
-use cosmwasm_storage::bucket;
 /// The default swap slippage
 pub const DEFAULT_SLIPPAGE: &str = "0.005";
 /// The maximum allowed swap slippage
@@ -293,7 +291,7 @@ pub fn get_share_in_assets(
 pub fn simple_swap(
     deps: DepsMut,
     env: Env,
-    info: MessageInfo,
+    _info: MessageInfo,
     sender: Addr,
     offer_asset: Asset,
     belief_price: Option<Decimal>,
@@ -497,12 +495,13 @@ pub fn commit(
         .add_attribute("subscriber", sender)
         .add_attribute("commit_amount", asset.amount.to_string()))
 }
-
+#[allow(dead_code)]
 fn get_token_amount(native_amount: Uint128) -> Uint128 {
     // example: 1 native unit (10^6) → 20 creator tokens
     const TOKENS_PER_NATIVE: u128 = 20;
     Uint128::from(native_amount.u128() * TOKENS_PER_NATIVE)
 }
+
 fn native_to_usd(
     querier: &QuerierWrapper,
     oracle_addr: &Addr,
@@ -902,7 +901,7 @@ fn compute_offer_amount(
     ask_amount: Uint128,
     commission_rate: Decimal,
 ) -> StdResult<(Uint128, Uint128, Uint128)> {
-    let cp = Uint256::from(offer_pool) * Uint256::from(ask_pool);
+    let _cp = Uint256::from(offer_pool) * Uint256::from(ask_pool);
     let one_minus_commission = Decimal256::one() - decimal2decimal256(commission_rate)?;
     let inv_one_minus_commission = Decimal256::one() / one_minus_commission;
 
@@ -995,6 +994,8 @@ fn trigger_threshold_payout(
 /// * **return_amount** is an object of type [`Uint128`]. This is the amount of assets to receive from the swap.
 ///
 /// * **spread_amount** is an object of type [`Uint128`]. This is the spread used in the swap.
+
+
 pub fn assert_max_spread(
     belief_price: Option<Decimal>,
     max_spread: Option<Decimal>,
@@ -1040,6 +1041,7 @@ pub fn assert_max_spread(
 /// * **deposits** are an array of [`Uint128`] type items. These are offer and ask amounts for a swap.
 ///
 /// * **pools** are an array of [`Asset`] type items. These are total amounts of assets in the pool.
+#[allow(dead_code)]
 fn assert_slippage_tolerance(
     slippage_tolerance: Option<Decimal>,
     deposits: &[Uint128; 2],
@@ -1109,7 +1111,7 @@ pub fn decimal2decimal256(dec_value: Decimal) -> StdResult<Decimal256> {
         ))
     })
 }
-
+#[allow(dead_code)]
 fn validate_input_amount(
     actual_funds: &[Coin],
     amount: Uint128,
@@ -1131,7 +1133,7 @@ fn validate_input_amount(
     }
     Ok(())
 }
-
+#[allow(dead_code)]
 fn get_amount_for_denom(coins: &[Coin], denom: &str) -> Coin {
     let amount: Uint128 = coins
         .iter()

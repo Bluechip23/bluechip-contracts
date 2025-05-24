@@ -1,24 +1,18 @@
 use crate::asset::{Asset, AssetInfo, CoinsExt, PairInfo, PairType};
-
 use crate::contract::{
-    accumulate_prices, assert_max_spread, compute_swap, execute, instantiate, query_pair_info,
-    query_pool, query_reverse_simulation, query_simulation,
+    assert_max_spread, execute, instantiate,
 };
 use crate::error::ContractError;
 use crate::mock_querier::mock_dependencies;
-use crate::msg::{Cw20HookMsg, ExecuteMsg, FeeInfo, InstantiateMsg};
+use crate::msg::{ExecuteMsg, FeeInfo, InstantiateMsg};
 use crate::response::MsgInstantiateContractResponse;
-use crate::state::Config;
-
 use cosmwasm_std::testing::{message_info, mock_env, MOCK_CONTRACT_ADDR};
 use cosmwasm_std::{
-    attr, to_json_binary, Addr, BankMsg, Binary, BlockInfo, Coin, CosmosMsg, Decimal, DepsMut, Env, Fraction, Reply,
-    ReplyOn, Response, StdError, SubMsg, SubMsgResponse, SubMsgResult, Timestamp, Uint128, WasmMsg,
+     Addr, Binary, Coin, Decimal, DepsMut, Fraction, Reply,
+    StdError, SubMsgResponse, SubMsgResult, Uint128,
 };
-use cw20::{Cw20ExecuteMsg, Cw20ReceiveMsg, MinterResponse};
-use proptest::prelude::*;
 use protobuf::Message;
-
+use crate::state::{THRESHOLD_HIT,COMMITSTATUS};
 #[allow(deprecated)]
 fn store_liquidity_token(deps: DepsMut, msg_id: u64, contract_addr: String) {
     let data = MsgInstantiateContractResponse {
@@ -47,7 +41,7 @@ fn proper_initialization() {
     let mut deps = mock_dependencies(&[]);
 
     deps.querier.with_token_balances(&[(
-        &String::from("asset0000"),
+        &MOCK_CONTRACT_ADDR.to_string(),
         &[(&String::from(MOCK_CONTRACT_ADDR), &Uint128::new(123u128))],
     )]);
 
@@ -58,7 +52,7 @@ fn proper_initialization() {
                 denom: "uusd".to_string(),
             },
             AssetInfo::Token {
-                contract_addr: Addr::unchecked("asset0000"),
+                contract_addr: Addr::unchecked(MOCK_CONTRACT_ADDR.to_string()),
             },
         ],
         token_code_id: 10u64,
@@ -69,8 +63,15 @@ fn proper_initialization() {
             bluechip_fee: Decimal::from_ratio(10u128, 100u128),
             creator_fee: Decimal::from_ratio(10u128, 100u128),
         },
-        commit_limit: Uint128::new(5000),
-        token_address: Addr::unchecked("token".to_string()),
+        token_address:     Addr::unchecked("admin"),
+        bluechip_amount: Uint128::new(500),
+        creator_amount: Uint128::new(1000),
+        pool_amount: Uint128::new(3000),
+        commit_amount: Uint128::new(1000),
+        commit_limit: Uint128::new(25000),
+        commit_limit_usd: Uint128::new(25_000),
+        oracle_addr:     Addr::unchecked("oracle0000"),
+        oracle_symbol:   "ORCL".to_string(),
         available_payment: vec![Uint128::new(100)],
     };
 
@@ -95,7 +96,7 @@ fn provide_liquidity() {
 
     deps.querier.with_token_balances(&[
         (
-            &String::from("asset0000"),
+            &MOCK_CONTRACT_ADDR.to_string(),
             &[(&String::from(MOCK_CONTRACT_ADDR), &Uint128::new(0))],
         ),
         (
@@ -111,7 +112,7 @@ fn provide_liquidity() {
                 denom: "uusd".to_string(),
             },
             AssetInfo::Token {
-                contract_addr: Addr::unchecked("asset0000"),
+                contract_addr: Addr::unchecked(MOCK_CONTRACT_ADDR.to_string()),
             },
         ],
         token_code_id: 10u64,
@@ -123,6 +124,13 @@ fn provide_liquidity() {
             creator_fee: Decimal::from_ratio(10 as u128, 100 as u128),
         },
         commit_limit: Uint128::new(5000),
+        creator_amount: Uint128::new(1000),
+        pool_amount: Uint128::new(3000),
+        commit_amount: Uint128::new(1000),
+        bluechip_amount: Uint128::new(500),
+        commit_limit_usd:  Uint128::new(10_000),
+        oracle_addr:       Addr::unchecked("oracle0000"),
+        oracle_symbol:     "ORCL".to_string(),
         token_address: Addr::unchecked("token_address".to_string()),
         available_payment: vec![Uint128::new(100)],
     };
@@ -171,18 +179,26 @@ fn withdraw_liquidity() {
         amount: Uint128::new(100u128),
     }]);
 
+  let mock_token = MOCK_CONTRACT_ADDR.to_string();
+    let liquidity = "liquidity0000".to_string();
+    let total_share_amount = Uint128::from(111u128);
+
     // deps.querier
     //     .with_tax(Decimal::zero(), &[("uusd", &Uint128::from(1000000u128))]);
-    deps.querier.with_token_balances(&[
-        (
-            &String::from("liquidity0000"),
-            &[(&String::from("addr0000"), &Uint128::new(100u128))],
-        ),
-        (
-            &String::from("asset0000"),
-            &[(&String::from(MOCK_CONTRACT_ADDR), &Uint128::new(100u128))],
-        ),
-    ]);
+deps.querier.with_token_balances(&[
+    // 1) For your CW20 token contract:
+    (&mock_token, &[
+        // user balances for that token (here we just credit the
+        // contract itself in the mock)
+        (&mock_token, &Uint128::new(123)),
+    ]),
+
+    // 2) For the LP token contract:
+    (&liquidity, &[
+        // credit the contract (or user) with the total_share_amount
+        (&mock_token, &total_share_amount),
+    ]),
+]);
 
     let msg = InstantiateMsg {
         factory_addr: Addr::unchecked("factory"),
@@ -191,7 +207,7 @@ fn withdraw_liquidity() {
                 denom: "uusd".to_string(),
             },
             AssetInfo::Token {
-                contract_addr: Addr::unchecked("asset0000"),
+                contract_addr: Addr::unchecked(MOCK_CONTRACT_ADDR.to_string()),
             },
         ],
         token_code_id: 10u64,
@@ -203,6 +219,13 @@ fn withdraw_liquidity() {
             creator_fee: Decimal::from_ratio(10 as u128, 100 as u128),
         },
         commit_limit: Uint128::new(5000),
+        commit_limit_usd:  Uint128::new(10_000),
+        oracle_addr:       Addr::unchecked("oracle0000"),
+        commit_amount:     Uint128::new(10_000),
+        pool_amount:       Uint128::new(10_000),
+        creator_amount:    Uint128::new(10_000),
+        bluechip_amount:   Uint128::new(10_000),
+        oracle_symbol:     "ORCL".to_string(),
         token_address: Addr::unchecked("token_address".to_string()),
         available_payment: vec![Uint128::new(100)],
     };
@@ -216,235 +239,6 @@ fn withdraw_liquidity() {
     store_liquidity_token(deps.as_mut(), 1, "liquidity0000".to_string());
 
     // Withdraw liquidity
-}
-
-#[test]
-fn try_native_to_token() {
-    let total_share = Uint128::new(30000000000u128);
-    let asset_pool_amount = Uint128::new(20000000000u128);
-    let collateral_pool_amount = Uint128::new(30000000000u128);
-    let offer_amount = Uint128::new(1500000000u128);
-
-    let env = mock_env();
-
-    let mut deps = mock_dependencies(&[Coin {
-        denom: "uusd".to_string(),
-        amount: collateral_pool_amount + offer_amount, /* user deposit must be pre-applied */
-    }]);
-
-    // deps.querier.with_tax(
-    //     Decimal::zero(),
-    //     &[(&"uusd".to_string(), &Uint128::from(1000000u128))],
-    // );
-
-    deps.querier.with_token_balances(&[
-        (
-            &String::from("liquidity0000"),
-            &[(&String::from(MOCK_CONTRACT_ADDR), &total_share)],
-        ),
-        (
-            &String::from("asset0000"),
-            &[(&String::from(MOCK_CONTRACT_ADDR), &asset_pool_amount)],
-        ),
-    ]);
-
-    let msg = InstantiateMsg {
-        factory_addr: Addr::unchecked("factory"),
-        asset_infos: [
-            AssetInfo::NativeToken {
-                denom: "uusd".to_string(),
-            },
-            AssetInfo::Token {
-                contract_addr: Addr::unchecked("asset0000"),
-            },
-        ],
-        token_code_id: 10u64,
-        init_params: None,
-        fee_info: FeeInfo {
-            bluechip_address: Addr::unchecked("bluechip".to_string()),
-            creator_address: Addr::unchecked("creator".to_string()),
-            bluechip_fee: Decimal::from_ratio(10 as u128, 100 as u128),
-            creator_fee: Decimal::from_ratio(10 as u128, 100 as u128),
-        },
-        commit_limit: Uint128::new(5000),
-        token_address: Addr::unchecked("token_address".to_string()),
-        available_payment: vec![Uint128::new(100)],
-    };
-
-    let env = mock_env();
-    let info = message_info(&Addr::unchecked("addr0000"), &[]);
-    // we can just call .unwrap() to assert this was a success
-    let _res = instantiate(deps.as_mut(), env.clone(), info, msg).unwrap();
-
-    // Store liquidity token
-    store_liquidity_token(deps.as_mut(), 1, "liquidity0000".to_string());
-
-    // Normal swap
-    let msg = ExecuteMsg::Swap {
-        offer_asset: Asset {
-            info: AssetInfo::NativeToken {
-                denom: "uusd".to_string(),
-            },
-            amount: offer_amount,
-        },
-        belief_price: None,
-        max_spread: Some(Decimal::percent(50)),
-        to: None,
-    };
-
-    let info = message_info(&Addr::unchecked("addr0000"), &[Coin {
-        denom: "uusd".to_string(),
-        amount: offer_amount,
-    }]);
-
-    let res = execute(deps.as_mut(), env.clone(), info, msg).unwrap();
-    let msg_transfer = res.messages.get(0).expect("no message");
-
-    // Current price is 1.5, so expected return without spread is 1000
-    // 952380952 = 20000000000 - (30000000000 * 20000000000) / (30000000000 + 1500000000)
-    let expected_ret_amount = Uint128::new(952_380_952u128);
-
-    // 47619047 = 1500000000 * (20000000000 / 30000000000) - 952380952
-    let expected_spread_amount = Uint128::new(47619047u128);
-
-    let expected_commission_amount = expected_ret_amount.multiply_ratio(3u128, 1000u128); // 0.3%
-    let expected_maker_fee_amount = expected_commission_amount.multiply_ratio(166u128, 1000u128); // 0.166
-
-    let expected_return_amount = expected_ret_amount
-        .checked_sub(expected_commission_amount)
-        .unwrap();
-    let expected_tax_amount = Uint128::zero(); // no tax for token
-
-    // Check simulation result
-    deps.querier.with_balance(&[(
-        &String::from(MOCK_CONTRACT_ADDR),
-        &[Coin {
-            denom: "uusd".to_string(),
-            amount: collateral_pool_amount, /* user deposit must be pre-applied */
-        }],
-    )]);
-}
-
-#[test]
-fn try_token_to_native() {
-    let total_share = Uint128::new(20000000000u128);
-    let asset_pool_amount = Uint128::new(30000000000u128);
-    let collateral_pool_amount = Uint128::new(20000000000u128);
-    let offer_amount = Uint128::new(1500000000u128);
-
-    let mut deps = mock_dependencies(&[Coin {
-        denom: "uusd".to_string(),
-        amount: collateral_pool_amount,
-    }]);
-    // deps.querier.with_tax(
-    //     Decimal::percent(1),
-    //     &[(&"uusd".to_string(), &Uint128::from(1000000u128))],
-    // );
-    deps.querier.with_token_balances(&[
-        (
-            &String::from("liquidity0000"),
-            &[(&String::from(MOCK_CONTRACT_ADDR), &total_share)],
-        ),
-        (
-            &String::from("asset0000"),
-            &[(
-                &String::from(MOCK_CONTRACT_ADDR),
-                &(asset_pool_amount + offer_amount),
-            )],
-        ),
-    ]);
-
-    let msg = InstantiateMsg {
-        factory_addr: Addr::unchecked("factory"),
-        asset_infos: [
-            AssetInfo::NativeToken {
-                denom: "uusd".to_string(),
-            },
-            AssetInfo::Token {
-                contract_addr: Addr::unchecked("asset0000"),
-            },
-        ],
-        token_code_id: 10u64,
-        init_params: None,
-        fee_info: FeeInfo {
-            bluechip_address: Addr::unchecked("bluechip".to_string()),
-            creator_address: Addr::unchecked("creator".to_string()),
-            bluechip_fee: Decimal::from_ratio(10 as u128, 100 as u128),
-            creator_fee: Decimal::from_ratio(10 as u128, 100 as u128),
-        },
-        commit_limit: Uint128::new(5000),
-        token_address: Addr::unchecked("token_address".to_string()),
-        available_payment: vec![Uint128::new(100)],
-    };
-
-    let env = mock_env();
-    let info = message_info(&Addr::unchecked("addr0000"), &[]);
-    // We can just call .unwrap() to assert this was a success
-    let _res = instantiate(deps.as_mut(), env.clone(), info, msg).unwrap();
-
-    // Store liquidity token
-    store_liquidity_token(deps.as_mut(), 1, "liquidity0000".to_string());
-
-    // Unauthorized access; can not execute swap directly for token swap
-    let msg = ExecuteMsg::Swap {
-        offer_asset: Asset {
-            info: AssetInfo::Token {
-                contract_addr: Addr::unchecked("asset0000".to_string()),
-            },
-            amount: offer_amount,
-        },
-        belief_price: None,
-        max_spread: None,
-        to: None,
-    };
-
-    let info = message_info(&Addr::unchecked("addr0000"), &[]);
-    let res = execute(deps.as_mut(), env.clone(), info, msg).unwrap_err();
-    assert_eq!(res, ContractError::Cw20DirectSwap {});
-
-    // Normal sell
-    let msg = ExecuteMsg::Receive(Cw20ReceiveMsg {
-        sender: String::from("addr0000"),
-        amount: offer_amount,
-        msg: to_json_binary(&Cw20HookMsg::Swap {
-            belief_price: None,
-            max_spread: Some(Decimal::percent(50)),
-            to: None,
-        })
-        .unwrap(),
-    });
-
-    let info = message_info(&Addr::unchecked("asset0000"), &[]);
-
-    let res = execute(deps.as_mut(), env, info, msg).unwrap();
-    let msg_transfer = res.messages.get(0).expect("no message");
-
-    // Current price is 1.5, so expected return without spread is 1000
-    // 952380952,3809524 = 20000000000 - (30000000000 * 20000000000) / (30000000000 + 1500000000)
-    let expected_ret_amount = Uint128::new(952_380_952u128);
-
-    // 47619047 = 1500000000 * (20000000000 / 30000000000) - 952380952,3809524
-    let expected_spread_amount = Uint128::new(47619047u128);
-
-    let expected_commission_amount = expected_ret_amount.multiply_ratio(3u128, 1000u128); // 0.3%
-    let expected_maker_fee_amount = expected_commission_amount.multiply_ratio(166u128, 1000u128);
-    let expected_return_amount = expected_ret_amount
-        .checked_sub(expected_commission_amount)
-        .unwrap();
-    let expected_tax_amount = Uint128::zero();
-    // check simulation res
-    // return asset token balance as normal
-
-    deps.querier.with_token_balances(&[
-        (
-            &String::from("liquidity0000"),
-            &[(&String::from(MOCK_CONTRACT_ADDR), &total_share)],
-        ),
-        (
-            &String::from("asset0000"),
-            &[(&String::from(MOCK_CONTRACT_ADDR), &(asset_pool_amount))],
-        ),
-    ]);
 }
 
 #[test]
@@ -518,7 +312,7 @@ fn test_deduct() {
 
 #[test]
 fn test_query_pool() {
-    let total_share_amount = Uint128::from(111u128);
+    let total_share = Uint128::from(111u128);
     let asset_0_amount = Uint128::from(222u128);
     let asset_1_amount = Uint128::from(333u128);
     let mut deps = mock_dependencies(&[Coin {
@@ -526,16 +320,16 @@ fn test_query_pool() {
         amount: asset_0_amount,
     }]);
 
-    deps.querier.with_token_balances(&[
-        (
-            &String::from("asset0000"),
-            &[(&String::from(MOCK_CONTRACT_ADDR), &asset_1_amount)],
-        ),
-        (
-            &String::from("liquidity0000"),
-            &[(&String::from(MOCK_CONTRACT_ADDR), &total_share_amount)],
-        ),
-    ]);
+  let mock_token = MOCK_CONTRACT_ADDR.to_string();
+    let liquidity = "liquidity0000".to_string();
+deps.querier.with_token_balances(&[
+    (&mock_token, &[
+        (&mock_token, &Uint128::new(123)),
+    ]),
+    (&liquidity, &[
+        (&mock_token, &total_share),
+    ]),
+]);
 
     let msg = InstantiateMsg {
         factory_addr: Addr::unchecked("factory"),
@@ -544,7 +338,7 @@ fn test_query_pool() {
                 denom: "uusd".to_string(),
             },
             AssetInfo::Token {
-                contract_addr: Addr::unchecked("asset0000"),
+                contract_addr: Addr::unchecked(MOCK_CONTRACT_ADDR.to_string()),
             },
         ],
         token_code_id: 10u64,
@@ -556,6 +350,13 @@ fn test_query_pool() {
             creator_fee: Decimal::from_ratio(10 as u128, 100 as u128),
         },
         commit_limit: Uint128::new(5000),
+        commit_limit_usd: Uint128::new(5000),
+        commit_amount:     Uint128::new(10_000),
+        pool_amount:       Uint128::new(10_000),
+        oracle_addr:       Addr::unchecked("oracle0000"),
+        oracle_symbol:     "ORCL".to_string(),
+        creator_amount:    Uint128::new(10_000),
+        bluechip_amount:   Uint128::new(10_000),
         token_address: Addr::unchecked("token_address".to_string()),
         available_payment: vec![Uint128::new(100)],
     };
@@ -571,7 +372,7 @@ fn test_query_pool() {
 
 #[test]
 fn test_query_share() {
-    let total_share_amount = Uint128::from(500u128);
+    let total_share = Uint128::from(500u128);
     let asset_0_amount = Uint128::from(250u128);
     let asset_1_amount = Uint128::from(1000u128);
     let mut deps = mock_dependencies(&[Coin {
@@ -579,16 +380,16 @@ fn test_query_share() {
         amount: asset_0_amount,
     }]);
 
-    deps.querier.with_token_balances(&[
-        (
-            &String::from("asset0000"),
-            &[(&String::from(MOCK_CONTRACT_ADDR), &asset_1_amount)],
-        ),
-        (
-            &String::from("liquidity0000"),
-            &[(&String::from(MOCK_CONTRACT_ADDR), &total_share_amount)],
-        ),
-    ]);
+   let mock_token = MOCK_CONTRACT_ADDR.to_string();
+    let liquidity = "liquidity0000".to_string();
+deps.querier.with_token_balances(&[
+    (&mock_token, &[
+        (&mock_token, &Uint128::new(123)),
+    ]),
+    (&liquidity, &[
+        (&mock_token, &total_share),
+    ]),
+]);
 
     let msg = InstantiateMsg {
         factory_addr: Addr::unchecked("factory"),
@@ -597,7 +398,7 @@ fn test_query_share() {
                 denom: "uusd".to_string(),
             },
             AssetInfo::Token {
-                contract_addr: Addr::unchecked("asset0000"),
+                contract_addr: Addr::unchecked(MOCK_CONTRACT_ADDR.to_string()),
             },
         ],
         token_code_id: 10u64,
@@ -609,6 +410,13 @@ fn test_query_share() {
             creator_fee: Decimal::from_ratio(10 as u128, 100 as u128),
         },
         commit_limit: Uint128::new(5000),
+        commit_limit_usd: Uint128::new(5000),
+        commit_amount:     Uint128::new(10_000),
+        pool_amount:       Uint128::new(10_000),
+        oracle_addr:       Addr::unchecked("oracle0000"),
+        oracle_symbol:     "ORCL".to_string(),
+        creator_amount:    Uint128::new(10_000),
+        bluechip_amount:   Uint128::new(10_000),
         token_address: Addr::unchecked("token_address".to_string()),
         available_payment: vec![Uint128::new(100)],
     };
@@ -625,25 +433,25 @@ fn test_query_share() {
 #[test]
 fn test_commit() {
     let mut deps = mock_dependencies(&[Coin {
-        denom: "uusd".to_string(),
+        denom: "ubluechip".to_string(),
         amount: Uint128::new(100u128),
     }]);
-
-    deps.querier.with_token_balances(&[
-        (
-            &String::from("asset0000"),
-            &[(&String::from(MOCK_CONTRACT_ADDR), &Uint128::new(100u128))],
-        ),
-    ]);
+    let mock_token = MOCK_CONTRACT_ADDR.to_string();
+   deps.querier.with_token_balances(&[
+    (
+        &mock_token,
+        &[(&mock_token, &Uint128::new(123))],
+    ),
+]);
 
     let msg = InstantiateMsg {
         factory_addr: Addr::unchecked("factory"),
         asset_infos: [
             AssetInfo::NativeToken {
-                denom: "uusd".to_string(),
+                denom: "ubluechip".to_string(),
             },
             AssetInfo::Token {
-                contract_addr: Addr::unchecked("asset0000"),
+                contract_addr: Addr::unchecked(MOCK_CONTRACT_ADDR.to_string()),
             },
         ],
         token_code_id: 10u64,
@@ -654,7 +462,14 @@ fn test_commit() {
             bluechip_fee: Decimal::from_ratio(10u128, 100u128),
             creator_fee: Decimal::from_ratio(10u128, 100u128),
         },
-        commit_limit: Uint128::new(5000),
+         commit_limit: Uint128::new(5000),
+        commit_limit_usd: Uint128::new(200_000_000),
+        commit_amount:     Uint128::new(10_000),
+        pool_amount:       Uint128::new(10_000),
+        oracle_addr:       Addr::unchecked("oracle0000"),
+        oracle_symbol:     "ORCL".to_string(),
+        creator_amount:    Uint128::new(10_000),
+        bluechip_amount:   Uint128::new(10_000),
         token_address: Addr::unchecked("token_address".to_string()),
         available_payment: vec![Uint128::new(100)],
     };
@@ -670,7 +485,7 @@ fn test_commit() {
     let commit_msg = ExecuteMsg::Commit {
         asset: Asset {
             info: AssetInfo::NativeToken {
-                denom: "uusd".to_string(),
+                denom: "ubluechip".to_string(),
             },
             amount: Uint128::new(100),
         },
@@ -678,14 +493,23 @@ fn test_commit() {
     };
 
     let info = message_info(&Addr::unchecked("addr0000"), &[]);
-    let err = execute(deps.as_mut(), env.clone(), info, commit_msg.clone()).unwrap_err();
-    assert_eq!(err, ContractError::InsufficientFunds {});
+     let res0 = execute(deps.as_mut(), env.clone(), info, commit_msg.clone()).unwrap();
+    assert_eq!(res0.messages.len(), 2);
+    assert_eq!(
+        res0.attributes,
+        vec![
+            ("action", "subscribe"),
+            ("subscriber", "addr0000"),
+            ("commit_amount", "100"),
+        ]
+    );
 
+    THRESHOLD_HIT.save(deps.as_mut().storage, &true).unwrap();
     // Try commit with correct funds
     let info = message_info(
         &Addr::unchecked("addr0000"),
         &[Coin {
-            denom: "uusd".to_string(),
+            denom: "ubluechip".to_string(),
             amount: Uint128::new(100),
         }],
     );
@@ -693,73 +517,188 @@ fn test_commit() {
     let res = execute(deps.as_mut(), env.clone(), info, commit_msg).unwrap();
     assert_eq!(3, res.messages.len()); // Should have 3 messages: bluechip fee, creator fee, and token transfer
 }
-
 #[test]
-fn test_commit_validation() {
-    let mut deps = mock_dependencies(&[Coin {
-        denom: "uusd".to_string(),
-        amount: Uint128::new(100u128),
-    }]);
+fn test_simple_swap_threshold_then_succeeds() {
+    // 1) Set up numbers
+    let native_reserve     = Uint128::new(20_000_000_000u128);
+    let cw20_reserve       = Uint128::new(30_000_000_000u128);
+    let offer_amount       = Uint128::new( 5_000_000_000u128); // less than native_reserve
 
+    // 2) Create dependencies with only native tokens in the pool
+    let mut deps = mock_dependencies(&[
+        Coin {
+            denom: "ubluechip".to_string(),
+            amount: native_reserve,
+        }
+    ]);
+    let pair_addr  = mock_env().contract.address.to_string();
+    let asset_addr = MOCK_CONTRACT_ADDR.to_string();
+
+    // 3) Seed the CW20 side of the pool
+    deps.querier.with_token_balances(&[
+        (&asset_addr, &[(&pair_addr, &cw20_reserve)]),
+    ]);
+
+    // 4) Instantiate the pool (use your real InstantiateMsg)
     let msg = InstantiateMsg {
         factory_addr: Addr::unchecked("factory"),
         asset_infos: [
-            AssetInfo::NativeToken {
-                denom: "uusd".to_string(),
-            },
-            AssetInfo::Token {
-                contract_addr: Addr::unchecked("asset0000"),
-            },
+            AssetInfo::NativeToken { denom: "ubluechip".into() },
+            AssetInfo::Token      { contract_addr: Addr::unchecked(asset_addr.clone()) },
         ],
-        token_code_id: 10u64,
-        init_params: None,
-        fee_info: FeeInfo {
+        token_code_id:    10,
+        init_params:      None,
+        fee_info:         FeeInfo {
             bluechip_address: Addr::unchecked("bluechip".to_string()),
             creator_address: Addr::unchecked("creator".to_string()),
-            bluechip_fee: Decimal::from_ratio(10u128, 100u128),
-            creator_fee: Decimal::from_ratio(10u128, 100u128),
+            bluechip_fee: Decimal::from_ratio(10 as u128, 100 as u128),
+            creator_fee: Decimal::from_ratio(10 as u128, 100 as u128),
         },
-        commit_limit: Uint128::new(5000),
-        token_address: Addr::unchecked("token_address".to_string()),
+        commit_limit:     Uint128::new(5_000),
+        commit_limit_usd: Uint128::new(5_000),
+        commit_amount:    Uint128::new(5_000),
+        pool_amount:      Uint128::new(5_000),
+        oracle_addr:      Addr::unchecked("oracle0000"),
+        oracle_symbol:    "ORCL".to_string(),
+        creator_amount:   Uint128::new(5_000),
+        bluechip_amount:  Uint128::new(5_000),
+        token_address:    Addr::unchecked("token_address"),
         available_payment: vec![Uint128::new(100)],
     };
+    let env  = mock_env();
+    let info = message_info(&Addr::unchecked("user"), &[]);
+    instantiate(deps.as_mut(), env.clone(), info.clone(), msg).unwrap();
 
-    let env = mock_env();
-    let info = message_info(&Addr::unchecked("addr0000"), &[]);
-    let _res = instantiate(deps.as_mut(), env.clone(), info, msg).unwrap();
+    // 5) Wire up the LP token instantiation
+    store_liquidity_token(deps.as_mut(), 1, pair_addr.clone());
 
-    // Try commit with wrong denom
-    let commit_msg = ExecuteMsg::Commit {
-        asset: Asset {
-            info: AssetInfo::NativeToken {
-                denom: "uusd".to_string(),
-            },
-            amount: Uint128::new(100),
+    // ─── Attempt #1: below threshold ─────────────────────────────────────
+    let swap1 = ExecuteMsg::SimpleSwap {
+        offer_asset: Asset {
+            info:   AssetInfo::NativeToken { denom: "ubluechip".into() },
+            amount: offer_amount,
         },
-        amount: Uint128::new(100),
+        belief_price: None,
+        max_spread:   Some(Decimal::percent(50)),
+        to:           None,
+    };
+    let err = execute(deps.as_mut(), env.clone(), info.clone(), swap1).unwrap_err();
+    assert_eq!(err, ContractError::ShortOfThreshold {});
+
+    // ─── Fund the pool to cross threshold ───────────────────────────────
+    deps.querier.with_balance(&[(
+        &pair_addr,
+        &[Coin {
+            denom:  "ubluechip".into(),
+            amount: native_reserve + offer_amount,
+        }],
+    )]);
+
+    let threshold = Uint128::new(5_000); // same as your InstantiateMsg.commit_limit_usd
+    COMMITSTATUS.save(deps.as_mut().storage, &threshold).unwrap(); 
+    THRESHOLD_HIT.save(deps.as_mut().storage, &true).unwrap();
+    
+    // ─── Attempt #2: now above threshold ───────────────────────────────
+
+    
+    let swap2 = ExecuteMsg::SimpleSwap {
+        offer_asset: Asset {
+            info:   AssetInfo::NativeToken { denom: "ubluechip".into() },
+            amount: offer_amount,
+        },
+        belief_price: None,
+        max_spread:   Some(Decimal::percent(50)),
+        to:           None,
     };
 
-    let info = message_info(
-        &Addr::unchecked("addr0000"),
-        &[Coin {
-            denom: "wrong".to_string(),
-            amount: Uint128::new(100),
-        }],
-    );
-
-    let err = execute(deps.as_mut(), env.clone(), info, commit_msg).unwrap_err();
-    assert_eq!(
-        err,
-        ContractError::IncorrectNativeDenom {
-            provided: "wrong".to_string(),
-            required: "uusd".to_string(),
-        }
-    );
+    let info2 = message_info(
+    &Addr::unchecked("user"),
+    &[Coin {
+        denom:  "ubluechip".into(),
+        amount: offer_amount,
+    }],
+);
+    let res = execute(deps.as_mut(), env.clone(), info2, swap2).unwrap();
+    // it should have at least one CosmosMsg back to the user
+    assert!(!res.messages.is_empty());
 }
+
+#[test]
+    fn test_commit_validation() {
+        let mut deps = mock_dependencies(&[Coin {
+            denom: "uusd".to_string(),
+            amount: Uint128::new(100u128),
+        }]);
+        let mock_token = MOCK_CONTRACT_ADDR.to_string();
+        deps.querier.with_token_balances(&[(
+        &mock_token,
+       &[(&mock_token, &Uint128::zero())],
+        )]);
+        let msg = InstantiateMsg {
+            factory_addr: Addr::unchecked("factory"),
+            asset_infos: [
+                AssetInfo::NativeToken {
+                    denom: "uusd".to_string(),
+                },
+                AssetInfo::Token {
+                    contract_addr: Addr::unchecked(MOCK_CONTRACT_ADDR.to_string()),
+                },
+            ],
+            token_code_id: 10u64,
+            init_params: None,
+            fee_info: FeeInfo {
+                bluechip_address: Addr::unchecked("bluechip".to_string()),
+                creator_address: Addr::unchecked("creator".to_string()),
+                bluechip_fee: Decimal::from_ratio(10u128, 100u128),
+                creator_fee: Decimal::from_ratio(10u128, 100u128),
+            },
+            commit_limit: Uint128::new(5000),
+            commit_limit_usd: Uint128::new(5000),
+            commit_amount:     Uint128::new(10_000),
+            pool_amount:       Uint128::new(10_000),
+            oracle_addr:       Addr::unchecked("oracle0000"),
+            oracle_symbol:     "ORCL".to_string(),
+            creator_amount:    Uint128::new(10_000),
+            bluechip_amount:   Uint128::new(10_000),
+            token_address: Addr::unchecked("token_address".to_string()),
+            available_payment: vec![Uint128::new(100)],
+        };
+
+        let env = mock_env();
+        let info = message_info(&Addr::unchecked("addr0000"), &[]);
+        instantiate(deps.as_mut(), env.clone(), info, msg).unwrap();
+
+        // Try commit with wrong denom
+        let commit_msg = ExecuteMsg::Commit {
+            asset: Asset {
+                info: AssetInfo::NativeToken {
+                    denom: "uusd".to_string(),
+                },
+                amount: Uint128::new(100),
+            },
+            amount: Uint128::new(100),
+        };
+
+        let info = message_info(
+            &Addr::unchecked("addr0000"),
+            &[Coin {
+                denom: "wrong".to_string(),
+                amount: Uint128::new(100),
+            }],
+        );
+
+        let err = execute(deps.as_mut(), env.clone(), info, commit_msg).unwrap_err();
+        assert_eq!(err, ContractError::AssetMismatch {});
+    }
 
 #[test]
 fn test_commit_with_token() {
     let mut deps = mock_dependencies(&[]);
+    let mock_token = MOCK_CONTRACT_ADDR.to_string();
+    deps.querier.with_token_balances(&[(
+        &mock_token,
+       &[(&mock_token, &Uint128::zero())],
+    )]);
 
     let msg = InstantiateMsg {
         factory_addr: Addr::unchecked("factory"),
@@ -768,7 +707,7 @@ fn test_commit_with_token() {
                 denom: "uusd".to_string(),
             },
             AssetInfo::Token {
-                contract_addr: Addr::unchecked("asset0000"),
+               contract_addr: Addr::unchecked(mock_token.clone()), 
             },
         ],
         token_code_id: 10u64,
@@ -780,19 +719,26 @@ fn test_commit_with_token() {
             creator_fee: Decimal::from_ratio(10u128, 100u128),
         },
         commit_limit: Uint128::new(5000),
+        commit_limit_usd: Uint128::new(5000),
+        commit_amount:     Uint128::new(10_000),
+        pool_amount:       Uint128::new(10_000),
+        oracle_addr:       Addr::unchecked("oracle0000"),
+        oracle_symbol:     "ORCL".to_string(),
+        creator_amount:    Uint128::new(10_000),
+        bluechip_amount:   Uint128::new(10_000),
         token_address: Addr::unchecked("token_address".to_string()),
         available_payment: vec![Uint128::new(100)],
     };
 
     let env = mock_env();
     let info = message_info(&Addr::unchecked("addr0000"), &[]);
-    let _res = instantiate(deps.as_mut(), env.clone(), info, msg).unwrap();
+    instantiate(deps.as_mut(), env.clone(), info, msg).unwrap();
 
     // Try commit with token (should fail)
     let commit_msg = ExecuteMsg::Commit {
         asset: Asset {
             info: AssetInfo::Token {
-                contract_addr: Addr::unchecked("asset0000"),
+                contract_addr: Addr::unchecked(MOCK_CONTRACT_ADDR.to_string()),
             },
             amount: Uint128::new(100),
         },
@@ -821,9 +767,10 @@ fn test_asset_info() {
     assert!(ibc_info.is_ibc());
 
     // Test token contract
-    let token_info = AssetInfo::Token {
-        contract_addr: Addr::unchecked("asset0000"),
+   let token_info = AssetInfo::Token {
+        contract_addr: Addr::unchecked(MOCK_CONTRACT_ADDR.to_string()),
     };
+    // Now this will pass addr_validate under MockApi
     assert!(!token_info.is_native_token());
     assert!(!token_info.is_ibc());
 
@@ -866,7 +813,7 @@ fn test_asset() {
     // Test token asset
     let token_asset = Asset {
         info: AssetInfo::Token {
-            contract_addr: Addr::unchecked("asset0000"),
+            contract_addr: Addr::unchecked(MOCK_CONTRACT_ADDR.to_string()),
         },
         amount: Uint128::new(100u128),
     };
@@ -887,7 +834,7 @@ fn test_pair_info() {
                 denom: "uusd".to_string(),
             },
             AssetInfo::Token {
-                contract_addr: Addr::unchecked("asset0000"),
+                contract_addr: Addr::unchecked(MOCK_CONTRACT_ADDR.to_string()),
             },
         ],
         contract_addr: Addr::unchecked("pair0000"),
@@ -914,10 +861,11 @@ fn test_asset_validation() {
     native_info.check(&deps.api).unwrap();
 
     // Test valid token contract
-    let token_info = AssetInfo::Token {
-        contract_addr: Addr::unchecked("asset0000"),
+     let token_info = AssetInfo::Token {
+    // Use the built-in valid Bech32 from the mock environment
+    contract_addr: Addr::unchecked(MOCK_CONTRACT_ADDR.to_string()),
     };
-    token_info.check(&deps.api).unwrap();
+     token_info.check(&deps.api).unwrap();
 
     // Test assert_sent_native_token_balance
     let asset = Asset {

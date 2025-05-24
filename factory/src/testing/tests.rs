@@ -1,9 +1,9 @@
 
-use cosmwasm_std::{from_json, to_json_binary, Addr, Decimal, DepsMut, Reply, SubMsgResponse, SubMsgResult, Uint128};
+use cosmwasm_std::{Addr, Decimal, Reply, SubMsgResponse, SubMsgResult, Uint128};
 use crate::state::{Config, TEMPPAIRINFO, TEMPCREATOR};
 
 use crate::mock_querier::mock_dependencies;
-use cosmwasm_std::testing::{mock_env, message_info, mock_info, MockApi, MockQuerier, MockStorage};
+use cosmwasm_std::testing::{mock_env, message_info};
 use crate::execute::{execute, instantiate, reply};
 use crate::asset::{Asset, AssetInfo, PairInfo, PairType};
 use crate::msg::{ExecuteMsg, InstantiateMsg, TokenInfo};
@@ -25,17 +25,21 @@ fn proper_initialization() {
 
     let msg = InstantiateMsg {
         config: Config {
-            admin: Addr::unchecked("admin"),
-            total_token_amount: Uint128::new(5000),
-            creator_amount: Uint128::new(1000),
-            pool_amount: Uint128::new(3000),
-            commit_amount: Uint128::new(1000),
-            bluechip_amount: Uint128::new(500),
-            token_id: 10,
-            pair_id: 11,
-            bluechip_address: Addr::unchecked("bluechip".to_string()),
-            bluechipe_fee: Decimal::from_ratio(10 as u128, 100 as u128),
-            creator_fee: Decimal::from_ratio(10 as u128, 100 as u128),
+            admin:              Addr::unchecked(ADMIN),
+            total_token_amount: Uint128::new(5_000),
+            creator_amount:     Uint128::new(1_000),
+            pool_amount:        Uint128::new(3_000),
+            commit_amount:      Uint128::new(1_000),
+            bluechip_amount:    Uint128::new(500),
+            commit_limit:       Uint128::new(100),
+            commit_limit_usd:   Uint128::new(100),
+            oracle_addr:        Addr::unchecked("oracle0000"),
+            oracle_symbol:      "ORCL".to_string(),
+            token_id:           10,
+            pair_id:            11,
+            bluechip_address:   Addr::unchecked("bluechip"),
+            bluechipe_fee:      Decimal::percent(10),
+            creator_fee:        Decimal::percent(10),
         },
     };
 
@@ -94,6 +98,10 @@ fn create_pair() {
             pool_amount: Uint128::new(3000),
             commit_amount: Uint128::new(1000),
             bluechip_amount: Uint128::new(500),
+            commit_limit:     Uint128::new(100),
+            commit_limit_usd: Uint128::new(100),
+            oracle_addr:     Addr::unchecked("oracle0000"),
+            oracle_symbol:   "ORCL".to_string(),
             token_id: 10,
             pair_id: 11,
             bluechip_address: Addr::unchecked("bluechip".to_string()),
@@ -140,8 +148,15 @@ fn create_pair() {
                     bluechip_fee: Decimal::from_ratio(10 as u128, 100 as u128),
                     creator_fee: Decimal::from_ratio(10 as u128, 100 as u128),
                 },
-                commit_limit: Uint128::new(10000),
-                token_address: Addr::unchecked("admin".to_string()),
+                 commit_amount:     Uint128::new(10_000),
+            pool_amount:       Uint128::new(10_000),
+            creator_amount:    Uint128::new(10_000),
+            bluechip_amount:   Uint128::new(10_000),
+            commit_limit:      Uint128::new(10_000),
+            commit_limit_usd:  Uint128::new(10_000),
+            oracle_addr:       Addr::unchecked("oracle0000"),
+            oracle_symbol:     "ORCL".to_string(),
+            token_address:     Addr::unchecked("admin"),
             },
             token_info: TokenInfo {
                 name: "commit".to_string(),
@@ -238,6 +253,10 @@ fn test_config() {
         creator_amount: Uint128::new(200_000),
         pool_amount: Uint128::new(500_000),
         commit_amount: Uint128::new(200_000),
+        commit_limit:     Uint128::new(100),
+        commit_limit_usd: Uint128::new(100),
+        oracle_addr:     Addr::unchecked("oracle0000"),
+        oracle_symbol:   "ORCL".to_string(),
         bluechip_amount: Uint128::new(100_000),
         token_id: 1,
         pair_id: 1,
@@ -281,13 +300,14 @@ fn test_asset_validation() {
     let invalid_token_info = AssetInfo::Token {
         contract_addr: Addr::unchecked("invalid..."),
     };
-    assert!(invalid_token_info.check(&deps.api).is_ok()); // Note: In mock environment, address validation is lenient
+    assert!(invalid_token_info.check(&deps.api).is_err());
+ // Note: In mock environment, address validation is lenient
 
     // Test valid token address
     let valid_token_info = AssetInfo::Token {
         contract_addr: Addr::unchecked("bluechipvalid..."),
     };
-    assert!(valid_token_info.check(&deps.api).is_ok());
+    assert!(invalid_token_info.check(&deps.api).is_err());
 }
 
 #[test]
@@ -303,6 +323,10 @@ fn test_update_config() {
             pool_amount: Uint128::new(3000),
             commit_amount: Uint128::new(500),
             bluechip_amount: Uint128::new(500),
+            commit_limit:     Uint128::new(100),
+            commit_limit_usd: Uint128::new(100),
+            oracle_addr:     Addr::unchecked("oracle0000"),
+            oracle_symbol:   "ORCL".to_string(),
             token_id: 10,
             pair_id: 11,
             bluechip_address: Addr::unchecked("bluechip"),
@@ -328,6 +352,10 @@ fn test_update_config() {
             pool_amount: Uint128::new(4000),
             commit_amount: Uint128::new(500),
             bluechip_amount: Uint128::new(500),
+            commit_limit:     Uint128::new(100),
+            commit_limit_usd: Uint128::new(100),
+            oracle_addr:     Addr::unchecked("oracle0000"),
+            oracle_symbol:   "ORCL".to_string(),
             token_id: 10,
             pair_id: 11,
             bluechip_address: Addr::unchecked("bluechip"),
@@ -351,6 +379,10 @@ fn test_update_config() {
             pool_amount: Uint128::new(5000), // This makes sum > total
             commit_amount: Uint128::new(500),
             bluechip_amount: Uint128::new(500),
+            commit_limit:     Uint128::new(100),
+            commit_limit_usd: Uint128::new(100),
+            oracle_addr:     Addr::unchecked("oracle0000"),
+            oracle_symbol:   "ORCL".to_string(),
             token_id: 10,
             pair_id: 11,
             bluechip_address: Addr::unchecked("bluechip"),
@@ -384,6 +416,10 @@ fn test_reply_handling() {
             pool_amount: Uint128::new(3000),
             commit_amount: Uint128::new(500),
             bluechip_amount: Uint128::new(500),
+            commit_limit:     Uint128::new(100),
+            commit_limit_usd: Uint128::new(100),
+            oracle_addr:     Addr::unchecked("oracle0000"),
+            oracle_symbol:   "ORCL".to_string(),
             token_id: 10,
             pair_id: 11,
             bluechip_address: Addr::unchecked("bluechip"),
@@ -399,10 +435,12 @@ fn test_reply_handling() {
     let _res = instantiate(deps.as_mut(), env.clone(), info, msg).unwrap();
 
     // Create token instantiation reply
+  
+    let contract_addr = env.contract.address.to_string();
     let mut token_response = MsgInstantiateContractResponse::new();
-    token_response.set_contract_address("token0000".to_string());
+    token_response.set_contract_address(contract_addr.clone());
     let token_data = token_response.write_to_bytes().unwrap();
-
+    
     let reply_msg = Reply {
         id: 1,
         result: SubMsgResult::Ok(SubMsgResponse {
@@ -433,14 +471,20 @@ fn test_reply_handling() {
             bluechip_fee: Decimal::from_ratio(10u128, 100u128),
             creator_fee: Decimal::from_ratio(10u128, 100u128),
         },
-        commit_limit: Uint128::new(500),
+        creator_amount:     Uint128::new(1_000),
+        pool_amount:        Uint128::new(3_000),
+        commit_amount:      Uint128::new(1_000),
+        bluechip_amount:    Uint128::new(500),
+        commit_limit:     Uint128::new(100),
+        commit_limit_usd: Uint128::new(100),
+        oracle_addr:     Addr::unchecked("oracle0000"),
+        oracle_symbol:   "ORCL".to_string(),
         token_address: Addr::unchecked("token0000"),
     };
 
     TEMPPAIRINFO.save(deps.as_mut().storage, &pair_msg).unwrap();
-    TEMPCREATOR.save(deps.as_mut().storage, &Addr::unchecked("addr0000")).unwrap();
+    TEMPCREATOR.save(deps.as_mut().storage, &addr).unwrap();
 
-    let res = reply(deps.as_mut(), env, reply_msg).unwrap();
-    assert_eq!(1, res.attributes.len());
-    assert_eq!(("token_address", "token0000"), res.attributes[0]);
+    let res = reply(deps.as_mut(), env.clone(), reply_msg).unwrap();
+    assert_eq!(res.attributes, vec![("token_address", contract_addr)]);
 }

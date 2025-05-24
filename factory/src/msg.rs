@@ -1,5 +1,4 @@
 use cosmwasm_schema::cw_serde;
-use cosmwasm_std::Addr;
 use cw20::{Cw20Coin, MinterResponse};
 use cw20_base::msg::InstantiateMarketingInfo;
 
