@@ -119,7 +119,7 @@ echo "✅ Pool deployed: $POOL_ADDR"
 # 4. Initial Commit & Event-Driven Hook Test
 # ─────────────────────────────────────────────────────────────────────────────
 echo "⏳ Commit #1 (below threshold)…"
-$CLIENT tx wasm execute "$POOL_ADDR" '{"commit":{"asset":{"native_token":{"denom":"ubluechip"},"amount":"8000"},"amount":"8000"}}' \
+$CLIENT tx wasm execute "$POOL_ADDR" '{"commit":{"asset":{"native_token":{"denom":"ubluechip"},"amount":"7000"},"amount":"7000"}}' \
   --from="$KEY1" --chain-id="$CHAIN_ID" --node="$NODE" --gas auto --gas-adjustment 1.3 --broadcast-mode block -y
 
 echo "✅ Commit #1 succeeded"
@@ -145,7 +145,7 @@ if [ $SWAP_EXIT -ne 0 ]; then echo "✅ Swap blocked before threshold"; else ech
 echo "⏳ Commits #2 & #3 to cross threshold…"
 for n in 2 3; do
   echo "  Commit #$n…"
-  $CLIENT tx wasm execute "$POOL_ADDR" '{"commit":{"asset":{"native_token":{"denom":"ubluechip"},"amount":"8000"},"amount":"8000"}}' \
+  $CLIENT tx wasm execute "$POOL_ADDR" '{"commit":{"asset":{"native_token":{"denom":"ubluechip"},"amount":"9000"},"amount":"9000"}}' \
     --from="$KEY2" --chain-id="$CHAIN_ID" --node="$NODE" --gas auto --gas-adjustment 1.3 --broadcast-mode block -y
   echo "  ✅ Commit #$n done"
 done
