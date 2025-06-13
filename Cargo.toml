@@ -35,7 +35,8 @@ thiserror = "2.0.2"
 integer-sqrt = "0.1"
 protobuf = { version = "2", features = ["with-bytes"] }
 proptest = "1.0"
-
+cw721 = "0.18.0"
+cw721-base = "0.18.0" 
 cw20 = "2.0.0"
 cw20-base = { version = "2.0.0", features = ["library"] }
 easy-addr = { path = "packages/easy-addr" }

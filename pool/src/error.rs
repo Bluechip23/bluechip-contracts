@@ -22,7 +22,16 @@ pub enum ContractError {
     InvalidFee {},                          
 
     #[error("belief_price cannot be zero")]
-    InvalidBeliefPrice {},   
+    InvalidBeliefPrice {},  
+
+    #[error("invalid amount of tokens")]
+    InvalidAmount {},
+
+    #[error("invalid bluechip amount")]
+    InvalidNativeAmount {},
+
+    #[error("the pool is missing needed liquidity to carry out transaction")]
+    InsufficientLiquidity {},
 
     #[error("CW20 tokens can be swapped via Cw20::Send message only")]
     Cw20DirectSwap {},

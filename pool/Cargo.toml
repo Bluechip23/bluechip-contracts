@@ -37,6 +37,8 @@ cosmwasm-std = { workspace = true }
 cosmwasm-storage = { workspace = true }
 cw-storage-plus = { workspace = true }
 thiserror = { workspace = true }
+cw721 = { workspace = true }
+cw721-base = { workspace = true }
 protobuf = { workspace = true }
 cw-utils = { workspace = true }
 

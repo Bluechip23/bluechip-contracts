@@ -37,6 +37,11 @@ pub struct Config {
     pub available_payment: Vec<Uint128>,
 }
 
+#[cw_serde]
+pub struct TokenMetadata {
+    pub name: Option<String>,
+    pub description: Option<String>,
+}
 
 /// ## Description
 /// Stores the config struct at the given key
@@ -48,14 +53,28 @@ pub const NATIVE_RAISED: Item<Uint128> = Item::new("native_raised");
 pub const THRESHOLD_HIT: Item<bool>    = Item::new("threshold_hit");
 pub const COMMIT_LEDGER: cw_storage_plus::Map<&Addr, Uint128> = cw_storage_plus::Map::new("commit_usd");
 pub const SUB_INFO: Map<&Addr, Subscription> = Map::new("sub_info");
-
+pub const NEXT_POSITION_ID: Item<u64> = Item::new("next_position_id");
+pub const POSITIONS: Map<&str, Position> = Map::new("positions");
+pub const POOLS: Map<u64, Pool> = Map::new("pools");
 
 #[cw_serde]
 pub struct Subscription {
     pub expires: Timestamp,   
     pub total_paid: Uint128,  
 }
+#[cw_serde]
 /// This structure stores the main parameters for an BETFI pair
+pub struct Pool {
+    pub pool_id: u64,
+    pub reserve0: Uint128,  // native token
+    pub reserve1: Uint128,  // cw20 token
+    pub total_liquidity: Uint128,
+    // Global fee trackers (fees per unit of liquidity)
+    pub fee_growth_global_0: Uint128,
+    pub fee_growth_global_1: Uint128,
+    pub total_fees_collected_0: Uint128,
+    pub total_fees_collected_1: Uint128,
+}
 #[cw_serde]
 pub struct PairInfo {
     /// Asset information for the two assets in the pool
@@ -66,6 +85,19 @@ pub struct PairInfo {
     pub liquidity_token: Addr,
     /// The pool type (xyk, stableswap etc) available in [`PairType`]
     pub pair_type: PairType,
+}
+
+#[cw_serde]
+pub struct Position {
+    pub pool_id: u64,
+    pub liquidity: Decimal,
+    pub owner: Addr,
+    // optionally: fee‐growth snapshots, etc.
+    pub fee_growth_inside_0_last: Uint128,
+    pub fee_growth_inside_1_last: Uint128,
+    // Timestamps for better tracking
+    pub created_at: u64,
+    pub last_fee_collection: u64,
 }
 
 impl PairInfo {

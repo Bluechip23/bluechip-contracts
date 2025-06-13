@@ -67,6 +67,36 @@ pub enum ExecuteMsg {
         asset: Asset,
         amount: Uint128,
     },
+     DepositLiquidity {
+        pool_id: u64,
+        amount0: Uint128,
+        amount1: Uint128,
+    },
+    /// Collect fees owed to a given position
+    CollectFees { 
+        position_id: String 
+    },
+    AddToPosition {
+        position_id: String,
+        amount0: Uint128,  // native token amount  
+        amount1: Uint128,  // cw20 token amount
+    },
+    RemovePartialLiquidity {
+        position_id: String,
+        liquidity_to_remove: Decimal,
+    },
+     RemovePartialLiquidityByPercent {
+        position_id: String,
+        percentage: u64,  // 1-99
+    },
+    RemoveLiquidity {
+        position_id: String,
+    },
+    /// Withdraw (and eventually burn) part or all of the liquidity
+    WithdrawPosition { 
+        position_id: String, 
+        liquidity: Uint128 
+    },
 }
 
 /// This structure describes a CW20 hook message.
@@ -77,6 +107,14 @@ pub enum Cw20HookMsg {
         belief_price: Option<Decimal>,
         max_spread: Option<Decimal>,
         to: Option<String>,
+    },
+     DepositLiquidity {
+        pool_id: u64,
+        amount0: Uint128,  // native amount (should be sent with the message)
+    },
+    AddToPosition {
+        position_id: String,
+        amount0: Uint128,  // native amount (should be sent with the message)
     },
 }
 
