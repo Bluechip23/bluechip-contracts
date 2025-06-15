@@ -9,10 +9,10 @@ use crate::response::MsgInstantiateContractResponse;
 use cosmwasm_std::testing::{message_info, mock_env, MOCK_CONTRACT_ADDR};
 use cosmwasm_std::{
      Addr, Binary, Coin, Decimal, DepsMut, Fraction, Reply,
-    StdError, SubMsgResponse, SubMsgResult, Uint128,
+    StdError, SubMsgResponse, SubMsgResult, Uint128, Env,
 };
 use protobuf::Message;
-use crate::state::{THRESHOLD_HIT,COMMITSTATUS};
+use crate::state::{THRESHOLD_HIT,COMMITSTATUS, POSITIONS, NEXT_POSITION_ID, POOLS, Position, Pool};
 #[allow(deprecated)]
 fn store_liquidity_token(deps: DepsMut, msg_id: u64, contract_addr: String) {
     let data = MsgInstantiateContractResponse {
@@ -970,4 +970,555 @@ fn test_coins_ext() {
         err,
         StdError::generic_err("Supplied coins contain invalid that is not in the input asset vector")
     );
+}
+
+// Add these imports to your existing test file
+
+// Test helper function for setting up a pool after threshold
+fn setup_pool_post_threshold(deps: DepsMut) -> (Env, Addr) {
+    // Set threshold as hit so liquidity operations are allowed
+    THRESHOLD_HIT.save(deps.storage, &true).unwrap();
+    
+    // Create a simple pool for testing
+    let pool = Pool {
+        pool_id: 1,
+        reserve0: Uint128::new(1000000), // 1M native tokens
+        reserve1: Uint128::new(2000000), // 2M CW20 tokens
+        total_liquidity: Uint128::zero(),
+        fee_growth_global_0: Uint128::zero(),
+        fee_growth_global_1: Uint128::zero(),
+        total_fees_collected_0: Uint128::zero(),
+        total_fees_collected_1: Uint128::zero(),
+    };
+    POOLS.save(deps.storage, 1, &pool).unwrap();
+    
+    (mock_env(), Addr::unchecked("user"))
+}
+
+#[test]
+fn test_deposit_liquidity_creates_nft() {
+    let mut deps = mock_dependencies(&[
+        Coin {
+            denom: "ubluechip".to_string(),
+            amount: Uint128::new(1000000u128),
+        }
+    ]);
+
+    // Standard setup
+    let msg = InstantiateMsg {
+        factory_addr: Addr::unchecked("factory"),
+        asset_infos: [
+            AssetInfo::NativeToken { denom: "ubluechip".to_string() },
+            AssetInfo::Token { contract_addr: Addr::unchecked(MOCK_CONTRACT_ADDR) },
+        ],
+        token_code_id: 10u64,
+        init_params: None,
+        fee_info: FeeInfo {
+            bluechip_address: Addr::unchecked("bluechip"),
+            creator_address: Addr::unchecked("creator"),
+            bluechip_fee: Decimal::from_ratio(10u128, 100u128),
+            creator_fee: Decimal::from_ratio(10u128, 100u128),
+        },
+        commit_limit: Uint128::new(5000),
+        commit_limit_usd: Uint128::new(5000),
+        commit_amount: Uint128::new(5000),
+        pool_amount: Uint128::new(5000),
+        oracle_addr: Addr::unchecked("oracle0000"),
+        oracle_symbol: "ORCL".to_string(),
+        creator_amount: Uint128::new(5000),
+        bluechip_amount: Uint128::new(5000),
+        token_address: Addr::unchecked("token_address"),
+        available_payment: vec![Uint128::new(100000)],
+    };
+
+      let env = mock_env();
+    let info = message_info(&Addr::unchecked("addr0000"), &[]);
+    instantiate(deps.as_mut(), env.clone(), info, msg).unwrap();
+    store_liquidity_token(deps.as_mut(), 42, "liquidity0000".to_string());
+
+    // *** FIX: Set up threshold BEFORE trying to deposit ***
+    THRESHOLD_HIT.save(deps.as_mut().storage, &true).unwrap();
+    COMMITSTATUS.save(deps.as_mut().storage, &Uint128::new(5000)).unwrap(); // Match commit_limit_usd
+    
+    // Create pool
+    let pool = Pool {
+        pool_id: 1,
+        reserve0: Uint128::new(1000000),
+        reserve1: Uint128::new(2000000), 
+        total_liquidity: Uint128::zero(),
+        fee_growth_global_0: Uint128::zero(),
+        fee_growth_global_1: Uint128::zero(),
+        total_fees_collected_0: Uint128::zero(),
+        total_fees_collected_1: Uint128::zero(),
+    };
+    POOLS.save(deps.as_mut().storage, 1, &pool).unwrap();
+
+    // Now test deposit liquidity
+    let deposit_msg = ExecuteMsg::DepositLiquidity {
+        pool_id: 1,
+        amount0: Uint128::new(100000),
+        amount1: Uint128::new(200000),
+    };
+
+    let user = Addr::unchecked("user");
+    let info = message_info(
+        &user,
+        &[Coin {
+            denom: "ubluechip".to_string(),
+            amount: Uint128::new(100000),
+        }]
+    );
+
+    let res = execute(deps.as_mut(), env.clone(), info, deposit_msg).unwrap();
+
+    // Verify response
+    assert!(!res.messages.is_empty()); // Should have NFT mint message
+    assert_eq!(res.attributes[0], ("action", "deposit_liquidity"));
+    assert_eq!(res.attributes[1], ("position_id", "1"));
+    assert_eq!(res.attributes[2], ("depositor", user.to_string()));
+
+    // Verify position was created
+    let position = POSITIONS.load(&deps.storage, "1").unwrap();
+    assert_eq!(position.pool_id, 1);
+    assert_eq!(position.owner, user);
+    assert!(!position.liquidity.is_zero());
+
+    // Verify position ID counter incremented
+    let next_id = NEXT_POSITION_ID.load(&deps.storage).unwrap();
+    assert_eq!(next_id, 1);
+}
+
+#[test]
+fn test_collect_fees() {
+    let mut deps = mock_dependencies(&[]);
+
+    // Setup (same as above test)
+    // ... instantiate and setup code ...
+
+    // Create a position first
+    let position = Position {
+        pool_id: 1,
+        liquidity: Decimal::from_ratio(100000u128, 1u128),
+        owner: Addr::unchecked("user"),
+        fee_growth_inside_0_last: Uint128::zero(),
+        fee_growth_inside_1_last: Uint128::zero(),
+        created_at: 12345,
+        last_fee_collection: 12345,
+    };
+    POSITIONS.save(deps.as_mut().storage, "1", &position).unwrap();
+
+    // Create pool with some accumulated fees
+    let pool = Pool {
+        pool_id: 1,
+        reserve0: Uint128::new(1000000),
+        reserve1: Uint128::new(2000000),
+        total_liquidity: Uint128::new(100000),
+        fee_growth_global_0: Uint128::new(1000), // Some fees accumulated
+        fee_growth_global_1: Uint128::new(2000),
+        total_fees_collected_0: Uint128::new(500),
+        total_fees_collected_1: Uint128::new(1000),
+    };
+    POOLS.save(deps.as_mut().storage, 1, &pool).unwrap();
+
+    // Test collect fees
+    let collect_msg = ExecuteMsg::CollectFees {
+        position_id: "1".to_string(),
+    };
+
+    let info = message_info(&Addr::unchecked("user"), &[]);
+    let res = execute(deps.as_mut(), mock_env(), info, collect_msg).unwrap();
+
+    // Verify response
+    assert_eq!(res.attributes[0], ("action", "collect_fees"));
+    assert_eq!(res.attributes[1], ("position_id", "1"));
+
+    // Should have messages sending fees to user
+    assert!(!res.messages.is_empty());
+
+    // Verify position fee tracking was updated
+    let updated_position = POSITIONS.load(&deps.storage, "1").unwrap();
+    assert_eq!(updated_position.fee_growth_inside_0_last, pool.fee_growth_global_0);
+    assert_eq!(updated_position.fee_growth_inside_1_last, pool.fee_growth_global_1);
+}
+
+#[test]
+fn test_add_to_position() {
+    let mut deps = mock_dependencies(&[
+        Coin {
+            denom: "ubluechip".to_string(),
+            amount: Uint128::new(50000u128),
+        }
+    ]);
+
+    // *** ADD THIS: Complete instantiation setup ***
+    let msg = InstantiateMsg {
+        factory_addr: Addr::unchecked("factory"),
+        asset_infos: [
+            AssetInfo::NativeToken { denom: "ubluechip".to_string() },
+            AssetInfo::Token { contract_addr: Addr::unchecked(MOCK_CONTRACT_ADDR) },
+        ],
+        token_code_id: 10u64,
+        init_params: None,
+        fee_info: FeeInfo {
+            bluechip_address: Addr::unchecked("bluechip"),
+            creator_address: Addr::unchecked("creator"),
+            bluechip_fee: Decimal::from_ratio(10u128, 100u128),
+            creator_fee: Decimal::from_ratio(10u128, 100u128),
+        },
+        commit_limit: Uint128::new(5000),
+        commit_limit_usd: Uint128::new(5000),
+        commit_amount: Uint128::new(5000),
+        pool_amount: Uint128::new(5000),
+        oracle_addr: Addr::unchecked("oracle0000"),
+        oracle_symbol: "ORCL".to_string(),
+        creator_amount: Uint128::new(5000),
+        bluechip_amount: Uint128::new(5000),
+        token_address: Addr::unchecked("token_address"),
+        available_payment: vec![Uint128::new(100000)],
+    };
+
+    let env = mock_env();
+    let info = message_info(&Addr::unchecked("addr0000"), &[]);
+    instantiate(deps.as_mut(), env.clone(), info, msg).unwrap();
+    store_liquidity_token(deps.as_mut(), 42, "liquidity0000".to_string());
+
+    // Set threshold and create pool
+    THRESHOLD_HIT.save(deps.as_mut().storage, &true).unwrap();
+    COMMITSTATUS.save(deps.as_mut().storage, &Uint128::new(5000)).unwrap();
+    
+    let pool = Pool {
+        pool_id: 1,
+        reserve0: Uint128::new(1000000),
+        reserve1: Uint128::new(2000000),
+        total_liquidity: Uint128::new(100000), // Should have some existing liquidity
+        fee_growth_global_0: Uint128::zero(),
+        fee_growth_global_1: Uint128::zero(),
+        total_fees_collected_0: Uint128::zero(),
+        total_fees_collected_1: Uint128::zero(),
+    };
+    POOLS.save(deps.as_mut().storage, 1, &pool).unwrap();
+
+    // Now create the position
+    let initial_liquidity = Decimal::from_ratio(100000u128, 1u128);
+    let position = Position {
+        pool_id: 1,
+        liquidity: initial_liquidity,
+        owner: Addr::unchecked("user"),
+        fee_growth_inside_0_last: Uint128::zero(),
+        fee_growth_inside_1_last: Uint128::zero(),
+        created_at: 12345,
+        last_fee_collection: 12345,
+    };
+    POSITIONS.save(deps.as_mut().storage, "1", &position).unwrap();
+
+    // Test adding to position
+    let add_msg = ExecuteMsg::AddToPosition {
+        position_id: "1".to_string(),
+        amount0: Uint128::new(50000), // Add 50k more native
+        amount1: Uint128::new(100000), // Add 100k more CW20
+    };
+
+    let info = message_info(
+        &Addr::unchecked("user"),
+        &[Coin {
+            denom: "ubluechip".to_string(),
+            amount: Uint128::new(50000),
+        }]
+    );
+
+    let res = execute(deps.as_mut(), mock_env(), info, add_msg).unwrap();
+
+    // Verify response
+    assert_eq!(res.attributes[0], ("action", "add_to_position"));
+    assert_eq!(res.attributes[1], ("position_id", "1"));
+
+    // Verify position liquidity increased
+    let updated_position = POSITIONS.load(&deps.storage, "1").unwrap();
+    assert!(updated_position.liquidity > initial_liquidity);
+}
+
+#[test]
+fn test_remove_partial_liquidity() {
+    let mut deps = mock_dependencies(&[]);
+let msg = InstantiateMsg {
+        factory_addr: Addr::unchecked("factory"),
+        asset_infos: [
+            AssetInfo::NativeToken { denom: "ubluechip".to_string() },
+            AssetInfo::Token { contract_addr: Addr::unchecked(MOCK_CONTRACT_ADDR) },
+        ],
+        token_code_id: 10u64,
+        init_params: None,
+        fee_info: FeeInfo {
+            bluechip_address: Addr::unchecked("bluechip"),
+            creator_address: Addr::unchecked("creator"),
+            bluechip_fee: Decimal::from_ratio(10u128, 100u128),
+            creator_fee: Decimal::from_ratio(10u128, 100u128),
+        },
+        commit_limit: Uint128::new(5000),
+        commit_limit_usd: Uint128::new(5000),
+        commit_amount: Uint128::new(5000),
+        pool_amount: Uint128::new(5000),
+        oracle_addr: Addr::unchecked("oracle0000"),
+        oracle_symbol: "ORCL".to_string(),
+        creator_amount: Uint128::new(5000),
+        bluechip_amount: Uint128::new(5000),
+        token_address: Addr::unchecked("token_address"),
+        available_payment: vec![Uint128::new(100000)],
+    };
+     let env = mock_env();
+    let info = message_info(&Addr::unchecked("addr0000"), &[]);
+    instantiate(deps.as_mut(), env.clone(), info, msg).unwrap();
+    store_liquidity_token(deps.as_mut(), 42, "liquidity0000".to_string());
+    THRESHOLD_HIT.save(deps.as_mut().storage, &true).unwrap();
+    // Setup and create position
+    let initial_liquidity = Decimal::from_ratio(100u128, 1u128);
+    let position = Position {
+        pool_id: 1,
+        liquidity: initial_liquidity,
+        owner: Addr::unchecked("user"),
+        fee_growth_inside_0_last: Uint128::zero(),
+        fee_growth_inside_1_last: Uint128::zero(),
+        created_at: 12345,
+        last_fee_collection: 12345,
+    };
+    POSITIONS.save(deps.as_mut().storage, "1", &position).unwrap();
+
+    // Create pool
+     let pool = Pool {
+        pool_id: 1,
+        reserve0: Uint128::new(1000u128),   // Much smaller
+        reserve1: Uint128::new(2000u128),   // Much smaller
+        total_liquidity: Uint128::from(initial_liquidity.atomics()), // This is huge, so let's match it
+        fee_growth_global_0: Uint128::zero(),
+        fee_growth_global_1: Uint128::zero(),
+        total_fees_collected_0: Uint128::zero(),
+        total_fees_collected_1: Uint128::zero(),
+    };
+    POOLS.save(deps.as_mut().storage, 1, &pool).unwrap();
+
+    // Test partial removal (50%)
+    let remove_msg = ExecuteMsg::RemovePartialLiquidityByPercent {
+        position_id: "1".to_string(),
+        percentage: 50,
+    };
+
+    let info = message_info(&Addr::unchecked("user"), &[]);
+    let res = execute(deps.as_mut(), mock_env(), info, remove_msg).unwrap();
+
+    // Verify response
+    assert_eq!(res.attributes[0], ("action", "remove_partial_liquidity"));
+    assert_eq!(res.attributes[1], ("position_id", "1"));
+
+    // Should have messages sending tokens to user
+    assert!(!res.messages.is_empty());
+
+    // Verify position still exists but with reduced liquidity
+    let updated_position = POSITIONS.load(&deps.storage, "1").unwrap();
+    assert!(updated_position.liquidity < initial_liquidity);
+    assert!(!updated_position.liquidity.is_zero());
+
+    // Position should still exist (NFT not burned)
+    assert!(POSITIONS.has(&deps.storage, "1"));
+}
+
+#[test]
+fn test_remove_full_liquidity_burns_nft() {
+    let mut deps = mock_dependencies(&[]);
+ let msg = InstantiateMsg {
+        factory_addr: Addr::unchecked("factory"),
+        asset_infos: [
+            AssetInfo::NativeToken { denom: "ubluechip".to_string() },
+            AssetInfo::Token { contract_addr: Addr::unchecked(MOCK_CONTRACT_ADDR) },
+        ],
+        token_code_id: 10u64,
+        init_params: None,
+        fee_info: FeeInfo {
+            bluechip_address: Addr::unchecked("bluechip"),
+            creator_address: Addr::unchecked("creator"),
+            bluechip_fee: Decimal::from_ratio(10u128, 100u128),
+            creator_fee: Decimal::from_ratio(10u128, 100u128),
+        },
+        commit_limit: Uint128::new(5000),
+        commit_limit_usd: Uint128::new(5000),
+        commit_amount: Uint128::new(5000),
+        pool_amount: Uint128::new(5000),
+        oracle_addr: Addr::unchecked("oracle0000"),
+        oracle_symbol: "ORCL".to_string(),
+        creator_amount: Uint128::new(5000),
+        bluechip_amount: Uint128::new(5000),
+        token_address: Addr::unchecked("token_address"),
+        available_payment: vec![Uint128::new(100000)],
+    };
+
+     let env = mock_env();
+    let info = message_info(&Addr::unchecked("addr0000"), &[]);
+    instantiate(deps.as_mut(), env.clone(), info, msg).unwrap();
+    store_liquidity_token(deps.as_mut(), 42, "liquidity0000".to_string());
+    THRESHOLD_HIT.save(deps.as_mut().storage, &true).unwrap();
+
+    // *** FIX: Make total_liquidity match the Decimal's atomics value ***
+    let position_liquidity = Decimal::from_ratio(50u128, 1u128);
+    let pool = Pool {
+        pool_id: 1,
+        reserve0: Uint128::new(100000u128), 
+        reserve1: Uint128::new(200000u128), 
+        total_liquidity: Uint128::from(position_liquidity.atomics()), 
+        fee_growth_global_0: Uint128::zero(),
+        fee_growth_global_1: Uint128::zero(),
+        total_fees_collected_0: Uint128::zero(),
+        total_fees_collected_1: Uint128::zero(),
+    };
+    POOLS.save(deps.as_mut().storage, 1, &pool).unwrap();
+
+    let position = Position {
+        pool_id: 1,
+        liquidity: position_liquidity,
+        owner: Addr::unchecked("user"),
+        fee_growth_inside_0_last: Uint128::zero(),
+        fee_growth_inside_1_last: Uint128::zero(),
+        created_at: 12345,
+        last_fee_collection: 12345,
+    };
+    POSITIONS.save(deps.as_mut().storage, "1", &position).unwrap();
+
+    // Test full removal
+    let remove_msg = ExecuteMsg::RemoveLiquidity {
+        position_id: "1".to_string(),
+    };
+
+    let info = message_info(&Addr::unchecked("user"), &[]);
+    let res = execute(deps.as_mut(), env, info, remove_msg).unwrap();
+
+    // Verify response
+    assert_eq!(res.attributes[0], ("action", "remove_liquidity"));
+    assert_eq!(res.attributes[1], ("position_id", "1"));
+
+    // Should have multiple messages: token transfers + NFT burn
+    assert!(res.messages.len() >= 2);
+
+    // Verify position was deleted (NFT burned)
+    assert!(!POSITIONS.has(&deps.storage, "1"));
+}
+
+#[test]
+fn test_unauthorized_access() {
+    let mut deps = mock_dependencies(&[]);
+
+    // Create position owned by "user"
+    let position = Position {
+        pool_id: 1,
+        liquidity: Decimal::from_ratio(100000u128, 1u128),
+        owner: Addr::unchecked("user"),
+        fee_growth_inside_0_last: Uint128::zero(),
+        fee_growth_inside_1_last: Uint128::zero(),
+        created_at: 12345,
+        last_fee_collection: 12345,
+    };
+    POSITIONS.save(deps.as_mut().storage, "1", &position).unwrap();
+
+    // Try to collect fees as different user
+    let collect_msg = ExecuteMsg::CollectFees {
+        position_id: "1".to_string(),
+    };
+
+    let info = message_info(&Addr::unchecked("attacker"), &[]);
+    let err = execute(deps.as_mut(), mock_env(), info, collect_msg).unwrap_err();
+    
+    assert_eq!(err, ContractError::Unauthorized {});
+}
+
+#[test]
+fn test_liquidity_deposit_before_threshold() {
+    let mut deps = mock_dependencies(&[
+        Coin {
+            denom: "ubluechip".to_string(),
+            amount: Uint128::new(100000u128),
+        }
+    ]);
+
+    // Standard setup but DON'T cross threshold
+    let msg = InstantiateMsg {
+        factory_addr: Addr::unchecked("factory"),
+        asset_infos: [
+            AssetInfo::NativeToken { denom: "ubluechip".to_string() },
+            AssetInfo::Token { contract_addr: Addr::unchecked(MOCK_CONTRACT_ADDR) },
+        ],
+        token_code_id: 10u64,
+        init_params: None,
+        fee_info: FeeInfo {
+            bluechip_address: Addr::unchecked("bluechip"),
+            creator_address: Addr::unchecked("creator"),
+            bluechip_fee: Decimal::from_ratio(10u128, 100u128),
+            creator_fee: Decimal::from_ratio(10u128, 100u128),
+        },
+        commit_limit: Uint128::new(5000),
+        commit_limit_usd: Uint128::new(5000),
+        commit_amount: Uint128::new(5000),
+        pool_amount: Uint128::new(5000),
+        oracle_addr: Addr::unchecked("oracle0000"),
+        oracle_symbol: "ORCL".to_string(),
+        creator_amount: Uint128::new(5000),
+        bluechip_amount: Uint128::new(5000),
+        token_address: Addr::unchecked("token_address"),
+        available_payment: vec![Uint128::new(100000)],
+    };
+
+    let env = mock_env();
+    let info = message_info(&Addr::unchecked("addr0000"), &[]);
+    instantiate(deps.as_mut(), env.clone(), info, msg).unwrap();
+
+    // Try to deposit liquidity before threshold (should fail)
+    let deposit_msg = ExecuteMsg::DepositLiquidity {
+        pool_id: 1,
+        amount0: Uint128::new(100000),
+        amount1: Uint128::new(200000),
+    };
+
+    let info = message_info(
+        &Addr::unchecked("user"),
+        &[Coin {
+            denom: "ubluechip".to_string(),
+            amount: Uint128::new(100000),
+        }]
+    );
+
+    let err = execute(deps.as_mut(), env, info, deposit_msg).unwrap_err();
+    assert_eq!(err, ContractError::ShortOfThreshold {});
+}
+
+#[test]
+fn test_invalid_partial_removal_amounts() {
+    let mut deps = mock_dependencies(&[]);
+
+    // Create position
+    let position = Position {
+        pool_id: 1,
+        liquidity: Decimal::from_ratio(100000u128, 1u128),
+        owner: Addr::unchecked("user"),
+        fee_growth_inside_0_last: Uint128::zero(),
+        fee_growth_inside_1_last: Uint128::zero(),
+        created_at: 12345,
+        last_fee_collection: 12345,
+    };
+    POSITIONS.save(deps.as_mut().storage, "1", &position).unwrap();
+
+    // Test 0% removal (should fail)
+    let remove_msg = ExecuteMsg::RemovePartialLiquidityByPercent {
+        position_id: "1".to_string(),
+        percentage: 0,
+    };
+
+    let info = message_info(&Addr::unchecked("user"), &[]);
+    let err = execute(deps.as_mut(), mock_env(), info, remove_msg).unwrap_err();
+    assert_eq!(err, ContractError::InvalidAmount {});
+
+    // Test 100% removal (should fail - use full removal instead)
+    let remove_msg = ExecuteMsg::RemovePartialLiquidityByPercent {
+        position_id: "1".to_string(),
+        percentage: 100,
+    };
+
+    let info = message_info(&Addr::unchecked("user"), &[]);
+    let err = execute(deps.as_mut(), mock_env(), info, remove_msg).unwrap_err();
+    assert_eq!(err, ContractError::InvalidAmount {});
 }
