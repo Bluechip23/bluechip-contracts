@@ -1108,11 +1108,28 @@ fn calc_liquidity_for_deposit(
             return Err(ContractError::InsufficientLiquidity {});
         }
         
-        let liquidity_0 = (amount0 * pool.total_liquidity) / pool.reserve0;
-        let liquidity_1 = (amount1 * pool.total_liquidity) / pool.reserve1;
+        if amount0.is_zero() || amount1.is_zero() {
+            return Err(ContractError::InsufficientLiquidity {});
+        }
+
+        let optimal_amount1_for_amount0 = (amount0 * pool.reserve1) / pool.reserve0;  // "If I use all of amount0, how much amount1 do I need?"
+        let optimal_amount0_for_amount1 = (amount1 * pool.reserve0) / pool.reserve1;  // "If I use all of amount1, how much amount0 do I need?"
         
-        // Take the minimum to maintain pool ratios
-        let liquidity_uint = std::cmp::min(liquidity_0, liquidity_1);
+        let (final_amount0, final_amount1) = if optimal_amount1_for_amount0 <= amount1 {
+            // User provided enough amount1, use all of amount0
+            (amount0, optimal_amount1_for_amount0)
+        } else {
+            // User didn't provide enough amount1, use all of amount1 
+            (optimal_amount0_for_amount1, amount1)
+        };
+        
+        // Sanity check the final amounts
+        if final_amount0.is_zero() || final_amount1.is_zero() {
+            return Err(ContractError::InsufficientLiquidity {});
+        }
+        
+        // Calculate liquidity with the adjusted amounts
+        let liquidity_uint = (final_amount0 * pool.total_liquidity) / pool.reserve0;
         
         if liquidity_uint.is_zero() {
             return Err(ContractError::InsufficientLiquidity {});
@@ -1593,7 +1610,17 @@ fn trigger_threshold_payout(
         denom,
         native_seed,
     )?);
-
+ let initial_pool = Pool {
+        pool_id: 0,  
+        reserve0: config.commit_limit + native_seed, // Total native tokens for trading
+        reserve1: config.pool_amount,                // CW20 tokens for trading  
+        total_liquidity: Uint128::zero(),           // No LP positions created yet
+        fee_growth_global_0: Uint128::zero(),
+        fee_growth_global_1: Uint128::zero(),
+        total_fees_collected_0: Uint128::zero(),
+        total_fees_collected_1: Uint128::zero(),
+    };
+    POOLS.save(storage, 0, &initial_pool)?;
     Ok(msgs)
 }
 /// ## Description
