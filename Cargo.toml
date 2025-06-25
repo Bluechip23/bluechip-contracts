@@ -3,10 +3,8 @@ members = [
     "packages/*",
     "pool",
     "factory",
-   
 ]
 
-# Resolver has to be set explicitely in workspaces, see https://github.com/rust-lang/cargo/issues/9956
 resolver = "2"
 
 [workspace.package]
@@ -20,14 +18,14 @@ optimize = """docker run --rm -v "$(pwd)":/home/sweetdream/Work/coswasm/bluechip
 """
 
 [workspace.dependencies]
-cosmwasm-schema = "2.0.2"
-cosmwasm-std = "2.0.2"
-cosmwasm-storage = "1.1.0"
-cw2 = "2.0.0"
-cw-controllers = "2.0.0"
-cw-multi-test = "2.0.0"
-cw-storage-plus = "2.0.0"
-cw-utils = "2.0.0"
+cosmwasm-schema = "1.5.11"
+cosmwasm-std = "1.5.11"
+cosmwasm-storage = "1.5.2"
+cw2 = "1.0.1"
+cw-controllers = "1.0.0"
+cw-multi-test = "1.0.1"
+cw-storage-plus = "1.1.0"
+cw-utils = "1.0.2"
 schemars = "0.8.15"
 semver = "1"
 serde = { version = "1.0.188", default-features = false, features = ["derive"] }
@@ -36,9 +34,9 @@ integer-sqrt = "0.1"
 protobuf = { version = "2", features = ["with-bytes"] }
 proptest = "1.0"
 cw721 = "0.18.0"
-cw721-base = "0.18.0" 
-cw20 = "2.0.0"
-cw20-base = { version = "2.0.0", features = ["library"] }
+cw721-base = { version = "0.18.0", features = ["library"] }
+cw20 = "1.0.1"
+cw20-base = { version = "1.0.1", features = ["library"] }
 easy-addr = { path = "packages/easy-addr" }
 
 [workspace.metadata.scripts]

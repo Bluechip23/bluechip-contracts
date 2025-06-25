@@ -3,7 +3,7 @@
 use cosmwasm_std::{
     entry_point, from_json, to_json_binary, BankMsg, Addr, Binary, Coin, CosmosMsg, Decimal, Decimal256, Deps,
 
-    DepsMut, Env, QuerierWrapper, Fraction, MessageInfo, Response, Order, StdError, Storage, StdResult, Uint128, Uint256, WasmMsg, Reply, SubMsg
+    DepsMut, Env, QuerierWrapper, Fraction, MessageInfo, Response, Order, StdError, Storage, StdResult, Uint128, Uint256, WasmMsg, Reply, SubMsg, SubMsgResult
 };
 use crate::oracle::{PriceResponse, PythQueryMsg};
 use cw721::Cw721ExecuteMsg;
@@ -206,20 +206,26 @@ pub fn execute(
 #[cfg_attr(not(feature = "library"), entry_point)]
 pub fn reply(deps: DepsMut, _env: Env, msg: Reply) -> Result<Response, ContractError> {
     if msg.id == 42 {
-        let res: MsgInstantiateContractResponse = Message::parse_from_bytes(
-            msg.result.unwrap().msg_responses[0].value.as_slice(),
-        ).map_err(|_| StdError::parse_err(
-            "MsgInstantiateContractResponse",
-            "invalid",
-        ))?;
+        let res = match msg.result {
+            SubMsgResult::Ok(res) => res,
+            SubMsgResult::Err(err) => return Err(StdError::generic_err(format!("submsg error: {err}")).into()),
+        };
 
-        let lp = deps.api.addr_validate(res.get_contract_address())?;
+        let data: Binary = res.data.ok_or_else(|| StdError::not_found("instantiate data"))?;
+        let parsed: MsgInstantiateContractResponse =
+            Message::parse_from_bytes(data.as_slice()).map_err(|_| {
+                StdError::parse_err("MsgInstantiateContractResponse", "invalid instantiate reply data")
+            })?;
+
+        let lp: Addr = deps.api.addr_validate(parsed.get_contract_address())?;
         CONFIG.update(deps.storage, |mut c| {
             c.pair_info.liquidity_token = lp.clone();
             Ok::<_, StdError>(c)
         })?;
+
         return Ok(Response::new().add_attribute("lp_token", lp));
     }
+
     Err(StdError::generic_err("unknown reply id").into())
 }
 
