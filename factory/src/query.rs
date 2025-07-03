@@ -1,13 +1,11 @@
-use cosmwasm_std::entry_point;
 use cosmwasm_std::{Deps, StdResult};
 
-use crate::msg::{ConfigResponse};
-use crate::state::{CONFIG};
+use crate::msg::ConfigResponse;
+use crate::state::CONFIG;
 
-#[cfg_attr(not(feature = "library"), entry_point)]
-
-#[allow(dead_code)]
-fn query_config(deps: Deps) -> StdResult<ConfigResponse> {
+/// This function is a regular helper function, not a top-level entry point.
+/// Do NOT add #[entry_point] here.
+pub fn query_config(deps: Deps) -> StdResult<ConfigResponse> {
     let config = CONFIG.load(deps.storage)?;
     Ok(ConfigResponse { config })
 }

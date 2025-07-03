@@ -3,18 +3,16 @@ use std::env;
 use crate::error::ContractError;
 use crate::msg::{ExecuteMsg, InstantiateMsg, MigrateMsg, TokenInfo, TokenInstantiateMsg};
 use crate::pair::{FeeInfo, InstantiateMsg as PairInstantiateMsg};
-use crate::response::MsgInstantiateContractResponse;
 use crate::state::{
-    Config, SubscribeInfo, CONFIG, SUBSCRIBE, TEMPCREATOR, TEMPPAIRINFO, TEMPTOKENADDR,
+    Config, CONFIG, SUBSCRIBE, TEMPCREATOR, TEMPPAIRINFO, TEMPTOKENADDR,
 };
 #[cfg(not(feature = "library"))]
 use cosmwasm_std::entry_point;
 use cosmwasm_std::{
-    to_json_binary, Addr, Coin, CosmosMsg, Deps, DepsMut, Env, MessageInfo, Reply, ReplyOn, Response,
-    StdError, StdResult, SubMsg, Uint128, WasmMsg,
+    to_json_binary, Addr, Coin, CosmosMsg, Deps, DepsMut, Env, MessageInfo, Reply, Response,
+    StdError, StdResult, SubMsg, SubMsgResult, Uint128, WasmMsg,
 };
 use cw20::{Cw20ExecuteMsg, MinterResponse};
-use protobuf::Message;
 
 const CONTRACT_NAME: &str = "bluechip_factory";
 const CONTRACT_VERSION: &str = env!("CARGO_PKG_VERSION");
@@ -64,7 +62,6 @@ pub fn execute(
         } => execute_create(deps, env, info, pair_msg, token_info),
     }
 }
-
 
 fn execute_update_config(
     deps: DepsMut,
@@ -118,13 +115,7 @@ fn execute_create(
         label: token_info.name,
     };
 
-    let sub_msg: Vec<SubMsg> = vec![SubMsg {
-        msg: msg.clone().into(),
-        id: INSTANTIATE_TOKEN_REPLY_ID,
-        gas_limit: None,
-        reply_on: ReplyOn::Success,
-        payload: to_json_binary(&msg)?,
-    }];
+    let sub_msg = vec![SubMsg::reply_on_success(msg, INSTANTIATE_TOKEN_REPLY_ID)];
 
     Ok(Response::new()
         .add_attribute("action", "create")
@@ -132,23 +123,36 @@ fn execute_create(
         .add_submessages(sub_msg))
 }
 
-#[cfg_attr(not(feature = "library"), entry_point)]
+#[entry_point]
 pub fn reply(deps: DepsMut, env: Env, msg: Reply) -> Result<Response, ContractError> {
     match msg.id {
         INSTANTIATE_TOKEN_REPLY_ID => {
             let config = CONFIG.load(deps.storage)?;
             let temp_pool_info = TEMPPAIRINFO.load(deps.storage)?;
             let temp_creator = TEMPCREATOR.load(deps.storage)?;
-            let result = msg.result.unwrap();
-            let raw_bytes = result
-                .data
-                .or_else(|| result.msg_responses.get(0).map(|r| r.value.clone()))
-                .ok_or_else(|| StdError::generic_err("reply has no data"))?;
-            let res: MsgInstantiateContractResponse =  Message::parse_from_bytes(raw_bytes.as_slice())
-                    .map_err(|_| StdError::parse_err("MsgInstantiateContractResponse", "failed to parse"))?;
 
-            let token_address = deps.api.addr_validate(res.get_contract_address())?;    
+            // ✅ Extract contract address from reply
+            let raw_bytes = match msg.result {
+                SubMsgResult::Ok(result) => result.data.ok_or_else(|| {
+                    StdError::generic_err("Reply data missing in token instantiation")
+                })?,
+                SubMsgResult::Err(err) => {
+                    return Err(StdError::generic_err(format!(
+                        "Token instantiation failed: {}",
+                        err
+                    ))
+                    .into())
+                }
+            };
+
+            let contract_addr_str = std::str::from_utf8(&raw_bytes)
+                .map_err(|_| StdError::parse_err("UTF-8", "Failed to decode reply data"))?;
+            let token_address = deps.api.addr_validate(contract_addr_str)?;
+
+            // Save token address
             TEMPTOKENADDR.save(deps.storage, &token_address)?;
+
+            // Instantiate the pair contract
             let msg = WasmMsg::Instantiate {
                 code_id: config.pair_id,
                 msg: to_json_binary(&PairInstantiateMsg {
@@ -157,18 +161,18 @@ pub fn reply(deps: DepsMut, env: Env, msg: Reply) -> Result<Response, ContractEr
                     token_code_id: config.token_id,
                     init_params: None,
                     fee_info: FeeInfo {
-                        bluechip_address: config.bluechip_address,
-                        creator_address: temp_creator,
+                        bluechip_address: config.bluechip_address.clone(),
+                        creator_address: temp_creator.clone(),
                         bluechip_fee: config.bluechipe_fee,
                         creator_fee: config.creator_fee,
                     },
                     commit_amount: config.commit_amount,
                     commit_limit_usd: config.commit_limit_usd,
-                    commit_limit: config.commit_limit, 
-                    creator_amount:   config.creator_amount,
-                    bluechip_amount:  config.bluechip_amount,
-                    pool_amount:      config.pool_amount,
-                    oracle_addr:   config.oracle_addr.clone(),
+                    commit_limit: config.commit_limit,
+                    creator_amount: config.creator_amount,
+                    bluechip_amount: config.bluechip_amount,
+                    pool_amount: config.pool_amount,
+                    oracle_addr: config.oracle_addr.clone(),
                     oracle_symbol: config.oracle_symbol.clone(),
                     token_address: token_address.clone(),
                 })?,
@@ -176,61 +180,72 @@ pub fn reply(deps: DepsMut, env: Env, msg: Reply) -> Result<Response, ContractEr
                 admin: None,
                 label: "Pair".to_string(),
             };
-            let sub_msg: Vec<SubMsg> = vec![SubMsg {
-                msg: msg.clone().into(),
-                id: INSTANTIATE_POOL_REPLY_ID,
-                gas_limit: None,
-                reply_on: ReplyOn::Success,
-                payload: to_json_binary(&msg)?,
-            }];
+
+            let sub_msg = SubMsg::reply_on_success(msg, INSTANTIATE_POOL_REPLY_ID);
 
             Ok(Response::new()
+                .add_attribute("action", "instantiate_token_reply")
                 .add_attribute("token_address", token_address)
-                .add_submessages(sub_msg))
+                .add_submessage(sub_msg))
         }
+
         INSTANTIATE_POOL_REPLY_ID => {
             let config = CONFIG.load(deps.storage)?;
-            let res: MsgInstantiateContractResponse = Message::parse_from_bytes(
-                msg.result.unwrap().msg_responses[0].value.as_slice()
-            ).map_err(|_| {
-                StdError::parse_err("MsgInstantiateContractResponse", "failed to parse data")
-            })?;
-
-            let pool_address = deps.api.addr_validate(res.get_contract_address())?;
             let temp_creator = TEMPCREATOR.load(deps.storage)?;
             let temp_token_address = TEMPTOKENADDR.load(deps.storage)?;
 
+            let raw_bytes = match msg.result {
+                SubMsgResult::Ok(result) => result.data.ok_or_else(|| {
+                    StdError::generic_err("Reply data missing in pool instantiation")
+                })?,
+                SubMsgResult::Err(err) => {
+                    return Err(StdError::generic_err(format!(
+                        "Pool instantiation failed: {}",
+                        err
+                    ))
+                    .into())
+                }
+            };
+
+            let contract_addr_str = std::str::from_utf8(&raw_bytes)
+                .map_err(|_| StdError::parse_err("UTF-8", "Failed to decode reply data"))?;
+            let pool_address = deps.api.addr_validate(contract_addr_str)?;
+
+            // Save subscribe info
             SUBSCRIBE.save(
                 deps.storage,
                 &temp_creator.to_string(),
-                &SubscribeInfo {
+                &crate::state::SubscribeInfo {
                     creator: temp_creator.clone(),
                     token_addr: temp_token_address.clone(),
                     pool_addr: pool_address.clone(),
                 },
             )?;
 
-            let mut messages: Vec<CosmosMsg> = Vec::new();
-            let creator_mint_msg =
-                mint_tokens(&temp_token_address, &temp_creator, config.creator_amount)?;
-            messages.push(creator_mint_msg);
-            let bluechip_mint_msg = mint_tokens(
+            // Mint tokens
+            let mut messages: Vec<CosmosMsg> = vec![];
+            messages.push(mint_tokens(
+                &temp_token_address,
+                &temp_creator,
+                config.creator_amount,
+            )?);
+            messages.push(mint_tokens(
                 &temp_token_address,
                 &config.bluechip_address,
                 config.bluechip_amount,
-            )?;
-            messages.push(bluechip_mint_msg);
-            let pool_mint_msg = mint_tokens(
+            )?);
+            messages.push(mint_tokens(
                 &temp_token_address,
                 &pool_address,
                 config.commit_amount + config.pool_amount,
-            )?;
-            messages.push(pool_mint_msg);
+            )?);
 
             Ok(Response::new()
+                .add_attribute("action", "instantiate_pool_reply")
                 .add_attribute("pool_address", pool_address)
                 .add_messages(messages))
         }
+
         _ => Err(StdError::generic_err(format!("Unknown reply ID: {}", msg.id)).into()),
     }
 }
