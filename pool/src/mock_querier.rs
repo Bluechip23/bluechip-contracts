@@ -94,7 +94,7 @@ impl WasmMockQuerier {
     /// Seed native bank balances
     pub fn with_balance(&mut self, balances: &[(&String, &[Coin])]) {
         for (addr, coins) in balances {
-            self.base.bank.update_balance(addr.to_string(), coins.to_vec());
+            self.base.update_balance(addr.to_string(), coins.to_vec());
         }
     }
 

@@ -1,4 +1,4 @@
-use crate::pair::InstantiateMsg as PairInstantiateMsg;
+use crate::pair::PairInstantiateMsg;
 use cosmwasm_schema::cw_serde;
 use cosmwasm_std::{Addr, Decimal, Uint128};
 use cw_storage_plus::{Item, Map};
@@ -11,15 +11,10 @@ pub const SUBSCRIBE: Map<&str, SubscribeInfo> = Map::new("subscription_info");
 #[cw_serde]
 pub struct Config {
     pub admin: Addr,
-    pub total_token_amount: Uint128,
-    pub creator_amount: Uint128,
-    pub pool_amount: Uint128,
     pub commit_limit: Uint128,
     pub commit_limit_usd: Uint128,
     pub oracle_addr: Addr,
     pub oracle_symbol: String,
-    pub commit_amount: Uint128,
-    pub bluechip_amount: Uint128,
     pub token_id: u64,
     pub pair_id: u64,
     pub bluechip_address: Addr,

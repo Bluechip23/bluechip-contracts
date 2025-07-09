@@ -1,11 +1,13 @@
 use std::env;
 
+use crate::asset::AssetInfo;
 use crate::error::ContractError;
-use crate::msg::{ExecuteMsg, InstantiateMsg, MigrateMsg, TokenInfo, TokenInstantiateMsg};
-use crate::pair::{FeeInfo, InstantiateMsg as PairInstantiateMsg};
-use crate::state::{
-    Config, CONFIG, SUBSCRIBE, TEMPCREATOR, TEMPPAIRINFO, TEMPTOKENADDR,
+use crate::msg::{
+    CreatePoolInstantiateMsg, ExecuteMsg, FeeInfo, MigrateMsg, OfficialInstantiateMsg, TokenInfo,
+    TokenInstantiateMsg,
 };
+use crate::pair::{PairInstantiateMsg, PoolInitParams};
+use crate::state::{Config, CONFIG, SUBSCRIBE, TEMPCREATOR, TEMPPAIRINFO, TEMPTOKENADDR};
 #[cfg(not(feature = "library"))]
 use cosmwasm_std::entry_point;
 use cosmwasm_std::{
@@ -25,7 +27,7 @@ pub fn instantiate(
     deps: DepsMut,
     _env: Env,
     _info: MessageInfo,
-    msg: InstantiateMsg,
+    msg: OfficialInstantiateMsg,
 ) -> Result<Response, ContractError> {
     cw2::set_contract_version(deps.storage, CONTRACT_NAME, CONTRACT_VERSION)?;
     /* Validate addresses */
@@ -70,15 +72,6 @@ fn execute_update_config(
 ) -> Result<Response, ContractError> {
     assert_is_admin(deps.as_ref(), info)?;
 
-    if config.total_token_amount
-        != config.bluechip_amount
-            + config.pool_amount
-            + config.creator_amount
-            + config.commit_amount
-    {
-        return Err(ContractError::WrongConfiguration {});
-    }
-
     CONFIG.save(deps.storage, &config)?;
 
     Ok(Response::new().add_attribute("action", "update_config"))
@@ -106,7 +99,7 @@ fn execute_create(
             initial_balances: vec![],
             mint: Some(MinterResponse {
                 minter: env.contract.address.to_string(),
-                cap: Some(config.total_token_amount),
+                cap: None,
             }),
             marketing: None,
         })?,
@@ -131,11 +124,26 @@ pub fn reply(deps: DepsMut, env: Env, msg: Reply) -> Result<Response, ContractEr
             let temp_pool_info = TEMPPAIRINFO.load(deps.storage)?;
             let temp_creator = TEMPCREATOR.load(deps.storage)?;
 
-            // ✅ Extract contract address from reply
-            let raw_bytes = match msg.result {
-                SubMsgResult::Ok(result) => result.data.ok_or_else(|| {
-                    StdError::generic_err("Reply data missing in token instantiation")
-                })?,
+            // Extract contract address from reply
+            let token_address = match msg.result {
+                SubMsgResult::Ok(result) => {
+                    let contract_addr = result
+                        .events
+                        .iter()
+                        .find(|event| event.ty == "instantiate")
+                        .and_then(|event| {
+                            event
+                                .attributes
+                                .iter()
+                                .find(|attr| attr.key == "_contract_address")
+                                .map(|attr| attr.value.clone())
+                        })
+                        .ok_or_else(|| {
+                            StdError::generic_err("Contract address not found in events")
+                        })?;
+
+                    deps.api.addr_validate(&contract_addr)?
+                }
                 SubMsgResult::Err(err) => {
                     return Err(StdError::generic_err(format!(
                         "Token instantiation failed: {}",
@@ -145,36 +153,44 @@ pub fn reply(deps: DepsMut, env: Env, msg: Reply) -> Result<Response, ContractEr
                 }
             };
 
-            let contract_addr_str = std::str::from_utf8(&raw_bytes)
-                .map_err(|_| StdError::parse_err("UTF-8", "Failed to decode reply data"))?;
-            let token_address = deps.api.addr_validate(contract_addr_str)?;
-
+            let pool_init_params = PoolInitParams {
+                creator_amount: Uint128::new(325_000),
+                bluechip_amount: Uint128::new(25_000),
+                pool_amount: Uint128::new(350_000),
+                commit_amount: Uint128::new(500_000),
+            };
+            let init_params_binary = to_json_binary(&pool_init_params)?;
+            let mut updated_asset_infos = temp_pool_info.asset_infos;
+            for asset_info in updated_asset_infos.iter_mut() {
+                if let AssetInfo::Token { contract_addr } = asset_info {
+                    if contract_addr.as_str() == "WILL_BE_CREATED_BY_FACTORY" {
+                        *contract_addr = token_address.clone();
+                    }
+                }
+            }
             // Save token address
             TEMPTOKENADDR.save(deps.storage, &token_address)?;
 
             // Instantiate the pair contract
             let msg = WasmMsg::Instantiate {
                 code_id: config.pair_id,
-                msg: to_json_binary(&PairInstantiateMsg {
-                    asset_infos: temp_pool_info.asset_infos,
-                    factory_addr: env.contract.address.to_string(),
+                msg: to_json_binary(&CreatePoolInstantiateMsg {
+                    asset_infos: updated_asset_infos,
+                    factory_addr: env.contract.address,
                     token_code_id: config.token_id,
-                    init_params: None,
+                    init_params: Some(init_params_binary),
                     fee_info: FeeInfo {
                         bluechip_address: config.bluechip_address.clone(),
                         creator_address: temp_creator.clone(),
                         bluechip_fee: config.bluechipe_fee,
                         creator_fee: config.creator_fee,
                     },
-                    commit_amount: config.commit_amount,
                     commit_limit_usd: config.commit_limit_usd,
                     commit_limit: config.commit_limit,
-                    creator_amount: config.creator_amount,
-                    bluechip_amount: config.bluechip_amount,
-                    pool_amount: config.pool_amount,
                     oracle_addr: config.oracle_addr.clone(),
                     oracle_symbol: config.oracle_symbol.clone(),
                     token_address: token_address.clone(),
+                    available_payment: temp_pool_info.available_payment,
                 })?,
                 funds: vec![],
                 admin: None,
@@ -190,14 +206,28 @@ pub fn reply(deps: DepsMut, env: Env, msg: Reply) -> Result<Response, ContractEr
         }
 
         INSTANTIATE_POOL_REPLY_ID => {
-            let config = CONFIG.load(deps.storage)?;
             let temp_creator = TEMPCREATOR.load(deps.storage)?;
             let temp_token_address = TEMPTOKENADDR.load(deps.storage)?;
 
-            let raw_bytes = match msg.result {
-                SubMsgResult::Ok(result) => result.data.ok_or_else(|| {
-                    StdError::generic_err("Reply data missing in pool instantiation")
-                })?,
+            let pool_address = match msg.result {
+                SubMsgResult::Ok(result) => {
+                    let contract_addr = result
+                        .events
+                        .iter()
+                        .find(|event| event.ty == "instantiate")
+                        .and_then(|event| {
+                            event
+                                .attributes
+                                .iter()
+                                .find(|attr| attr.key == "_contract_address")
+                                .map(|attr| attr.value.clone())
+                        })
+                        .ok_or_else(|| {
+                            StdError::generic_err("Contract address not found in events")
+                        })?;
+
+                    deps.api.addr_validate(&contract_addr)?
+                }
                 SubMsgResult::Err(err) => {
                     return Err(StdError::generic_err(format!(
                         "Pool instantiation failed: {}",
@@ -206,10 +236,6 @@ pub fn reply(deps: DepsMut, env: Env, msg: Reply) -> Result<Response, ContractEr
                     .into())
                 }
             };
-
-            let contract_addr_str = std::str::from_utf8(&raw_bytes)
-                .map_err(|_| StdError::parse_err("UTF-8", "Failed to decode reply data"))?;
-            let pool_address = deps.api.addr_validate(contract_addr_str)?;
 
             // Save subscribe info
             SUBSCRIBE.save(
@@ -222,28 +248,9 @@ pub fn reply(deps: DepsMut, env: Env, msg: Reply) -> Result<Response, ContractEr
                 },
             )?;
 
-            // Mint tokens
-            let mut messages: Vec<CosmosMsg> = vec![];
-            messages.push(mint_tokens(
-                &temp_token_address,
-                &temp_creator,
-                config.creator_amount,
-            )?);
-            messages.push(mint_tokens(
-                &temp_token_address,
-                &config.bluechip_address,
-                config.bluechip_amount,
-            )?);
-            messages.push(mint_tokens(
-                &temp_token_address,
-                &pool_address,
-                config.commit_amount + config.pool_amount,
-            )?);
-
             Ok(Response::new()
                 .add_attribute("action", "instantiate_pool_reply")
-                .add_attribute("pool_address", pool_address)
-                .add_messages(messages))
+                .add_attribute("pool_address", pool_address))
         }
 
         _ => Err(StdError::generic_err(format!("Unknown reply ID: {}", msg.id)).into()),
