@@ -17,7 +17,7 @@ use cw20::{
 
 use cw_utils::must_pay;
 
-pub const UBLUECHIP_DENOM: &str = "ubluechip";
+pub const UBLUECHIP_DENOM: &str = "stake";
 /// LUNA token denomination
 pub const ULUNA_DENOM: &str = "uluna";
 /// Minimum initial LP share

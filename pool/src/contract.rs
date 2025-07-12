@@ -473,14 +473,9 @@ pub fn commit(
     let fee_info: FeeInfo = FEEINFO.load(deps.storage)?;
     let sender = info.sender.clone();
 
-    let pools: Vec<Asset> = config
-        .pair_info
-        .query_pools(&deps.querier, env.clone().contract.address)?
-        .iter()
-        .map(Clone::clone)
-        .collect();
-
-    if !asset.info.equal(&pools[0].info) && !asset.info.equal(&pools[1].info) {
+    if !asset.info.equal(&config.pair_info.asset_infos[0])
+        && !asset.info.equal(&config.pair_info.asset_infos[1])
+    {
         return Err(ContractError::AssetMismatch {});
     }
     if amount != asset.amount {
@@ -491,24 +486,54 @@ pub fn commit(
 
     match asset.info {
         // we never accept CW20 for commit
-        AssetInfo::NativeToken { denom } if denom == "ubluechip" => {
+        AssetInfo::NativeToken { denom } if denom == "stake" => {
+            let sent = info
+                .funds
+                .iter()
+                .find(|c| c.denom == denom)
+                .map(|c| c.amount)
+                .unwrap_or_default();
+            if sent < amount {
+                return Err(ContractError::MismatchAmount {});
+            }
+
             //fees upfront - can
             let bluechip_fee_amt =
                 amount * fee_info.bluechip_fee.numerator() / fee_info.bluechip_fee.denominator();
             let creator_fee_amt =
                 amount * fee_info.creator_fee.numerator() / fee_info.creator_fee.denominator();
 
-            messages.push(get_bank_transfer_to_msg(
-                &fee_info.bluechip_address,
-                &denom,
-                bluechip_fee_amt,
-            )?);
-            messages.push(get_bank_transfer_to_msg(
-                &fee_info.creator_address,
-                &denom,
-                creator_fee_amt,
-            )?);
+            let contract_balance = deps
+                .querier
+                .query_balance(env.contract.address.clone(), denom.clone())?;
+            let total_fees = bluechip_fee_amt + creator_fee_amt;
 
+            if contract_balance.amount < total_fees {
+                return Err(ContractError::Std(StdError::generic_err(format!(
+                    "Contract has insufficient balance to pay fees. Contract has {}, needs {}",
+                    contract_balance.amount, total_fees
+                ))));
+            }
+
+            let bluechip_transfer =
+                get_bank_transfer_to_msg(&fee_info.bluechip_address, &denom, bluechip_fee_amt)
+                    .map_err(|e| {
+                        ContractError::Std(StdError::generic_err(format!(
+                            "Bluechip transfer failed: {}",
+                            e
+                        )))
+                    })?;
+
+            let creator_transfer =
+                get_bank_transfer_to_msg(&fee_info.creator_address, &denom, creator_fee_amt)
+                    .map_err(|e| {
+                        ContractError::Std(StdError::generic_err(format!(
+                            "Creator transfer failed: {}",
+                            e
+                        )))
+                    })?;
+            messages.push(bluechip_transfer);
+            messages.push(creator_transfer);
             //funding contract
             if !THRESHOLD_HIT.load(deps.storage)? {
                 if !config.available_payment.contains(&asset.amount) {
@@ -632,7 +657,7 @@ pub fn execute_deposit_liquidity(
     amount1: Uint128, // CW20 amount
 ) -> Result<Response, ContractError> {
     // 1. Validate the native deposit (token0)
-    const NATIVE_DENOM: &str = "ubluechip";
+    const NATIVE_DENOM: &str = "stake";
     let paid_native = info
         .funds
         .iter()
@@ -752,7 +777,7 @@ pub fn execute_collect_fees(
         let native_msg = BankMsg::Send {
             to_address: info.sender.to_string(),
             amount: vec![Coin {
-                denom: "ubluechip".to_string(),
+                denom: "stake".to_string(),
                 amount: fees_owed_0,
             }],
         };
@@ -785,7 +810,7 @@ pub fn execute_add_to_position(
     amount1: Uint128, // CW20 amount to add
 ) -> Result<Response, ContractError> {
     // 1. Validate the native deposit (token0)
-    const NATIVE_DENOM: &str = "ubluechip";
+    const NATIVE_DENOM: &str = "stake";
     let paid_native = info
         .funds
         .iter()
@@ -970,7 +995,7 @@ pub fn execute_remove_liquidity(
         let native_msg = BankMsg::Send {
             to_address: info.sender.to_string(),
             amount: vec![Coin {
-                denom: "ubluechip".to_string(),
+                denom: "stake".to_string(),
                 amount: total_amount_0,
             }],
         };
@@ -1088,7 +1113,7 @@ pub fn execute_remove_partial_liquidity(
         let native_msg = BankMsg::Send {
             to_address: info.sender.to_string(),
             amount: vec![Coin {
-                denom: "ubluechip".to_string(),
+                denom: "stake".to_string(),
                 amount: total_amount_0,
             }],
         };
@@ -1676,7 +1701,7 @@ fn trigger_threshold_payout(
     // 4. seed the pool with 23 500 native units
     let denom = match &config.pair_info.asset_infos[0] {
         AssetInfo::NativeToken { denom, .. } => denom,
-        _ => "ubluechip", // fallback if first asset isn’t native
+        _ => "stake", // fallback if first asset isn’t native
     };
     let native_seed = Uint128::new(23_500_000_000); // 23 500 × 10^6
     msgs.push(get_bank_transfer_to_msg(

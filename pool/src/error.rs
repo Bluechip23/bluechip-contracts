@@ -15,7 +15,7 @@ pub enum ContractError {
      #[error("You can not swap until the threshold is crossed. You must subscribe to transact with this pool")]
     ShortOfThreshold {},
 
-    #[error("amount field does not match asset.amount")]
+    #[error("Your subscription amount does not match an amount designated by the creator of the pool.")]
     MismatchAmount {},
 
     #[error("Fee is to great or to small for this transaction")]

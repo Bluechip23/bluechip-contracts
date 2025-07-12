@@ -3,6 +3,7 @@ members = [
     "packages/*",
     "pool",
     "factory",
+    "mockoracle",
 ]
 
 resolver = "2"
