@@ -1,9 +1,9 @@
 use cosmwasm_schema::{cw_serde, QueryResponses};
 
 use crate::asset::{Asset, AssetInfo, PairInfo};
+use crate::state::Subscription;
 use cosmwasm_std::{Addr, Binary, Decimal, Uint128};
 use cw20::Cw20ReceiveMsg;
-use crate::state::Subscription;
 
 /// The default swap slippage
 pub const DEFAULT_SLIPPAGE: &str = "0.005";
@@ -32,7 +32,6 @@ pub struct PoolInstantiateMsg {
     pub token_address: Addr,
     pub available_payment: Vec<Uint128>,
 }
-
 
 #[cw_serde]
 pub struct PoolInitParams {
@@ -70,35 +69,35 @@ pub enum ExecuteMsg {
         asset: Asset,
         amount: Uint128,
     },
-     DepositLiquidity {
+    DepositLiquidity {
         pool_id: u64,
         amount0: Uint128,
         amount1: Uint128,
     },
     /// Collect fees owed to a given position
-    CollectFees { 
-        position_id: String 
+    CollectFees {
+        position_id: String,
     },
     AddToPosition {
         position_id: String,
-        amount0: Uint128,  // native token amount  
-        amount1: Uint128,  // cw20 token amount
+        amount0: Uint128, // native token amount
+        amount1: Uint128, // cw20 token amount
     },
     RemovePartialLiquidity {
         position_id: String,
         liquidity_to_remove: Decimal,
     },
-     RemovePartialLiquidityByPercent {
+    RemovePartialLiquidityByPercent {
         position_id: String,
-        percentage: u64,  // 1-99
+        percentage: u64, // 1-99
     },
     RemoveLiquidity {
         position_id: String,
     },
     /// Withdraw (and eventually burn) part or all of the liquidity
-    WithdrawPosition { 
-        position_id: String, 
-        liquidity: Uint128 
+    WithdrawPosition {
+        position_id: String,
+        liquidity: Uint128,
     },
 }
 
@@ -111,13 +110,13 @@ pub enum Cw20HookMsg {
         max_spread: Option<Decimal>,
         to: Option<String>,
     },
-     DepositLiquidity {
+    DepositLiquidity {
         pool_id: u64,
-        amount0: Uint128,  // native amount (should be sent with the message)
+        amount0: Uint128, // native amount (should be sent with the message)
     },
     AddToPosition {
         position_id: String,
-        amount0: Uint128,  // native amount (should be sent with the message)
+        amount0: Uint128, // native amount (should be sent with the message)
     },
 }
 
@@ -147,15 +146,14 @@ pub enum QueryMsg {
     #[returns(FeeInfoResponse)]
     FeeInfo {},
 
-    #[returns(bool)]
+    #[returns(CommitStatus)]
     IsFullyCommited {},
 
     #[returns(Option<Subscription>)]
     SubscriptionInfo { wallet: String },
-    
+
     #[returns(bool)]
     IsSubscribed { wallet: String },
-
 }
 
 /// This struct is used to return a query result with the total amount of LP tokens and the two assets in a specific pool.
@@ -174,8 +172,7 @@ pub struct ConfigResponse {
     pub params: Option<Binary>,
 }
 #[cw_serde]
-pub struct SubscriptionResponse {
-}
+pub struct SubscriptionResponse {}
 /// This structure holds the parameters that are returned from a swap simulation response
 #[cw_serde]
 pub struct SimulationResponse {
@@ -239,4 +236,9 @@ pub struct StablePoolConfig {
 pub enum StablePoolUpdateParams {
     StartChangingAmp { next_amp: u64, next_amp_time: u64 },
     StopChangingAmp {},
+}
+#[cw_serde]
+pub enum CommitStatus {
+    InProgress { raised: Uint128, target: Uint128 },
+    FullyCommitted,
 }

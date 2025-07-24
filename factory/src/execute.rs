@@ -154,10 +154,10 @@ pub fn reply(deps: DepsMut, env: Env, msg: Reply) -> Result<Response, ContractEr
             };
 
             let pool_init_params = PoolInitParams {
-                creator_amount: Uint128::new(325_000),
-                bluechip_amount: Uint128::new(25_000),
-                pool_amount: Uint128::new(350_000),
-                commit_amount: Uint128::new(500_000),
+                creator_amount: Uint128::new(325_000_000_000),
+                bluechip_amount: Uint128::new(25_000_000_000),
+                pool_amount: Uint128::new(350_000_000_000),
+                commit_amount: Uint128::new(500_000_000_000),
             };
             let init_params_binary = to_json_binary(&pool_init_params)?;
             let mut updated_asset_infos = temp_pool_info.asset_infos;
@@ -247,12 +247,18 @@ pub fn reply(deps: DepsMut, env: Env, msg: Reply) -> Result<Response, ContractEr
                     pool_addr: pool_address.clone(),
                 },
             )?;
-
+            let update_minter_msg = WasmMsg::Execute {
+                contract_addr: temp_token_address.to_string(),
+                msg: to_json_binary(&Cw20ExecuteMsg::UpdateMinter {
+                    new_minter: Some(pool_address.to_string()),
+                })?,
+                funds: vec![],
+            };
             Ok(Response::new()
+                .add_message(update_minter_msg)
                 .add_attribute("action", "instantiate_pool_reply")
                 .add_attribute("pool_address", pool_address))
         }
-
         _ => Err(StdError::generic_err(format!("Unknown reply ID: {}", msg.id)).into()),
     }
 }

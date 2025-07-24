@@ -109,7 +109,7 @@ pub enum QueryMsg {
     #[returns(FeeInfoResponse)]
     FeeInfo {},
 
-    #[returns(bool)]
+    #[returns(CommitStatus)]
     IsFullyCommited {},
 }
 
@@ -192,4 +192,9 @@ pub struct StablePoolConfig {
 pub enum StablePoolUpdateParams {
     StartChangingAmp { next_amp: u64, next_amp_time: u64 },
     StopChangingAmp {},
+}
+#[cw_serde]
+pub enum CommitStatus {
+    InProgress { raised: Uint128, target: Uint128 },
+    FullyCommitted,
 }

@@ -2,15 +2,20 @@
 use crate::asset::{pool_info, Asset, AssetInfo, PairType};
 use crate::error::ContractError;
 use crate::msg::{
-    ConfigResponse, CumulativePricesResponse, Cw20HookMsg, ExecuteMsg, FeeInfo, FeeInfoResponse,
-    MigrateMsg, PoolInitParams, PoolInstantiateMsg, PoolResponse, QueryMsg,
-    ReverseSimulationResponse, SimulationResponse,
+    CommitStatus, ConfigResponse, CumulativePricesResponse, Cw20HookMsg, ExecuteMsg, FeeInfo, FeeInfoResponse, MigrateMsg, PoolInitParams, PoolInstantiateMsg, PoolResponse, QueryMsg, ReverseSimulationResponse, SimulationResponse
 };
 use crate::oracle::{PriceResponse, PythQueryMsg};
 use crate::response::MsgInstantiateContractResponse;
 use crate::state::{
-    Config, PairInfo, COMMITSTATUS, COMMIT_LEDGER, CONFIG, FEEINFO, NATIVE_RAISED, THRESHOLD_HIT,
-    USD_RAISED,
+    Config,
+    PairInfo,
+    COMMITSTATUS,
+    COMMIT_LEDGER,
+    CONFIG,
+    FEEINFO,
+    NATIVE_RAISED,
+    THRESHOLD_HIT,
+    USD_RAISED, //ACCUMULATED_BLUECHIP_FEES, ACCUMULATED_CREATOR_FEES,
 };
 use crate::state::{
     Pool, Position, Subscription, TokenMetadata, NEXT_POSITION_ID, POOLS, POSITIONS, SUB_INFO,
@@ -534,6 +539,7 @@ pub fn commit(
                     })?;
             messages.push(bluechip_transfer);
             messages.push(creator_transfer);
+
             //funding contract
             if !THRESHOLD_HIT.load(deps.storage)? {
                 if !config.available_payment.contains(&asset.amount) {
@@ -573,9 +579,8 @@ pub fn commit(
                     .add_attribute("subscriber", sender)
                     .add_attribute("commit_amount", asset.amount.to_string()));
             }
-
             //after threshold - still accounts for the 6% fees.
-            let net_amount = asset
+            /*let net_amount = asset
                 .amount
                 .checked_sub(bluechip_fee_amt + creator_fee_amt)?;
             let offer_asset = Asset {
@@ -594,8 +599,67 @@ pub fn commit(
                 })?,
                 funds: vec![],
             }));
-
             // record / extend 30-day expiry
+            let new_expiry = env.block.time.plus_seconds(config.subscription_period);
+            SUB_INFO.save(
+                deps.storage,
+                &sender,
+                &Subscription {
+                    expires: new_expiry,
+                    total_paid: asset.amount,
+                },
+            )?; */
+            // After threshold - still accounts for the 6% fees.
+            let net_amount = asset
+                .amount
+                .checked_sub(bluechip_fee_amt + creator_fee_amt)?;
+
+            // Load current pool state
+            let pools = config
+                .pair_info
+                .query_pools(&deps.querier, env.contract.address.clone())?;
+
+            // Determine which pool is native and which is CW20
+            let (offer_pool, ask_pool) = if pools[0].info.is_native_token() {
+                (pools[0].clone(), pools[1].clone())
+            } else {
+                (pools[1].clone(), pools[0].clone())
+            };
+
+            // Calculate swap output
+            let (return_amt, _spread_amt, commission_amt) = compute_swap(
+                offer_pool.amount,
+                ask_pool.amount,
+                net_amount,
+                config.lp_fee,
+            )?;
+            // Send CW20 tokens to user
+            if !return_amt.is_zero() {
+                messages.push(
+                    WasmMsg::Execute {
+                        contract_addr: config.token_address.to_string(),
+                        msg: to_json_binary(&Cw20ExecuteMsg::Transfer {
+                            recipient: sender.to_string(),
+                            amount: return_amt,
+                        })?,
+                        funds: vec![],
+                    }
+                    .into(),
+                );
+            }
+            // Update price accumulator if needed
+            if let Some((p0_new, p1_new, block_time)) =
+                accumulate_prices(env.clone(), &config, pools[0].amount, pools[1].amount)?
+            {
+                CONFIG.update(deps.storage, |mut cfg| -> Result<_, ContractError> {
+                    cfg.price0_cumulative_last = p0_new;
+                    cfg.price1_cumulative_last = p1_new;
+                    cfg.block_time_last = block_time;
+                    Ok(cfg)
+                })?;
+            }
+
+            // Record / extend 30-day expiry
             let new_expiry = env.block.time.plus_seconds(config.subscription_period);
             SUB_INFO.save(
                 deps.storage,
@@ -630,18 +694,20 @@ fn native_to_usd(
     native_amount: Uint128, // micro-native
 ) -> StdResult<Uint128> {
     // 1. query oracle
-    let resp: PriceResponse = querier.query_wasm_smart(
-        oracle_addr.clone(),
-        &PythQueryMsg::GetPrice {
-            price_id: symbol.into(),
-        },
-    )?;
+    let resp: PriceResponse = querier
+        .query_wasm_smart(
+            oracle_addr.clone(),
+            &PythQueryMsg::GetPrice {
+                price_id: symbol.into(),
+            },
+        )
+        .map_err(|e| StdError::generic_err(format!("Oracle query failed: {}", e)))?;
     let price_8dec = resp.price; // e.g. 1.25 USD = 125_000_000
 
     // 2. convert: (µnative × price) / 10^(8-6) = µUSD
     // pool/src/contract.rs  – helper native_to_usd
     let usd_micro_u256 =
-        (Uint256::from(native_amount) * Uint256::from(price_8dec)) / Uint256::from(100u128); // 10^(8-6) = 100
+        (Uint256::from(native_amount) * Uint256::from(price_8dec)) / Uint256::from(100_000_000u128); // 10^(8-6) = 100
 
     let usd_micro = Uint128::try_from(usd_micro_u256)?;
     Ok(usd_micro)
@@ -1356,7 +1422,7 @@ pub fn query(deps: Deps, env: Env, msg: QueryMsg) -> StdResult<Binary> {
         QueryMsg::CumulativePrices {} => to_json_binary(&query_cumulative_prices(deps, env)?),
         QueryMsg::Config {} => to_json_binary(&query_config(deps)?),
         QueryMsg::FeeInfo {} => to_json_binary(&query_fee_info(deps)?),
-        QueryMsg::IsFullyCommited {} => to_json_binary(&query_check_commit(deps)?),
+        QueryMsg::IsFullyCommited {} => to_json_binary(&query_check_threshold_limit(deps)?),
         QueryMsg::IsSubscribed { wallet } => {
             let addr = deps.api.addr_validate(&wallet)?;
             let active = SUB_INFO
@@ -1703,7 +1769,7 @@ fn trigger_threshold_payout(
         AssetInfo::NativeToken { denom, .. } => denom,
         _ => "stake", // fallback if first asset isn’t native
     };
-    let native_seed = Uint128::new(23_500_000_000); // 23 500 × 10^6
+    let native_seed = Uint128::new(2350); // 23 500 × 10^6
     msgs.push(get_bank_transfer_to_msg(
         &env.contract.address,
         denom,
@@ -1711,9 +1777,9 @@ fn trigger_threshold_payout(
     )?);
     let initial_pool = Pool {
         pool_id: 0,
-        reserve0: config.commit_limit + native_seed, // Total native tokens for trading
-        reserve1: config.pool_amount,                // CW20 tokens for trading
-        total_liquidity: Uint128::zero(),            // No LP positions created yet
+        reserve0: config.commit_limit, // Total native tokens for trading
+        reserve1: config.pool_amount,  // CW20 tokens for trading
+        total_liquidity: Uint128::zero(), // No LP positions created yet
         fee_growth_global_0: Uint128::zero(),
         fee_growth_global_1: Uint128::zero(),
         total_fees_collected_0: Uint128::zero(),
@@ -1934,6 +2000,21 @@ fn mint_tokens(token_addr: &Addr, recipient: &Addr, amount: Uint128) -> StdResul
     };
 
     Ok(exec.into())
+}
+
+pub fn query_check_threshold_limit(deps: Deps) -> StdResult<CommitStatus> {
+    let config = CONFIG.load(deps.storage)?;
+    let threshold_hit = THRESHOLD_HIT.load(deps.storage)?;
+    
+    if threshold_hit {
+        Ok(CommitStatus::FullyCommitted)
+    } else {
+        let usd_raised = USD_RAISED.load(deps.storage)?;
+        Ok(CommitStatus::InProgress {
+            raised: usd_raised,
+            target: config.commit_limit_usd,
+        })
+    }
 }
 
 fn calculate_fees_owed(

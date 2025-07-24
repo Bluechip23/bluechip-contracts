@@ -57,6 +57,7 @@ pub const NEXT_POSITION_ID: Item<u64> = Item::new("next_position_id");
 pub const POSITIONS: Map<&str, Position> = Map::new("positions");
 pub const POOLS: Map<u64, Pool> = Map::new("pools");
 
+
 #[cw_serde]
 pub struct Subscription {
     pub expires: Timestamp,   
