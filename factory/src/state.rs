@@ -7,6 +7,7 @@ pub const CONFIG: Item<Config> = Item::new("config");
 pub const TEMPPAIRINFO: Item<PairInstantiateMsg> = Item::new("temp_pair");
 pub const TEMPCREATOR: Item<Addr> = Item::new("temp_admin");
 pub const TEMPTOKENADDR: Item<Addr> = Item::new("temp_token_addr");
+pub const TEMPNFTADDR: Item<Addr> = Item::new("temp_nft_addr");
 pub const SUBSCRIBE: Map<&str, SubscribeInfo> = Map::new("subscription_info");
 #[cw_serde]
 pub struct Config {
@@ -16,6 +17,7 @@ pub struct Config {
     pub oracle_addr: Addr,
     pub oracle_symbol: String,
     pub token_id: u64,
+    pub position_nft_id: u64, 
     pub pair_id: u64,
     pub bluechip_address: Addr,
     pub bluechipe_fee: Decimal,

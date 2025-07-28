@@ -30,12 +30,14 @@ pub struct CreatePoolInstantiateMsg {
     pub factory_addr: Addr,
     /// Optional binary serialised parameters for custom pool types
     pub init_params: Option<Binary>,
+    
     pub fee_info: FeeInfo,
     pub commit_limit: Uint128,
     pub commit_limit_usd: Uint128,
     pub oracle_addr: Addr,
     pub oracle_symbol: String,
     pub token_address: Addr,
+    pub position_nft_address: Addr,
     pub available_payment: Vec<Uint128>,
 }
 

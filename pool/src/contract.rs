@@ -2,7 +2,9 @@
 use crate::asset::{pool_info, Asset, AssetInfo, PairType};
 use crate::error::ContractError;
 use crate::msg::{
-    CommitStatus, ConfigResponse, CumulativePricesResponse, Cw20HookMsg, ExecuteMsg, FeeInfo, FeeInfoResponse, MigrateMsg, PoolInitParams, PoolInstantiateMsg, PoolResponse, QueryMsg, ReverseSimulationResponse, SimulationResponse
+    CommitStatus, ConfigResponse, CumulativePricesResponse, Cw20HookMsg, ExecuteMsg, FeeInfo,
+    FeeInfoResponse, MigrateMsg, PoolInitParams, PoolInstantiateMsg, PoolResponse, QueryMsg,
+    ReverseSimulationResponse, SimulationResponse,
 };
 use crate::oracle::{PriceResponse, PythQueryMsg};
 use crate::response::MsgInstantiateContractResponse;
@@ -18,7 +20,7 @@ use crate::state::{
     USD_RAISED, //ACCUMULATED_BLUECHIP_FEES, ACCUMULATED_CREATOR_FEES,
 };
 use crate::state::{
-    Pool, Position, Subscription, TokenMetadata, NEXT_POSITION_ID, POOLS, POSITIONS, SUB_INFO,
+    Pool, Position, Subscription, TokenMetadata, NEXT_POSITION_ID, POSITIONS, SUB_INFO,
 };
 use cosmwasm_std::{
     entry_point, from_json, to_json_binary, Addr, BankMsg, Binary, Coin, CosmosMsg, Decimal,
@@ -27,7 +29,6 @@ use cosmwasm_std::{
 };
 use cw2::{get_contract_version, set_contract_version};
 use cw20::{Cw20ExecuteMsg, Cw20ReceiveMsg};
-use cw721::Cw721ExecuteMsg;
 use cw721_base::ExecuteMsg as CW721BaseExecuteMsg;
 use protobuf::Message;
 use std::convert::TryInto;
@@ -92,8 +93,11 @@ pub fn instantiate(
         },
         //++++++++++++++++++++++++++++++++++++++++++++++need to check if the factory is valid++++++++++++++++++++++++++++++++++++++++++++++++++++++++
         // factory_addr: deps.api.addr_validate(msg.factory_addr.as_str())?,
+        position_nft_address: msg.position_nft_address.clone(),
         factory_addr: msg.factory_addr.clone(),
         block_time_last: 0,
+        reserve0: Uint128::zero(), // native token
+        reserve1: Uint128::zero(),
         price0_cumulative_last: Uint128::zero(),
         price1_cumulative_last: Uint128::zero(),
         subscription_period: 2592000,
@@ -108,6 +112,11 @@ pub fn instantiate(
         commit_amount: pool_params.commit_amount,
         token_address: msg.token_address.clone(),
         available_payment: msg.available_payment.clone(),
+        total_liquidity: Uint128::zero(),
+        fee_growth_global_0: Decimal::zero(),
+        fee_growth_global_1: Decimal::zero(),
+        total_fees_collected_0: Uint128::zero(),
+        total_fees_collected_1: Uint128::zero(),
     };
     USD_RAISED.save(deps.storage, &Uint128::zero())?;
     CONFIG.save(deps.storage, &config)?;
@@ -436,6 +445,31 @@ pub fn simple_swap(
         spread_amt,
     )?;
 
+    if !config.total_liquidity.is_zero() {
+        // Check if token0 is being offered (fees collected in token1)
+        if offer_asset.info.equal(&pools[0].info) {
+            config.fee_growth_global_1 +=
+                Decimal::from_ratio(commission_amt, config.total_liquidity);
+            config.total_fees_collected_1 += commission_amt; // Optional: track total fees
+        } else {
+            // Token1 is being offered (fees collected in token0)
+            config.fee_growth_global_0 +=
+                Decimal::from_ratio(commission_amt, config.total_liquidity);
+            config.total_fees_collected_0 += commission_amt; // Optional: track total fees
+        }
+    }
+
+    // Update price accumulator if needed
+    if let Some((p0_new, p1_new, block_time)) =
+        accumulate_prices(env.clone(), &config, pools[0].amount, pools[1].amount)?
+    {
+        config.price0_cumulative_last = p0_new;
+        config.price1_cumulative_last = p1_new;
+        config.block_time_last = block_time;
+    }
+
+    // Save config once after all updates
+    CONFIG.save(deps.storage, &config)?;
     let mut msgs = vec![];
     if !return_amt.is_zero() {
         let return_asset = Asset {
@@ -561,16 +595,17 @@ pub fn commit(
                 COMMITSTATUS.save(deps.storage, &usd_total)?;
 
                 // one-time threshold crossing
+                let mut config = CONFIG.load(deps.storage)?;
                 if usd_total >= config.commit_limit_usd {
                     THRESHOLD_HIT.save(deps.storage, &true)?;
                     messages.extend(trigger_threshold_payout(
                         deps.storage,
-                        &config,
+                        &mut config,
                         &fee_info,
                         &env,
                     )?);
                 }
-
+                CONFIG.save(deps.storage, &config)?;
                 // emit & exit
                 return Ok(Response::new()
                     .add_messages(messages)
@@ -736,26 +771,42 @@ pub fn execute_deposit_liquidity(
     }
 
     // 2. Load the pool and update fee tracking
-    let mut pool = POOLS.load(deps.storage, pool_id)?;
+    let mut config = CONFIG.load(deps.storage)?;
 
-    // 3. Compute liquidity amount
-    let liquidity = calc_liquidity_for_deposit(deps.as_ref(), pool_id, amount0, amount1)?;
+    // 3. Transfer CW20 tokens from user to pool (if amount1 > 0)
+    let mut messages = vec![];
 
-    // 4. Generate position ID
+    if !amount1.is_zero() {
+        let transfer_cw20_msg = WasmMsg::Execute {
+            contract_addr: config.token_address.to_string(),
+            msg: to_json_binary(&cw20::Cw20ExecuteMsg::TransferFrom {
+                owner: info.sender.to_string(), // Transfer from the sender
+                recipient: env.contract.address.to_string(), // To the pool
+                amount: amount1,
+            })?,
+            funds: vec![],
+        };
+        messages.push(CosmosMsg::Wasm(transfer_cw20_msg));
+    }
+
+    // 4. Compute liquidity amount
+    let liquidity = calc_liquidity_for_deposit(deps.as_ref(), amount0, amount1)?;
+
+    // 5. Generate position ID
     let mut pos_id = NEXT_POSITION_ID.load(deps.storage)?;
     pos_id += 1;
     NEXT_POSITION_ID.save(deps.storage, &pos_id)?;
     let position_id = pos_id.to_string();
 
-    // 5. Create NFT metadata with position info
+    // 6. Create NFT metadata with position info
     let metadata = TokenMetadata {
         name: Some(format!("LP Position #{}", position_id)),
         description: Some(format!("Pool {} Liquidity Position", pool_id)),
     };
 
-    // 6. Mint the NFT
+    // 7. Mint the NFT on the external NFT contract
     let mint_liquidity_nft = WasmMsg::Execute {
-        contract_addr: env.contract.address.to_string(), // Your contract is the NFT contract
+        contract_addr: config.position_nft_address.to_string(), // Use the NFT contract address!
         msg: to_json_binary(
             &CW721BaseExecuteMsg::<TokenMetadata, cosmwasm_std::Empty>::Mint {
                 token_id: position_id.clone(),
@@ -766,27 +817,26 @@ pub fn execute_deposit_liquidity(
         )?,
         funds: vec![],
     };
-    // 7. Create and store the position with current fee growth
+    messages.push(CosmosMsg::Wasm(mint_liquidity_nft));
+
+    // 8. Create and store the position with current fee growth
     let position = Position {
-        pool_id,
         liquidity,
         owner: user.clone(),
-        fee_growth_inside_0_last: pool.fee_growth_global_0,
-        fee_growth_inside_1_last: pool.fee_growth_global_1,
+        fee_growth_inside_0_last: config.fee_growth_global_0,
+        fee_growth_inside_1_last: config.fee_growth_global_1,
         created_at: env.block.time.seconds(),
         last_fee_collection: env.block.time.seconds(),
     };
 
     POSITIONS.save(deps.storage, &position_id, &position)?;
 
-    // 8. Update pool state
-    pool.reserve0 += amount0;
-    pool.reserve1 += amount1;
-    pool.total_liquidity += Uint128::from(liquidity.atomics());
-    POOLS.save(deps.storage, pool_id, &pool)?;
+    // 9. Update pool state
+    config.total_liquidity += Uint128::from(liquidity.atomics());
+    CONFIG.save(deps.storage, &config)?;
 
     Ok(Response::new()
-        .add_message(mint_liquidity_nft)
+        .add_messages(messages) // Add all messages
         .add_attribute("action", "deposit_liquidity")
         .add_attribute("position_id", position_id)
         .add_attribute("depositor", user)
@@ -800,45 +850,48 @@ pub fn execute_collect_fees(
     info: MessageInfo,
     position_id: String,
 ) -> Result<Response, ContractError> {
-    // 1. Load and validate position ownership
+    // 1. Load config
+    let config = CONFIG.load(deps.storage)?;
+
+    // 2. Verify NFT ownership through external NFT contract
+    verify_position_ownership(
+        deps.as_ref(),
+        &config.position_nft_address,
+        &position_id,
+        &info.sender,
+    )?;
+
+    // 3. Load position
     let mut position = POSITIONS.load(deps.storage, &position_id)?;
 
-    // Verify NFT ownership
-    if position.owner != info.sender {
-        return Err(ContractError::Unauthorized {});
-    }
-
-    // 2. Load pool to get current fee growth
-    let pool = POOLS.load(deps.storage, position.pool_id)?;
-
-    // 3. Calculate fees owed to this position
+    // 4. Calculate fees owed to this position
     let fees_owed_0 = calculate_fees_owed(
         position.liquidity,
-        pool.fee_growth_global_0,
+        config.fee_growth_global_0,
         position.fee_growth_inside_0_last,
     );
 
     let fees_owed_1 = calculate_fees_owed(
         position.liquidity,
-        pool.fee_growth_global_1,
+        config.fee_growth_global_1,
         position.fee_growth_inside_1_last,
     );
 
-    // 4. Update position's fee growth tracking
-    position.fee_growth_inside_0_last = pool.fee_growth_global_0;
-    position.fee_growth_inside_1_last = pool.fee_growth_global_1;
+    // 5. Update position's fee growth tracking
+    position.fee_growth_inside_0_last = config.fee_growth_global_0;
+    position.fee_growth_inside_1_last = config.fee_growth_global_1;
     position.last_fee_collection = env.block.time.seconds();
 
     POSITIONS.save(deps.storage, &position_id, &position)?;
 
-    // 5. Prepare fee payments
+    // 6. Prepare fee payments
     let mut response = Response::new()
         .add_attribute("action", "collect_fees")
         .add_attribute("position_id", position_id)
         .add_attribute("fees_0", fees_owed_0)
         .add_attribute("fees_1", fees_owed_1);
 
-    // 6. Send native token fees (token0)
+    // 7. Send native token fees (token0)
     if !fees_owed_0.is_zero() {
         let native_msg = BankMsg::Send {
             to_address: info.sender.to_string(),
@@ -850,10 +903,10 @@ pub fn execute_collect_fees(
         response = response.add_message(native_msg);
     }
 
-    // 7. Send CW20 token fees (token1) - you'll need the CW20 contract address
+    // 8. Send CW20 token fees (token1)
     if !fees_owed_1.is_zero() {
         let cw20_msg = WasmMsg::Execute {
-            contract_addr: "YOUR_CW20_CONTRACT_ADDRESS".to_string(), // Replace with actual address
+            contract_addr: config.token_address.to_string(), // Using config.token_address
             msg: to_json_binary(&cw20::Cw20ExecuteMsg::Transfer {
                 recipient: info.sender.to_string(),
                 amount: fees_owed_1,
@@ -888,52 +941,51 @@ pub fn execute_add_to_position(
         return Err(ContractError::InvalidNativeAmount {});
     }
 
-    // 2. Load and validate position ownership
+    // 2. Load config
+    let mut config = CONFIG.load(deps.storage)?;
+
+    // 3. Verify NFT ownership through external NFT contract
+    verify_position_ownership(
+        deps.as_ref(),
+        &config.position_nft_address,
+        &position_id,
+        &info.sender,
+    )?;
+
+    // 4. Load position
     let mut position = POSITIONS.load(deps.storage, &position_id)?;
 
-    // Verify NFT ownership
-
-    if position.owner != info.sender {
-        return Err(ContractError::Unauthorized {});
-    }
-
-    // 3. Load pool state
-    let mut pool = POOLS.load(deps.storage, position.pool_id)?;
-
-    // 4. Calculate any pending fees FIRST (before diluting the position)
+    // 5. Calculate any pending fees FIRST (before diluting the position)
     let fees_owed_0 = calculate_fees_owed(
         position.liquidity,
-        pool.fee_growth_global_0,
+        config.fee_growth_global_0,
         position.fee_growth_inside_0_last,
     );
 
     let fees_owed_1 = calculate_fees_owed(
         position.liquidity,
-        pool.fee_growth_global_1,
+        config.fee_growth_global_1,
         position.fee_growth_inside_1_last,
     );
 
-    // 5. Calculate new liquidity for the additional deposit
-    let additional_liquidity =
-        calc_liquidity_for_deposit(deps.as_ref(), position.pool_id, amount0, amount1)?;
+    // 6. Calculate new liquidity for the additional deposit
+    let additional_liquidity = calc_liquidity_for_deposit(deps.as_ref(), amount0, amount1)?;
 
-    // 6. Update position with new totals and reset fee tracking
+    // 7. Update position with new totals and reset fee tracking
     position.liquidity += additional_liquidity;
-    position.fee_growth_inside_0_last = pool.fee_growth_global_0;
-    position.fee_growth_inside_1_last = pool.fee_growth_global_1;
+    position.fee_growth_inside_0_last = config.fee_growth_global_0;
+    position.fee_growth_inside_1_last = config.fee_growth_global_1;
     position.last_fee_collection = env.block.time.seconds();
 
-    // 7. Update pool state
-    pool.reserve0 += amount0;
-    pool.reserve1 += amount1;
-    pool.total_liquidity += Uint128::from(additional_liquidity.atomics());
-    POOLS.save(deps.storage, position.pool_id, &pool)?;
+    // 8. Update config state (just total liquidity)
+    config.total_liquidity += Uint128::from(additional_liquidity.atomics());
+    CONFIG.save(deps.storage, &config)?;
 
-    // 8. Save updated position
+    // 9. Save updated position
     POSITIONS.save(deps.storage, &position_id, &position)?;
 
-    // Note: NFT metadata is immutable after minting in standard CW721
-    // Current position data is tracked in contract storage via POSITIONS map
+    // Note: Pool reserves will be automatically updated when tokens are transferred in
+    // NFT metadata is immutable after minting in standard CW721
 
     // 10. Prepare response
     let mut response = Response::new()
@@ -960,7 +1012,7 @@ pub fn execute_add_to_position(
 
     if !fees_owed_1.is_zero() {
         let cw20_msg = WasmMsg::Execute {
-            contract_addr: "YOUR_CW20_CONTRACT_ADDRESS".to_string(), // Replace with actual address
+            contract_addr: config.token_address.to_string(), // Using config.token_address
             msg: to_json_binary(&cw20::Cw20ExecuteMsg::Transfer {
                 recipient: user.to_string(),
                 amount: fees_owed_1,
@@ -980,22 +1032,33 @@ pub fn execute_remove_liquidity(
     info: MessageInfo,
     position_id: String,
 ) -> Result<Response, ContractError> {
-    // 1. Load and validate position
+    // 1. Load config
+    let mut config = CONFIG.load(deps.storage)?;
+
+    // 2. Load and validate position
     let position = POSITIONS.load(deps.storage, &position_id)?;
 
-    // 2. Verify NFT ownership
-    if position.owner != info.sender {
-        return Err(ContractError::Unauthorized {});
-    }
-    // 3. Load pool state
-    let mut pool = POOLS.load(deps.storage, position.pool_id)?;
+    // 3. Verify NFT ownership through external NFT contract
+    verify_position_ownership(
+        deps.as_ref(),
+        &config.position_nft_address,
+        &position_id,
+        &info.sender,
+    )?;
 
-    // 4. Calculate user's share of the pool
-    let pool_reserve0_decimal = Decimal::from_atomics(pool.reserve0, 0)
+    // 4. Get current pool reserves
+    let pools = config
+        .pair_info
+        .query_pools(&deps.querier, env.contract.address.clone())?;
+    let current_reserve0 = pools[0].amount;
+    let current_reserve1 = pools[1].amount;
+
+    // 5. Calculate user's share of the pool (using your decimal logic)
+    let pool_reserve0_decimal = Decimal::from_atomics(current_reserve0, 0)
         .map_err(|_| ContractError::InsufficientLiquidity {})?;
-    let pool_reserve1_decimal = Decimal::from_atomics(pool.reserve1, 0)
+    let pool_reserve1_decimal = Decimal::from_atomics(current_reserve1, 0)
         .map_err(|_| ContractError::InsufficientLiquidity {})?;
-    let pool_total_liquidity_decimal = Decimal::from_atomics(pool.total_liquidity, 0)
+    let pool_total_liquidity_decimal = Decimal::from_atomics(config.total_liquidity, 0)
         .map_err(|_| ContractError::InsufficientLiquidity {})?;
 
     let user_share_0_decimal =
@@ -1007,43 +1070,43 @@ pub fn execute_remove_liquidity(
     let user_share_0 = Uint128::from(user_share_0_decimal.atomics());
     let user_share_1 = Uint128::from(user_share_1_decimal.atomics());
 
-    // 5. Calculate any remaining fees owed
+    // 6. Calculate any remaining fees owed
     let fees_owed_0 = calculate_fees_owed(
         position.liquidity,
-        pool.fee_growth_global_0,
+        config.fee_growth_global_0,
         position.fee_growth_inside_0_last,
     );
 
     let fees_owed_1 = calculate_fees_owed(
         position.liquidity,
-        pool.fee_growth_global_1,
+        config.fee_growth_global_1,
         position.fee_growth_inside_1_last,
     );
 
-    // 6. Total amounts to send (principal + fees)
+    // 7. Total amounts to send (principal + fees)
     let total_amount_0 = user_share_0 + fees_owed_0;
     let total_amount_1 = user_share_1 + fees_owed_1;
 
-    // 7. Update pool state
-    pool.reserve0 = pool.reserve0.checked_sub(user_share_0)?;
-    pool.reserve1 = pool.reserve1.checked_sub(user_share_1)?;
-
+    // 8. Update config state (total liquidity)
     let liquidity_to_subtract = Uint128::from(position.liquidity.atomics());
-    pool.total_liquidity = pool.total_liquidity.checked_sub(liquidity_to_subtract)?;
-    POOLS.save(deps.storage, position.pool_id, &pool)?;
+    config.total_liquidity = config.total_liquidity.checked_sub(liquidity_to_subtract)?;
+    CONFIG.save(deps.storage, &config)?;
 
-    // 8. Burn the NFT
+    // Note: Pool reserves will be automatically updated when tokens are transferred out
+
+    // 9. Burn the NFT (on external NFT contract)
     let burn_msg = WasmMsg::Execute {
-        contract_addr: env.contract.address.to_string(), // Your contract is the NFT contract
-        msg: to_json_binary(&Cw721ExecuteMsg::Burn {
+        contract_addr: config.position_nft_address.to_string(), // External NFT contract
+        msg: to_json_binary(&cw721::Cw721ExecuteMsg::Burn {
             token_id: position_id.clone(),
         })?,
         funds: vec![],
     };
-    // 9. Remove position from storage
+
+    // 10. Remove position from storage
     POSITIONS.remove(deps.storage, &position_id);
 
-    // 10. Prepare response with token transfers
+    // 11. Prepare response with token transfers
     let mut response = Response::new()
         .add_message(burn_msg)
         .add_attribute("action", "remove_liquidity")
@@ -1056,7 +1119,7 @@ pub fn execute_remove_liquidity(
         .add_attribute("total_0", total_amount_0)
         .add_attribute("total_1", total_amount_1);
 
-    // 11. Send native token (token0) - principal + fees
+    // 12. Send native token (token0) - principal + fees
     if !total_amount_0.is_zero() {
         let native_msg = BankMsg::Send {
             to_address: info.sender.to_string(),
@@ -1068,10 +1131,10 @@ pub fn execute_remove_liquidity(
         response = response.add_message(native_msg);
     }
 
-    // 12. Send CW20 token (token1) - principal + fees
+    // 13. Send CW20 token (token1) - principal + fees
     if !total_amount_1.is_zero() {
         let cw20_msg = WasmMsg::Execute {
-            contract_addr: "YOUR_CW20_CONTRACT_ADDRESS".to_string(), // Replace with actual address
+            contract_addr: config.token_address.to_string(), // Using config.token_address
             msg: to_json_binary(&cw20::Cw20ExecuteMsg::Transfer {
                 recipient: info.sender.to_string(),
                 amount: total_amount_1,
@@ -1091,16 +1154,21 @@ pub fn execute_remove_partial_liquidity(
     position_id: String,
     liquidity_to_remove: Decimal, // Specific amount of liquidity to remove
 ) -> Result<Response, ContractError> {
-    // 1. Load and validate position
+    // 1. Load config
+    let mut config = CONFIG.load(deps.storage)?;
+
+    // 2. Load and validate position
     let mut position = POSITIONS.load(deps.storage, &position_id)?;
 
-    // 2. Verify NFT ownership
+    // 3. Verify NFT ownership through external NFT contract
+    verify_position_ownership(
+        deps.as_ref(),
+        &config.position_nft_address,
+        &position_id,
+        &info.sender,
+    )?;
 
-    if position.owner != info.sender {
-        return Err(ContractError::Unauthorized {});
-    }
-
-    // 3. Validate removal amount
+    // 4. Validate removal amount
     if liquidity_to_remove.is_zero() {
         return Err(ContractError::InvalidAmount {});
     }
@@ -1109,28 +1177,32 @@ pub fn execute_remove_partial_liquidity(
         return Err(ContractError::InvalidAmount {});
     }
 
-    // 4. Load pool state
-    let mut pool = POOLS.load(deps.storage, position.pool_id)?;
+    // 5. Get current pool reserves
+    let pools = config
+        .pair_info
+        .query_pools(&deps.querier, env.contract.address.clone())?;
+    let current_reserve0 = pools[0].amount;
+    let current_reserve1 = pools[1].amount;
 
-    // 5. Calculate ALL pending fees first (before any changes)
+    // 6. Calculate ALL pending fees first (before any changes)
     let fees_owed_0 = calculate_fees_owed(
         position.liquidity,
-        pool.fee_growth_global_0,
+        config.fee_growth_global_0,
         position.fee_growth_inside_0_last,
     );
 
     let fees_owed_1 = calculate_fees_owed(
         position.liquidity,
-        pool.fee_growth_global_1,
+        config.fee_growth_global_1,
         position.fee_growth_inside_1_last,
     );
 
-    // 6. Calculate partial withdrawal amounts (principal only, not fees)
-    let pool_reserve0_decimal = Decimal::from_atomics(pool.reserve0, 0)
+    // 7. Calculate partial withdrawal amounts (principal only, not fees)
+    let pool_reserve0_decimal = Decimal::from_atomics(current_reserve0, 0)
         .map_err(|_| ContractError::InsufficientLiquidity {})?;
-    let pool_reserve1_decimal = Decimal::from_atomics(pool.reserve1, 0)
+    let pool_reserve1_decimal = Decimal::from_atomics(current_reserve1, 0)
         .map_err(|_| ContractError::InsufficientLiquidity {})?;
-    let pool_total_liquidity_decimal = Decimal::from_atomics(pool.total_liquidity, 0)
+    let pool_total_liquidity_decimal = Decimal::from_atomics(config.total_liquidity, 0)
         .map_err(|_| ContractError::InsufficientLiquidity {})?;
 
     let withdrawal_amount_0_decimal =
@@ -1141,22 +1213,21 @@ pub fn execute_remove_partial_liquidity(
     let withdrawal_amount_0 = Uint128::from(withdrawal_amount_0_decimal.atomics());
     let withdrawal_amount_1 = Uint128::from(withdrawal_amount_1_decimal.atomics());
 
-    // 7. Total amounts to send (partial principal + all accumulated fees)
+    // 8. Total amounts to send (partial principal + all accumulated fees)
     let total_amount_0 = withdrawal_amount_0 + fees_owed_0;
     let total_amount_1 = withdrawal_amount_1 + fees_owed_1;
 
-    // 8. Update pool state (remove the liquidity being withdrawn)
-    pool.reserve0 = pool.reserve0.checked_sub(withdrawal_amount_0)?;
-    pool.reserve1 = pool.reserve1.checked_sub(withdrawal_amount_1)?;
-    // Convert Decimal to Uint128 for pool total_liquidity
+    // 9. Update config state (remove the liquidity being withdrawn)
     let liquidity_to_remove_uint = Uint128::from(liquidity_to_remove.atomics());
-    pool.total_liquidity = pool.total_liquidity.checked_sub(liquidity_to_remove_uint)?;
-    POOLS.save(deps.storage, position.pool_id, &pool)?;
+    config.total_liquidity = config
+        .total_liquidity
+        .checked_sub(liquidity_to_remove_uint)?;
+    CONFIG.save(deps.storage, &config)?;
 
-    // 9. Update position - reduce liquidity and reset fee tracking
-    position.liquidity = position.liquidity.checked_sub(liquidity_to_remove)?; // Now both are Decimal
-    position.fee_growth_inside_0_last = pool.fee_growth_global_0;
-    position.fee_growth_inside_1_last = pool.fee_growth_global_1;
+    // 10. Update position - reduce liquidity and reset fee tracking
+    position.liquidity = position.liquidity.checked_sub(liquidity_to_remove)?;
+    position.fee_growth_inside_0_last = config.fee_growth_global_0;
+    position.fee_growth_inside_1_last = config.fee_growth_global_1;
     position.last_fee_collection = env.block.time.seconds();
 
     POSITIONS.save(deps.storage, &position_id, &position)?;
@@ -1189,7 +1260,7 @@ pub fn execute_remove_partial_liquidity(
     // 13. Send CW20 token (token1) - partial principal + fees
     if !total_amount_1.is_zero() {
         let cw20_msg = WasmMsg::Execute {
-            contract_addr: "YOUR_CW20_CONTRACT_ADDRESS".to_string(), // Replace with actual address
+            contract_addr: config.token_address.to_string(), // Using config.token_address
             msg: to_json_binary(&cw20::Cw20ExecuteMsg::Transfer {
                 recipient: info.sender.to_string(),
                 amount: total_amount_1,
@@ -1228,15 +1299,14 @@ pub fn execute_remove_partial_liquidity_by_percent(
 // Helper function to calculate liquidity for deposits
 fn calc_liquidity_for_deposit(
     deps: Deps,
-    pool_id: u64,
     amount0: Uint128,
     amount1: Uint128,
 ) -> Result<Decimal, ContractError> {
     // Changed return type to Decimal
-    let pool = POOLS.load(deps.storage, pool_id)?;
+    let config = CONFIG.load(deps.storage)?;
 
     // If this is the first deposit (empty pool), use geometric mean
-    if pool.total_liquidity.is_zero() {
+    if config.total_liquidity.is_zero() {
         // First liquidity provider gets sqrt(amount0 * amount1)
         // This is the standard AMM approach (like Uniswap V2)
         let product = amount0.checked_mul(amount1)?;
@@ -1254,7 +1324,7 @@ fn calc_liquidity_for_deposit(
         // Subsequent deposits: maintain proportional share
         // liquidity = min(amount0/reserve0, amount1/reserve1) * total_liquidity
 
-        if pool.reserve0.is_zero() || pool.reserve1.is_zero() {
+        if config.reserve0.is_zero() || config.reserve1.is_zero() {
             return Err(ContractError::InsufficientLiquidity {});
         }
 
@@ -1262,8 +1332,8 @@ fn calc_liquidity_for_deposit(
             return Err(ContractError::InsufficientLiquidity {});
         }
 
-        let optimal_amount1_for_amount0 = (amount0 * pool.reserve1) / pool.reserve0; // "If I use all of amount0, how much amount1 do I need?"
-        let optimal_amount0_for_amount1 = (amount1 * pool.reserve0) / pool.reserve1; // "If I use all of amount1, how much amount0 do I need?"
+        let optimal_amount1_for_amount0 = (amount0 * config.reserve1) / config.reserve0; // "If I use all of amount0, how much amount1 do I need?"
+        let optimal_amount0_for_amount1 = (amount1 * config.reserve0) / config.reserve1; // "If I use all of amount1, how much amount0 do I need?"
 
         let (final_amount0, final_amount1) = if optimal_amount1_for_amount0 <= amount1 {
             // User provided enough amount1, use all of amount0
@@ -1279,7 +1349,7 @@ fn calc_liquidity_for_deposit(
         }
 
         // Calculate liquidity with the adjusted amounts
-        let liquidity_uint = (final_amount0 * pool.total_liquidity) / pool.reserve0;
+        let liquidity_uint = (final_amount0 * config.total_liquidity) / config.reserve0;
 
         if liquidity_uint.is_zero() {
             return Err(ContractError::InsufficientLiquidity {});
@@ -1720,7 +1790,7 @@ fn compute_offer_amount(
 
 fn trigger_threshold_payout(
     storage: &mut dyn Storage,
-    config: &Config,
+    config: &mut Config, // Make it mutable so we can update it
     fee_info: &FeeInfo,
     env: &Env,
 ) -> StdResult<Vec<CosmosMsg>> {
@@ -1746,6 +1816,7 @@ fn trigger_threshold_payout(
         &env.contract.address,
         config.pool_amount + config.commit_limit,
     )?);
+
     let held_amount = config.commit_amount;
     for payer_res in COMMIT_LEDGER.keys(storage, None, None, Order::Ascending) {
         // unwrap the StdResult<Addr> into an Addr
@@ -1764,28 +1835,30 @@ fn trigger_threshold_payout(
     }
     COMMIT_LEDGER.clear(storage);
 
-    // 4. seed the pool with 23 500 native units
+    // 4. seed the pool with 2350 native units
     let denom = match &config.pair_info.asset_infos[0] {
         AssetInfo::NativeToken { denom, .. } => denom,
-        _ => "stake", // fallback if first asset isn’t native
+        _ => "stake", // fallback if first asset isn't native
     };
-    let native_seed = Uint128::new(2350); // 23 500 × 10^6
+    let native_seed = Uint128::new(2350); // Corrected comment
     msgs.push(get_bank_transfer_to_msg(
         &env.contract.address,
         denom,
         native_seed,
     )?);
-    let initial_pool = Pool {
-        pool_id: 0,
-        reserve0: config.commit_limit, // Total native tokens for trading
-        reserve1: config.pool_amount,  // CW20 tokens for trading
-        total_liquidity: Uint128::zero(), // No LP positions created yet
-        fee_growth_global_0: Uint128::zero(),
-        fee_growth_global_1: Uint128::zero(),
-        total_fees_collected_0: Uint128::zero(),
-        total_fees_collected_1: Uint128::zero(),
-    };
-    POOLS.save(storage, 0, &initial_pool)?;
+
+    // 5. Initialize the pool state in CONFIG (instead of creating a new POOLS entry)
+    // Note: The actual reserves will be tracked by token balances
+    // We're just initializing the fee tracking and liquidity state
+    config.total_liquidity = Uint128::zero(); // No LP positions created yet
+    config.fee_growth_global_0 = Decimal::zero();
+    config.fee_growth_global_1 = Decimal::zero();
+    config.total_fees_collected_0 = Uint128::zero();
+    config.total_fees_collected_1 = Uint128::zero();
+
+    // Save the updated config
+    CONFIG.save(storage, config)?;
+
     Ok(msgs)
 }
 /// ## Description
@@ -2005,7 +2078,7 @@ fn mint_tokens(token_addr: &Addr, recipient: &Addr, amount: Uint128) -> StdResul
 pub fn query_check_threshold_limit(deps: Deps) -> StdResult<CommitStatus> {
     let config = CONFIG.load(deps.storage)?;
     let threshold_hit = THRESHOLD_HIT.load(deps.storage)?;
-    
+
     if threshold_hit {
         Ok(CommitStatus::FullyCommitted)
     } else {
@@ -2019,8 +2092,8 @@ pub fn query_check_threshold_limit(deps: Deps) -> StdResult<CommitStatus> {
 
 fn calculate_fees_owed(
     liquidity: Decimal, // Changed to accept Decimal
-    fee_growth_global: Uint128,
-    fee_growth_last: Uint128,
+    fee_growth_global: Decimal,
+    fee_growth_last: Decimal,
 ) -> Uint128 {
     if fee_growth_global >= fee_growth_last {
         let fee_growth_delta = fee_growth_global - fee_growth_last;
@@ -2050,4 +2123,25 @@ pub fn get_cw20_transfer_msg(
 
     let cw20_transfer_msg: CosmosMsg = exec_cw20_transfer_msg.into();
     Ok(cw20_transfer_msg)
+}
+
+fn verify_position_ownership(
+    deps: Deps,
+    nft_contract: &Addr,
+    token_id: &str,
+    expected_owner: &Addr,
+) -> Result<(), ContractError> {
+    let owner_response: cw721::OwnerOfResponse = deps.querier.query_wasm_smart(
+        nft_contract,
+        &cw721::Cw721QueryMsg::OwnerOf {
+            token_id: token_id.to_string(),
+            include_expired: None,
+        },
+    )?;
+
+    if owner_response.owner != expected_owner.to_string() {
+        return Err(ContractError::Unauthorized {});
+    }
+
+    Ok(())
 }

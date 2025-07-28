@@ -35,6 +35,15 @@ pub struct Config {
     pub bluechip_amount: Uint128,
     pub pool_amount: Uint128,
     pub available_payment: Vec<Uint128>,
+    //NFT
+    pub position_nft_address: Addr,
+    pub total_liquidity: Uint128,
+    pub fee_growth_global_0: Decimal,
+    pub fee_growth_global_1: Decimal,
+    pub total_fees_collected_0: Uint128,
+    pub total_fees_collected_1: Uint128,
+    pub reserve0: Uint128,  // native token
+    pub reserve1: Uint128,  // cw20 token
 }
 
 #[cw_serde]
@@ -55,7 +64,6 @@ pub const COMMIT_LEDGER: cw_storage_plus::Map<&Addr, Uint128> = cw_storage_plus:
 pub const SUB_INFO: Map<&Addr, Subscription> = Map::new("sub_info");
 pub const NEXT_POSITION_ID: Item<u64> = Item::new("next_position_id");
 pub const POSITIONS: Map<&str, Position> = Map::new("positions");
-pub const POOLS: Map<u64, Pool> = Map::new("pools");
 
 
 #[cw_serde]
@@ -64,9 +72,7 @@ pub struct Subscription {
     pub total_paid: Uint128,  
 }
 #[cw_serde]
-/// This structure stores the main parameters for an BETFI pair
 pub struct Pool {
-    pub pool_id: u64,
     pub reserve0: Uint128,  // native token
     pub reserve1: Uint128,  // cw20 token
     pub total_liquidity: Uint128,
@@ -90,12 +96,11 @@ pub struct PairInfo {
 
 #[cw_serde]
 pub struct Position {
-    pub pool_id: u64,
     pub liquidity: Decimal,
     pub owner: Addr,
     // optionally: fee‐growth snapshots, etc.
-    pub fee_growth_inside_0_last: Uint128,
-    pub fee_growth_inside_1_last: Uint128,
+    pub fee_growth_inside_0_last: Decimal,
+    pub fee_growth_inside_1_last: Decimal,
     // Timestamps for better tracking
     pub created_at: u64,
     pub last_fee_collection: u64,

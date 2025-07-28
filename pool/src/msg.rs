@@ -27,6 +27,7 @@ pub struct PoolInstantiateMsg {
     pub fee_info: FeeInfo,
     pub commit_limit: Uint128,
     pub commit_limit_usd: Uint128,
+    pub position_nft_address: Addr,
     pub oracle_addr: Addr,
     pub oracle_symbol: String,
     pub token_address: Addr,

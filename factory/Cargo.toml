@@ -35,6 +35,8 @@ integer-sqrt = { workspace = true }
 cw2 = { workspace = true }
 cw20 = { workspace = true }
 cw20-base = { workspace = true }
+cw721 = {workspace = true}
+cw721-base = {workspace = true}
 cosmwasm-std = { workspace = true }
 cosmwasm-storage = { workspace = true }
 cw-storage-plus = { workspace = true }
