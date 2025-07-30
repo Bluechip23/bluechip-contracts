@@ -8,13 +8,14 @@ use crate::msg::{
 };
 use crate::pair::{PairInstantiateMsg, PoolInitParams};
 use crate::state::{
-    Config, CONFIG, SUBSCRIBE, TEMPCREATOR, TEMPNFTADDR, TEMPPAIRINFO, TEMPTOKENADDR,
+    Config, SubscribeInfo, CONFIG, NEXT_POOL_ID, POOLS_BY_ID, SUBSCRIBE, TEMPCREATOR, TEMPNFTADDR,
+    TEMPPAIRINFO, TEMPPOOLID, TEMPTOKENADDR,
 };
 #[cfg(not(feature = "library"))]
 use cosmwasm_std::entry_point;
 use cosmwasm_std::{
-    to_json_binary, Addr, Coin, CosmosMsg, Deps, DepsMut, Env, MessageInfo, Reply, Response,
-    StdError, StdResult, SubMsg, SubMsgResult, Uint128, WasmMsg, Empty,
+    to_json_binary, Addr, Coin, CosmosMsg, Deps, DepsMut, Empty, Env, MessageInfo, Reply, Response,
+    StdError, StdResult, SubMsg, SubMsgResult, Uint128, WasmMsg,
 };
 use cw20::{Cw20ExecuteMsg, MinterResponse};
 use cw721_base::msg::InstantiateMsg as Cw721InstantiateMsg;
@@ -37,7 +38,7 @@ pub fn instantiate(
     cw2::set_contract_version(deps.storage, CONTRACT_NAME, CONTRACT_VERSION)?;
     /* Validate addresses */
     CONFIG.save(deps.storage, &msg.config)?;
-
+    NEXT_POOL_ID.save(deps.storage, &0u64)?;
     Ok(Response::new().add_attribute("action", "init_contract"))
 }
 
@@ -92,7 +93,9 @@ fn execute_create(
     assert_is_admin(deps.as_ref(), info.clone())?;
     let config = CONFIG.load(deps.storage)?;
     let sender = info.sender;
-
+    let pool_id = NEXT_POOL_ID.load(deps.storage)?;
+    NEXT_POOL_ID.save(deps.storage, &(pool_id + 1))?;
+    TEMPPOOLID.save(deps.storage, &pool_id)?;
     TEMPPAIRINFO.save(deps.storage, &pair_msg)?;
     TEMPCREATOR.save(deps.storage, &sender)?;
     let msg = WasmMsg::Instantiate {
@@ -235,11 +238,12 @@ pub fn reply(deps: DepsMut, env: Env, msg: Reply) -> Result<Response, ContractEr
                     }
                 }
             }
-
+            let pool_id = TEMPPOOLID.load(deps.storage)?;
             // Instantiate the pool
             let pool_msg = WasmMsg::Instantiate {
                 code_id: config.pair_id,
                 msg: to_json_binary(&CreatePoolInstantiateMsg {
+                    pool_id,
                     asset_infos: updated_asset_infos,
                     factory_addr: env.contract.address,
                     token_code_id: config.token_id,
@@ -276,6 +280,7 @@ pub fn reply(deps: DepsMut, env: Env, msg: Reply) -> Result<Response, ContractEr
             let temp_creator = TEMPCREATOR.load(deps.storage)?;
             let temp_token_address = TEMPTOKENADDR.load(deps.storage)?;
             let temp_nft_address = TEMPNFTADDR.load(deps.storage)?;
+            let pool_id = TEMPPOOLID.load(deps.storage)?;
 
             let pool_address = match msg.result {
                 SubMsgResult::Ok(result) => {
@@ -306,16 +311,18 @@ pub fn reply(deps: DepsMut, env: Env, msg: Reply) -> Result<Response, ContractEr
             };
 
             // Save subscribe info
-            SUBSCRIBE.save(
-                deps.storage,
-                &temp_creator.to_string(),
-                &crate::state::SubscribeInfo {
-                    creator: temp_creator.clone(),
-                    token_addr: temp_token_address.clone(),
-                    pool_addr: pool_address.clone(),
-                },
-            )?;
+            let subscribe_info = SubscribeInfo {
+                pool_id, // Include the pool_id
+                creator: temp_creator.clone(),
+                token_addr: temp_token_address.clone(),
+                pool_addr: pool_address.clone(),
+            };
 
+            // Save by creator address (existing)
+            SUBSCRIBE.save(deps.storage, &temp_creator.to_string(), &subscribe_info)?;
+
+            // Also save by pool_id for easy lookup
+            POOLS_BY_ID.save(deps.storage, pool_id, &subscribe_info)?;
             // Update CW20 minter
             let update_token_minter = WasmMsg::Execute {
                 contract_addr: temp_token_address.to_string(),
@@ -334,8 +341,8 @@ pub fn reply(deps: DepsMut, env: Env, msg: Reply) -> Result<Response, ContractEr
                 ))?,
                 funds: vec![],
             };
-
             // Clean up temp storage
+            TEMPPOOLID.remove(deps.storage);
             TEMPPAIRINFO.remove(deps.storage);
             TEMPCREATOR.remove(deps.storage);
             TEMPTOKENADDR.remove(deps.storage);
@@ -343,8 +350,10 @@ pub fn reply(deps: DepsMut, env: Env, msg: Reply) -> Result<Response, ContractEr
 
             Ok(Response::new()
                 .add_message(update_token_minter)
+                .add_message(update_nft_ownership)
                 .add_attribute("action", "instantiate_pool_reply")
-                .add_attribute("pool_address", pool_address))
+                .add_attribute("pool_address", pool_address)
+                .add_attribute("pool_id", pool_id.to_string()))
         }
 
         _ => Err(StdError::generic_err(format!("Unknown reply ID: {}", msg.id)).into()),

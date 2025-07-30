@@ -13,6 +13,7 @@ use cw_storage_plus::Map;
 /// This structure stores the main config parameters for a constant product pair contract.
 #[cw_serde]
 pub struct Config {
+    pub pool_id: u64, 
     /// General pair information (e.g pair type)
     pub pair_info: PairInfo,
     /// The factory contract address
@@ -23,6 +24,7 @@ pub struct Config {
     pub price0_cumulative_last: Uint128,
     /// The last cumulative price for asset 1
     pub price1_cumulative_last: Uint128,
+    pub nft_ownership_accepted: bool,
     pub subscription_period: u64,
     pub lp_fee: Decimal,
     pub commit_limit: Uint128,

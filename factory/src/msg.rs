@@ -22,6 +22,7 @@ pub struct FeeInfo {
 
 #[cw_serde]
 pub struct CreatePoolInstantiateMsg {
+    pub pool_id: u64,
     /// Information about the two assets in the pool
     pub asset_infos: [AssetInfo; 2],
     /// The token contract code ID used for the tokens in the pool

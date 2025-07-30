@@ -24,8 +24,8 @@ use crate::state::{
 };
 use cosmwasm_std::{
     entry_point, from_json, to_json_binary, Addr, BankMsg, Binary, Coin, CosmosMsg, Decimal,
-    Decimal256, Deps, DepsMut, Env, Fraction, MessageInfo, Order, QuerierWrapper, Reply, Response,
-    StdError, StdResult, Storage, SubMsgResult, Uint128, Uint256, WasmMsg,
+    Decimal256, Deps, DepsMut, Empty, Env, Fraction, MessageInfo, Order, QuerierWrapper, Reply,
+    Response, StdError, StdResult, Storage, SubMsgResult, Uint128, Uint256, WasmMsg,
 };
 use cw2::{get_contract_version, set_contract_version};
 use cw20::{Cw20ExecuteMsg, Cw20ReceiveMsg};
@@ -85,6 +85,7 @@ pub fn instantiate(
     };
 
     let config = Config {
+        pool_id: msg.pool_id.clone(),
         pair_info: PairInfo {
             contract_addr: env.contract.address.clone(),
             liquidity_token: Addr::unchecked(""),
@@ -112,6 +113,7 @@ pub fn instantiate(
         commit_amount: pool_params.commit_amount,
         token_address: msg.token_address.clone(),
         available_payment: msg.available_payment.clone(),
+        nft_ownership_accepted: false,
         total_liquidity: Uint128::zero(),
         fee_growth_global_0: Decimal::zero(),
         fee_growth_global_1: Decimal::zero(),
@@ -177,7 +179,6 @@ pub fn execute(
 
         // ── NEW: NFT-based liquidity management ──────────────────
         ExecuteMsg::DepositLiquidity {
-            pool_id,
             amount0,
             amount1,
         } => {
@@ -186,7 +187,7 @@ pub fn execute(
                 return Err(ContractError::ShortOfThreshold {});
             }
             let sender = info.sender.clone();
-            execute_deposit_liquidity(deps, env, info, sender, pool_id, amount0, amount1)
+            execute_deposit_liquidity(deps, env, info, sender, amount0, amount1)
         }
 
         ExecuteMsg::AddToPosition {
@@ -317,12 +318,11 @@ pub fn receive_cw20(
                 to_addr,
             )
         }
-        Ok(Cw20HookMsg::DepositLiquidity { pool_id, amount0 }) => execute_deposit_liquidity(
+        Ok(Cw20HookMsg::DepositLiquidity { amount0 }) => execute_deposit_liquidity(
             deps,
             env,
             info,
             Addr::unchecked(cw20_msg.sender),
-            pool_id,
             amount0,
             cw20_msg.amount,
         ),
@@ -614,36 +614,6 @@ pub fn commit(
                     .add_attribute("subscriber", sender)
                     .add_attribute("commit_amount", asset.amount.to_string()));
             }
-            //after threshold - still accounts for the 6% fees.
-            /*let net_amount = asset
-                .amount
-                .checked_sub(bluechip_fee_amt + creator_fee_amt)?;
-            let offer_asset = Asset {
-                info: AssetInfo::NativeToken {
-                    denom: denom.clone(),
-                },
-                amount: net_amount,
-            };
-            messages.push(CosmosMsg::Wasm(WasmMsg::Execute {
-                contract_addr: env.contract.address.to_string(),
-                msg: to_json_binary(&ExecuteMsg::SimpleSwap {
-                    offer_asset,
-                    belief_price: None,
-                    max_spread: None,
-                    to: Some(sender.to_string()),
-                })?,
-                funds: vec![],
-            }));
-            // record / extend 30-day expiry
-            let new_expiry = env.block.time.plus_seconds(config.subscription_period);
-            SUB_INFO.save(
-                deps.storage,
-                &sender,
-                &Subscription {
-                    expires: new_expiry,
-                    total_paid: asset.amount,
-                },
-            )?; */
             // After threshold - still accounts for the 6% fees.
             let net_amount = asset
                 .amount
@@ -753,7 +723,6 @@ pub fn execute_deposit_liquidity(
     env: Env,
     info: MessageInfo,
     user: Addr,
-    pool_id: u64,
     amount0: Uint128, // native amount
     amount1: Uint128, // CW20 amount
 ) -> Result<Response, ContractError> {
@@ -788,7 +757,18 @@ pub fn execute_deposit_liquidity(
         };
         messages.push(CosmosMsg::Wasm(transfer_cw20_msg));
     }
-
+    if !config.nft_ownership_accepted {
+        let accept_msg = WasmMsg::Execute {
+            contract_addr: config.position_nft_address.to_string(),
+            msg: to_json_binary(&cw721_base::ExecuteMsg::<Empty, Empty>::UpdateOwnership(
+                cw721_base::Action::AcceptOwnership {},
+            ))?,
+            funds: vec![],
+        };
+        messages.push(CosmosMsg::Wasm(accept_msg)); // Add to messages
+        config.nft_ownership_accepted = true;
+        // Don't return here! Continue with the deposit
+    }
     // 4. Compute liquidity amount
     let liquidity = calc_liquidity_for_deposit(deps.as_ref(), amount0, amount1)?;
 
@@ -801,7 +781,7 @@ pub fn execute_deposit_liquidity(
     // 6. Create NFT metadata with position info
     let metadata = TokenMetadata {
         name: Some(format!("LP Position #{}", position_id)),
-        description: Some(format!("Pool {} Liquidity Position", pool_id)),
+        description: Some(format!("Pool Liquidity Position")),
     };
 
     // 7. Mint the NFT on the external NFT contract
@@ -841,7 +821,7 @@ pub fn execute_deposit_liquidity(
         .add_attribute("position_id", position_id)
         .add_attribute("depositor", user)
         .add_attribute("liquidity", liquidity.to_string())
-        .add_attribute("pool_id", pool_id.to_string()))
+        )
 }
 
 pub fn execute_collect_fees(
@@ -954,6 +934,19 @@ pub fn execute_add_to_position(
 
     // 4. Load position
     let mut position = POSITIONS.load(deps.storage, &position_id)?;
+    let mut messages: Vec<CosmosMsg> = vec![];
+    if !amount1.is_zero() {
+        let transfer_cw20_msg = WasmMsg::Execute {
+            contract_addr: config.token_address.to_string(),
+            msg: to_json_binary(&cw20::Cw20ExecuteMsg::TransferFrom {
+                owner: info.sender.to_string(),
+                recipient: env.contract.address.to_string(),
+                amount: amount1,
+            })?,
+            funds: vec![],
+        };
+        messages.push(CosmosMsg::Wasm(transfer_cw20_msg));
+    }
 
     // 5. Calculate any pending fees FIRST (before diluting the position)
     let fees_owed_0 = calculate_fees_owed(
@@ -989,6 +982,7 @@ pub fn execute_add_to_position(
 
     // 10. Prepare response
     let mut response = Response::new()
+        .add_messages(messages)
         .add_attribute("action", "add_to_position")
         .add_attribute("position_id", position_id)
         .add_attribute("additional_liquidity", additional_liquidity.to_string())

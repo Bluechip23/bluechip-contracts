@@ -16,6 +16,7 @@ pub const TWAP_PRECISION: u8 = 6;
 /// This structure describes the parameters used for creating a contract.
 #[cw_serde]
 pub struct PoolInstantiateMsg {
+    pub pool_id: u64,
     /// Information about the two assets in the pool
     pub asset_infos: [AssetInfo; 2],
     /// The token contract code ID used for the tokens in the pool
@@ -71,7 +72,6 @@ pub enum ExecuteMsg {
         amount: Uint128,
     },
     DepositLiquidity {
-        pool_id: u64,
         amount0: Uint128,
         amount1: Uint128,
     },
@@ -112,7 +112,6 @@ pub enum Cw20HookMsg {
         to: Option<String>,
     },
     DepositLiquidity {
-        pool_id: u64,
         amount0: Uint128, // native amount (should be sent with the message)
     },
     AddToPosition {
