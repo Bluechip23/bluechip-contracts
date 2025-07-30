@@ -1,6 +1,6 @@
 use cosmwasm_schema::{cw_serde, QueryResponses};
 
-use crate::asset::{Asset, AssetInfo, PairInfo};
+use crate::asset::{Asset, AssetInfo, PairInfo, PaymentInfoResponse};
 use crate::state::Subscription;
 use cosmwasm_std::{Addr, Binary, Decimal, Uint128};
 use cw20::Cw20ReceiveMsg;
@@ -100,6 +100,17 @@ pub enum ExecuteMsg {
         position_id: String,
         liquidity: Uint128,
     },
+    UpdatePaymentTiers {
+        new_payment_tiers: Vec<Uint128>,
+    },
+     AddPaymentTiers {
+        tiers_to_add: Vec<Uint128>,
+    },
+    
+    /// Remove specific payment tiers - only callable by creator
+    RemovePaymentTiers {
+        tiers_to_remove: Vec<Uint128>,
+    },
 }
 
 /// This structure describes a CW20 hook message.
@@ -124,6 +135,8 @@ pub enum Cw20HookMsg {
 #[cw_serde]
 #[derive(QueryResponses)]
 pub enum QueryMsg {
+    #[returns(PaymentInfoResponse)]
+    PaymentInfo {},
     /// Returns information about a pair in an object of type [`super::asset::PairInfo`].
     #[returns(PairInfo)]
     Pair {},
@@ -171,6 +184,7 @@ pub struct ConfigResponse {
     /// The pool's parameters
     pub params: Option<Binary>,
 }
+
 #[cw_serde]
 pub struct SubscriptionResponse {}
 /// This structure holds the parameters that are returned from a swap simulation response

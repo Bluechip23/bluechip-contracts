@@ -1,5 +1,5 @@
 #![allow(non_snake_case)]
-use crate::asset::{pool_info, Asset, AssetInfo, PairType};
+use crate::asset::{pool_info, Asset, AssetInfo, PairType, PaymentInfoResponse};
 use crate::error::ContractError;
 use crate::msg::{
     CommitStatus, ConfigResponse, CumulativePricesResponse, Cw20HookMsg, ExecuteMsg, FeeInfo,
@@ -224,6 +224,19 @@ pub fn execute(
             position_id,
             liquidity: _,
         } => execute_remove_liquidity(deps, env, info, position_id),
+
+        ExecuteMsg::UpdatePaymentTiers { new_payment_tiers } => {
+            execute_update_payment_tiers(deps, env, info, new_payment_tiers)
+        },
+        
+        ExecuteMsg::AddPaymentTiers { tiers_to_add } => {
+            execute_add_payment_tiers(deps, env, info, tiers_to_add)
+        },
+        
+        ExecuteMsg::RemovePaymentTiers { tiers_to_remove } => {
+            execute_remove_payment_tiers(deps, env, info, tiers_to_remove)
+        },
+        
     }
 }
 
@@ -1475,6 +1488,7 @@ pub fn calculate_maker_fee(
 #[cfg_attr(not(feature = "library"), entry_point)]
 pub fn query(deps: Deps, env: Env, msg: QueryMsg) -> StdResult<Binary> {
     match msg {
+        QueryMsg::PaymentInfo {} => to_json_binary(&query_payment_info(deps)?),
         QueryMsg::Pair {} => to_json_binary(&query_pair_info(deps)?),
         QueryMsg::Pool {} => to_json_binary(&query_pool(deps)?),
         QueryMsg::Simulation { offer_asset } => {
@@ -1510,7 +1524,15 @@ pub fn query_pair_info(deps: Deps) -> StdResult<PairInfo> {
     let config: Config = CONFIG.load(deps.storage)?;
     Ok(config.pair_info)
 }
-
+pub fn query_payment_info(deps: Deps) -> StdResult<PaymentInfoResponse> {
+    let config = CONFIG.load(deps.storage)?;
+    let fee_info = FEEINFO.load(deps.storage)?;
+    
+    Ok(PaymentInfoResponse {
+        creator: fee_info.creator_address,
+        available_payment_tiers: config.available_payment,
+    })
+}
 /// ## Description
 /// Returns the amounts of assets in the pair contract as well as the amount of LP
 /// tokens currently minted in an object of type [`PoolResponse`].
@@ -2138,4 +2160,139 @@ fn verify_position_ownership(
     }
 
     Ok(())
+}
+
+pub fn execute_update_payment_tiers(
+    deps: DepsMut,
+    _env: Env,
+    info: MessageInfo,
+    new_payment_tiers: Vec<Uint128>,
+) -> Result<Response, ContractError> {
+    // Load fee info to get creator address
+    let fee_info = FEEINFO.load(deps.storage)?;
+    
+    // Check if sender is the creator
+    if info.sender != fee_info.creator_address {
+        return Err(ContractError::UnauthorizedNotCreator {});
+    }
+    
+    // Validate payment tiers
+    if new_payment_tiers.is_empty() {
+        return Err(ContractError::InvalidPaymentTiers {});
+    }
+    
+    // Check for duplicates
+    let mut unique_tiers = new_payment_tiers.clone();
+    unique_tiers.sort();
+    unique_tiers.dedup();
+    if unique_tiers.len() != new_payment_tiers.len() {
+        return Err(ContractError::Std(StdError::generic_err(
+            "Duplicate payment tiers not allowed"
+        )));
+    }
+    
+    // Update the config with new payment tiers
+    CONFIG.update(deps.storage, |mut config| -> Result<_, ContractError> {
+        config.available_payment = new_payment_tiers.clone();
+        Ok(config)
+    })?;
+    
+    Ok(Response::new()
+        .add_attribute("action", "update_payment_tiers")
+        .add_attribute("creator", fee_info.creator_address)
+        .add_attribute("new_tiers", format!("{:?}", new_payment_tiers)))
+}
+
+// Add new payment tiers to existing ones
+pub fn execute_add_payment_tiers(
+    deps: DepsMut,
+    _env: Env,
+    info: MessageInfo,
+    tiers_to_add: Vec<Uint128>,
+) -> Result<Response, ContractError> {
+    // Load fee info to get creator address
+    let fee_info = FEEINFO.load(deps.storage)?;
+    
+    // Check if sender is the creator
+    if info.sender != fee_info.creator_address {
+        return Err(ContractError::UnauthorizedNotCreator {});
+    }
+    
+    if tiers_to_add.is_empty() {
+        return Err(ContractError::Std(StdError::generic_err(
+            "No tiers to add"
+        )));
+    }
+    
+    // Update the config
+    CONFIG.update(deps.storage, |mut config| -> Result<_, ContractError> {
+        // Add new tiers
+        config.available_payment.extend(tiers_to_add.clone());
+        
+        // Remove duplicates while preserving order
+        config.available_payment.sort();
+        config.available_payment.dedup();
+        
+        // Ensure we still have at least one tier
+        if config.available_payment.is_empty() {
+            return Err(ContractError::InvalidPaymentTiers {});
+        }
+        
+        Ok(config)
+    })?;
+    
+    Ok(Response::new()
+        .add_attribute("action", "add_payment_tiers")
+        .add_attribute("creator", fee_info.creator_address)
+        .add_attribute("added_tiers", format!("{:?}", tiers_to_add)))
+}
+
+// Remove specific payment tiers
+pub fn execute_remove_payment_tiers(
+    deps: DepsMut,
+    _env: Env,
+    info: MessageInfo,
+    tiers_to_remove: Vec<Uint128>,
+) -> Result<Response, ContractError> {
+    // Load fee info to get creator address
+    let fee_info = FEEINFO.load(deps.storage)?;
+    
+    // Check if sender is the creator
+    if info.sender != fee_info.creator_address {
+        return Err(ContractError::UnauthorizedNotCreator {});
+    }
+    
+    if tiers_to_remove.is_empty() {
+        return Err(ContractError::Std(StdError::generic_err(
+            "No tiers to remove"
+        )));
+    }
+    
+    // Get initial count
+    let initial_count = CONFIG.load(deps.storage)?.available_payment.len();
+    
+    // Update the config
+    CONFIG.update(deps.storage, |mut config| -> Result<_, ContractError> {
+        // Remove specified tiers
+        config.available_payment.retain(|tier| !tiers_to_remove.contains(tier));
+        
+        // Ensure we still have at least one tier
+        if config.available_payment.is_empty() {
+            return Err(ContractError::Std(StdError::generic_err(
+                "Cannot remove all payment tiers - at least one must remain"
+            )));
+        }
+        
+        Ok(config)
+    })?;
+    
+    // Calculate how many were actually removed
+    let final_count = CONFIG.load(deps.storage)?.available_payment.len();
+    let removed_count = initial_count - final_count;
+    
+    Ok(Response::new()
+        .add_attribute("action", "remove_payment_tiers")
+        .add_attribute("creator", fee_info.creator_address)
+        .add_attribute("removed_tiers", format!("{:?}", tiers_to_remove))
+        .add_attribute("removed_count", removed_count.to_string()))
 }
