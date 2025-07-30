@@ -185,14 +185,7 @@ impl CoinsExt for Vec<Coin> {
     }
 }
 
-/// This enum describes available Token types.
-/// ## Examples
-/// ```
-/// # use cosmwasm_std::Addr;
-/// # use betfi::asset::AssetInfo::{NativeToken, Token};
-/// Token { contract_addr: Addr::unchecked("stake...") };
-/// NativeToken { denom: String::from("uluna") };
-/// ```
+
 #[cw_serde]
 pub enum AssetInfo {
     /// Non-native Token

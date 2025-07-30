@@ -1,25 +1,31 @@
 use std::env;
 
+use crate::asset::AssetInfo;
 use crate::error::ContractError;
-use crate::msg::{ExecuteMsg, InstantiateMsg, MigrateMsg, TokenInfo, TokenInstantiateMsg};
-use crate::pair::{FeeInfo, InstantiateMsg as PairInstantiateMsg};
-use crate::response::MsgInstantiateContractResponse;
+use crate::msg::{
+    CreatePoolInstantiateMsg, ExecuteMsg, FeeInfo, MigrateMsg, OfficialInstantiateMsg, TokenInfo,
+    TokenInstantiateMsg,
+};
+use crate::pair::{PairInstantiateMsg, PoolInitParams};
 use crate::state::{
-    Config, SubscribeInfo, CONFIG, SUBSCRIBE, TEMPCREATOR, TEMPPAIRINFO, TEMPTOKENADDR,
+    Config, SubscribeInfo, CONFIG, NEXT_POOL_ID, POOLS_BY_ID, SUBSCRIBE, TEMPCREATOR, TEMPNFTADDR,
+    TEMPPAIRINFO, TEMPPOOLID, TEMPTOKENADDR,
 };
 #[cfg(not(feature = "library"))]
 use cosmwasm_std::entry_point;
 use cosmwasm_std::{
-    to_json_binary, Addr, Coin, CosmosMsg, Deps, DepsMut, Env, MessageInfo, Reply, ReplyOn, Response,
-    StdError, StdResult, SubMsg, Uint128, WasmMsg,
+    to_json_binary, Addr, Coin, CosmosMsg, Deps, DepsMut, Empty, Env, MessageInfo, Reply, Response,
+    StdError, StdResult, SubMsg, SubMsgResult, Uint128, WasmMsg,
 };
 use cw20::{Cw20ExecuteMsg, MinterResponse};
-use protobuf::Message;
+use cw721_base::msg::InstantiateMsg as Cw721InstantiateMsg;
+use cw721_base::Action;
 
 const CONTRACT_NAME: &str = "bluechip_factory";
 const CONTRACT_VERSION: &str = env!("CARGO_PKG_VERSION");
 
 const INSTANTIATE_TOKEN_REPLY_ID: u64 = 1;
+const INSTANTIATE_NFT_REPLY_ID: u64 = 3;
 const INSTANTIATE_POOL_REPLY_ID: u64 = 2;
 
 #[cfg_attr(not(feature = "library"), entry_point)]
@@ -27,12 +33,12 @@ pub fn instantiate(
     deps: DepsMut,
     _env: Env,
     _info: MessageInfo,
-    msg: InstantiateMsg,
+    msg: OfficialInstantiateMsg,
 ) -> Result<Response, ContractError> {
     cw2::set_contract_version(deps.storage, CONTRACT_NAME, CONTRACT_VERSION)?;
     /* Validate addresses */
     CONFIG.save(deps.storage, &msg.config)?;
-
+    NEXT_POOL_ID.save(deps.storage, &0u64)?;
     Ok(Response::new().add_attribute("action", "init_contract"))
 }
 
@@ -72,15 +78,6 @@ fn execute_update_config(
 ) -> Result<Response, ContractError> {
     assert_is_admin(deps.as_ref(), info)?;
 
-    if config.total_token_amount
-        != config.bluechip_amount
-            + config.pool_amount
-            + config.creator_amount
-            + config.commit_amount
-    {
-        return Err(ContractError::WrongConfiguration {});
-    }
-
     CONFIG.save(deps.storage, &config)?;
 
     Ok(Response::new().add_attribute("action", "update_config"))
@@ -96,7 +93,9 @@ fn execute_create(
     assert_is_admin(deps.as_ref(), info.clone())?;
     let config = CONFIG.load(deps.storage)?;
     let sender = info.sender;
-
+    let pool_id = NEXT_POOL_ID.load(deps.storage)?;
+    NEXT_POOL_ID.save(deps.storage, &(pool_id + 1))?;
+    TEMPPOOLID.save(deps.storage, &pool_id)?;
     TEMPPAIRINFO.save(deps.storage, &pair_msg)?;
     TEMPCREATOR.save(deps.storage, &sender)?;
     let msg = WasmMsg::Instantiate {
@@ -108,7 +107,7 @@ fn execute_create(
             initial_balances: vec![],
             mint: Some(MinterResponse {
                 minter: env.contract.address.to_string(),
-                cap: Some(config.total_token_amount),
+                cap: None,
             }),
             marketing: None,
         })?,
@@ -117,13 +116,7 @@ fn execute_create(
         label: token_info.name,
     };
 
-    let sub_msg: Vec<SubMsg> = vec![SubMsg {
-        msg: msg.clone().into(),
-        id: INSTANTIATE_TOKEN_REPLY_ID,
-        gas_limit: None,
-        reply_on: ReplyOn::Success,
-        payload: to_json_binary(&msg)?,
-    }];
+    let sub_msg = vec![SubMsg::reply_on_success(msg, INSTANTIATE_TOKEN_REPLY_ID)];
 
     Ok(Response::new()
         .add_attribute("action", "create")
@@ -131,103 +124,238 @@ fn execute_create(
         .add_submessages(sub_msg))
 }
 
-#[cfg_attr(not(feature = "library"), entry_point)]
+#[entry_point]
 pub fn reply(deps: DepsMut, env: Env, msg: Reply) -> Result<Response, ContractError> {
     match msg.id {
         INSTANTIATE_TOKEN_REPLY_ID => {
             let config = CONFIG.load(deps.storage)?;
-            let temp_pool_info = TEMPPAIRINFO.load(deps.storage)?;
-            let temp_creator = TEMPCREATOR.load(deps.storage)?;
-            let res: MsgInstantiateContractResponse = Message::parse_from_bytes(
-                msg.result.unwrap().msg_responses[0].value.as_slice()
-            ).map_err(|_| {
-                StdError::parse_err("MsgInstantiateContractResponse", "failed to parse data")
+
+            // Extract token address from reply
+            let token_address = match msg.result {
+                SubMsgResult::Ok(result) => {
+                    let contract_addr = result
+                        .events
+                        .iter()
+                        .find(|event| event.ty == "instantiate")
+                        .and_then(|event| {
+                            event
+                                .attributes
+                                .iter()
+                                .find(|attr| attr.key == "_contract_address")
+                                .map(|attr| attr.value.clone())
+                        })
+                        .ok_or_else(|| {
+                            StdError::generic_err("Contract address not found in events")
+                        })?;
+
+                    deps.api.addr_validate(&contract_addr)?
+                }
+                SubMsgResult::Err(err) => {
+                    return Err(StdError::generic_err(format!(
+                        "Token instantiation failed: {}",
+                        err
+                    ))
+                    .into())
+                }
+            };
+
+            // Save token address
+            TEMPTOKENADDR.save(deps.storage, &token_address)?;
+
+            // Create NFT instantiate message
+            let nft_instantiate_msg = to_json_binary(&Cw721InstantiateMsg {
+                name: "AMM LP Positions".to_string(),
+                symbol: "AMM-LP".to_string(),
+                minter: env.contract.address.to_string(),
             })?;
 
-            let token_address = deps.api.addr_validate(res.get_contract_address())?;
-            TEMPTOKENADDR.save(deps.storage, &token_address)?;
-            let msg = WasmMsg::Instantiate {
+            let nft_msg = WasmMsg::Instantiate {
+                code_id: config.position_nft_id,
+                msg: nft_instantiate_msg,
+                funds: vec![],
+                admin: None,
+                label: format!("AMM-LP-NFT-{}", token_address),
+            };
+
+            let sub_msg = SubMsg::reply_on_success(nft_msg, INSTANTIATE_NFT_REPLY_ID);
+
+            Ok(Response::new()
+                .add_attribute("action", "instantiate_token_reply")
+                .add_attribute("token_address", token_address)
+                .add_submessage(sub_msg))
+        }
+
+        INSTANTIATE_NFT_REPLY_ID => {
+            let config = CONFIG.load(deps.storage)?;
+            let temp_pool_info = TEMPPAIRINFO.load(deps.storage)?;
+            let temp_creator = TEMPCREATOR.load(deps.storage)?;
+            let token_address = TEMPTOKENADDR.load(deps.storage)?;
+
+            // Extract NFT address from reply
+            let nft_address = match msg.result {
+                SubMsgResult::Ok(result) => {
+                    let contract_addr = result
+                        .events
+                        .iter()
+                        .find(|event| event.ty == "instantiate")
+                        .and_then(|event| {
+                            event
+                                .attributes
+                                .iter()
+                                .find(|attr| attr.key == "_contract_address")
+                                .map(|attr| attr.value.clone())
+                        })
+                        .ok_or_else(|| {
+                            StdError::generic_err("NFT contract address not found in events")
+                        })?;
+
+                    deps.api.addr_validate(&contract_addr)?
+                }
+                SubMsgResult::Err(err) => {
+                    return Err(
+                        StdError::generic_err(format!("NFT instantiation failed: {}", err)).into(),
+                    )
+                }
+            };
+
+            // Save NFT address
+            TEMPNFTADDR.save(deps.storage, &nft_address)?;
+
+            // Prepare pool instantiation (your existing code)
+            let pool_init_params = PoolInitParams {
+                creator_amount: Uint128::new(325_000_000_000),
+                bluechip_amount: Uint128::new(25_000_000_000),
+                pool_amount: Uint128::new(350_000_000_000),
+                commit_amount: Uint128::new(500_000_000_000),
+            };
+            let init_params_binary = to_json_binary(&pool_init_params)?;
+
+            let mut updated_asset_infos = temp_pool_info.asset_infos;
+            for asset_info in updated_asset_infos.iter_mut() {
+                if let AssetInfo::Token { contract_addr } = asset_info {
+                    if contract_addr.as_str() == "WILL_BE_CREATED_BY_FACTORY" {
+                        *contract_addr = token_address.clone();
+                    }
+                }
+            }
+            let pool_id = TEMPPOOLID.load(deps.storage)?;
+            // Instantiate the pool
+            let pool_msg = WasmMsg::Instantiate {
                 code_id: config.pair_id,
-                msg: to_json_binary(&PairInstantiateMsg {
-                    asset_infos: temp_pool_info.asset_infos,
-                    factory_addr: env.contract.address.to_string(),
+                msg: to_json_binary(&CreatePoolInstantiateMsg {
+                    pool_id,
+                    asset_infos: updated_asset_infos,
+                    factory_addr: env.contract.address,
                     token_code_id: config.token_id,
-                    init_params: None,
+                    init_params: Some(init_params_binary),
                     fee_info: FeeInfo {
-                        bluechip_address: config.bluechip_address,
-                        creator_address: temp_creator,
+                        bluechip_address: config.bluechip_address.clone(),
+                        creator_address: temp_creator.clone(),
                         bluechip_fee: config.bluechipe_fee,
                         creator_fee: config.creator_fee,
                     },
-                    commit_amount: config.commit_amount,
                     commit_limit_usd: config.commit_limit_usd,
-                    commit_limit: config.commit_limit, 
-                    creator_amount:   config.creator_amount,
-                    bluechip_amount:  config.bluechip_amount,
-                    pool_amount:      config.pool_amount,
-                    oracle_addr:   config.oracle_addr.clone(),
+                    commit_limit: config.commit_limit,
+                    oracle_addr: config.oracle_addr.clone(),
                     oracle_symbol: config.oracle_symbol.clone(),
-                    token_address: token_address.clone(),
+                    token_address: token_address,
+                    position_nft_address: nft_address.clone(),
+                    available_payment: temp_pool_info.available_payment,
                 })?,
                 funds: vec![],
                 admin: None,
                 label: "Pair".to_string(),
             };
-            let sub_msg: Vec<SubMsg> = vec![SubMsg {
-                msg: msg.clone().into(),
-                id: INSTANTIATE_POOL_REPLY_ID,
-                gas_limit: None,
-                reply_on: ReplyOn::Success,
-                payload: to_json_binary(&msg)?,
-            }];
+
+            let sub_msg = SubMsg::reply_on_success(pool_msg, INSTANTIATE_POOL_REPLY_ID);
 
             Ok(Response::new()
-                .add_attribute("token_address", token_address)
-                .add_submessages(sub_msg))
+                .add_attribute("action", "instantiate_nft_reply")
+                .add_attribute("nft_address", nft_address)
+                .add_submessage(sub_msg))
         }
-        INSTANTIATE_POOL_REPLY_ID => {
-            let config = CONFIG.load(deps.storage)?;
-            let res: MsgInstantiateContractResponse = Message::parse_from_bytes(
-                msg.result.unwrap().msg_responses[0].value.as_slice()
-            ).map_err(|_| {
-                StdError::parse_err("MsgInstantiateContractResponse", "failed to parse data")
-            })?;
 
-            let pool_address = deps.api.addr_validate(res.get_contract_address())?;
+        INSTANTIATE_POOL_REPLY_ID => {
+            // Your existing pool reply code - just add NFT minter update
             let temp_creator = TEMPCREATOR.load(deps.storage)?;
             let temp_token_address = TEMPTOKENADDR.load(deps.storage)?;
+            let temp_nft_address = TEMPNFTADDR.load(deps.storage)?;
+            let pool_id = TEMPPOOLID.load(deps.storage)?;
 
-            SUBSCRIBE.save(
-                deps.storage,
-                &temp_creator.to_string(),
-                &SubscribeInfo {
-                    creator: temp_creator.clone(),
-                    token_addr: temp_token_address.clone(),
-                    pool_addr: pool_address.clone(),
-                },
-            )?;
+            let pool_address = match msg.result {
+                SubMsgResult::Ok(result) => {
+                    let contract_addr = result
+                        .events
+                        .iter()
+                        .find(|event| event.ty == "instantiate")
+                        .and_then(|event| {
+                            event
+                                .attributes
+                                .iter()
+                                .find(|attr| attr.key == "_contract_address")
+                                .map(|attr| attr.value.clone())
+                        })
+                        .ok_or_else(|| {
+                            StdError::generic_err("Contract address not found in events")
+                        })?;
 
-            let mut messages: Vec<CosmosMsg> = Vec::new();
-            let creator_mint_msg =
-                mint_tokens(&temp_token_address, &temp_creator, config.creator_amount)?;
-            messages.push(creator_mint_msg);
-            let bluechip_mint_msg = mint_tokens(
-                &temp_token_address,
-                &config.bluechip_address,
-                config.bluechip_amount,
-            )?;
-            messages.push(bluechip_mint_msg);
-            let pool_mint_msg = mint_tokens(
-                &temp_token_address,
-                &pool_address,
-                config.commit_amount + config.pool_amount,
-            )?;
-            messages.push(pool_mint_msg);
+                    deps.api.addr_validate(&contract_addr)?
+                }
+                SubMsgResult::Err(err) => {
+                    return Err(StdError::generic_err(format!(
+                        "Pool instantiation failed: {}",
+                        err
+                    ))
+                    .into())
+                }
+            };
+
+            // Save subscribe info
+            let subscribe_info = SubscribeInfo {
+                pool_id, // Include the pool_id
+                creator: temp_creator.clone(),
+                token_addr: temp_token_address.clone(),
+                pool_addr: pool_address.clone(),
+            };
+
+            // Save by creator address (existing)
+            SUBSCRIBE.save(deps.storage, &temp_creator.to_string(), &subscribe_info)?;
+
+            // Also save by pool_id for easy lookup
+            POOLS_BY_ID.save(deps.storage, pool_id, &subscribe_info)?;
+            // Update CW20 minter
+            let update_token_minter = WasmMsg::Execute {
+                contract_addr: temp_token_address.to_string(),
+                msg: to_json_binary(&Cw20ExecuteMsg::UpdateMinter {
+                    new_minter: Some(pool_address.to_string()),
+                })?,
+                funds: vec![],
+            };
+            let update_nft_ownership = WasmMsg::Execute {
+                contract_addr: temp_nft_address.to_string(),
+                msg: to_json_binary(&cw721_base::ExecuteMsg::<Empty, Empty>::UpdateOwnership(
+                    Action::TransferOwnership {
+                        new_owner: pool_address.to_string(),
+                        expiry: None,
+                    },
+                ))?,
+                funds: vec![],
+            };
+            // Clean up temp storage
+            TEMPPOOLID.remove(deps.storage);
+            TEMPPAIRINFO.remove(deps.storage);
+            TEMPCREATOR.remove(deps.storage);
+            TEMPTOKENADDR.remove(deps.storage);
+            TEMPNFTADDR.remove(deps.storage);
 
             Ok(Response::new()
+                .add_message(update_token_minter)
+                .add_message(update_nft_ownership)
+                .add_attribute("action", "instantiate_pool_reply")
                 .add_attribute("pool_address", pool_address)
-                .add_messages(messages))
+                .add_attribute("pool_id", pool_id.to_string()))
         }
+
         _ => Err(StdError::generic_err(format!("Unknown reply ID: {}", msg.id)).into()),
     }
 }

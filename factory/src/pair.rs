@@ -15,25 +15,30 @@ pub const TWAP_PRECISION: u8 = 6;
 
 /// This structure describes the parameters used for creating a contract.
 #[cw_serde]
-pub struct InstantiateMsg {
+pub struct PairInstantiateMsg {
     /// Information about the two assets in the pool
     pub asset_infos: [AssetInfo; 2],
     /// The token contract code ID used for the tokens in the pool
     pub token_code_id: u64,
     /// The factory contract address
-    pub factory_addr: String,
+    pub factory_addr: Addr,
     /// Optional binary serialised parameters for custom pool types
     pub init_params: Option<Binary>,
     pub fee_info: FeeInfo,
     pub commit_limit: Uint128,
-    pub commit_amount: Uint128,
     pub token_address: Addr,
     pub commit_limit_usd: Uint128,
+    pub oracle_addr: Addr,     
+    pub oracle_symbol: String,
+    pub available_payment: Vec<Uint128>,
+}
+
+#[cw_serde]
+pub struct PoolInitParams {
     pub creator_amount: Uint128,
     pub bluechip_amount: Uint128,
     pub pool_amount: Uint128,
-    pub oracle_addr: Addr,     
-    pub oracle_symbol: String,  
+    pub commit_amount: Uint128,
 }
 
 #[cw_serde]
@@ -81,7 +86,7 @@ pub enum Cw20HookMsg {
 #[cw_serde]
 #[derive(QueryResponses)]
 pub enum QueryMsg {
-    /// Returns information about a pair in an object of type [`super::asset::PairInfo`].
+    
     #[returns(PairInfo)]
     Pair {},
     /// Returns information about a pool in an object of type [`PoolResponse`].
@@ -104,7 +109,7 @@ pub enum QueryMsg {
     #[returns(FeeInfoResponse)]
     FeeInfo {},
 
-    #[returns(bool)]
+    #[returns(CommitStatus)]
     IsFullyCommited {},
 }
 
@@ -187,4 +192,9 @@ pub struct StablePoolConfig {
 pub enum StablePoolUpdateParams {
     StartChangingAmp { next_amp: u64, next_amp_time: u64 },
     StopChangingAmp {},
+}
+#[cw_serde]
+pub enum CommitStatus {
+    InProgress { raised: Uint128, target: Uint128 },
+    FullyCommitted,
 }

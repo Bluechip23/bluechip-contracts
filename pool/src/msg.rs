@@ -1,7 +1,7 @@
 use cosmwasm_schema::{cw_serde, QueryResponses};
 
 use crate::asset::{Asset, AssetInfo, PairInfo};
-
+use crate::state::Subscription;
 use cosmwasm_std::{Addr, Binary, Decimal, Uint128};
 use cw20::Cw20ReceiveMsg;
 
@@ -15,7 +15,8 @@ pub const TWAP_PRECISION: u8 = 6;
 
 /// This structure describes the parameters used for creating a contract.
 #[cw_serde]
-pub struct InstantiateMsg {
+pub struct PoolInstantiateMsg {
+    pub pool_id: u64,
     /// Information about the two assets in the pool
     pub asset_infos: [AssetInfo; 2],
     /// The token contract code ID used for the tokens in the pool
@@ -24,19 +25,22 @@ pub struct InstantiateMsg {
     pub factory_addr: Addr,
     /// Optional binary serialised parameters for custom pool types
     pub init_params: Option<Binary>,
-
     pub fee_info: FeeInfo,
-    pub commit_amount: Uint128,
     pub commit_limit: Uint128,
     pub commit_limit_usd: Uint128,
+    pub position_nft_address: Addr,
     pub oracle_addr: Addr,
     pub oracle_symbol: String,
+    pub token_address: Addr,
+    pub available_payment: Vec<Uint128>,
+}
+
+#[cw_serde]
+pub struct PoolInitParams {
     pub creator_amount: Uint128,
     pub bluechip_amount: Uint128,
     pub pool_amount: Uint128,
-    pub token_address: Addr,
-
-    pub available_payment: Vec<Uint128>,
+    pub commit_amount: Uint128,
 }
 
 #[cw_serde]
@@ -46,14 +50,13 @@ pub struct FeeInfo {
     pub bluechip_fee: Decimal,
     pub creator_fee: Decimal,
 }
-
 /// This structure describes the execute messages available in the contract.
 #[cw_serde]
 pub enum ExecuteMsg {
     /// Receives a message of type [`Cw20ReceiveMsg`]
     Receive(Cw20ReceiveMsg),
     /// Swap performs a swap in the pool
-    Swap {
+    SimpleSwap {
         offer_asset: Asset,
         belief_price: Option<Decimal>,
         max_spread: Option<Decimal>,
@@ -68,6 +71,35 @@ pub enum ExecuteMsg {
         asset: Asset,
         amount: Uint128,
     },
+    DepositLiquidity {
+        amount0: Uint128,
+        amount1: Uint128,
+    },
+    /// Collect fees owed to a given position
+    CollectFees {
+        position_id: String,
+    },
+    AddToPosition {
+        position_id: String,
+        amount0: Uint128, // native token amount
+        amount1: Uint128, // cw20 token amount
+    },
+    RemovePartialLiquidity {
+        position_id: String,
+        liquidity_to_remove: Decimal,
+    },
+    RemovePartialLiquidityByPercent {
+        position_id: String,
+        percentage: u64, // 1-99
+    },
+    RemoveLiquidity {
+        position_id: String,
+    },
+    /// Withdraw (and eventually burn) part or all of the liquidity
+    WithdrawPosition {
+        position_id: String,
+        liquidity: Uint128,
+    },
 }
 
 /// This structure describes a CW20 hook message.
@@ -78,6 +110,13 @@ pub enum Cw20HookMsg {
         belief_price: Option<Decimal>,
         max_spread: Option<Decimal>,
         to: Option<String>,
+    },
+    DepositLiquidity {
+        amount0: Uint128, // native amount (should be sent with the message)
+    },
+    AddToPosition {
+        position_id: String,
+        amount0: Uint128, // native amount (should be sent with the message)
     },
 }
 
@@ -94,7 +133,6 @@ pub enum QueryMsg {
     /// Returns contract configuration settings in a custom [`ConfigResponse`] structure.
     #[returns(ConfigResponse)]
     Config {},
-
     /// Returns information about a swap simulation in a [`SimulationResponse`] object.
     #[returns(SimulationResponse)]
     Simulation { offer_asset: Asset },
@@ -108,8 +146,14 @@ pub enum QueryMsg {
     #[returns(FeeInfoResponse)]
     FeeInfo {},
 
-    #[returns(bool)]
+    #[returns(CommitStatus)]
     IsFullyCommited {},
+
+    #[returns(Option<Subscription>)]
+    SubscriptionInfo { wallet: String },
+
+    #[returns(bool)]
+    IsSubscribed { wallet: String },
 }
 
 /// This struct is used to return a query result with the total amount of LP tokens and the two assets in a specific pool.
@@ -127,7 +171,8 @@ pub struct ConfigResponse {
     /// The pool's parameters
     pub params: Option<Binary>,
 }
-
+#[cw_serde]
+pub struct SubscriptionResponse {}
 /// This structure holds the parameters that are returned from a swap simulation response
 #[cw_serde]
 pub struct SimulationResponse {
@@ -191,4 +236,9 @@ pub struct StablePoolConfig {
 pub enum StablePoolUpdateParams {
     StartChangingAmp { next_amp: u64, next_amp_time: u64 },
     StopChangingAmp {},
+}
+#[cw_serde]
+pub enum CommitStatus {
+    InProgress { raised: Uint128, target: Uint128 },
+    FullyCommitted,
 }

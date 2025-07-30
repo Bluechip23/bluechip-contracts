@@ -17,7 +17,7 @@ use cw20::{
 
 use cw_utils::must_pay;
 
-pub const UUSD_DENOM: &str = "uusd";
+pub const UBLUECHIP_DENOM: &str = "stake";
 /// LUNA token denomination
 pub const ULUNA_DENOM: &str = "uluna";
 /// Minimum initial LP share
@@ -443,14 +443,14 @@ mod tests {
 
     #[test]
     fn test_native_coins_sent() {
-        let asset = native_asset_info("uusd".to_string()).with_balance(1000u16);
+        let asset = native_asset_info("ubluechip".to_string()).with_balance(1000u16);
         let addr = Addr::unchecked("addr0000");
 
         let info = message_info(&addr, &coins(1000, "random"));
         let err = asset.assert_sent_native_token_balance(&info).unwrap_err();
-        assert_eq!(err, StdError::generic_err("Must send reserve token 'uusd'"));
+        assert_eq!(err, StdError::generic_err("Must send reserve token 'ubluechip'"));
 
-        let info = message_info(&addr, &coins(100, "uusd"));
+        let info = message_info(&addr, &coins(100, "ubluechip"));
         let err = asset.assert_sent_native_token_balance(&info).unwrap_err();
         assert_eq!(
             err,
@@ -459,14 +459,14 @@ mod tests {
             )
         );
 
-        let info = message_info(&addr, &coins(1000, "uusd"));
+        let info = message_info(&addr, &coins(1000, "ubluechip"));
         asset.assert_sent_native_token_balance(&info).unwrap();
     }
 
     #[test]
     fn test_proper_native_coins_sent() {
         let pool_asset_infos = [
-            native_asset_info("uusd".to_string()),
+            native_asset_info("ubluechip".to_string()),
             native_asset_info("uluna".to_string()),
         ];
 
@@ -474,7 +474,7 @@ mod tests {
             pool_asset_infos[0].with_balance(1000u16),
             pool_asset_infos[1].with_balance(100u16),
         ];
-        let err = vec![coin(1000, "uusd"), coin(1000, "random")]
+        let err = vec![coin(1000, "ubluechip"), coin(1000, "random")]
             .assert_coins_properly_sent(&assets, &pool_asset_infos)
             .unwrap_err();
         assert_eq!(
@@ -488,7 +488,7 @@ mod tests {
             pool_asset_infos[0].with_balance(1000u16),
             native_asset_info("random".to_string()).with_balance(100u16),
         ];
-        let err = vec![coin(1000, "uusd"), coin(100, "random")]
+        let err = vec![coin(1000, "ubluechip"), coin(100, "random")]
             .assert_coins_properly_sent(&assets, &pool_asset_infos)
             .unwrap_err();
         assert_eq!(
@@ -500,7 +500,7 @@ mod tests {
             pool_asset_infos[0].with_balance(1000u16),
             pool_asset_infos[1].with_balance(1000u16),
         ];
-        let err = vec![coin(1000, "uusd"), coin(100, "uluna")]
+        let err = vec![coin(1000, "ubluechip"), coin(100, "uluna")]
             .assert_coins_properly_sent(&assets, &pool_asset_infos)
             .unwrap_err();
         assert_eq!(
@@ -514,7 +514,7 @@ mod tests {
             pool_asset_infos[0].with_balance(1000u16),
             pool_asset_infos[1].with_balance(1000u16),
         ];
-        vec![coin(1000, "uusd"), coin(1000, "uluna")]
+        vec![coin(1000, "ubluechip"), coin(1000, "uluna")]
             .assert_coins_properly_sent(&assets, &pool_asset_infos)
             .unwrap();
 
@@ -526,13 +526,13 @@ mod tests {
             pool_asset_infos[0].with_balance(1000u16),
             pool_asset_infos[1].with_balance(1000u16),
         ];
-        let err = vec![coin(1000, "uusd"), coin(1000, "uluna")]
+        let err = vec![coin(1000, "ubluechip"), coin(1000, "uluna")]
             .assert_coins_properly_sent(&assets, &pool_asset_infos)
             .unwrap_err();
         assert_eq!(
             err,
             StdError::generic_err(
-                "Supplied coins contain uusd that is not in the input asset vector"
+                "Supplied coins contain ubluechip that is not in the input asset vector"
             )
         );
     }

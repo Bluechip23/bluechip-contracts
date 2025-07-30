@@ -12,14 +12,26 @@ pub enum ContractError {
     #[error("Unauthorized")]
     Unauthorized {},
 
-    #[error("amount field does not match asset.amount")]
+     #[error("You can not swap until the threshold is crossed. You must subscribe to transact with this pool")]
+    ShortOfThreshold {},
+
+    #[error("Your subscription amount does not match an amount designated by the creator of the pool.")]
     MismatchAmount {},
 
     #[error("Fee is to great or to small for this transaction")]
     InvalidFee {},                          
 
     #[error("belief_price cannot be zero")]
-    InvalidBeliefPrice {},   
+    InvalidBeliefPrice {},  
+
+    #[error("invalid amount of tokens")]
+    InvalidAmount {},
+
+    #[error("invalid bluechip amount")]
+    InvalidNativeAmount {},
+
+    #[error("the pool is missing needed liquidity to carry out transaction")]
+    InsufficientLiquidity {},
 
     #[error("CW20 tokens can be swapped via Cw20::Send message only")]
     Cw20DirectSwap {},

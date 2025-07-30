@@ -1,5 +1,5 @@
 [package]
-name = "pool"
+name = "oracle"
 
 version.workspace = true
 authors = ["bestselection18 <noahsflood908@gmail.com>"]
