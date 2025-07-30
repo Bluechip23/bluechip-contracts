@@ -225,8 +225,8 @@ pub fn execute(
             liquidity: _,
         } => execute_remove_liquidity(deps, env, info, position_id),
 
-        ExecuteMsg::UpdatePaymentTiers { new_payment_tiers } => {
-            execute_update_payment_tiers(deps, env, info, new_payment_tiers)
+        ExecuteMsg::ReplaceAllPaymentTiers { new_payment_tiers } => {
+            execute_replace_all_payment_tiers(deps, env, info, new_payment_tiers)
         },
         
         ExecuteMsg::AddPaymentTiers { tiers_to_add } => {
@@ -2162,7 +2162,7 @@ fn verify_position_ownership(
     Ok(())
 }
 
-pub fn execute_update_payment_tiers(
+pub fn execute_replace_all_payment_tiers(
     deps: DepsMut,
     _env: Env,
     info: MessageInfo,
@@ -2198,7 +2198,7 @@ pub fn execute_update_payment_tiers(
     })?;
     
     Ok(Response::new()
-        .add_attribute("action", "update_payment_tiers")
+        .add_attribute("action", "update_replace_all_tiers")
         .add_attribute("creator", fee_info.creator_address)
         .add_attribute("new_tiers", format!("{:?}", new_payment_tiers)))
 }

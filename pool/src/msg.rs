@@ -100,7 +100,7 @@ pub enum ExecuteMsg {
         position_id: String,
         liquidity: Uint128,
     },
-    UpdatePaymentTiers {
+    ReplaceAllPaymentTiers {
         new_payment_tiers: Vec<Uint128>,
     },
      AddPaymentTiers {
