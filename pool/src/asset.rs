@@ -3,7 +3,7 @@ use std::collections::{HashMap, HashSet};
 use std::fmt::{self, Display, Formatter, Result};
 
 use crate::msg::QueryMsg;
-use crate::state::Config;
+use crate::state::{Config,};
 
 use cosmwasm_std::{
     to_json_binary, Addr, Api, BalanceResponse, BankMsg, BankQuery, Coin, CosmosMsg, Deps, MessageInfo,
@@ -308,6 +308,12 @@ pub struct PairInfo {
     pub liquidity_token: Addr,
     /// The pool type (xyk, stableswap etc) available in [`PairType`]
     pub pair_type: PairType,
+}
+
+#[cw_serde]
+pub struct PaymentInfoResponse {
+    pub creator: Addr,
+    pub available_payment_tiers: Vec<Uint128>,
 }
 
 impl PairInfo {

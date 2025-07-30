@@ -32,6 +32,12 @@ pub enum ContractError {
 
     #[error("the pool is missing needed liquidity to carry out transaction")]
     InsufficientLiquidity {},
+    
+    #[error("Unauthorized: Only creator can perform this action")]
+    UnauthorizedNotCreator {},
+    
+    #[error("Invalid payment tiers: cannot be empty")]
+    InvalidPaymentTiers {},
 
     #[error("CW20 tokens can be swapped via Cw20::Send message only")]
     Cw20DirectSwap {},
