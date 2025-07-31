@@ -12,17 +12,19 @@ pub enum ContractError {
     #[error("Unauthorized")]
     Unauthorized {},
 
-     #[error("You can not swap until the threshold is crossed. You must subscribe to transact with this pool")]
+    #[error("You can not swap until the threshold is crossed. You must subscribe to transact with this pool")]
     ShortOfThreshold {},
 
-    #[error("Your subscription amount does not match an amount designated by the creator of the pool.")]
+    #[error(
+        "Your subscription amount does not match an amount designated by the creator of the pool."
+    )]
     MismatchAmount {},
 
     #[error("Fee is to great or to small for this transaction")]
-    InvalidFee {},                          
+    InvalidFee {},
 
     #[error("belief_price cannot be zero")]
-    InvalidBeliefPrice {},  
+    InvalidBeliefPrice {},
 
     #[error("invalid amount of tokens")]
     InvalidAmount {},
@@ -32,10 +34,10 @@ pub enum ContractError {
 
     #[error("the pool is missing needed liquidity to carry out transaction")]
     InsufficientLiquidity {},
-    
+
     #[error("Unauthorized: Only creator can perform this action")]
     UnauthorizedNotCreator {},
-    
+
     #[error("Invalid payment tiers: cannot be empty")]
     InvalidPaymentTiers {},
 
@@ -83,6 +85,20 @@ pub enum ContractError {
 
     #[error("Incorrect native denom: provided: {provided}, required: {required}")]
     IncorrectNativeDenom { provided: String, required: String },
+
+    #[error("Invalid payment amount: ${usd_amount} USD. Available tiers: {available:?}")]
+    InvalidUSDPaymentTier {
+        usd_amount: String,
+        available: Vec<String>,
+    },
+
+    #[error("Invalid payment amount. Sent: {sent_native} (${sent_usd}). Available native tiers: {available_native:?}. Available USD tiers: {available_usd:?}")]
+    InvalidPaymentAmount {
+        sent_native: String,
+        sent_usd: String,
+        available_native: Vec<String>,
+        available_usd: Vec<String>,
+    },
 }
 
 impl From<OverflowError> for ContractError {

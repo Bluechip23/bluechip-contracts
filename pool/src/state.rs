@@ -1,19 +1,16 @@
-use cosmwasm_schema::cw_serde;
-use cosmwasm_std::{
-    Addr, QuerierWrapper, StdResult,
-    Uint128, Timestamp, Decimal,
-};
-use cw_storage_plus::Item;
 use crate::{
     asset::{Asset, AssetInfo, PairType},
     msg::FeeInfo,
 };
+use cosmwasm_schema::cw_serde;
+use cosmwasm_std::{Addr, Decimal, QuerierWrapper, StdResult, Timestamp, Uint128};
+use cw_storage_plus::Item;
 use cw_storage_plus::Map;
 /// ## Description
 /// This structure stores the main config parameters for a constant product pair contract.
 #[cw_serde]
 pub struct Config {
-    pub pool_id: u64, 
+    pub pool_id: u64,
     /// General pair information (e.g pair type)
     pub pair_info: PairInfo,
     /// The factory contract address
@@ -24,7 +21,6 @@ pub struct Config {
     pub price0_cumulative_last: Uint128,
     /// The last cumulative price for asset 1
     pub price1_cumulative_last: Uint128,
-    pub nft_ownership_accepted: bool,
     pub subscription_period: u64,
     pub lp_fee: Decimal,
     pub commit_limit: Uint128,
@@ -37,15 +33,18 @@ pub struct Config {
     pub bluechip_amount: Uint128,
     pub pool_amount: Uint128,
     pub available_payment: Vec<Uint128>,
+    pub available_payment_usd: Vec<Uint128>,
     //NFT
     pub position_nft_address: Addr,
+    pub usd_payment_tolerance_bps: u16,
+    pub nft_ownership_accepted: bool,
     pub total_liquidity: Uint128,
     pub fee_growth_global_0: Decimal,
     pub fee_growth_global_1: Decimal,
     pub total_fees_collected_0: Uint128,
     pub total_fees_collected_1: Uint128,
-    pub reserve0: Uint128,  // native token
-    pub reserve1: Uint128,  // cw20 token
+    pub reserve0: Uint128, // native token
+    pub reserve1: Uint128, // cw20 token
 }
 
 #[cw_serde]
@@ -61,22 +60,23 @@ pub const CONFIG: Item<Config> = Item::new("c   onfig");
 pub const FEEINFO: Item<FeeInfo> = Item::new("fee_info");
 pub const COMMITSTATUS: Item<Uint128> = Item::new("commit_status");
 pub const NATIVE_RAISED: Item<Uint128> = Item::new("native_raised");
-pub const THRESHOLD_HIT: Item<bool>    = Item::new("threshold_hit");
-pub const COMMIT_LEDGER: cw_storage_plus::Map<&Addr, Uint128> = cw_storage_plus::Map::new("commit_usd");
+pub const THRESHOLD_HIT: Item<bool> = Item::new("threshold_hit");
+pub const COMMIT_LEDGER: cw_storage_plus::Map<&Addr, Uint128> =
+    cw_storage_plus::Map::new("commit_usd");
 pub const SUB_INFO: Map<&Addr, Subscription> = Map::new("sub_info");
 pub const NEXT_POSITION_ID: Item<u64> = Item::new("next_position_id");
 pub const POSITIONS: Map<&str, Position> = Map::new("positions");
 
-
 #[cw_serde]
 pub struct Subscription {
-    pub expires: Timestamp,   
-    pub total_paid: Uint128,  
+    pub expires: Timestamp,
+    pub total_paid: Uint128,
+    pub total_paid_usd: Uint128,
 }
 #[cw_serde]
 pub struct Pool {
-    pub reserve0: Uint128,  // native token
-    pub reserve1: Uint128,  // cw20 token
+    pub reserve0: Uint128, // native token
+    pub reserve1: Uint128, // cw20 token
     pub total_liquidity: Uint128,
     // Global fee trackers (fees per unit of liquidity)
     pub fee_growth_global_0: Uint128,
