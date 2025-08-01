@@ -3,7 +3,8 @@ use std::collections::{HashMap, HashSet};
 use std::fmt::{self, Display, Formatter, Result};
 
 use crate::msg::QueryMsg;
-use crate::state::{Config,};
+use crate::state::PoolInfo;
+
 
 use cosmwasm_std::{
     to_json_binary, Addr, Api, BalanceResponse, BankMsg, BankQuery, Coin, CosmosMsg, Deps, MessageInfo,
@@ -655,9 +656,9 @@ pub fn query_balance(
     Ok(balance.amount.amount)
 }
 
-pub fn pool_info(deps: Deps, config: Config) -> StdResult<[Asset; 2]> {
-    let contract_addr = config.pair_info.contract_addr.clone();
-    let pools: [Asset; 2] = config.pair_info.query_pools(&deps.querier, contract_addr)?;
+pub fn call_pool_info(deps: Deps, pool_info: PoolInfo) -> StdResult<[Asset; 2]> {
+    let contract_addr = pool_info.pair_info.contract_addr.clone();
+    let pools: [Asset; 2] = pool_info.pair_info.query_pools(&deps.querier, contract_addr)?;
 
     Ok(pools)
 }
