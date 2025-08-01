@@ -309,6 +309,8 @@ pub struct PairInfo {
     pub liquidity_token: Addr,
     /// The pool type (xyk, stableswap etc) available in [`PairType`]
     pub pair_type: PairType,
+    pub assets: [Asset; 2],
+
 }
 
 #[cw_serde]

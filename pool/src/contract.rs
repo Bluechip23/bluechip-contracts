@@ -5,9 +5,7 @@ use crate::asset::{
 };
 use crate::error::ContractError;
 use crate::msg::{
-    CommitStatus, ConfigResponse, CumulativePricesResponse, Cw20HookMsg, ExecuteMsg, FeeInfo,
-    FeeInfoResponse, MigrateMsg, PoolInitParams, PoolInstantiateMsg, PoolResponse, QueryMsg,
-    ReverseSimulationResponse, SimulationResponse,
+    CommitStatus, ConfigResponse, CumulativePricesResponse, Cw20HookMsg, ExecuteMsg, FeeInfo, FeeInfoResponse, MigrateMsg, PoolFeeStateResponse, PoolInfoResponse, PoolInitParams, PoolInstantiateMsg, PoolResponse, PoolStateResponse, PositionResponse, PositionsResponse, QueryMsg, ReverseSimulationResponse, SimulationResponse
 };
 use crate::oracle::{PriceResponse, PythQueryMsg};
 use crate::response::MsgInstantiateContractResponse;
@@ -46,6 +44,7 @@ use cosmwasm_std::{
 };
 use cw2::{get_contract_version, set_contract_version};
 use cw20::{Cw20ExecuteMsg, Cw20ReceiveMsg};
+use cw_storage_plus::Bound;
 use cw721_base::ExecuteMsg as CW721BaseExecuteMsg;
 use protobuf::Message;
 use std::convert::TryInto;
@@ -1722,10 +1721,21 @@ pub fn calculate_maker_fee(
 #[cfg_attr(not(feature = "library"), entry_point)]
 pub fn query(deps: Deps, env: Env, msg: QueryMsg) -> StdResult<Binary> {
     match msg {
+        QueryMsg::PoolState {} => to_json_binary(&query_pool_state(deps)?),
+        QueryMsg::FeeState {} => to_json_binary(&query_fee_state(deps)?),
+        QueryMsg::Position { position_id } => to_json_binary(&query_position(deps, position_id)?),
+        QueryMsg::Positions { start_after, limit } => {
+            to_json_binary(&query_positions(deps, start_after, limit)?)
+        }
+        QueryMsg::PositionsByOwner {
+            owner,
+            start_after,
+            limit,
+        } => to_json_binary(&query_positions_by_owner(deps, owner, start_after, limit)?),
+        QueryMsg::PoolInfo {} => to_json_binary(&query_pool_info(deps)?),
         QueryMsg::PaymentInfo {} => to_json_binary(&query_payment_info(deps)?),
         QueryMsg::CreatorTierInfo {} => to_json_binary(&query_payment_tiers_with_tolerance(deps)?),
         QueryMsg::Pair {} => to_json_binary(&query_pair_info(deps)?),
-        QueryMsg::Pool {} => to_json_binary(&query_pool(deps)?),
         QueryMsg::Simulation { offer_asset } => {
             to_json_binary(&query_simulation(deps, offer_asset)?)
         }
@@ -2805,4 +2815,142 @@ fn is_within_tolerance(payment_usd: Uint128, tier_usd: Uint128, tolerance_bps: u
     let upper_bound = tier_usd.multiply_ratio(10000u128 + tolerance_bps as u128, 10000u128);
 
     payment_usd >= lower_bound && payment_usd <= upper_bound
+}
+
+fn query_pool_state(deps: Deps) -> StdResult<PoolStateResponse> {
+    let pool_state = POOL_STATE.load(deps.storage)?;
+    Ok(PoolStateResponse {
+        nft_ownership_accepted: pool_state.nft_ownership_accepted,
+        reserve0: pool_state.reserve0,
+        reserve1: pool_state.reserve1,
+        total_liquidity: pool_state.total_liquidity,
+        block_time_last: pool_state.block_time_last,
+    })
+}
+
+fn query_fee_state(deps: Deps) -> StdResult<PoolFeeStateResponse> {
+    let pool_fee_state = POOL_FEE_STATE.load(deps.storage)?;  // Since fees are in PoolState
+    Ok(PoolFeeStateResponse {
+        fee_growth_global_0: pool_fee_state.fee_growth_global_0,
+        fee_growth_global_1: pool_fee_state.fee_growth_global_1,
+        total_fees_collected_0: pool_fee_state.total_fees_collected_0,
+        total_fees_collected_1: pool_fee_state.total_fees_collected_1,
+    })
+}
+
+fn query_position(deps: Deps, position_id: String) -> StdResult<PositionResponse> {
+    let liquidity_position = LIQUIDITY_POSITIONS.load(deps.storage, &position_id)?;
+    
+    // Optionally calculate unclaimed fees
+    let pool_fee_state = POOL_FEE_STATE.load(deps.storage)?;
+    let unclaimed_fees_0 = calculate_unclaimed_fees(
+        liquidity_position.liquidity,
+        liquidity_position.fee_growth_inside_0_last,
+        pool_fee_state.fee_growth_global_0,
+    );
+    let unclaimed_fees_1 = calculate_unclaimed_fees(
+        liquidity_position.liquidity,
+        liquidity_position.fee_growth_inside_1_last,
+        pool_fee_state.fee_growth_global_1,
+    );
+    
+    Ok(PositionResponse {
+        position_id,
+        liquidity: liquidity_position.liquidity,
+        owner: liquidity_position.owner,
+        fee_growth_inside_0_last: liquidity_position.fee_growth_inside_0_last,
+        fee_growth_inside_1_last: liquidity_position.fee_growth_inside_1_last,
+        created_at: liquidity_position.created_at,
+        last_fee_collection: liquidity_position.last_fee_collection,
+        unclaimed_fees_0,
+        unclaimed_fees_1,
+    })
+}
+
+fn query_positions(
+    deps: Deps,
+    start_after: Option<String>,
+    limit: Option<u32>,
+) -> StdResult<PositionsResponse> {
+    let limit = limit.unwrap_or(10).min(30) as usize;
+    let start = start_after.as_ref().map(|s| Bound::exclusive(s.as_str()));
+    
+    let liquidity_positions: StdResult<Vec<_>> = LIQUIDITY_POSITIONS
+        .range(deps.storage, start, None, Order::Ascending)
+        .take(limit)
+        .map(|item| {
+            let (position_id, position) = item?;
+            query_position(deps, position_id)
+        })
+        .collect();
+    
+    Ok(PositionsResponse {
+        positions: liquidity_positions?,
+    })
+}
+
+fn query_positions_by_owner(
+    deps: Deps,
+    owner: String,
+    start_after: Option<String>,
+    limit: Option<u32>,
+) -> StdResult<PositionsResponse> {
+    let owner_addr = deps.api.addr_validate(&owner)?;
+    let limit = limit.unwrap_or(10).min(30) as usize;
+    let start = start_after.as_ref().map(|s| Bound::exclusive(s.as_str()));
+    
+    let positions: StdResult<Vec<_>> = LIQUIDITY_POSITIONS
+        .range(deps.storage, start, None, Order::Ascending)
+        .filter(|item| {
+            item.as_ref()
+                .map(|(_, position)| position.owner == owner_addr)
+                .unwrap_or(false)
+        })
+        .take(limit)
+        .map(|item| {
+            let (position_id, position) = item?;
+            query_position(deps, position_id)
+        })
+        .collect();
+    
+    Ok(PositionsResponse {
+        positions: positions?,
+    })
+}
+
+fn query_pool_info(deps: Deps) -> StdResult<PoolInfoResponse> {
+    let pool_fee_state = POOL_FEE_STATE.load(deps.storage)?;
+    let next_position_id = NEXT_POSITION_ID.load(deps.storage)?;
+    let pool_state = POOL_STATE.load(deps.storage)?;
+    
+    Ok(PoolInfoResponse {
+        pool_state: PoolStateResponse {
+            nft_ownership_accepted: pool_state.nft_ownership_accepted,
+            reserve0: pool_state.reserve0,
+            reserve1: pool_state.reserve1,
+            total_liquidity: pool_state.total_liquidity,
+            block_time_last: pool_state.block_time_last,
+        },
+        fee_state: PoolFeeStateResponse {
+            fee_growth_global_0: pool_fee_state.fee_growth_global_0,
+            fee_growth_global_1: pool_fee_state.fee_growth_global_1,
+            total_fees_collected_0: pool_fee_state.total_fees_collected_0,
+            total_fees_collected_1: pool_fee_state.total_fees_collected_1,
+        },
+        total_positions: next_position_id,
+    })
+}
+
+// Helper function to calculate unclaimed fees
+fn calculate_unclaimed_fees(
+    liquidity: Decimal,
+    fee_growth_inside_last: Decimal,
+    fee_growth_global: Decimal,
+) -> Uint128 {
+    if fee_growth_global > fee_growth_inside_last {
+        let fee_growth_delta = fee_growth_global - fee_growth_inside_last;
+        (liquidity * fee_growth_delta).to_uint_floor()
+    } else {
+        Uint128::zero()
+    }
 }
