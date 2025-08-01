@@ -1,6 +1,7 @@
 #![allow(non_snake_case)]
 use crate::asset::{
-    pool_info, Asset, AssetInfo, NativeTierInfo, PairType, PaymentInfoResponse, PaymentTiersResponseWithTolerance, USDTierInfoWithTolerance
+    pool_info, Asset, AssetInfo, NativeTierInfo, PairType, PaymentInfoResponse,
+    PaymentTiersResponseWithTolerance, USDTierInfoWithTolerance,
 };
 use crate::error::ContractError;
 use crate::msg::{
@@ -18,8 +19,10 @@ use crate::state::{
     CONFIG,
     FEEINFO,
     NATIVE_RAISED,
+    REENTRANCY_GUARD,
     THRESHOLD_HIT,
-    USD_RAISED, //ACCUMULATED_BLUECHIP_FEES, ACCUMULATED_CREATOR_FEES,
+    USD_RAISED,
+    USER_LAST_COMMIT, //ACCUMULATED_BLUECHIP_FEES, ACCUMULATED_CREATOR_FEES,
 };
 use crate::state::{
     Pool, Position, Subscription, TokenMetadata, NEXT_POSITION_ID, POSITIONS, SUB_INFO,
@@ -97,6 +100,7 @@ pub fn instantiate(
         //++++++++++++++++++++++++++++++++++++++++++++++need to check if the factory is valid++++++++++++++++++++++++++++++++++++++++++++++++++++++++
         // factory_addr: deps.api.addr_validate(msg.factory_addr.as_str())?,
         position_nft_address: msg.position_nft_address.clone(),
+        min_commit_interval: 13,
         factory_addr: msg.factory_addr.clone(),
         usd_payment_tolerance_bps: 100,
         block_time_last: 0,
@@ -237,17 +241,17 @@ pub fn execute(
             execute_remove_payment_tiers(deps, env, info, tiers_to_remove)
         }
 
-        ExecuteMsg::ReplaceAllUsdPaymentTiers { new_payment_tiers_usd } => {
-            execute_replace_all_usd_payment_tiers(deps, env, info, new_payment_tiers_usd)
-        }
+        ExecuteMsg::ReplaceAllUsdPaymentTiers {
+            new_payment_tiers_usd,
+        } => execute_replace_all_usd_payment_tiers(deps, env, info, new_payment_tiers_usd),
 
         ExecuteMsg::AddUsdPaymentTiers { tiers_to_add_usd } => {
             execute_add_usd_payment_tiers(deps, env, info, tiers_to_add_usd)
         }
 
-        ExecuteMsg::RemoveUsdPaymentTiers { tiers_to_remove_usd } => {
-            execute_remove_usd_payment_tiers(deps, env, info, tiers_to_remove_usd)
-        }
+        ExecuteMsg::RemoveUsdPaymentTiers {
+            tiers_to_remove_usd,
+        } => execute_remove_usd_payment_tiers(deps, env, info, tiers_to_remove_usd),
     }
 }
 
@@ -527,7 +531,58 @@ pub fn simple_swap(
 #[allow(clippy::too_many_arguments)]
 
 pub fn commit(
-    deps: DepsMut,
+    mut deps: DepsMut,
+    env: Env,
+    info: MessageInfo,
+    asset: Asset,
+    amount: Uint128,
+) -> Result<Response, ContractError> {
+    // Reentrancy protection - check and set guard
+    let reentrancy_guard = REENTRANCY_GUARD.may_load(deps.storage)?.unwrap_or(false);
+    if reentrancy_guard {
+        return Err(ContractError::ReentrancyGuard {});
+    }
+    REENTRANCY_GUARD.save(deps.storage, &true)?;
+    let config: Config = CONFIG.load(deps.storage)?;
+    let sender = info.sender.clone();
+
+    // Rate limiting check
+    if let Err(e) = check_rate_limit(&mut deps, &env, &config, &sender) {
+        REENTRANCY_GUARD.save(deps.storage, &false)?;
+        return Err(e);
+    }
+    // Your existing function logic here...
+    let result = execute_commit_logic(&mut deps, env, info, asset, amount);
+
+    // Always clear the guard before returning (even on error)
+    REENTRANCY_GUARD.save(deps.storage, &false)?;
+
+    result
+}
+
+fn check_rate_limit(
+    deps: &mut DepsMut,
+    env: &Env,
+    config: &Config,
+    sender: &Addr,
+) -> Result<(), ContractError> {
+    if let Some(last_commit_time) = USER_LAST_COMMIT.may_load(deps.storage, sender)? {
+        let time_since_last = env.block.time.seconds() - last_commit_time;
+
+        if time_since_last < config.min_commit_interval {
+            let wait_time = config.min_commit_interval - time_since_last;
+            return Err(ContractError::TooFrequentCommits { wait_time });
+        }
+    }
+
+    // Update the last commit time
+    USER_LAST_COMMIT.save(deps.storage, sender, &env.block.time.seconds())?;
+
+    Ok(())
+}
+
+pub fn execute_commit_logic(
+    deps: &mut DepsMut,
     env: Env,
     info: MessageInfo,
     asset: Asset,
@@ -543,10 +598,14 @@ pub fn commit(
     {
         return Err(ContractError::AssetMismatch {});
     }
-    
+
     // Validate amount matches
     if amount != asset.amount {
         return Err(ContractError::MismatchAmount {});
+    }
+
+    if asset.amount.is_zero() {
+        return Err(ContractError::ZeroAmount {});
     }
 
     match asset.info {
@@ -567,7 +626,7 @@ pub fn commit(
             let mut payment_type = "unknown";
             let mut matched_tier = Uint128::zero();
             let mut usd_value = Uint128::zero();
-            
+
             // First check native tiers (exact match, no oracle call needed)
             if config.available_payment.contains(&asset.amount) {
                 payment_valid = true;
@@ -588,13 +647,13 @@ pub fn commit(
                     &config.oracle_symbol,
                     asset.amount,
                 )?;
-                
+
                 // Check each USD tier with tolerance
                 for &tier in config.available_payment_usd.iter() {
                     if is_within_tolerance(usd_value, tier, config.usd_payment_tolerance_bps) {
                         payment_valid = true;
                         payment_type = "usd";
-                        matched_tier = tier;  // Store the tier they matched
+                        matched_tier = tier; // Store the tier they matched
                         break;
                     }
                 }
@@ -602,20 +661,25 @@ pub fn commit(
 
             // If payment doesn't match any tier, return detailed error
             if !payment_valid {
-                let native_tiers: Vec<String> = config.available_payment
+                let native_tiers: Vec<String> = config
+                    .available_payment
                     .iter()
                     .map(|tier| format!("{} {}", tier.u128() as f64 / 1_000_000.0, denom))
                     .collect();
-                    
+
                 let tolerance_pct = config.usd_payment_tolerance_bps as f64 / 100.0;
-                let usd_tiers: Vec<String> = config.available_payment_usd
+                let usd_tiers: Vec<String> = config
+                    .available_payment_usd
                     .iter()
-                    .map(|tier| format!("${:.2} (±{:.1}%)", 
-                        tier.u128() as f64 / 1_000_000.0,
-                        tolerance_pct
-                    ))
+                    .map(|tier| {
+                        format!(
+                            "${:.2} (±{:.1}%)",
+                            tier.u128() as f64 / 1_000_000.0,
+                            tolerance_pct
+                        )
+                    })
                     .collect();
-                
+
                 return Err(ContractError::InvalidPaymentAmount {
                     sent_native: format!("{} {}", asset.amount.u128() as f64 / 1_000_000.0, denom),
                     sent_usd: format!("{:.2}", usd_value.u128() as f64 / 1_000_000.0),
@@ -664,7 +728,7 @@ pub fn commit(
                             e
                         )))
                     })?;
-                    
+
             messages.push(bluechip_transfer);
             messages.push(creator_transfer);
 
@@ -674,7 +738,7 @@ pub fn commit(
                 COMMIT_LEDGER.update::<_, ContractError>(deps.storage, &sender, |v| {
                     Ok(v.unwrap_or_default() + usd_value)
                 })?;
-                
+
                 // Update total USD raised
                 let usd_total =
                     USD_RAISED.update::<_, ContractError>(deps.storage, |r| Ok(r + usd_value))?;
@@ -1650,11 +1714,14 @@ pub fn query_payment_info(deps: Deps) -> StdResult<PaymentInfoResponse> {
     })
 }
 
-pub fn query_payment_tiers_with_tolerance(deps: Deps) -> StdResult<PaymentTiersResponseWithTolerance> {
+pub fn query_payment_tiers_with_tolerance(
+    deps: Deps,
+) -> StdResult<PaymentTiersResponseWithTolerance> {
     let config = CONFIG.load(deps.storage)?;
-    
+
     // Native tiers remain the same (no tolerance)
-    let native_tiers: Vec<NativeTierInfo> = config.available_payment
+    let native_tiers: Vec<NativeTierInfo> = config
+        .available_payment
         .iter()
         .map(|&native_amount| {
             let usd_value = native_to_usd(
@@ -1662,47 +1729,56 @@ pub fn query_payment_tiers_with_tolerance(deps: Deps) -> StdResult<PaymentTiersR
                 &config.oracle_addr,
                 &config.oracle_symbol,
                 native_amount,
-            ).unwrap_or_default();
-            
+            )
+            .unwrap_or_default();
+
             NativeTierInfo {
                 native_amount,
                 current_usd_value: usd_value,
             }
         })
         .collect();
-    
+
     // USD tiers now show tolerance ranges
-    let usd_tiers: Vec<USDTierInfoWithTolerance> = config.available_payment_usd
+    let usd_tiers: Vec<USDTierInfoWithTolerance> = config
+        .available_payment_usd
         .iter()
         .map(|&usd_amount| {
             // Calculate USD tolerance range
-            let min_usd = usd_amount
-                .multiply_ratio(10000u128 - config.usd_payment_tolerance_bps as u128, 10000u128);
-            let max_usd = usd_amount
-                .multiply_ratio(10000u128 + config.usd_payment_tolerance_bps as u128, 10000u128);
-            
+            let min_usd = usd_amount.multiply_ratio(
+                10000u128 - config.usd_payment_tolerance_bps as u128,
+                10000u128,
+            );
+            let max_usd = usd_amount.multiply_ratio(
+                10000u128 + config.usd_payment_tolerance_bps as u128,
+                10000u128,
+            );
+
             // Convert to native amounts
             let native_exact = usd_to_native(
                 &deps.querier,
                 &config.oracle_addr,
                 &config.oracle_symbol,
                 usd_amount,
-            ).unwrap_or_default();
-            
+            )
+            .unwrap_or_default();
+
             let native_min = usd_to_native(
                 &deps.querier,
                 &config.oracle_addr,
                 &config.oracle_symbol,
                 min_usd,
-            ).unwrap_or_default();
-            
+            )
+            .unwrap_or_default();
+
             let native_max = usd_to_native(
                 &deps.querier,
                 &config.oracle_addr,
                 &config.oracle_symbol,
                 max_usd,
-            ).unwrap_or_default();
-            
+            )
+            .unwrap_or_default();
+
             USDTierInfoWithTolerance {
                 usd_amount,
                 tolerance_bps: config.usd_payment_tolerance_bps,
@@ -1714,7 +1790,7 @@ pub fn query_payment_tiers_with_tolerance(deps: Deps) -> StdResult<PaymentTiersR
             }
         })
         .collect();
-    
+
     // Return the correct type!
     Ok(PaymentTiersResponseWithTolerance {
         native_tiers,
@@ -2548,7 +2624,9 @@ pub fn execute_add_usd_payment_tiers(
     // Update the config
     CONFIG.update(deps.storage, |mut config| -> Result<_, ContractError> {
         // Add new tiers
-        config.available_payment_usd.extend(tiers_to_add_usd.clone());
+        config
+            .available_payment_usd
+            .extend(tiers_to_add_usd.clone());
 
         // Remove duplicates while preserving order
         config.available_payment_usd.sort();
@@ -2567,7 +2645,6 @@ pub fn execute_add_usd_payment_tiers(
         .add_attribute("creator", fee_info.creator_address)
         .add_attribute("added_tiers", format!("{:?}", tiers_to_add_usd)))
 }
-
 
 // Remove specific USD payment tiers
 pub fn execute_remove_usd_payment_tiers(
@@ -2621,40 +2698,37 @@ pub fn execute_update_usd_payment_tolerance(
     tolerance_bps: u16,
 ) -> Result<Response, ContractError> {
     let fee_info = FEEINFO.load(deps.storage)?;
-    
+
     if info.sender != fee_info.creator_address {
         return Err(ContractError::UnauthorizedNotCreator {});
     }
-    
+
     // Reasonable limits: 0% to 10% tolerance
     if tolerance_bps > 1000 {
         return Err(ContractError::Std(StdError::generic_err(
-            "Tolerance cannot exceed 10% (1000 basis points)"
+            "Tolerance cannot exceed 10% (1000 basis points)",
         )));
     }
-    
+
     CONFIG.update(deps.storage, |mut config| -> Result<_, ContractError> {
         config.usd_payment_tolerance_bps = tolerance_bps;
         Ok(config)
     })?;
-    
+
     Ok(Response::new()
         .add_attribute("action", "update_usd_payment_tolerance")
         .add_attribute("creator", fee_info.creator_address)
         .add_attribute("tolerance_bps", tolerance_bps.to_string())
-        .add_attribute("tolerance_percent", format!("{:.2}%", tolerance_bps as f64 / 100.0)))
+        .add_attribute(
+            "tolerance_percent",
+            format!("{:.2}%", tolerance_bps as f64 / 100.0),
+        ))
 }
-fn is_within_tolerance(
-    payment_usd: Uint128,
-    tier_usd: Uint128,
-    tolerance_bps: u16,
-) -> bool {
+fn is_within_tolerance(payment_usd: Uint128, tier_usd: Uint128, tolerance_bps: u16) -> bool {
     // Calculate tolerance range
     // For 1% tolerance (100 bps): multiplier is 10000 ± 100
-    let lower_bound = tier_usd
-        .multiply_ratio(10000u128 - tolerance_bps as u128, 10000u128);
-    let upper_bound = tier_usd
-        .multiply_ratio(10000u128 + tolerance_bps as u128, 10000u128);
-    
+    let lower_bound = tier_usd.multiply_ratio(10000u128 - tolerance_bps as u128, 10000u128);
+    let upper_bound = tier_usd.multiply_ratio(10000u128 + tolerance_bps as u128, 10000u128);
+
     payment_usd >= lower_bound && payment_usd <= upper_bound
 }

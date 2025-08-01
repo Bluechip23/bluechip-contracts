@@ -21,6 +21,7 @@ pub struct Config {
     pub price0_cumulative_last: Uint128,
     /// The last cumulative price for asset 1
     pub price1_cumulative_last: Uint128,
+    pub min_commit_interval: u64, 
     pub subscription_period: u64,
     pub lp_fee: Decimal,
     pub commit_limit: Uint128,
@@ -60,10 +61,12 @@ pub const CONFIG: Item<Config> = Item::new("c   onfig");
 pub const FEEINFO: Item<FeeInfo> = Item::new("fee_info");
 pub const COMMITSTATUS: Item<Uint128> = Item::new("commit_status");
 pub const NATIVE_RAISED: Item<Uint128> = Item::new("native_raised");
+pub const REENTRANCY_GUARD: Item<bool> = Item::new("reentrancy_guard");
 pub const THRESHOLD_HIT: Item<bool> = Item::new("threshold_hit");
 pub const COMMIT_LEDGER: cw_storage_plus::Map<&Addr, Uint128> =
     cw_storage_plus::Map::new("commit_usd");
 pub const SUB_INFO: Map<&Addr, Subscription> = Map::new("sub_info");
+pub const USER_LAST_COMMIT: Map<&Addr, u64> = Map::new("user_last_commit");
 pub const NEXT_POSITION_ID: Item<u64> = Item::new("next_position_id");
 pub const POSITIONS: Map<&str, Position> = Map::new("positions");
 
@@ -94,6 +97,11 @@ pub struct PairInfo {
     pub liquidity_token: Addr,
     /// The pool type (xyk, stableswap etc) available in [`PairType`]
     pub pair_type: PairType,
+}
+#[cw_serde]
+pub struct CachedOracleRate {
+    pub rate: Uint128,          // Rate in micro units (1 NATIVE = rate USD)
+    pub timestamp: u64,         // Block timestamp when cached
 }
 
 #[cw_serde]
