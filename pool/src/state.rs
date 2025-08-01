@@ -8,45 +8,47 @@ use cw_storage_plus::Item;
 use cw_storage_plus::Map;
 /// ## Description
 /// This structure stores the main config parameters for a constant product pair contract.
-#[cw_serde]
-pub struct Config {
+
+/*pub struct Config {
+    //poolinfo
     pub pool_id: u64,
-    /// General pair information (e.g pair type)
     pub pair_info: PairInfo,
-    /// The factory contract address
     pub factory_addr: Addr,
-    /// The last timestamp when the pair contract update the asset cumulative prices
-    pub block_time_last: u64,
-    /// The last cumulative price for asset 0
-    pub price0_cumulative_last: Uint128,
-    /// The last cumulative price for asset 1
-    pub price1_cumulative_last: Uint128,
+    pub token_address: Addr,
+    pub position_nft_address: Addr,
+    //PoolParams
     pub subscription_period: u64,
     pub lp_fee: Decimal,
+    pub min_commit_interval: u64,
+    pub usd_payment_tolerance_bps: u16,
+    //commitinfo
     pub commit_limit: Uint128,
-    pub commit_amount: Uint128,
     pub commit_limit_usd: Uint128,
+    pub available_payment: Vec<Uint128>,
+    pub available_payment_usd: Vec<Uint128>,
+    //oracleinfo
     pub oracle_addr: Addr,
     pub oracle_symbol: String,
-    pub token_address: Addr,
+    //thresholdinfo
     pub creator_amount: Uint128,
     pub bluechip_amount: Uint128,
     pub pool_amount: Uint128,
-    pub available_payment: Vec<Uint128>,
-    pub available_payment_usd: Vec<Uint128>,
-    //NFT
-    pub position_nft_address: Addr,
-    pub usd_payment_tolerance_bps: u16,
+    pub commit_amount: Uint128,
+    //PoolState
     pub nft_ownership_accepted: bool,
     pub total_liquidity: Uint128,
+    pub reserve0: Uint128, // native token
+    pub reserve1: Uint128, // cw20 token
+    pub block_time_last: u64,
+    pub price0_cumulative_last: Uint128, /// The last cumulative price for asset 0
+    pub price1_cumulative_last: Uint128,   /// The last cumulative price for asset 1
+    //PoolFeeState
     pub fee_growth_global_0: Decimal,
     pub fee_growth_global_1: Decimal,
     pub total_fees_collected_0: Uint128,
     pub total_fees_collected_1: Uint128,
-    pub reserve0: Uint128, // native token
-    pub reserve1: Uint128, // cw20 token
 }
-
+*/
 #[cw_serde]
 pub struct TokenMetadata {
     pub name: Option<String>,
@@ -56,16 +58,25 @@ pub struct TokenMetadata {
 /// ## Description
 /// Stores the config struct at the given key
 pub const USD_RAISED: Item<Uint128> = Item::new("usd_raised");
-pub const CONFIG: Item<Config> = Item::new("c   onfig");
+
 pub const FEEINFO: Item<FeeInfo> = Item::new("fee_info");
 pub const COMMITSTATUS: Item<Uint128> = Item::new("commit_status");
 pub const NATIVE_RAISED: Item<Uint128> = Item::new("native_raised");
+pub const REENTRANCY_GUARD: Item<bool> = Item::new("reentrancy_guard");
 pub const THRESHOLD_HIT: Item<bool> = Item::new("threshold_hit");
-pub const COMMIT_LEDGER: cw_storage_plus::Map<&Addr, Uint128> =
-    cw_storage_plus::Map::new("commit_usd");
+pub const COMMIT_LEDGER: cw_storage_plus::Map<&Addr, Uint128> = cw_storage_plus::Map::new("commit_usd");
 pub const SUB_INFO: Map<&Addr, Subscription> = Map::new("sub_info");
+pub const USER_LAST_COMMIT: Map<&Addr, u64> = Map::new("user_last_commit");
+pub const POOL_INFO: Item<PoolInfo> = Item::new("pool_info");
+pub const POOL_STATE: Item<PoolState> = Item::new("pool_state");
+pub const POOL_SPECS: Item<PoolSpecs> = Item::new("pool_specs");
+pub const THRESHOLD_PAYOUT: Item<ThresholdPayout> = Item::new("threshold_payout_amounts");
 pub const NEXT_POSITION_ID: Item<u64> = Item::new("next_position_id");
-pub const POSITIONS: Map<&str, Position> = Map::new("positions");
+pub const LIQUIDITY_POSITIONS: Map<&str, Position> = Map::new("positions");
+pub const COMMIT_CONFIG: Item<CommitInfo> = Item::new("commit_config");
+pub const ORACLE_INFO: Item<OracleInfo> = Item::new("oracle_info");
+pub const POOL_PARAMS: Item<PoolSpecs> = Item::new("pool_params");
+pub const POOL_FEE_STATE: Item<PoolFeeState> = Item::new("pool_fee_state");
 
 #[cw_serde]
 pub struct Subscription {
@@ -74,16 +85,41 @@ pub struct Subscription {
     pub total_paid_usd: Uint128,
 }
 #[cw_serde]
-pub struct Pool {
+pub struct PoolState {
+    pub nft_ownership_accepted: bool,
     pub reserve0: Uint128, // native token
     pub reserve1: Uint128, // cw20 token
     pub total_liquidity: Uint128,
-    // Global fee trackers (fees per unit of liquidity)
-    pub fee_growth_global_0: Uint128,
-    pub fee_growth_global_1: Uint128,
+    pub block_time_last: u64,
+    pub price0_cumulative_last: Uint128,
+    pub price1_cumulative_last: Uint128,
+}
+
+#[cw_serde]
+pub struct PoolFeeState {
+    pub fee_growth_global_0: Decimal,
+    pub fee_growth_global_1: Decimal,
     pub total_fees_collected_0: Uint128,
     pub total_fees_collected_1: Uint128,
 }
+
+#[cw_serde]
+pub struct PoolSpecs {
+    pub subscription_period: u64,
+    pub lp_fee: Decimal,
+    pub min_commit_interval: u64,
+    pub usd_payment_tolerance_bps: u16,
+}
+
+#[cw_serde]
+pub struct PoolInfo {
+    pub pool_id: u64,
+    pub pair_info: PairInfo,
+    pub factory_addr: Addr,
+    pub token_address: Addr,
+    pub position_nft_address: Addr,
+}
+
 #[cw_serde]
 pub struct PairInfo {
     /// Asset information for the two assets in the pool
@@ -94,6 +130,32 @@ pub struct PairInfo {
     pub liquidity_token: Addr,
     /// The pool type (xyk, stableswap etc) available in [`PairType`]
     pub pair_type: PairType,
+}
+#[cw_serde]
+pub struct CachedOracleRate {
+    pub rate: Uint128,  // Rate in micro units (1 NATIVE = rate USD)
+    pub timestamp: u64, // Block timestamp when cached
+}
+#[cw_serde]
+pub struct OracleInfo {
+    pub oracle_addr: Addr,
+    pub oracle_symbol: String,
+}
+
+#[cw_serde]
+pub struct ThresholdPayout {
+    pub creator_amount: Uint128,
+    pub bluechip_amount: Uint128,
+    pub pool_amount: Uint128,
+    pub commit_amount: Uint128,
+}
+
+#[cw_serde]
+pub struct CommitInfo {
+    pub commit_limit: Uint128,
+    pub commit_limit_usd: Uint128,
+    pub available_payment: Vec<Uint128>,
+    pub available_payment_usd: Vec<Uint128>,
 }
 
 #[cw_serde]

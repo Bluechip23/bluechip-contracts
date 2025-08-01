@@ -12,8 +12,17 @@ pub enum ContractError {
     #[error("Unauthorized")]
     Unauthorized {},
 
+    #[error("Reentrancy detected")]
+    ReentrancyGuard {},
+
     #[error("You can not swap until the threshold is crossed. You must subscribe to transact with this pool")]
     ShortOfThreshold {},
+
+    #[error("You are trying to commit too frequently.")]
+    TooFrequentCommits {wait_time: u64},
+
+    #[error("Zero won't work.")]
+    ZeroAmount {},
 
     #[error(
         "Your subscription amount does not match an amount designated by the creator of the pool."
