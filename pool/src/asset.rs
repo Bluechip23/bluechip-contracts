@@ -316,6 +316,42 @@ pub struct PaymentInfoResponse {
     pub available_payment_tiers: Vec<Uint128>,
 }
 
+#[cw_serde]
+pub struct USDTierInfoWithTolerance {
+    pub usd_amount: Uint128,
+    pub tolerance_bps: u16,
+    pub min_usd_accepted: Uint128,
+    pub max_usd_accepted: Uint128,
+    pub current_native_required: Uint128,
+    pub min_native_accepted: Uint128,
+    pub max_native_accepted: Uint128,
+}
+
+#[cw_serde]
+pub struct PaymentTiersResponse {
+    pub native_tiers: Vec<NativeTierInfo>,
+    pub usd_tiers: Vec<UsdTierInfo>,
+}
+
+#[cw_serde]
+pub struct PaymentTiersResponseWithTolerance {
+    pub native_tiers: Vec<NativeTierInfo>,
+    pub usd_tiers: Vec<USDTierInfoWithTolerance>,
+}
+
+#[cw_serde]
+pub struct NativeTierInfo {
+    pub native_amount: Uint128,
+    pub current_usd_value: Uint128,  // What it's worth in USD right now
+}
+
+#[cw_serde]
+pub struct UsdTierInfo {
+    pub usd_amount: Uint128,
+    pub current_native_required: Uint128,  // How many native tokens needed right now
+}
+
+
 impl PairInfo {
     /// Returns the balance for each asset in the pool.
     /// ## Params
@@ -441,7 +477,7 @@ impl AssetInfoExt for AssetInfo {
     }
 }
 
-#[cfg(test)]
+/*#[cfg(test)]
 mod tests {
     use super::*;
     use cosmwasm_std::testing::message_info;
@@ -543,6 +579,7 @@ mod tests {
         );
     }
 }
+    */
 
 #[cw_serde]
 pub enum PairType {

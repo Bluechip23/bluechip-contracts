@@ -261,6 +261,7 @@ pub fn reply(deps: DepsMut, env: Env, msg: Reply) -> Result<Response, ContractEr
                     token_address: token_address,
                     position_nft_address: nft_address.clone(),
                     available_payment: temp_pool_info.available_payment,
+                    available_payment_usd: temp_pool_info.available_payment_usd.clone(),
                 })?,
                 funds: vec![],
                 admin: None,

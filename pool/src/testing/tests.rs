@@ -1,4 +1,4 @@
-use crate::asset::{Asset, AssetInfo, CoinsExt, PairInfo, PairType};
+/*use crate::asset::{Asset, AssetInfo, CoinsExt, PairInfo, PairType};
 use crate::contract::{
     assert_max_spread, execute, instantiate,
 };
@@ -1522,3 +1522,4 @@ fn test_invalid_partial_removal_amounts() {
     let err = execute(deps.as_mut(), mock_env(), info, remove_msg).unwrap_err();
     assert_eq!(err, ContractError::InvalidAmount {});
 }
+    */

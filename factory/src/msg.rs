@@ -40,6 +40,7 @@ pub struct CreatePoolInstantiateMsg {
     pub token_address: Addr,
     pub position_nft_address: Addr,
     pub available_payment: Vec<Uint128>,
+    pub available_payment_usd: Vec<Uint128>,
 }
 
 #[cw_serde]

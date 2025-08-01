@@ -31,6 +31,7 @@ pub struct PairInstantiateMsg {
     pub oracle_addr: Addr,     
     pub oracle_symbol: String,
     pub available_payment: Vec<Uint128>,
+    pub available_payment_usd: Vec<Uint128>,
 }
 
 #[cw_serde]
