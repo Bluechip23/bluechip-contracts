@@ -49,7 +49,7 @@ pub enum ExecuteMsg {
     },
     RemovePartialLiquidity {
         position_id: String,
-        liquidity_to_remove: Decimal,
+        liquidity_to_remove: Uint128, // Specific amount of liquidity to remove
     },
     RemovePartialLiquidityByPercent {
         position_id: String,
@@ -58,12 +58,7 @@ pub enum ExecuteMsg {
     RemoveLiquidity {
         position_id: String,
     },
-    /// Withdraw (and eventually burn) part or all of the liquidity
-    WithdrawPosition {
-        position_id: String,
-        liquidity: Uint128,
-    },
-
+    
     ReplaceAllPaymentTiers {
         new_payment_tiers: Vec<Uint128>,
     },
@@ -315,14 +310,14 @@ pub struct PoolFeeStateResponse {
 #[cw_serde]
 pub struct PositionResponse {
     pub position_id: String,
-    pub liquidity: Decimal,
+    pub liquidity: Uint128,
     pub owner: Addr,
     pub fee_growth_inside_0_last: Decimal,
     pub fee_growth_inside_1_last: Decimal,
     pub created_at: u64,
     pub last_fee_collection: u64,
-    pub unclaimed_fees_0: Uint128,  // Calculate if needed
-    pub unclaimed_fees_1: Uint128,  // Calculate if needed
+    pub unclaimed_fees_0: Uint128, // Calculate if needed
+    pub unclaimed_fees_1: Uint128, // Calculate if needed
 }
 
 #[cw_serde]
