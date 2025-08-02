@@ -19,7 +19,13 @@ pub enum ContractError {
     ShortOfThreshold {},
 
     #[error("You are trying to commit too frequently.")]
-    TooFrequentCommits {wait_time: u64},
+    TooFrequentCommits { wait_time: u64 },
+
+    #[error("Division by zero error")]
+    DivideByZero,
+
+    #[error("percent must be between 1 and 99")]
+    InvalidPercent,
 
     #[error("Zero won't work.")]
     ZeroAmount {},

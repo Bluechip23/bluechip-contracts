@@ -13,44 +13,6 @@ pub const MAX_ALLOWED_SLIPPAGE: &str = "0.5";
 // Decimal precision for TWAP results
 pub const TWAP_PRECISION: u8 = 6;
 
-/// This structure describes the parameters used for creating a contract.
-#[cw_serde]
-pub struct PoolInstantiateMsg {
-    pub pool_id: u64,
-    /// Information about the two assets in the pool
-    pub asset_infos: [AssetInfo; 2],
-    /// The token contract code ID used for the tokens in the pool
-    pub token_code_id: u64,
-    /// The factory contract address
-    pub factory_addr: Addr,
-    /// Optional binary serialised parameters for custom pool types
-    pub init_params: Option<Binary>,
-    pub fee_info: FeeInfo,
-    pub commit_limit: Uint128,
-    pub commit_limit_usd: Uint128,
-    pub position_nft_address: Addr,
-    pub oracle_addr: Addr,
-    pub oracle_symbol: String,
-    pub token_address: Addr,
-    pub available_payment_usd: Vec<Uint128>,
-    pub available_payment: Vec<Uint128>,
-}
-
-#[cw_serde]
-pub struct PoolInitParams {
-    pub creator_amount: Uint128,
-    pub bluechip_amount: Uint128,
-    pub pool_amount: Uint128,
-    pub commit_amount: Uint128,
-}
-
-#[cw_serde]
-pub struct FeeInfo {
-    pub bluechip_address: Addr,
-    pub creator_address: Addr,
-    pub bluechip_fee: Decimal,
-    pub creator_fee: Decimal,
-}
 /// This structure describes the execute messages available in the contract.
 #[cw_serde]
 pub enum ExecuteMsg {
@@ -87,7 +49,7 @@ pub enum ExecuteMsg {
     },
     RemovePartialLiquidity {
         position_id: String,
-        liquidity_to_remove: Decimal,
+        liquidity_to_remove: Uint128, // Specific amount of liquidity to remove
     },
     RemovePartialLiquidityByPercent {
         position_id: String,
@@ -96,12 +58,7 @@ pub enum ExecuteMsg {
     RemoveLiquidity {
         position_id: String,
     },
-    /// Withdraw (and eventually burn) part or all of the liquidity
-    WithdrawPosition {
-        position_id: String,
-        liquidity: Uint128,
-    },
-
+    
     ReplaceAllPaymentTiers {
         new_payment_tiers: Vec<Uint128>,
     },
@@ -156,9 +113,6 @@ pub enum QueryMsg {
     /// Returns information about a pair in an object of type [`super::asset::PairInfo`].
     #[returns(PairInfo)]
     Pair {},
-    /// Returns information about a pool in an object of type [`PoolResponse`].
-    #[returns(PoolResponse)]
-    Pool {},
     /// Returns contract configuration settings in a custom [`ConfigResponse`] structure.
     #[returns(ConfigResponse)]
     Config {},
@@ -183,6 +137,69 @@ pub enum QueryMsg {
 
     #[returns(bool)]
     IsSubscribed { wallet: String },
+
+    #[returns(PoolStateResponse)]
+    PoolState {},
+
+    #[returns(PoolFeeStateResponse)]
+    FeeState {},
+
+    #[returns(PositionResponse)]
+    Position { position_id: String },
+
+    #[returns(PositionsResponse)]
+    Positions {
+        start_after: Option<String>,
+        limit: Option<u32>,
+    },
+
+    #[returns(PositionsResponse)]
+    PositionsByOwner {
+        owner: String,
+        start_after: Option<String>,
+        limit: Option<u32>,
+    },
+
+    #[returns(PoolInfoResponse)]
+    PoolInfo {},
+}
+
+#[cw_serde]
+pub struct PoolInstantiateMsg {
+    pub pool_id: u64,
+    /// Information about the two assets in the pool
+    pub asset_infos: [AssetInfo; 2],
+    /// The token contract code ID used for the tokens in the pool
+    pub token_code_id: u64,
+    /// The factory contract address
+    pub factory_addr: Addr,
+    /// Optional binary serialised parameters for custom pool types
+    pub init_params: Option<Binary>,
+    pub fee_info: FeeInfo,
+    pub commit_limit: Uint128,
+    pub commit_limit_usd: Uint128,
+    pub position_nft_address: Addr,
+    pub oracle_addr: Addr,
+    pub oracle_symbol: String,
+    pub token_address: Addr,
+    pub available_payment_usd: Vec<Uint128>,
+    pub available_payment: Vec<Uint128>,
+}
+
+#[cw_serde]
+pub struct PoolInitParams {
+    pub creator_amount: Uint128,
+    pub bluechip_amount: Uint128,
+    pub pool_amount: Uint128,
+    pub commit_amount: Uint128,
+}
+
+#[cw_serde]
+pub struct FeeInfo {
+    pub bluechip_address: Addr,
+    pub creator_address: Addr,
+    pub bluechip_fee: Decimal,
+    pub creator_fee: Decimal,
 }
 
 /// This struct is used to return a query result with the total amount of LP tokens and the two assets in a specific pool.
@@ -271,4 +288,46 @@ pub enum StablePoolUpdateParams {
 pub enum CommitStatus {
     InProgress { raised: Uint128, target: Uint128 },
     FullyCommitted,
+}
+
+#[cw_serde]
+pub struct PoolStateResponse {
+    pub nft_ownership_accepted: bool,
+    pub reserve0: Uint128,
+    pub reserve1: Uint128,
+    pub total_liquidity: Uint128,
+    pub block_time_last: u64,
+}
+
+#[cw_serde]
+pub struct PoolFeeStateResponse {
+    pub fee_growth_global_0: Decimal,
+    pub fee_growth_global_1: Decimal,
+    pub total_fees_collected_0: Uint128,
+    pub total_fees_collected_1: Uint128,
+}
+
+#[cw_serde]
+pub struct PositionResponse {
+    pub position_id: String,
+    pub liquidity: Uint128,
+    pub owner: Addr,
+    pub fee_growth_inside_0_last: Decimal,
+    pub fee_growth_inside_1_last: Decimal,
+    pub created_at: u64,
+    pub last_fee_collection: u64,
+    pub unclaimed_fees_0: Uint128, // Calculate if needed
+    pub unclaimed_fees_1: Uint128, // Calculate if needed
+}
+
+#[cw_serde]
+pub struct PositionsResponse {
+    pub positions: Vec<PositionResponse>,
+}
+
+#[cw_serde]
+pub struct PoolInfoResponse {
+    pub pool_state: PoolStateResponse,
+    pub fee_state: PoolFeeStateResponse,
+    pub total_positions: u64,
 }

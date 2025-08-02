@@ -123,7 +123,9 @@ impl Asset {
                 ))
             }
         } else {
-            Ok(())
+             Err(StdError::generic_err(
+            "SimpleSwap can only be used with native tokens. Use CW20 Send for token swaps.",
+        ))
         }
     }
 }
@@ -305,10 +307,9 @@ pub struct PairInfo {
     pub asset_infos: [AssetInfo; 2],
     /// Pair contract address
     pub contract_addr: Addr,
-    /// Pair LP token address
-    pub liquidity_token: Addr,
     /// The pool type (xyk, stableswap etc) available in [`PairType`]
     pub pair_type: PairType,
+    pub assets: [Asset; 2],
 }
 
 #[cw_serde]

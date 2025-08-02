@@ -160,7 +160,7 @@ pub struct CommitInfo {
 
 #[cw_serde]
 pub struct Position {
-    pub liquidity: Decimal,
+    pub liquidity: Uint128,
     pub owner: Addr,
     // optionally: fee‐growth snapshots, etc.
     pub fee_growth_inside_0_last: Decimal,
