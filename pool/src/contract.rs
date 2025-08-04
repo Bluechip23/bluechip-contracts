@@ -6,9 +6,9 @@ use crate::asset::{
 use crate::error::ContractError;
 use crate::msg::{
     CommitStatus, ConfigResponse, CumulativePricesResponse, Cw20HookMsg, ExecuteMsg, FeeInfo,
-    FeeInfoResponse, MigrateMsg, PoolFeeStateResponse, PoolInfoResponse, PoolInitParams,
-    PoolInstantiateMsg, PoolResponse, PoolStateResponse, PositionResponse, PositionsResponse,
-    QueryMsg, ReverseSimulationResponse, SimulationResponse,
+    FeeInfoResponse, LastSubscribedResponse, MigrateMsg, PoolFeeStateResponse, PoolInfoResponse,
+    PoolInitParams, PoolInstantiateMsg, PoolResponse, PoolStateResponse, PositionResponse,
+    PositionsResponse, QueryMsg, ReverseSimulationResponse, SimulationResponse,
 };
 use crate::oracle::{PriceResponse, PythQueryMsg};
 use crate::response::MsgInstantiateContractResponse;
@@ -726,76 +726,15 @@ pub fn execute_commit_logic(
                 return Err(ContractError::MismatchAmount {});
             }
 
+            let usd_value = native_to_usd(
+                &deps.querier,
+                &oracle_info.oracle_addr,
+                &oracle_info.oracle_symbol,
+                asset.amount,
+            )?;
             // Payment validation
-            let mut payment_valid = false;
-            let mut payment_type = "unknown";
-            let mut matched_tier = Uint128::zero();
-            let mut usd_value = Uint128::zero();
-
-            // First check native tiers (exact match, no oracle call needed)
-            if commit_config.available_payment.contains(&asset.amount) {
-                payment_valid = true;
-                payment_type = "native";
-                matched_tier = asset.amount;
-                // Calculate USD for tracking/recording purposes
-                usd_value = native_to_usd(
-                    &deps.querier,
-                    &oracle_info.oracle_addr,
-                    &oracle_info.oracle_symbol,
-                    asset.amount,
-                )?;
-            } else {
-                // Not a native tier, so convert to USD and check USD tiers
-                usd_value = native_to_usd(
-                    &deps.querier,
-                    &oracle_info.oracle_addr,
-                    &oracle_info.oracle_symbol,
-                    asset.amount,
-                )?;
-
-                // Check each USD tier with tolerance
-                for &tier in commit_config.available_payment_usd.iter() {
-                    if is_within_tolerance(usd_value, tier, pool_specs.usd_payment_tolerance_bps) {
-                        payment_valid = true;
-                        payment_type = "usd";
-                        matched_tier = tier; // Store the tier they matched
-                        break;
-                    }
-                }
-            }
-
-            // If payment doesn't match any tier, return detailed error
-            if !payment_valid {
-                let native_tiers: Vec<String> = commit_config
-                    .available_payment
-                    .iter()
-                    .map(|tier| format!("{} {}", tier.u128() as f64 / 1_000_000.0, denom))
-                    .collect();
-
-                let tolerance_pct = pool_specs.usd_payment_tolerance_bps as f64 / 100.0;
-                let usd_tiers: Vec<String> = commit_config
-                    .available_payment_usd
-                    .iter()
-                    .map(|tier| {
-                        format!(
-                            "${:.2} (±{:.1}%)",
-                            tier.u128() as f64 / 1_000_000.0,
-                            tolerance_pct
-                        )
-                    })
-                    .collect();
-
-                return Err(ContractError::InvalidPaymentAmount {
-                    sent_native: format!("{} {}", asset.amount.u128() as f64 / 1_000_000.0, denom),
-                    sent_usd: format!("{:.2}", usd_value.u128() as f64 / 1_000_000.0),
-                    available_native: native_tiers,
-                    available_usd: usd_tiers,
-                });
-            }
-
             // Initialize messages vector for transfers
             let mut messages: Vec<CosmosMsg> = Vec::new();
-
             // Calculate fees
             let bluechip_fee_amt =
                 amount * fee_info.bluechip_fee.numerator() / fee_info.bluechip_fee.denominator();
@@ -870,8 +809,6 @@ pub fn execute_commit_logic(
                     .add_attribute("action", "subscribe")
                     .add_attribute("phase", "funding")
                     .add_attribute("subscriber", sender)
-                    .add_attribute("payment_type", payment_type)
-                    .add_attribute("matched_tier", matched_tier.to_string())
                     .add_attribute("commit_amount_native", asset.amount.to_string())
                     .add_attribute("commit_amount_usd", usd_value.to_string()));
             }
@@ -941,14 +878,31 @@ pub fn execute_commit_logic(
             }
 
             // Record/extend subscription
-            let new_expiry = env.block.time.plus_seconds(pool_specs.subscription_period);
-            SUB_INFO.save(
+            SUB_INFO.update(
                 deps.storage,
                 &sender,
-                &Subscription {
-                    expires: new_expiry,
-                    total_paid: asset.amount,
-                    total_paid_usd: usd_value,
+                |maybe_sub| -> Result<_, ContractError> {
+                    match maybe_sub {
+                        Some(mut sub) => {
+                            // Update totals
+                            sub.total_paid_native += asset.amount;
+                            sub.total_paid_usd += usd_value;
+                            // Track most recent payment
+                            sub.last_payment_native = asset.amount;
+                            sub.last_payment_usd = usd_value;
+                            sub.last_subscribed = env.block.time;
+                            Ok(sub)
+                        }
+                        None => Ok(Subscription {
+                            pool_id: pool_info.pool_id,
+                            subscriber: sender.clone(),
+                            total_paid_native: asset.amount,
+                            total_paid_usd: usd_value,
+                            last_subscribed: env.block.time,
+                            last_payment_native: asset.amount,
+                            last_payment_usd: usd_value,
+                        }),
+                    }
                 },
             )?;
 
@@ -958,11 +912,10 @@ pub fn execute_commit_logic(
                 .add_attribute("action", "subscribe")
                 .add_attribute("phase", "active")
                 .add_attribute("subscriber", sender)
-                .add_attribute("payment_type", payment_type)
-                .add_attribute("matched_tier", matched_tier.to_string())
                 .add_attribute("commit_amount_native", asset.amount.to_string())
                 .add_attribute("commit_amount_usd", usd_value.to_string())
                 .add_attribute("net_offered", net_amount.to_string())
+                .add_attribute("block_subscribed", env.block.time.to_string())
                 .add_attribute("tokens_received", return_amt.to_string()))
         }
         _ => Err(ContractError::AssetMismatch {}),
@@ -1399,7 +1352,7 @@ pub fn execute_remove_liquidity(
     // Note: Pool reserves will be automatically updated when tokens are transferred out
 
     // 9. Burn the NFT (on external NFT contract)
-   /* let burn_msg = WasmMsg::Execute {
+    /* let burn_msg = WasmMsg::Execute {
         contract_addr: pool_info.position_nft_address.to_string(), // External NFT contract
         msg: to_json_binary(&cw721::Cw721ExecuteMsg::Burn {
             token_id: position_id.clone(),
@@ -2547,17 +2500,28 @@ pub fn query(deps: Deps, env: Env, msg: QueryMsg) -> StdResult<Binary> {
         QueryMsg::ReverseSimulation { ask_asset } => {
             to_json_binary(&query_reverse_simulation(deps, ask_asset)?)
         }
+        QueryMsg::LastSubscribed { wallet } => {
+            let addr = deps.api.addr_validate(&wallet)?;
+            let response = match SUB_INFO.may_load(deps.storage, &addr)? {
+                Some(sub) => LastSubscribedResponse {
+                    has_subscribed: true,
+                    last_subscribed: Some(sub.last_subscribed),
+                    last_payment_native: Some(sub.last_payment_native),
+                    last_payment_usd: Some(sub.last_payment_usd),
+                },
+                None => LastSubscribedResponse {
+                    has_subscribed: false,
+                    last_subscribed: None,
+                    last_payment_native: None,
+                    last_payment_usd: None,
+                },
+            };
+            to_json_binary(&response)
+        }
         QueryMsg::CumulativePrices {} => to_json_binary(&query_cumulative_prices(deps, env)?),
         QueryMsg::Config {} => to_json_binary(&query_config(deps)?),
         QueryMsg::FeeInfo {} => to_json_binary(&query_fee_info(deps)?),
         QueryMsg::IsFullyCommited {} => to_json_binary(&query_check_threshold_limit(deps)?),
-        QueryMsg::IsSubscribed { wallet } => {
-            let addr = deps.api.addr_validate(&wallet)?;
-            let active = SUB_INFO
-                .may_load(deps.storage, &addr)?
-                .map_or(false, |sub| sub.expires > env.block.time);
-            to_json_binary(&active)
-        }
         QueryMsg::SubscriptionInfo { wallet } => {
             let addr = deps.api.addr_validate(&wallet)?;
             let info = SUB_INFO.may_load(deps.storage, &addr)?; // Option<Subscription>

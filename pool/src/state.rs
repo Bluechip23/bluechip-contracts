@@ -1,6 +1,6 @@
 use crate::{
     asset::{Asset, AssetInfo, PairType},
-    msg::FeeInfo,
+    msg::{FeeInfo,},
 };
 use cosmwasm_schema::cw_serde;
 use cosmwasm_std::{Addr, Decimal, QuerierWrapper, StdResult, Timestamp, Uint128};
@@ -64,7 +64,8 @@ pub const COMMITSTATUS: Item<Uint128> = Item::new("commit_status");
 pub const NATIVE_RAISED: Item<Uint128> = Item::new("native_raised");
 pub const REENTRANCY_GUARD: Item<bool> = Item::new("reentrancy_guard");
 pub const THRESHOLD_HIT: Item<bool> = Item::new("threshold_hit");
-pub const COMMIT_LEDGER: cw_storage_plus::Map<&Addr, Uint128> = cw_storage_plus::Map::new("commit_usd");
+pub const COMMIT_LEDGER: cw_storage_plus::Map<&Addr, Uint128> =
+    cw_storage_plus::Map::new("commit_usd");
 pub const SUB_INFO: Map<&Addr, Subscription> = Map::new("sub_info");
 pub const USER_LAST_COMMIT: Map<&Addr, u64> = Map::new("user_last_commit");
 pub const POOL_INFO: Item<PoolInfo> = Item::new("pool_info");
@@ -80,9 +81,13 @@ pub const POOL_FEE_STATE: Item<PoolFeeState> = Item::new("pool_fee_state");
 
 #[cw_serde]
 pub struct Subscription {
-    pub expires: Timestamp,
-    pub total_paid: Uint128,
+    pub pool_id: u64,
+    pub subscriber: Addr,
     pub total_paid_usd: Uint128,
+    pub total_paid_native: Uint128,
+    pub last_subscribed: Timestamp,
+    pub last_payment_native: Uint128,  
+    pub last_payment_usd: Uint128, 
 }
 #[cw_serde]
 pub struct PoolState {
