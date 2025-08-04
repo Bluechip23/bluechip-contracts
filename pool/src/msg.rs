@@ -2,7 +2,7 @@ use cosmwasm_schema::{cw_serde, QueryResponses};
 
 use crate::asset::{Asset, AssetInfo, PairInfo, PaymentInfoResponse, USDTierInfoWithTolerance};
 use crate::state::Subscription;
-use cosmwasm_std::{Addr, Binary, Decimal, Uint128};
+use cosmwasm_std::{Addr, Binary, Decimal, Timestamp, Uint128};
 use cw20::Cw20ReceiveMsg;
 
 /// The default swap slippage
@@ -58,7 +58,7 @@ pub enum ExecuteMsg {
     RemoveLiquidity {
         position_id: String,
     },
-    
+
     ReplaceAllPaymentTiers {
         new_payment_tiers: Vec<Uint128>,
     },
@@ -135,9 +135,6 @@ pub enum QueryMsg {
     #[returns(Option<Subscription>)]
     SubscriptionInfo { wallet: String },
 
-    #[returns(bool)]
-    IsSubscribed { wallet: String },
-
     #[returns(PoolStateResponse)]
     PoolState {},
 
@@ -159,6 +156,8 @@ pub enum QueryMsg {
         start_after: Option<String>,
         limit: Option<u32>,
     },
+    #[returns(LastSubscribedResponse)]
+    LastSubscribed { wallet: String },
 
     #[returns(PoolInfoResponse)]
     PoolInfo {},
@@ -219,7 +218,13 @@ pub struct ConfigResponse {
 }
 
 #[cw_serde]
-pub struct SubscriptionResponse {}
+pub struct LastSubscribedResponse {
+    pub has_subscribed: bool,
+    pub last_subscribed: Option<Timestamp>,
+    pub last_payment_native: Option<Uint128>,  // Most recent payment
+    pub last_payment_usd: Option<Uint128>,
+}
+
 /// This structure holds the parameters that are returned from a swap simulation response
 #[cw_serde]
 pub struct SimulationResponse {
