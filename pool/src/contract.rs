@@ -7,8 +7,9 @@ use crate::error::ContractError;
 use crate::msg::{
     CommitStatus, ConfigResponse, CumulativePricesResponse, Cw20HookMsg, ExecuteMsg, FeeInfo,
     FeeInfoResponse, LastSubscribedResponse, MigrateMsg, PoolFeeStateResponse, PoolInfoResponse,
-    PoolInitParams, PoolInstantiateMsg, PoolResponse, PoolStateResponse, PositionResponse,
-    PositionsResponse, QueryMsg, ReverseSimulationResponse, SimulationResponse,
+    PoolInitParams, PoolInstantiateMsg, PoolResponse, PoolStateResponse, PoolSubscribersResponse,
+    PositionResponse, PositionsResponse, QueryMsg, ReverseSimulationResponse, SimulationResponse,
+    SubscriberInfo,
 };
 use crate::oracle::{PriceResponse, PythQueryMsg};
 use crate::response::MsgInstantiateContractResponse;
@@ -803,12 +804,40 @@ pub fn execute_commit_logic(
                     )?);
                 }
 
+                SUB_INFO.update(
+                    deps.storage,
+                    &sender,
+                    |maybe_sub| -> Result<_, ContractError> {
+                        match maybe_sub {
+                            Some(mut sub) => {
+                                // Update totals
+                                sub.total_paid_native += asset.amount;
+                                sub.total_paid_usd += usd_value;
+                                // Track most recent payment
+                                sub.last_payment_native = asset.amount;
+                                sub.last_payment_usd = usd_value;
+                                sub.last_subscribed = env.block.time;
+                                Ok(sub)
+                            }
+                            None => Ok(Subscription {
+                                pool_id: pool_info.pool_id,
+                                subscriber: sender.clone(),
+                                total_paid_native: asset.amount,
+                                total_paid_usd: usd_value,
+                                last_subscribed: env.block.time,
+                                last_payment_native: asset.amount,
+                                last_payment_usd: usd_value,
+                            }),
+                        }
+                    },
+                )?;
                 // Return early for pre-threshold commits
                 return Ok(Response::new()
                     .add_messages(messages)
                     .add_attribute("action", "subscribe")
                     .add_attribute("phase", "funding")
                     .add_attribute("subscriber", sender)
+                    .add_attribute("block_subscribed", env.block.time.to_string())
                     .add_attribute("commit_amount_native", asset.amount.to_string())
                     .add_attribute("commit_amount_usd", usd_value.to_string()));
             }
@@ -921,6 +950,7 @@ pub fn execute_commit_logic(
         _ => Err(ContractError::AssetMismatch {}),
     }
 }
+
 #[allow(dead_code)]
 fn get_token_amount(native_amount: Uint128) -> Uint128 {
     // example: 1 native unit (10^6) → 20 creator tokens
@@ -2485,6 +2515,20 @@ pub fn query(deps: Deps, env: Env, msg: QueryMsg) -> StdResult<Binary> {
         QueryMsg::Positions { start_after, limit } => {
             to_json_binary(&query_positions(deps, start_after, limit)?)
         }
+        QueryMsg::PoolSubscribers {
+            pool_id,
+            min_payment_usd,
+            after_timestamp,
+            start_after,
+            limit,
+        } => to_json_binary(&query_pool_subscribers(
+            deps,
+            pool_id,
+            min_payment_usd,
+            after_timestamp,
+            start_after,
+            limit,
+        )?),
         QueryMsg::PositionsByOwner {
             owner,
             start_after,
@@ -2927,6 +2971,70 @@ fn query_pool_info(deps: Deps) -> StdResult<PoolInfoResponse> {
             total_fees_collected_1: pool_fee_state.total_fees_collected_1,
         },
         total_positions: next_position_id,
+    })
+}
+
+fn query_pool_subscribers(
+    deps: Deps,
+    pool_id: u64,
+    min_payment_usd: Option<Uint128>,
+    after_timestamp: Option<u64>,
+    start_after: Option<String>,
+    limit: Option<u32>,
+) -> StdResult<PoolSubscribersResponse> {
+    let limit = limit.unwrap_or(30).min(100) as usize;
+
+    // Create the bound - handle the lifetime properly
+    let start_addr = start_after
+        .map(|addr_str| deps.api.addr_validate(&addr_str))
+        .transpose()?;
+    
+    let start = start_addr.as_ref().map(Bound::exclusive);
+
+    let mut subscribers = vec![];
+    let mut count = 0;
+
+    // Iterate through all subscriptions
+    for item in SUB_INFO.range(deps.storage, start, None, Order::Ascending) {
+        let (subscriber_addr, sub) = item?;
+
+        // Filter by pool_id
+        if sub.pool_id != pool_id {
+            continue;
+        }
+
+        // Apply optional filters
+        if let Some(min_usd) = min_payment_usd {
+            if sub.last_payment_usd < min_usd {
+                continue;
+            }
+        }
+
+        if let Some(after_ts) = after_timestamp {
+            if sub.last_subscribed.seconds() < after_ts {
+                continue;
+            }
+        }
+
+        subscribers.push(SubscriberInfo {
+            wallet: subscriber_addr.to_string(),
+            last_payment_native: sub.last_payment_native,
+            last_payment_usd: sub.last_payment_usd,
+            last_subscribed: sub.last_subscribed,
+            total_paid_usd: sub.total_paid_usd,
+        });
+
+        count += 1;
+
+        // Stop if we've collected enough
+        if subscribers.len() >= limit {
+            break;
+        }
+    }
+
+    Ok(PoolSubscribersResponse {
+        total_count: count,
+        subscribers,
     })
 }
 

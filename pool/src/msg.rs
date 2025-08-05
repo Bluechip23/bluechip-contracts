@@ -135,6 +135,15 @@ pub enum QueryMsg {
     #[returns(Option<Subscription>)]
     SubscriptionInfo { wallet: String },
 
+    #[returns(PoolSubscribersResponse)]
+    PoolSubscribers {
+        pool_id: u64,
+        min_payment_usd: Option<Uint128>,
+        after_timestamp: Option<u64>, // Unix timestamp
+        start_after: Option<String>,  // For pagination
+        limit: Option<u32>,
+    },
+
     #[returns(PoolStateResponse)]
     PoolState {},
 
@@ -194,6 +203,20 @@ pub struct PoolInitParams {
 }
 
 #[cw_serde]
+pub struct PoolSubscribersResponse {
+    pub total_count: u32,
+    pub subscribers: Vec<SubscriberInfo>,
+}
+
+#[cw_serde]
+pub struct SubscriberInfo {
+    pub wallet: String,
+    pub last_payment_native: Uint128,
+    pub last_payment_usd: Uint128,
+    pub last_subscribed: Timestamp,
+    pub total_paid_usd: Uint128,
+}
+#[cw_serde]
 pub struct FeeInfo {
     pub bluechip_address: Addr,
     pub creator_address: Addr,
@@ -221,7 +244,7 @@ pub struct ConfigResponse {
 pub struct LastSubscribedResponse {
     pub has_subscribed: bool,
     pub last_subscribed: Option<Timestamp>,
-    pub last_payment_native: Option<Uint128>,  // Most recent payment
+    pub last_payment_native: Option<Uint128>, // Most recent payment
     pub last_payment_usd: Option<Uint128>,
 }
 
