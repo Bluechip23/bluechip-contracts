@@ -78,6 +78,7 @@ pub const COMMIT_CONFIG: Item<CommitInfo> = Item::new("commit_config");
 pub const ORACLE_INFO: Item<OracleInfo> = Item::new("oracle_info");
 pub const POOL_PARAMS: Item<PoolSpecs> = Item::new("pool_params");
 pub const POOL_FEE_STATE: Item<PoolFeeState> = Item::new("pool_fee_state");
+pub const POOL_SUBSCRIBERS: Map<(u64, &Addr), bool> = Map::new("pool_subs");
 
 #[cw_serde]
 pub struct Subscription {
