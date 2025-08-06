@@ -226,7 +226,6 @@ pub fn execute(
                 to_addr,
             )
         }
-
         ExecuteMsg::Receive(cw20_msg) => execute_swap_cw20(deps, env, info, cw20_msg),
 
         // ── NEW: NFT-based liquidity management ──────────────────
@@ -291,7 +290,6 @@ pub fn reply(deps: DepsMut, _env: Env, msg: Reply) -> Result<Response, ContractE
                     "invalid instantiate reply data",
                 )
             })?;
-
         let lp: Addr = deps.api.addr_validate(parsed.get_contract_address())?;
 
         // CHANGED: Update POOL_INFO instead of CONFIG
@@ -816,7 +814,6 @@ pub fn execute_commit_logic(
             }
 
             // Post-threshold: handle swap for subscription
-            // Post-threshold: handle swap for subscription
             let net_amount = asset
                 .amount
                 .checked_sub(bluechip_fee_amt + creator_fee_amt)?;
@@ -942,7 +939,6 @@ fn native_to_usd(
     let price_8dec = resp.price; // e.g. 1.25 USD = 125_000_000
 
     // 2. convert: (µnative × price) / 10^(8-6) = µUSD
-    // pool/src/contract.rs  – helper native_to_usd
     let usd_micro_u256 =
         (Uint256::from(native_amount) * Uint256::from(price_8dec)) / Uint256::from(100_000_000u128); // 10^(8-6) = 100
 
@@ -1019,7 +1015,6 @@ pub fn execute_deposit_liquidity(
         };
         messages.push(CosmosMsg::Wasm(accept_msg)); // Add to messages
         pool_state.nft_ownership_accepted = true;
-        // Don't return here! Continue with the deposit
     }
     // 4. Compute liquidity amount
     let (liquidity, actual_amount0, actual_amount1) =
@@ -1222,18 +1217,6 @@ pub fn execute_add_to_position(
     // 4. Load position
     let mut liquidity_position = LIQUIDITY_POSITIONS.load(deps.storage, &position_id)?;
     let mut messages: Vec<CosmosMsg> = vec![];
-    if !amount1.is_zero() {
-        let transfer_cw20_msg = WasmMsg::Execute {
-            contract_addr: pool_info.token_address.to_string(),
-            msg: to_json_binary(&cw20::Cw20ExecuteMsg::TransferFrom {
-                owner: info.sender.to_string(),
-                recipient: env.contract.address.to_string(),
-                amount: amount1,
-            })?,
-            funds: vec![],
-        };
-        messages.push(CosmosMsg::Wasm(transfer_cw20_msg));
-    }
 
     // 5. Calculate any pending fees FIRST (before diluting the position)
     let fees_owed_0 = calculate_fees_owed(
@@ -1995,7 +1978,7 @@ pub fn assert_max_spread(
 /// Used for the contract migration. Returns a default object of type [`Response`].
 /// ## Params
 /// * **deps** is an object of type [`DepsMut`].
-///
+//
 /// * **_env** is an object of type [`Env`].
 ///
 /// * **_msg** is an object of type [`MigrateMsg`].
