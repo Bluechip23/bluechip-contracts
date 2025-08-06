@@ -3,9 +3,8 @@ use crate::asset::{call_pool_info, Asset, AssetInfo, PairType};
 use crate::error::ContractError;
 use crate::msg::{
     CommitStatus, ConfigResponse, CumulativePricesResponse, Cw20HookMsg, ExecuteMsg, FeeInfo,
-    FeeInfoResponse, LastSubscribedResponse, MigrateMsg, 
-    PoolInitParams, PoolInstantiateMsg, PoolResponse, PoolSubscribersResponse,
-   QueryMsg, ReverseSimulationResponse, SimulationResponse,
+    FeeInfoResponse, LastSubscribedResponse, MigrateMsg, PoolInitParams, PoolInstantiateMsg,
+    PoolResponse, PoolSubscribersResponse, QueryMsg, ReverseSimulationResponse, SimulationResponse,
     SubscriberInfo,
 };
 use crate::oracle::{PriceResponse, PythQueryMsg};
@@ -35,13 +34,12 @@ use crate::state::{
     USER_LAST_COMMIT, //ACCUMULATED_BLUECHIP_FEES, ACCUMULATED_CREATOR_FEES,
 };
 use crate::state::{
-    PoolState, Position, Subscription, LIQUIDITY_POSITIONS, NEXT_POSITION_ID,
-    SUB_INFO,
+    PoolState, Position, Subscription, LIQUIDITY_POSITIONS, NEXT_POSITION_ID, SUB_INFO,
 };
 use cosmwasm_std::{
-    entry_point, from_json, to_json_binary, Addr, Binary, Coin, CosmosMsg, Decimal,
-    Decimal256, Deps, DepsMut, Env, Fraction, MessageInfo, Order, QuerierWrapper, Reply,
-    Response, StdError, StdResult, Storage, SubMsgResult, Uint128, Uint256, WasmMsg,
+    entry_point, from_json, to_json_binary, Addr, Binary, Coin, CosmosMsg, Decimal, Decimal256,
+    Deps, DepsMut, Env, Fraction, MessageInfo, Order, QuerierWrapper, Reply, Response, StdError,
+    StdResult, Storage, SubMsgResult, Uint128, Uint256, WasmMsg,
 };
 use cw2::{get_contract_version, set_contract_version};
 use cw20::{Cw20ExecuteMsg, Cw20ReceiveMsg};
@@ -226,7 +224,6 @@ pub fn execute(
             )
         }
         ExecuteMsg::Receive(cw20_msg) => execute_swap_cw20(deps, env, info, cw20_msg),
-    
     }
 }
 
@@ -322,7 +319,7 @@ pub fn execute_swap_cw20(
                 to_addr,
             )
         }
-       
+
         Err(err) => Err(ContractError::Std(err)),
     }
 }
@@ -427,8 +424,14 @@ pub fn simple_swap(
         pool_state.reserve0 = ask_pool_post;
         pool_state.reserve1 = offer_pool_post;
     }
-
-  
+    // Update fee growth
+    update_fee_growth(
+        &mut pool_fee_state,
+        &pool_state,
+        offer_pool_idx,
+        commission_amt,
+    )?;
+    POOL_FEE_STATE.save(deps.storage, &pool_fee_state)?;
 
     // Update price accumulator
     update_price_accumulator(&mut pool_state, env.block.time.seconds())?;
@@ -471,6 +474,30 @@ fn identify_pools(
     }
 }
 
+fn update_fee_growth(
+    pool_fee_state: &mut PoolFeeState,
+    pool_state: &PoolState,
+    offer_pool_idx: usize,
+    commission_amt: Uint128,
+) -> Result<(), ContractError> {
+    if pool_state.total_liquidity.is_zero() || commission_amt.is_zero() {
+        return Ok(());
+    }
+
+    let fee_growth = Decimal::from_ratio(commission_amt, pool_state.total_liquidity);
+
+    if offer_pool_idx == 0 {
+        // Token0 offered, fees collected in token0
+        pool_fee_state.fee_growth_global_0 += fee_growth;
+        pool_fee_state.total_fees_collected_0 += commission_amt;
+    } else {
+        // Token1 offered, fees collected in token1
+        pool_fee_state.fee_growth_global_1 += fee_growth;
+        pool_fee_state.total_fees_collected_1 += commission_amt;
+    }
+
+    Ok(())
+}
 
 // Update price accumulator with time-weighted average
 fn update_price_accumulator(
@@ -753,7 +780,15 @@ pub fn execute_commit_logic(
             // Native (token0) increases, CW20 (token1) decreases
             pool_state.reserve0 = offer_pool.amount.checked_add(net_amount)?;
             pool_state.reserve1 = ask_pool.amount.checked_sub(return_amt)?;
-
+            // UPDATE FEE GROWTH
+            update_fee_growth(
+                &mut pool_fee_state,
+                &pool_state,
+                0, // Native is always index 0, fees always collected in token0
+                commission_amt,
+            )?;
+            // Save fee state
+            POOL_FEE_STATE.save(deps.storage, &pool_fee_state)?;
 
             // Update price accumulator with new reserves
             update_price_accumulator(&mut pool_state, env.block.time.seconds())?;
@@ -1556,7 +1591,6 @@ pub fn query_check_commit(deps: Deps) -> StdResult<bool> {
     // true once we've raised at least the USD threshold
     Ok(usd_raised >= commit_info.commit_limit_usd)
 }
-
 
 fn query_pool_subscribers(
     deps: Deps,
