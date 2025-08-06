@@ -1092,8 +1092,8 @@ pub fn execute_deposit_liquidity(
     LIQUIDITY_POSITIONS.save(deps.storage, &position_id, &position)?;
 
     // 9. Update pool state
-    pool_state.reserve0 = pool_state.reserve0.checked_add(amount0)?;
-    pool_state.reserve1 = pool_state.reserve1.checked_add(amount1)?;
+    pool_state.reserve0 = pool_state.reserve0.checked_add(actual_amount0)?;
+    pool_state.reserve1 = pool_state.reserve1.checked_add(actual_amount1)?;
     pool_state.total_liquidity = pool_state.total_liquidity.checked_add(liquidity)?;
     POOL_STATE.save(deps.storage, &pool_state)?;
 
