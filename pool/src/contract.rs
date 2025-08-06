@@ -1,8 +1,5 @@
 #![allow(non_snake_case)]
-use crate::asset::{
-    call_pool_info, Asset, AssetInfo, PairType,
-  
-};
+use crate::asset::{call_pool_info, Asset, AssetInfo, PairType};
 use crate::error::ContractError;
 use crate::msg::{
     CommitStatus, ConfigResponse, CumulativePricesResponse, Cw20HookMsg, ExecuteMsg, FeeInfo,
@@ -229,7 +226,6 @@ pub fn execute(
                 to_addr,
             )
         }
-
         ExecuteMsg::Receive(cw20_msg) => execute_swap_cw20(deps, env, info, cw20_msg),
 
         // ── NEW: NFT-based liquidity management ──────────────────
@@ -294,7 +290,6 @@ pub fn reply(deps: DepsMut, _env: Env, msg: Reply) -> Result<Response, ContractE
                     "invalid instantiate reply data",
                 )
             })?;
-
         let lp: Addr = deps.api.addr_validate(parsed.get_contract_address())?;
 
         // CHANGED: Update POOL_INFO instead of CONFIG
@@ -819,7 +814,6 @@ pub fn execute_commit_logic(
             }
 
             // Post-threshold: handle swap for subscription
-            // Post-threshold: handle swap for subscription
             let net_amount = asset
                 .amount
                 .checked_sub(bluechip_fee_amt + creator_fee_amt)?;
@@ -945,7 +939,6 @@ fn native_to_usd(
     let price_8dec = resp.price; // e.g. 1.25 USD = 125_000_000
 
     // 2. convert: (µnative × price) / 10^(8-6) = µUSD
-    // pool/src/contract.rs  – helper native_to_usd
     let usd_micro_u256 =
         (Uint256::from(native_amount) * Uint256::from(price_8dec)) / Uint256::from(100_000_000u128); // 10^(8-6) = 100
 
@@ -1000,7 +993,7 @@ pub fn execute_deposit_liquidity(
         .map(|c| c.amount)
         .unwrap_or_default();
 
-    if paid_native != amount0 {
+    if paid_native < amount0 {
         return Err(ContractError::InvalidNativeAmount {});
     }
 
@@ -1012,18 +1005,6 @@ pub fn execute_deposit_liquidity(
     // 3. Transfer CW20 tokens from user to pool (if amount1 > 0)
     let mut messages = vec![];
 
-    if !amount1.is_zero() {
-        let transfer_cw20_msg = WasmMsg::Execute {
-            contract_addr: pool_info.token_address.to_string(),
-            msg: to_json_binary(&cw20::Cw20ExecuteMsg::TransferFrom {
-                owner: info.sender.to_string(), // Transfer from the sender
-                recipient: env.contract.address.to_string(), // To the pool
-                amount: amount1,
-            })?,
-            funds: vec![],
-        };
-        messages.push(CosmosMsg::Wasm(transfer_cw20_msg));
-    }
     if !pool_state.nft_ownership_accepted {
         let accept_msg = WasmMsg::Execute {
             contract_addr: pool_info.position_nft_address.to_string(),
@@ -1034,10 +1015,37 @@ pub fn execute_deposit_liquidity(
         };
         messages.push(CosmosMsg::Wasm(accept_msg)); // Add to messages
         pool_state.nft_ownership_accepted = true;
-        // Don't return here! Continue with the deposit
     }
     // 4. Compute liquidity amount
-    let liquidity = calc_liquidity_for_deposit(deps.as_ref(), amount0, amount1)?;
+    let (liquidity, actual_amount0, actual_amount1) =
+        calc_liquidity_for_deposit(deps.as_ref(), &env, amount0, amount1)?;
+
+    // Transfer only the actual CW20 amount needed
+    if !actual_amount1.is_zero() {
+        let transfer_cw20_msg = WasmMsg::Execute {
+            contract_addr: pool_info.token_address.to_string(),
+            msg: to_json_binary(&cw20::Cw20ExecuteMsg::TransferFrom {
+                owner: info.sender.to_string(),
+                recipient: env.contract.address.to_string(),
+                amount: actual_amount1, // Use actual amount, not requested
+            })?,
+            funds: vec![],
+        };
+        messages.push(CosmosMsg::Wasm(transfer_cw20_msg));
+    }
+
+    // Refund excess native tokens
+    let refund_amount = paid_native.checked_sub(actual_amount0)?;
+    if !refund_amount.is_zero() {
+        let refund_msg = BankMsg::Send {
+            to_address: info.sender.to_string(),
+            amount: vec![Coin {
+                denom: NATIVE_DENOM.to_string(),
+                amount: refund_amount,
+            }],
+        };
+        messages.push(CosmosMsg::Bank(refund_msg));
+    }
 
     // 5. Generate position ID
     let mut pos_id = NEXT_POSITION_ID.load(deps.storage)?;
@@ -1079,8 +1087,8 @@ pub fn execute_deposit_liquidity(
     LIQUIDITY_POSITIONS.save(deps.storage, &position_id, &position)?;
 
     // 9. Update pool state
-    pool_state.reserve0 = pool_state.reserve0.checked_add(amount0)?;
-    pool_state.reserve1 = pool_state.reserve1.checked_add(amount1)?;
+    pool_state.reserve0 = pool_state.reserve0.checked_add(actual_amount0)?;
+    pool_state.reserve1 = pool_state.reserve1.checked_add(actual_amount1)?;
     pool_state.total_liquidity = pool_state.total_liquidity.checked_add(liquidity)?;
     POOL_STATE.save(deps.storage, &pool_state)?;
 
@@ -1089,6 +1097,10 @@ pub fn execute_deposit_liquidity(
         .add_attribute("action", "deposit_liquidity")
         .add_attribute("position_id", position_id)
         .add_attribute("depositor", user)
+        .add_attribute("liquidity", liquidity.to_string())
+        .add_attribute("actual_amount0", actual_amount0.to_string())
+        .add_attribute("actual_amount1", actual_amount1.to_string())
+        .add_attribute("refunded_amount0", refund_amount.to_string())
         .add_attribute("liquidity", liquidity.to_string())
         .add_attribute("amount0", amount0.to_string())
         .add_attribute("amount1", amount1.to_string()))
@@ -1205,18 +1217,6 @@ pub fn execute_add_to_position(
     // 4. Load position
     let mut liquidity_position = LIQUIDITY_POSITIONS.load(deps.storage, &position_id)?;
     let mut messages: Vec<CosmosMsg> = vec![];
-    if !amount1.is_zero() {
-        let transfer_cw20_msg = WasmMsg::Execute {
-            contract_addr: pool_info.token_address.to_string(),
-            msg: to_json_binary(&cw20::Cw20ExecuteMsg::TransferFrom {
-                owner: info.sender.to_string(),
-                recipient: env.contract.address.to_string(),
-                amount: amount1,
-            })?,
-            funds: vec![],
-        };
-        messages.push(CosmosMsg::Wasm(transfer_cw20_msg));
-    }
 
     // 5. Calculate any pending fees FIRST (before diluting the position)
     let fees_owed_0 = calculate_fees_owed(
@@ -1232,7 +1232,35 @@ pub fn execute_add_to_position(
     );
 
     // 6. Calculate new liquidity for the additional deposit
-    let additional_liquidity = calc_liquidity_for_deposit(deps.as_ref(), amount0, amount1)?;
+    let (additional_liquidity, actual_amount0, actual_amount1) =
+        calc_liquidity_for_deposit(deps.as_ref(), &env, amount0, amount1)?;
+
+    // 7. Transfer only the actual CW20 amount needed
+    if !actual_amount1.is_zero() {
+        let transfer_cw20_msg = WasmMsg::Execute {
+            contract_addr: pool_info.token_address.to_string(),
+            msg: to_json_binary(&cw20::Cw20ExecuteMsg::TransferFrom {
+                owner: info.sender.to_string(),
+                recipient: env.contract.address.to_string(),
+                amount: actual_amount1, // Use actual amount
+            })?,
+            funds: vec![],
+        };
+        messages.push(CosmosMsg::Wasm(transfer_cw20_msg));
+    }
+
+    // 8. Refund excess native tokens
+    let refund_amount = paid_native.checked_sub(actual_amount0)?;
+    if !refund_amount.is_zero() {
+        let refund_msg = BankMsg::Send {
+            to_address: info.sender.to_string(),
+            amount: vec![Coin {
+                denom: NATIVE_DENOM.to_string(),
+                amount: refund_amount,
+            }],
+        };
+        messages.push(CosmosMsg::Bank(refund_msg));
+    }
 
     // 7. Update position with new totals and reset fee tracking
     liquidity_position.liquidity += additional_liquidity;
@@ -1259,6 +1287,9 @@ pub fn execute_add_to_position(
         .add_attribute("total_liquidity", liquidity_position.liquidity.to_string())
         .add_attribute("amount0_added", amount0)
         .add_attribute("amount1_added", amount1)
+        .add_attribute("actual_amount0", actual_amount0.to_string())
+        .add_attribute("actual_amount1", actual_amount1.to_string())
+        .add_attribute("refunded_amount0", refund_amount.to_string())
         .add_attribute("fees_collected_0", fees_owed_0)
         .add_attribute("fees_collected_1", fees_owed_1);
 
@@ -1558,11 +1589,19 @@ pub fn execute_remove_partial_liquidity_by_percent(
 // Helper function to calculate liquidity for deposits
 fn calc_liquidity_for_deposit(
     deps: Deps,
+    env: &Env,
     amount0: Uint128,
     amount1: Uint128,
-) -> Result<Uint128, ContractError> {
+) -> Result<(Uint128, Uint128, Uint128), ContractError> {
     // Changed return type to Decimal
     let pool_state = POOL_STATE.load(deps.storage)?;
+    let pool_info = POOL_INFO.load(deps.storage)?;
+    let pools = pool_info.pair_info.query_pools(
+        &deps.querier,
+        deps.api.addr_validate(&env.contract.address.to_string())?,
+    )?;
+    let reserve0 = pools[0].amount;
+    let reserve1 = pools[1].amount;
     // If this is the first deposit (empty pool), use geometric mean
     if pool_state.total_liquidity.is_zero() {
         // First liquidity provider gets sqrt(amount0 * amount1)
@@ -1574,13 +1613,12 @@ fn calc_liquidity_for_deposit(
         if liquidity_uint < Uint128::from(1000u128) {
             return Err(ContractError::InsufficientLiquidity {});
         }
-        // Convert to Decimal
-        Ok(liquidity_uint)
+        Ok((liquidity_uint, amount0, amount1))
     } else {
         // Subsequent deposits: maintain proportional share
         // liquidity = min(amount0/reserve0, amount1/reserve1) * total_liquidity
 
-        if pool_state.reserve0.is_zero() || pool_state.reserve1.is_zero() {
+        if reserve0.is_zero() || reserve1.is_zero() {
             return Err(ContractError::InsufficientLiquidity {});
         }
 
@@ -1588,8 +1626,8 @@ fn calc_liquidity_for_deposit(
             return Err(ContractError::InsufficientLiquidity {});
         }
 
-        let optimal_amount1_for_amount0 = (amount0 * pool_state.reserve1) / pool_state.reserve0; // "If I use all of amount0, how much amount1 do I need?"
-        let optimal_amount0_for_amount1 = (amount1 * pool_state.reserve0) / pool_state.reserve1; // "If I use all of amount1, how much amount0 do I need?"
+        let optimal_amount1_for_amount0 = (amount0 * reserve1) / reserve0; // "If I use all of amount0, how much amount1 do I need?"
+        let optimal_amount0_for_amount1 = (amount1 * reserve0) / reserve1; // "If I use all of amount1, how much amount0 do I need?"
 
         let (final_amount0, final_amount1) = if optimal_amount1_for_amount0 <= amount1 {
             // User provided enough amount1, use all of amount0
@@ -1605,14 +1643,13 @@ fn calc_liquidity_for_deposit(
         }
 
         // Calculate liquidity with the adjusted amounts
-        let liquidity_uint = (final_amount0 * pool_state.total_liquidity) / pool_state.reserve0;
+        let liquidity_uint = (final_amount0 * pool_state.total_liquidity) / reserve0;
 
         if liquidity_uint.is_zero() {
             return Err(ContractError::InsufficientLiquidity {});
         }
 
-        // Convert to Decimal
-        Ok(liquidity_uint)
+        Ok((liquidity_uint, final_amount0, final_amount1))
     }
 }
 
@@ -1937,12 +1974,11 @@ pub fn assert_max_spread(
     Ok(())
 }
 
-
 /// ## Description
 /// Used for the contract migration. Returns a default object of type [`Response`].
 /// ## Params
 /// * **deps** is an object of type [`DepsMut`].
-///
+//
 /// * **_env** is an object of type [`Env`].
 ///
 /// * **_msg** is an object of type [`MigrateMsg`].
@@ -2167,8 +2203,6 @@ pub fn query_pair_info(deps: Deps) -> StdResult<PairInfo> {
     let pool_info = POOL_INFO.load(deps.storage)?;
     Ok(pool_info.pair_info)
 }
-
-
 
 /// ## Description
 /// Returns the amounts of assets in the pair contract as well as the amount of LP
@@ -2482,7 +2516,7 @@ fn query_pool_subscribers(
     let start_addr = start_after
         .map(|addr_str| deps.api.addr_validate(&addr_str))
         .transpose()?;
-    
+
     let start = start_addr.as_ref().map(Bound::exclusive);
 
     let mut subscribers = vec![];
