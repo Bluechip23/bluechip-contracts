@@ -14,7 +14,7 @@ use crate::state::{
 #[cfg(not(feature = "library"))]
 use cosmwasm_std::entry_point;
 use cosmwasm_std::{
-    to_json_binary, Addr, Coin, CosmosMsg, Deps, DepsMut, Empty, Env, MessageInfo, Reply, Response,
+    to_json_binary, Deps, DepsMut, Empty, Env, MessageInfo, Reply, Response,
     StdError, StdResult, SubMsg, SubMsgResult, Uint128, WasmMsg,
 };
 use cw20::{Cw20ExecuteMsg, MinterResponse};
@@ -359,99 +359,6 @@ pub fn reply(deps: DepsMut, env: Env, msg: Reply) -> Result<Response, ContractEr
 
         _ => Err(StdError::generic_err(format!("Unknown reply ID: {}", msg.id)).into()),
     }
-}
-
-pub fn get_cw20_transfer_msg(
-    token_addr: &Addr,
-    recipient: &Addr,
-    amount: Uint128,
-) -> StdResult<CosmosMsg> {
-    let transfer_cw20_msg = Cw20ExecuteMsg::Transfer {
-        recipient: recipient.into(),
-        amount,
-    };
-
-    let exec_cw20_transfer_msg = WasmMsg::Execute {
-        contract_addr: token_addr.into(),
-        msg: to_json_binary(&transfer_cw20_msg)?,
-        funds: vec![],
-    };
-
-    let cw20_transfer_msg: CosmosMsg = exec_cw20_transfer_msg.into();
-    Ok(cw20_transfer_msg)
-}
-
-pub fn get_cw20_transfer_from_msg(
-    token_addr: &Addr,
-    owner: &Addr,
-    recipient: &Addr,
-    amount: Uint128,
-) -> StdResult<CosmosMsg> {
-    let transfer_cw20_msg = Cw20ExecuteMsg::TransferFrom {
-        owner: owner.into(),
-        recipient: recipient.into(),
-        amount,
-    };
-
-    let exec_cw20_transfer_msg = WasmMsg::Execute {
-        contract_addr: token_addr.into(),
-        msg: to_json_binary(&transfer_cw20_msg)?,
-        funds: vec![],
-    };
-
-    let cw20_transfer_msg: CosmosMsg = exec_cw20_transfer_msg.into();
-    Ok(cw20_transfer_msg)
-}
-
-pub fn get_cw20_burn_from_msg(
-    token_addr: &Addr,
-    owner: &Addr,
-    amount: Uint128,
-) -> StdResult<CosmosMsg> {
-    let burn_cw20_msg = Cw20ExecuteMsg::BurnFrom {
-        owner: owner.into(),
-        amount,
-    };
-    let exec_cw20_burn_msg = WasmMsg::Execute {
-        contract_addr: token_addr.into(),
-        msg: to_json_binary(&burn_cw20_msg)?,
-        funds: vec![],
-    };
-
-    let cw20_burn_msg: CosmosMsg = exec_cw20_burn_msg.into();
-    Ok(cw20_burn_msg)
-}
-
-pub fn mint_tokens(token_addr: &Addr, recipient: &Addr, amount: Uint128) -> StdResult<CosmosMsg> {
-    let burn_cw20_msg = Cw20ExecuteMsg::Mint {
-        recipient: recipient.to_string(),
-        amount,
-    };
-    let exec_cw20_burn_msg = WasmMsg::Execute {
-        contract_addr: token_addr.into(),
-        msg: to_json_binary(&burn_cw20_msg)?,
-        funds: vec![],
-    };
-
-    let cw20_burn_msg: CosmosMsg = exec_cw20_burn_msg.into();
-    Ok(cw20_burn_msg)
-}
-
-pub fn get_bank_transfer_to_msg(
-    recipient: &Addr,
-    denom: &str,
-    amount: Uint128,
-) -> StdResult<CosmosMsg> {
-    let transfer_bank_msg = cosmwasm_std::BankMsg::Send {
-        to_address: recipient.into(),
-        amount: vec![Coin {
-            denom: denom.to_string(),
-            amount,
-        }],
-    };
-
-    let transfer_bank_cosmos_msg: CosmosMsg = transfer_bank_msg.into();
-    Ok(transfer_bank_cosmos_msg)
 }
 
 fn assert_is_admin(deps: Deps, info: MessageInfo) -> StdResult<bool> {

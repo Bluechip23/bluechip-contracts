@@ -1,7 +1,7 @@
 #![allow(non_snake_case)]
 use crate::asset::{
-    call_pool_info, Asset, AssetInfo, NativeTierInfo, PairType, PaymentInfoResponse,
-    PaymentTiersResponseWithTolerance, USDTierInfoWithTolerance,
+    call_pool_info, Asset, AssetInfo, PairType,
+  
 };
 use crate::error::ContractError;
 use crate::msg::{
@@ -271,30 +271,6 @@ pub fn execute(
             position_id,
             percentage,
         } => execute_remove_partial_liquidity_by_percent(deps, env, info, position_id, percentage),
-
-        ExecuteMsg::ReplaceAllPaymentTiers { new_payment_tiers } => {
-            execute_replace_all_payment_tiers(deps, env, info, new_payment_tiers)
-        }
-
-        ExecuteMsg::AddPaymentTiers { tiers_to_add } => {
-            execute_add_payment_tiers(deps, env, info, tiers_to_add)
-        }
-
-        ExecuteMsg::RemovePaymentTiers { tiers_to_remove } => {
-            execute_remove_payment_tiers(deps, env, info, tiers_to_remove)
-        }
-
-        ExecuteMsg::ReplaceAllUsdPaymentTiers {
-            new_payment_tiers_usd,
-        } => execute_replace_all_usd_payment_tiers(deps, env, info, new_payment_tiers_usd),
-
-        ExecuteMsg::AddUsdPaymentTiers { tiers_to_add_usd } => {
-            execute_add_usd_payment_tiers(deps, env, info, tiers_to_add_usd)
-        }
-
-        ExecuteMsg::RemoveUsdPaymentTiers {
-            tiers_to_remove_usd,
-        } => execute_remove_usd_payment_tiers(deps, env, info, tiers_to_remove_usd),
     }
 }
 
@@ -834,10 +810,10 @@ pub fn execute_commit_logic(
                 // Return early for pre-threshold commits
                 return Ok(Response::new()
                     .add_messages(messages)
-                    .add_attribute("action", "subscribe")
+                    .add_attribute("action", "commit")
                     .add_attribute("phase", "funding")
-                    .add_attribute("subscriber", sender)
-                    .add_attribute("block_subscribed", env.block.time.to_string())
+                    .add_attribute("commiter", sender)
+                    .add_attribute("block_committed", env.block.time.to_string())
                     .add_attribute("commit_amount_native", asset.amount.to_string())
                     .add_attribute("commit_amount_usd", usd_value.to_string()));
             }
@@ -938,24 +914,17 @@ pub fn execute_commit_logic(
             // Return response
             Ok(Response::new()
                 .add_messages(messages)
-                .add_attribute("action", "subscribe")
+                .add_attribute("action", "commit")
                 .add_attribute("phase", "active")
-                .add_attribute("subscriber", sender)
+                .add_attribute("committer", sender)
                 .add_attribute("commit_amount_native", asset.amount.to_string())
                 .add_attribute("commit_amount_usd", usd_value.to_string())
                 .add_attribute("net_offered", net_amount.to_string())
-                .add_attribute("block_subscribed", env.block.time.to_string())
+                .add_attribute("block_committed", env.block.time.to_string())
                 .add_attribute("tokens_received", return_amt.to_string()))
         }
         _ => Err(ContractError::AssetMismatch {}),
     }
-}
-
-#[allow(dead_code)]
-fn get_token_amount(native_amount: Uint128) -> Uint128 {
-    // example: 1 native unit (10^6) → 20 creator tokens
-    const TOKENS_PER_NATIVE: u128 = 20;
-    Uint128::from(native_amount.u128() * TOKENS_PER_NATIVE)
 }
 
 fn native_to_usd(
@@ -1968,45 +1937,6 @@ pub fn assert_max_spread(
     Ok(())
 }
 
-/// ## Description
-/// This is an internal function that enforces slippage tolerance for swaps.
-/// Returns a [`ContractError`] on failure, otherwise returns [`Ok`].
-/// ## Params
-/// * **slippage_tolerance** is an object of type [`Option<Decimal>`]. This is the slippage tolerance to enforce.
-///
-/// * **deposits** are an array of [`Uint128`] type items. These are offer and ask amounts for a swap.
-///
-/// * **pools** are an array of [`Asset`] type items. These are total amounts of assets in the pool.
-#[allow(dead_code)]
-fn assert_slippage_tolerance(
-    slippage_tolerance: Option<Decimal>,
-    deposits: &[Uint128; 2],
-    pools: &[Asset; 2],
-) -> Result<(), ContractError> {
-    let default_slippage = Decimal::from_str(DEFAULT_SLIPPAGE)?;
-    let max_allowed_slippage = Decimal::from_str(MAX_ALLOWED_SLIPPAGE)?;
-
-    let slippage_tolerance = slippage_tolerance.unwrap_or(default_slippage);
-    if slippage_tolerance.gt(&max_allowed_slippage) {
-        return Err(ContractError::AllowedSpreadAssertion {});
-    }
-
-    let slippage_tolerance: Decimal256 = decimal2decimal256(slippage_tolerance)?;
-    let one_minus_slippage_tolerance = Decimal256::one() - slippage_tolerance;
-    let deposits: [Uint256; 2] = [deposits[0].into(), deposits[1].into()];
-    let pools: [Uint256; 2] = [pools[0].amount.into(), pools[1].amount.into()];
-
-    // Ensure each price does not change more than what the slippage tolerance allows
-    if Decimal256::from_ratio(deposits[0], deposits[1]) * one_minus_slippage_tolerance
-        > Decimal256::from_ratio(pools[0], pools[1])
-        || Decimal256::from_ratio(deposits[1], deposits[0]) * one_minus_slippage_tolerance
-            > Decimal256::from_ratio(pools[1], pools[0])
-    {
-        return Err(ContractError::MaxSlippageAssertion {});
-    }
-
-    Ok(())
-}
 
 /// ## Description
 /// Used for the contract migration. Returns a default object of type [`Response`].
@@ -2046,40 +1976,6 @@ pub fn decimal2decimal256(dec_value: Decimal) -> StdResult<Decimal256> {
             dec_value
         ))
     })
-}
-#[allow(dead_code)]
-fn validate_input_amount(
-    actual_funds: &[Coin],
-    amount: Uint128,
-    denom: &String,
-) -> Result<(), ContractError> {
-    let actual = get_amount_for_denom(actual_funds, &denom);
-
-    if amount == Uint128::zero() {
-        return Err(ContractError::InsufficientFunds {});
-    }
-    if actual.amount != amount {
-        return Err(ContractError::InsufficientFunds {});
-    }
-    if &actual.denom != denom {
-        return Err(ContractError::IncorrectNativeDenom {
-            provided: actual.denom,
-            required: denom.to_string(),
-        });
-    }
-    Ok(())
-}
-#[allow(dead_code)]
-fn get_amount_for_denom(coins: &[Coin], denom: &str) -> Coin {
-    let amount: Uint128 = coins
-        .iter()
-        .filter(|c| c.denom == denom)
-        .map(|c| c.amount)
-        .sum();
-    Coin {
-        amount,
-        denom: denom.to_string(),
-    }
 }
 
 pub fn get_bank_transfer_to_msg(
@@ -2184,315 +2080,6 @@ fn verify_position_ownership(
     Ok(())
 }
 
-pub fn execute_replace_all_payment_tiers(
-    deps: DepsMut,
-    _env: Env,
-    info: MessageInfo,
-    new_payment_tiers: Vec<Uint128>,
-) -> Result<Response, ContractError> {
-    // Load fee info to get creator address
-    let fee_info = FEEINFO.load(deps.storage)?;
-
-    // Check if sender is the creator
-    if info.sender != fee_info.creator_address {
-        return Err(ContractError::UnauthorizedNotCreator {});
-    }
-
-    // Validate payment tiers
-    if new_payment_tiers.is_empty() {
-        return Err(ContractError::InvalidPaymentTiers {});
-    }
-
-    // Check for duplicates
-    let mut unique_tiers = new_payment_tiers.clone();
-    unique_tiers.sort();
-    unique_tiers.dedup();
-    if unique_tiers.len() != new_payment_tiers.len() {
-        return Err(ContractError::Std(StdError::generic_err(
-            "Duplicate payment tiers not allowed",
-        )));
-    }
-
-    // Update the config with new payment tiers
-    COMMIT_CONFIG.update(deps.storage, |mut config| -> Result<_, ContractError> {
-        config.available_payment = new_payment_tiers.clone();
-        Ok(config)
-    })?;
-
-    Ok(Response::new()
-        .add_attribute("action", "update_replace_all_tiers")
-        .add_attribute("creator", fee_info.creator_address)
-        .add_attribute("new_tiers", format!("{:?}", new_payment_tiers)))
-}
-
-// Add new payment tiers to existing ones
-pub fn execute_add_payment_tiers(
-    deps: DepsMut,
-    _env: Env,
-    info: MessageInfo,
-    tiers_to_add: Vec<Uint128>,
-) -> Result<Response, ContractError> {
-    // Load fee info to get creator address
-    let fee_info = FEEINFO.load(deps.storage)?;
-
-    // Check if sender is the creator
-    if info.sender != fee_info.creator_address {
-        return Err(ContractError::UnauthorizedNotCreator {});
-    }
-
-    if tiers_to_add.is_empty() {
-        return Err(ContractError::Std(StdError::generic_err("No tiers to add")));
-    }
-
-    // Update the config
-    COMMIT_CONFIG.update(deps.storage, |mut config| -> Result<_, ContractError> {
-        // Add new tiers
-        config.available_payment.extend(tiers_to_add.clone());
-
-        // Remove duplicates while preserving order
-        config.available_payment.sort();
-        config.available_payment.dedup();
-
-        // Ensure we still have at least one tier
-        if config.available_payment.is_empty() {
-            return Err(ContractError::InvalidPaymentTiers {});
-        }
-
-        Ok(config)
-    })?;
-
-    Ok(Response::new()
-        .add_attribute("action", "add_payment_tiers")
-        .add_attribute("creator", fee_info.creator_address)
-        .add_attribute("added_tiers", format!("{:?}", tiers_to_add)))
-}
-
-// Remove specific payment tiers
-pub fn execute_remove_payment_tiers(
-    deps: DepsMut,
-    _env: Env,
-    info: MessageInfo,
-    tiers_to_remove: Vec<Uint128>,
-) -> Result<Response, ContractError> {
-    // Load fee info to get creator address
-    let fee_info = FEEINFO.load(deps.storage)?;
-
-    // Check if sender is the creator
-    if info.sender != fee_info.creator_address {
-        return Err(ContractError::UnauthorizedNotCreator {});
-    }
-
-    if tiers_to_remove.is_empty() {
-        return Err(ContractError::Std(StdError::generic_err(
-            "No tiers to remove",
-        )));
-    }
-
-    // Get initial count
-    let initial_count = COMMIT_CONFIG.load(deps.storage)?.available_payment.len();
-
-    // Update the config
-    COMMIT_CONFIG.update(deps.storage, |mut config| -> Result<_, ContractError> {
-        // Remove specified tiers
-        config
-            .available_payment
-            .retain(|tier| !tiers_to_remove.contains(tier));
-
-        // Ensure we still have at least one tier
-        if config.available_payment.is_empty() {
-            return Err(ContractError::Std(StdError::generic_err(
-                "Cannot remove all payment tiers - at least one must remain",
-            )));
-        }
-
-        Ok(config)
-    })?;
-
-    // Calculate how many were actually removed
-    let final_count = COMMIT_CONFIG.load(deps.storage)?.available_payment.len();
-    let removed_count = initial_count - final_count;
-
-    Ok(Response::new()
-        .add_attribute("action", "remove_payment_tiers")
-        .add_attribute("creator", fee_info.creator_address)
-        .add_attribute("removed_tiers", format!("{:?}", tiers_to_remove))
-        .add_attribute("removed_count", removed_count.to_string()))
-}
-
-pub fn execute_replace_all_usd_payment_tiers(
-    deps: DepsMut,
-    _env: Env,
-    info: MessageInfo,
-    new_payment_tiers_usd: Vec<Uint128>,
-) -> Result<Response, ContractError> {
-    // Load fee info to get creator address
-    let fee_info = FEEINFO.load(deps.storage)?;
-
-    // Check if sender is the creator
-    if info.sender != fee_info.creator_address {
-        return Err(ContractError::UnauthorizedNotCreator {});
-    }
-
-    // Validate payment tiers
-    if new_payment_tiers_usd.is_empty() {
-        return Err(ContractError::InvalidPaymentTiers {});
-    }
-
-    // Check for duplicates
-    let mut unique_tiers = new_payment_tiers_usd.clone();
-    unique_tiers.sort();
-    unique_tiers.dedup();
-    if unique_tiers.len() != new_payment_tiers_usd.len() {
-        return Err(ContractError::Std(StdError::generic_err(
-            "Duplicate payment tiers not allowed",
-        )));
-    }
-
-    // Update the config with new payment tiers
-    COMMIT_CONFIG.update(deps.storage, |mut config| -> Result<_, ContractError> {
-        config.available_payment = new_payment_tiers_usd.clone();
-        Ok(config)
-    })?;
-
-    Ok(Response::new()
-        .add_attribute("action", "update_replace_all_tiers")
-        .add_attribute("creator", fee_info.creator_address)
-        .add_attribute("new_tiers", format!("{:?}", new_payment_tiers_usd)))
-}
-
-pub fn execute_add_usd_payment_tiers(
-    deps: DepsMut,
-    _env: Env,
-    info: MessageInfo,
-    tiers_to_add_usd: Vec<Uint128>,
-) -> Result<Response, ContractError> {
-    // Load fee info to get creator address
-    let fee_info = FEEINFO.load(deps.storage)?;
-
-    // Check if sender is the creator
-    if info.sender != fee_info.creator_address {
-        return Err(ContractError::UnauthorizedNotCreator {});
-    }
-
-    if tiers_to_add_usd.is_empty() {
-        return Err(ContractError::Std(StdError::generic_err("No tiers to add")));
-    }
-
-    // Update the config
-    COMMIT_CONFIG.update(deps.storage, |mut config| -> Result<_, ContractError> {
-        // Add new tiers
-        config
-            .available_payment_usd
-            .extend(tiers_to_add_usd.clone());
-
-        // Remove duplicates while preserving order
-        config.available_payment_usd.sort();
-        config.available_payment_usd.dedup();
-
-        // Ensure we still have at least one tier
-        if config.available_payment_usd.is_empty() {
-            return Err(ContractError::InvalidPaymentTiers {});
-        }
-
-        Ok(config)
-    })?;
-
-    Ok(Response::new()
-        .add_attribute("action", "add_payment_tiers")
-        .add_attribute("creator", fee_info.creator_address)
-        .add_attribute("added_tiers", format!("{:?}", tiers_to_add_usd)))
-}
-
-// Remove specific USD payment tiers
-pub fn execute_remove_usd_payment_tiers(
-    deps: DepsMut,
-    _env: Env,
-    info: MessageInfo,
-    tiers_to_remove_usd: Vec<Uint128>,
-) -> Result<Response, ContractError> {
-    // Load fee info to get creator address
-    let fee_info = FEEINFO.load(deps.storage)?;
-
-    // Check if sender is the creator
-    if info.sender != fee_info.creator_address {
-        return Err(ContractError::UnauthorizedNotCreator {});
-    }
-
-    if tiers_to_remove_usd.is_empty() {
-        return Err(ContractError::Std(StdError::generic_err(
-            "No tiers to remove",
-        )));
-    }
-
-    // Get initial count
-    let initial_count = COMMIT_CONFIG
-        .load(deps.storage)?
-        .available_payment_usd
-        .len();
-
-    // Update the config
-    COMMIT_CONFIG.update(deps.storage, |mut config| -> Result<_, ContractError> {
-        // Remove specified tiers
-        config
-            .available_payment_usd
-            .retain(|tier| !tiers_to_remove_usd.contains(tier));
-
-        Ok(config)
-    })?;
-
-    // Calculate how many were actually removed
-    let final_count = COMMIT_CONFIG.load(deps.storage)?.available_payment.len();
-    let removed_count = initial_count - final_count;
-
-    Ok(Response::new()
-        .add_attribute("action", "remove_payment_tiers")
-        .add_attribute("creator", fee_info.creator_address)
-        .add_attribute("removed_tiers", format!("{:?}", tiers_to_remove_usd))
-        .add_attribute("removed_count", removed_count.to_string()))
-}
-
-pub fn execute_update_usd_payment_tolerance(
-    deps: DepsMut,
-    _env: Env,
-    info: MessageInfo,
-    tolerance_bps: u16,
-) -> Result<Response, ContractError> {
-    let fee_info = FEEINFO.load(deps.storage)?;
-
-    if info.sender != fee_info.creator_address {
-        return Err(ContractError::UnauthorizedNotCreator {});
-    }
-
-    // Reasonable limits: 0% to 10% tolerance
-    if tolerance_bps > 1000 {
-        return Err(ContractError::Std(StdError::generic_err(
-            "Tolerance cannot exceed 10% (1000 basis points)",
-        )));
-    }
-
-    POOL_SPECS.update(deps.storage, |mut pool_specs| -> Result<_, ContractError> {
-        pool_specs.usd_payment_tolerance_bps = tolerance_bps;
-        Ok(pool_specs)
-    })?;
-
-    Ok(Response::new()
-        .add_attribute("action", "update_usd_payment_tolerance")
-        .add_attribute("creator", fee_info.creator_address)
-        .add_attribute("tolerance_bps", tolerance_bps.to_string())
-        .add_attribute(
-            "tolerance_percent",
-            format!("{:.2}%", tolerance_bps as f64 / 100.0),
-        ))
-}
-fn is_within_tolerance(payment_usd: Uint128, tier_usd: Uint128, tolerance_bps: u16) -> bool {
-    // Calculate tolerance range
-    // For 1% tolerance (100 bps): multiplier is 10000 ± 100
-    let lower_bound = tier_usd.multiply_ratio(10000u128 - tolerance_bps as u128, 10000u128);
-    let upper_bound = tier_usd.multiply_ratio(10000u128 + tolerance_bps as u128, 10000u128);
-
-    payment_usd >= lower_bound && payment_usd <= upper_bound
-}
-
 fn calculate_unclaimed_fees(
     liquidity: Uint128,
     fee_growth_inside_last: Decimal,
@@ -2535,8 +2122,6 @@ pub fn query(deps: Deps, env: Env, msg: QueryMsg) -> StdResult<Binary> {
             limit,
         } => to_json_binary(&query_positions_by_owner(deps, owner, start_after, limit)?),
         QueryMsg::PoolInfo {} => to_json_binary(&query_pool_info(deps)?),
-        QueryMsg::PaymentInfo {} => to_json_binary(&query_payment_info(deps)?),
-        QueryMsg::CreatorTierInfo {} => to_json_binary(&query_payment_tiers_with_tolerance(deps)?),
         QueryMsg::Pair {} => to_json_binary(&query_pair_info(deps)?),
         QueryMsg::Simulation { offer_asset } => {
             to_json_binary(&query_simulation(deps, offer_asset)?)
@@ -2582,99 +2167,8 @@ pub fn query_pair_info(deps: Deps) -> StdResult<PairInfo> {
     let pool_info = POOL_INFO.load(deps.storage)?;
     Ok(pool_info.pair_info)
 }
-pub fn query_payment_info(deps: Deps) -> StdResult<PaymentInfoResponse> {
-    let fee_info = FEEINFO.load(deps.storage)?;
-    let commit_config = COMMIT_CONFIG.load(deps.storage)?;
-    Ok(PaymentInfoResponse {
-        creator: fee_info.creator_address,
-        available_payment_tiers: commit_config.available_payment,
-    })
-}
 
-pub fn query_payment_tiers_with_tolerance(
-    deps: Deps,
-) -> StdResult<PaymentTiersResponseWithTolerance> {
-    let commit_config = COMMIT_CONFIG.load(deps.storage)?;
-    let pool_specs = POOL_SPECS.load(deps.storage)?;
-    let oracle_info = ORACLE_INFO.load(deps.storage)?;
-    // Native tiers remain the same (no tolerance)
-    let native_tiers: Vec<NativeTierInfo> = commit_config
-        .available_payment
-        .iter()
-        .map(|&native_amount| {
-            let usd_value = native_to_usd(
-                &deps.querier,
-                &oracle_info.oracle_addr,
-                &oracle_info.oracle_symbol,
-                native_amount,
-            )
-            .unwrap_or_default();
 
-            NativeTierInfo {
-                native_amount,
-                current_usd_value: usd_value,
-            }
-        })
-        .collect();
-
-    // USD tiers now show tolerance ranges
-    let usd_tiers: Vec<USDTierInfoWithTolerance> = commit_config
-        .available_payment_usd
-        .iter()
-        .map(|&usd_amount| {
-            // Calculate USD tolerance range
-            let min_usd = usd_amount.multiply_ratio(
-                10000u128 - pool_specs.usd_payment_tolerance_bps as u128,
-                10000u128,
-            );
-            let max_usd = usd_amount.multiply_ratio(
-                10000u128 + pool_specs.usd_payment_tolerance_bps as u128,
-                10000u128,
-            );
-
-            // Convert to native amounts
-            let native_exact = usd_to_native(
-                &deps.querier,
-                &oracle_info.oracle_addr,
-                &oracle_info.oracle_symbol,
-                usd_amount,
-            )
-            .unwrap_or_default();
-
-            let native_min = usd_to_native(
-                &deps.querier,
-                &oracle_info.oracle_addr,
-                &oracle_info.oracle_symbol,
-                min_usd,
-            )
-            .unwrap_or_default();
-
-            let native_max = usd_to_native(
-                &deps.querier,
-                &oracle_info.oracle_addr,
-                &oracle_info.oracle_symbol,
-                max_usd,
-            )
-            .unwrap_or_default();
-
-            USDTierInfoWithTolerance {
-                usd_amount,
-                tolerance_bps: pool_specs.usd_payment_tolerance_bps,
-                min_usd_accepted: min_usd,
-                max_usd_accepted: max_usd,
-                current_native_required: native_exact,
-                min_native_accepted: native_min,
-                max_native_accepted: native_max,
-            }
-        })
-        .collect();
-
-    // Return the correct type!
-    Ok(PaymentTiersResponseWithTolerance {
-        native_tiers,
-        usd_tiers,
-    })
-}
 
 /// ## Description
 /// Returns the amounts of assets in the pair contract as well as the amount of LP
