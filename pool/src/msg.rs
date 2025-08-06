@@ -1,9 +1,9 @@
 use cosmwasm_schema::{cw_serde, QueryResponses};
 
-use crate::asset::{Asset, AssetInfo, PairInfo, PaymentInfoResponse, USDTierInfoWithTolerance};
-use crate::state::Subscription;
+use crate::asset::{Asset, AssetInfo, PairInfo, };
+
 use cosmwasm_std::{Addr, Binary, Decimal, Timestamp, Uint128};
-use cw20::Cw20ReceiveMsg;
+
 
 /// The default swap slippage
 pub const DEFAULT_SLIPPAGE: &str = "0.005";
@@ -17,70 +17,11 @@ pub const TWAP_PRECISION: u8 = 6;
 #[cw_serde]
 pub enum ExecuteMsg {
     /// Receives a message of type [`Cw20ReceiveMsg`]
-    Receive(Cw20ReceiveMsg),
-    /// Swap performs a swap in the pool
-    SimpleSwap {
-        offer_asset: Asset,
-        belief_price: Option<Decimal>,
-        max_spread: Option<Decimal>,
-        to: Option<String>,
-    },
     /// Update the pair configuration
     UpdateConfig {
         params: Binary,
     },
 
-    Commit {
-        asset: Asset,
-        amount: Uint128,
-    },
-    DepositLiquidity {
-        amount0: Uint128,
-        amount1: Uint128,
-    },
-    /// Collect fees owed to a given position
-    CollectFees {
-        position_id: String,
-    },
-    AddToPosition {
-        position_id: String,
-        amount0: Uint128, // native token amount
-        amount1: Uint128, // cw20 token amount
-    },
-    RemovePartialLiquidity {
-        position_id: String,
-        liquidity_to_remove: Uint128, // Specific amount of liquidity to remove
-    },
-    RemovePartialLiquidityByPercent {
-        position_id: String,
-        percentage: u64, // 1-99
-    },
-    RemoveLiquidity {
-        position_id: String,
-    },
-
-    ReplaceAllPaymentTiers {
-        new_payment_tiers: Vec<Uint128>,
-    },
-    AddPaymentTiers {
-        tiers_to_add: Vec<Uint128>,
-    },
-
-    /// Remove specific payment tiers - only callable by creator
-    RemovePaymentTiers {
-        tiers_to_remove: Vec<Uint128>,
-    },
-    ReplaceAllUsdPaymentTiers {
-        new_payment_tiers_usd: Vec<Uint128>,
-    },
-    AddUsdPaymentTiers {
-        tiers_to_add_usd: Vec<Uint128>,
-    },
-
-    /// Remove specific payment tiers - only callable by creator
-    RemoveUsdPaymentTiers {
-        tiers_to_remove_usd: Vec<Uint128>,
-    },
 }
 
 /// This structure describes a CW20 hook message.
@@ -105,68 +46,16 @@ pub enum Cw20HookMsg {
 #[cw_serde]
 #[derive(QueryResponses)]
 pub enum QueryMsg {
-    #[returns(USDTierInfoWithTolerance)]
-    CreatorTierInfo {},
-
-    #[returns(PaymentInfoResponse)]
-    PaymentInfo {},
     /// Returns information about a pair in an object of type [`super::asset::PairInfo`].
     #[returns(PairInfo)]
     Pair {},
     /// Returns contract configuration settings in a custom [`ConfigResponse`] structure.
     #[returns(ConfigResponse)]
     Config {},
-    /// Returns information about a swap simulation in a [`SimulationResponse`] object.
-    #[returns(SimulationResponse)]
-    Simulation { offer_asset: Asset },
-    /// Returns information about cumulative prices in a [`CumulativePricesResponse`] object.
-    #[returns(ReverseSimulationResponse)]
-    ReverseSimulation { ask_asset: Asset },
-    /// Returns information about the cumulative prices in a [`CumulativePricesResponse`] object
-    #[returns(CumulativePricesResponse)]
-    CumulativePrices {},
+
 
     #[returns(FeeInfoResponse)]
     FeeInfo {},
-
-    #[returns(CommitStatus)]
-    IsFullyCommited {},
-
-    #[returns(Option<Subscription>)]
-    SubscriptionInfo { wallet: String },
-
-    #[returns(PoolSubscribersResponse)]
-    PoolSubscribers {
-        pool_id: u64,
-        min_payment_usd: Option<Uint128>,
-        after_timestamp: Option<u64>, // Unix timestamp
-        start_after: Option<String>,  // For pagination
-        limit: Option<u32>,
-    },
-
-    #[returns(PoolStateResponse)]
-    PoolState {},
-
-    #[returns(PoolFeeStateResponse)]
-    FeeState {},
-
-    #[returns(PositionResponse)]
-    Position { position_id: String },
-
-    #[returns(PositionsResponse)]
-    Positions {
-        start_after: Option<String>,
-        limit: Option<u32>,
-    },
-
-    #[returns(PositionsResponse)]
-    PositionsByOwner {
-        owner: String,
-        start_after: Option<String>,
-        limit: Option<u32>,
-    },
-    #[returns(LastSubscribedResponse)]
-    LastSubscribed { wallet: String },
 
     #[returns(PoolInfoResponse)]
     PoolInfo {},
