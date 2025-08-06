@@ -34,32 +34,7 @@ pub enum ExecuteMsg {
         asset: Asset,
         amount: Uint128,
     },
-    DepositLiquidity {
-        amount0: Uint128,
-        amount1: Uint128,
-    },
-    /// Collect fees owed to a given position
-    CollectFees {
-        position_id: String,
-    },
-    AddToPosition {
-        position_id: String,
-        amount0: Uint128, // native token amount
-        amount1: Uint128, // cw20 token amount
-    },
-    RemovePartialLiquidity {
-        position_id: String,
-        liquidity_to_remove: Uint128, // Specific amount of liquidity to remove
-    },
-    RemovePartialLiquidityByPercent {
-        position_id: String,
-        percentage: u64, // 1-99
-    },
-    RemoveLiquidity {
-        position_id: String,
-    },
 
-  
 }
 
 /// This structure describes a CW20 hook message.
@@ -70,13 +45,6 @@ pub enum Cw20HookMsg {
         belief_price: Option<Decimal>,
         max_spread: Option<Decimal>,
         to: Option<String>,
-    },
-    DepositLiquidity {
-        amount0: Uint128, // native amount (should be sent with the message)
-    },
-    AddToPosition {
-        position_id: String,
-        amount0: Uint128, // native amount (should be sent with the message)
     },
 }
 
@@ -118,33 +86,9 @@ pub enum QueryMsg {
         start_after: Option<String>,  // For pagination
         limit: Option<u32>,
     },
-
-    #[returns(PoolStateResponse)]
-    PoolState {},
-
-    #[returns(PoolFeeStateResponse)]
-    FeeState {},
-
-    #[returns(PositionResponse)]
-    Position { position_id: String },
-
-    #[returns(PositionsResponse)]
-    Positions {
-        start_after: Option<String>,
-        limit: Option<u32>,
-    },
-
-    #[returns(PositionsResponse)]
-    PositionsByOwner {
-        owner: String,
-        start_after: Option<String>,
-        limit: Option<u32>,
-    },
     #[returns(LastSubscribedResponse)]
     LastSubscribed { wallet: String },
 
-    #[returns(PoolInfoResponse)]
-    PoolInfo {},
 }
 
 #[cw_serde]
