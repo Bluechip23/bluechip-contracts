@@ -30,6 +30,9 @@ pub enum ContractError {
     #[error("Zero won't work.")]
     ZeroAmount {},
 
+    #[error("Transaction deadline has passed")]
+    TransactionExpired {},
+
     #[error(
         "Your subscription amount does not match an amount designated by the creator of the pool."
     )]

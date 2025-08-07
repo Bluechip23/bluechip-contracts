@@ -196,13 +196,19 @@ pub fn execute(
     match msg {
         ExecuteMsg::UpdateConfig { .. } => Err(ContractError::NonSupported {}),
 
-        ExecuteMsg::Commit { asset, amount } => commit(deps, env, info, asset, amount),
+        ExecuteMsg::Commit {
+            asset,
+            amount,
+            belief_price,
+            max_spread,
+        } => commit(deps, env, info, asset, amount, None),
         // ── standard swap via native coin ──────────────────
         ExecuteMsg::SimpleSwap {
             offer_asset,
             belief_price,
             max_spread,
             to,
+            deadline,
         } => {
             // only allow swap once commit_limit_usd has been reached
             if !query_check_commit(deps.as_ref())? {
@@ -224,6 +230,7 @@ pub fn execute(
                 belief_price,
                 max_spread,
                 to_addr,
+                None,
             )
         }
         ExecuteMsg::Receive(cw20_msg) => execute_swap_cw20(deps, env, info, cw20_msg),
@@ -378,6 +385,7 @@ pub fn execute_swap_cw20(
                 belief_price,
                 max_spread,
                 to_addr,
+                None,
             )
         }
         Ok(Cw20HookMsg::DepositLiquidity { amount0 }) => execute_deposit_liquidity(
@@ -441,7 +449,11 @@ pub fn simple_swap(
     belief_price: Option<Decimal>,
     max_spread: Option<Decimal>,
     to: Option<Addr>,
+    deadline: Option<Timestamp>,
 ) -> Result<Response, ContractError> {
+    enforce_deadline(env.block.time, deadline)?;
+
+
     // Load necessary data
     let pool_info = POOL_INFO.load(deps.storage)?;
     let mut pool_state = POOL_STATE.load(deps.storage)?;
@@ -522,7 +534,19 @@ pub fn simple_swap(
         .add_attribute("offer_amount", offer_asset.amount.to_string())
         .add_attribute("return_amount", return_amt.to_string())
         .add_attribute("spread_amount", spread_amt.to_string())
-        .add_attribute("commission_amount", commission_amt.to_string()))
+        .add_attribute("commission_amount", commission_amt.to_string())
+        .add_attribute(
+            "belief_price",
+            belief_price
+                .map(|p| p.to_string())
+                .unwrap_or("none".to_string()),
+        )
+        .add_attribute(
+            "max_spread",
+            max_spread
+                .map(|s| s.to_string())
+                .unwrap_or("none".to_string()),
+        ))
 }
 
 fn identify_pools(
@@ -607,6 +631,7 @@ pub fn commit(
     info: MessageInfo,
     asset: Asset,
     amount: Uint128,
+    deadline: Option<Timestamp>,
 ) -> Result<Response, ContractError> {
     // Reentrancy protection - check and set guard
     let reentrancy_guard = REENTRANCY_GUARD.may_load(deps.storage)?.unwrap_or(false);
@@ -622,8 +647,10 @@ pub fn commit(
         REENTRANCY_GUARD.save(deps.storage, &false)?;
         return Err(e);
     }
+    
+    enforce_deadline(env.block.time, deadline)?;
     // Your existing function logic here...
-    let result = execute_commit_logic(&mut deps, env, info, asset, amount);
+    let result = execute_commit_logic(&mut deps, env, info, asset, amount, None, None);
 
     // Always clear the guard before returning (even on error)
     REENTRANCY_GUARD.save(deps.storage, &false)?;
@@ -658,6 +685,8 @@ pub fn execute_commit_logic(
     info: MessageInfo,
     asset: Asset,
     amount: Uint128,
+    belief_price: Option<Decimal>, // Add belief price parameter
+    max_spread: Option<Decimal>,
 ) -> Result<Response, ContractError> {
     // Load all necessary data from separate storage
     let pool_info = POOL_INFO.load(deps.storage)?;
@@ -705,6 +734,7 @@ pub fn execute_commit_logic(
                 &oracle_info.oracle_symbol,
                 asset.amount,
             )?;
+
             // Payment validation
             // Initialize messages vector for transfers
             let mut messages: Vec<CosmosMsg> = Vec::new();
@@ -828,8 +858,17 @@ pub fn execute_commit_logic(
             let ask_pool = pool_state.reserve1;
 
             // Calculate swap output
+          update_liquidity_providing
             let (return_amt, _spread_amt, commission_amt) =
                 compute_swap(offer_pool, ask_pool, net_amount, pool_specs.lp_fee)?;
+
+            assert_max_spread(
+                belief_price,
+                max_spread,
+                net_amount, // offer_amount (what we're swapping)
+                return_amt, // return_amount (what we're getting back)
+                spread_amt, // spread_amount from compute_swap
+            )?;
 
             // UPDATE RESERVES
             // Native (token0) increases, CW20 (token1) decreases
@@ -2030,6 +2069,15 @@ pub fn decimal2decimal256(dec_value: Decimal) -> StdResult<Decimal256> {
             dec_value
         ))
     })
+}
+
+fn enforce_deadline(current: Timestamp, deadline: Option<Timestamp>) -> Result<(), ContractError> {
+    if let Some(dl) = deadline {
+        if current > dl {
+            return Err(ContractError::TransactionExpired {});
+        }
+    }
+    Ok(())
 }
 
 pub fn get_bank_transfer_to_msg(
