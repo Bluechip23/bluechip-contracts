@@ -454,11 +454,8 @@ pub fn simple_swap(
     to: Option<Addr>,
     deadline: Option<Timestamp>,
 ) -> Result<Response, ContractError> {
-    if let Some(dl) = deadline {
-        if env.block.time > dl {
-            return Err(ContractError::TransactionExpired {});
-        }
-    }
+    enforce_deadline(env.block.time, deadline)?;
+
 
     // Load necessary data
     let pool_info = POOL_INFO.load(deps.storage)?;
@@ -649,14 +646,8 @@ pub fn commit(
         REENTRANCY_GUARD.save(deps.storage, &false)?;
         return Err(e);
     }
-
-    if let Some(dl) = deadline {
-        if env.block.time > dl {
-            REENTRANCY_GUARD.save(deps.storage, &false)?;
-            return Err(ContractError::TransactionExpired {});
-        }
-    }
-
+    
+    enforce_deadline(env.block.time, deadline)?;
     // Your existing function logic here...
     let result = execute_commit_logic(&mut deps, env, info, asset, amount, None, None);
 
@@ -2059,6 +2050,15 @@ pub fn decimal2decimal256(dec_value: Decimal) -> StdResult<Decimal256> {
             dec_value
         ))
     })
+}
+
+fn enforce_deadline(current: Timestamp, deadline: Option<Timestamp>) -> Result<(), ContractError> {
+    if let Some(dl) = deadline {
+        if current > dl {
+            return Err(ContractError::TransactionExpired {});
+        }
+    }
+    Ok(())
 }
 
 pub fn get_bank_transfer_to_msg(
