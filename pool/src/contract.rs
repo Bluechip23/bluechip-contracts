@@ -452,8 +452,6 @@ pub fn simple_swap(
     deadline: Option<Timestamp>,
 ) -> Result<Response, ContractError> {
     enforce_deadline(env.block.time, deadline)?;
-
-
     // Load necessary data
     let pool_info = POOL_INFO.load(deps.storage)?;
     let mut pool_state = POOL_STATE.load(deps.storage)?;
@@ -549,19 +547,6 @@ pub fn simple_swap(
         ))
 }
 
-fn identify_pools(
-    pools: &[Asset; 2],
-    offer_asset: &Asset,
-) -> Result<(usize, Asset, Asset), ContractError> {
-    if offer_asset.info.equal(&pools[0].info) {
-        Ok((0, pools[0].clone(), pools[1].clone()))
-    } else if offer_asset.info.equal(&pools[1].info) {
-        Ok((1, pools[1].clone(), pools[0].clone()))
-    } else {
-        Err(ContractError::AssetMismatch {})
-    }
-}
-
 // Update fee growth based on which token was offered
 fn update_fee_growth(
     pool_fee_state: &mut PoolFeeState,
@@ -647,7 +632,6 @@ pub fn commit(
         REENTRANCY_GUARD.save(deps.storage, &false)?;
         return Err(e);
     }
-    
     enforce_deadline(env.block.time, deadline)?;
     // Your existing function logic here...
     let result = execute_commit_logic(&mut deps, env, info, asset, amount, None, None);
@@ -734,7 +718,6 @@ pub fn execute_commit_logic(
                 &oracle_info.oracle_symbol,
                 asset.amount,
             )?;
-
             // Payment validation
             // Initialize messages vector for transfers
             let mut messages: Vec<CosmosMsg> = Vec::new();
@@ -858,8 +841,7 @@ pub fn execute_commit_logic(
             let ask_pool = pool_state.reserve1;
 
             // Calculate swap output
-          update_liquidity_providing
-            let (return_amt, _spread_amt, commission_amt) =
+            let (return_amt, spread_amt, commission_amt) =
                 compute_swap(offer_pool, ask_pool, net_amount, pool_specs.lp_fee)?;
 
             assert_max_spread(
@@ -1650,7 +1632,7 @@ pub fn execute_remove_partial_liquidity(
 fn enforce_deadline(current: Timestamp, deadline: Option<Timestamp>) -> Result<(), ContractError> {
     if let Some(dl) = deadline {
         if current > dl {
-            return Err(ContractError::MismatchAmount {});
+            return Err(ContractError::TransactionExpired {});
         }
     }
     Ok(())
@@ -2069,15 +2051,6 @@ pub fn decimal2decimal256(dec_value: Decimal) -> StdResult<Decimal256> {
             dec_value
         ))
     })
-}
-
-fn enforce_deadline(current: Timestamp, deadline: Option<Timestamp>) -> Result<(), ContractError> {
-    if let Some(dl) = deadline {
-        if current > dl {
-            return Err(ContractError::TransactionExpired {});
-        }
-    }
-    Ok(())
 }
 
 pub fn get_bank_transfer_to_msg(
