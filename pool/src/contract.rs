@@ -41,7 +41,7 @@ use crate::state::{
 use cosmwasm_std::{
     entry_point, from_json, to_json_binary, Addr, BankMsg, Binary, Coin, CosmosMsg, Decimal,
     Decimal256, Deps, DepsMut, Empty, Env, Fraction, MessageInfo, Order, QuerierWrapper, Reply,
-    Response, StdError, StdResult, Storage, SubMsgResult, Uint128, Uint256, WasmMsg,
+    Response, StdError, StdResult, Storage, SubMsgResult, Timestamp, Uint128, Uint256, WasmMsg,
 };
 use cw2::{get_contract_version, set_contract_version};
 use cw20::{Cw20ExecuteMsg, Cw20ReceiveMsg};
@@ -235,7 +235,7 @@ pub fn execute(
                 return Err(ContractError::ShortOfThreshold {});
             }
             let sender = info.sender.clone();
-            execute_deposit_liquidity(deps, env, info, sender, amount0, amount1, None, None)
+            execute_deposit_liquidity(deps, env, info, sender, amount0, amount1, None, None, None)
         }
 
         ExecuteMsg::AddToPosition {
@@ -258,6 +258,7 @@ pub fn execute(
                 amount1,
                 None,
                 None,
+                None,
             )
         }
 
@@ -268,10 +269,17 @@ pub fn execute(
         ExecuteMsg::RemovePartialLiquidity {
             position_id,
             liquidity_to_remove,
-        } => execute_remove_partial_liquidity(deps, env, info, position_id, liquidity_to_remove),
+        } => execute_remove_partial_liquidity(
+            deps,
+            env,
+            info,
+            position_id,
+            liquidity_to_remove,
+            None,
+        ),
 
         ExecuteMsg::RemoveLiquidity { position_id } => {
-            execute_remove_liquidity(deps, env, info, position_id)
+            execute_remove_liquidity(deps, env, info, position_id, None)
         }
         ExecuteMsg::RemovePartialLiquidityByPercent {
             position_id,
@@ -381,6 +389,7 @@ pub fn execute_swap_cw20(
             cw20_msg.amount,
             None,
             None,
+            None,
         ),
         Ok(Cw20HookMsg::AddToPosition {
             position_id,
@@ -393,6 +402,7 @@ pub fn execute_swap_cw20(
             position_id,
             amount0,
             cw20_msg.amount,
+            None,
             None,
             None,
         ),
@@ -966,6 +976,7 @@ pub fn execute_deposit_liquidity(
     amount1: Uint128, // CW20 amount
     min_amount0: Option<Uint128>,
     min_amount1: Option<Uint128>,
+    deadline: Option<Timestamp>,
 ) -> Result<Response, ContractError> {
     // 1. Validate the native deposit (token0)
     const NATIVE_DENOM: &str = "stake";
@@ -1192,6 +1203,7 @@ pub fn execute_add_to_position(
     amount1: Uint128, // CW20 amount to add
     min_amount0: Option<Uint128>,
     min_amount1: Option<Uint128>,
+    deadline: Option<Timestamp>,
 ) -> Result<Response, ContractError> {
     // 1. Validate the native deposit (token0)
     const NATIVE_DENOM: &str = "stake";
@@ -1353,6 +1365,7 @@ pub fn execute_remove_liquidity(
     env: Env,
     info: MessageInfo,
     position_id: String,
+    deadline: Option<Timestamp>,
 ) -> Result<Response, ContractError> {
     // 1. Load config
     let pool_fee_state = POOL_FEE_STATE.load(deps.storage)?;
@@ -1467,7 +1480,9 @@ pub fn execute_remove_partial_liquidity(
     env: Env,
     info: MessageInfo,
     position_id: String,
-    liquidity_to_remove: Uint128, // Specific amount of liquidity to remove
+    liquidity_to_remove: Uint128,
+    deadline: Option<Timestamp>,
+    // Specific amount of liquidity to remove
 ) -> Result<Response, ContractError> {
     // 1. Load config
 
@@ -1609,7 +1624,7 @@ pub fn execute_remove_partial_liquidity_by_percent(
         .checked_div(Uint128::from(100u128))
         .map_err(|_| ContractError::DivideByZero)?;
     // Call the main partial removal function
-    execute_remove_partial_liquidity(deps, env, info, position_id, liquidity_to_remove)
+    execute_remove_partial_liquidity(deps, env, info, position_id, liquidity_to_remove, None)
 }
 
 // Helper function to calculate liquidity for deposits
