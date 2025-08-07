@@ -242,7 +242,7 @@ pub fn execute(
                 return Err(ContractError::ShortOfThreshold {});
             }
             let sender = info.sender.clone();
-            execute_deposit_liquidity(deps, env, info, sender, amount0, amount1)
+            execute_deposit_liquidity(deps, env, info, sender, amount0, amount1, None, None, None)
         }
 
         ExecuteMsg::AddToPosition {
@@ -255,7 +255,18 @@ pub fn execute(
                 return Err(ContractError::ShortOfThreshold {});
             }
             let sender = info.sender.clone();
-            execute_add_to_position(deps, env, info, sender, position_id, amount0, amount1)
+            execute_add_to_position(
+                deps,
+                env,
+                info,
+                sender,
+                position_id,
+                amount0,
+                amount1,
+                None,
+                None,
+                None,
+            )
         }
 
         ExecuteMsg::CollectFees { position_id } => {
@@ -265,10 +276,17 @@ pub fn execute(
         ExecuteMsg::RemovePartialLiquidity {
             position_id,
             liquidity_to_remove,
-        } => execute_remove_partial_liquidity(deps, env, info, position_id, liquidity_to_remove),
+        } => execute_remove_partial_liquidity(
+            deps,
+            env,
+            info,
+            position_id,
+            liquidity_to_remove,
+            None,
+        ),
 
         ExecuteMsg::RemoveLiquidity { position_id } => {
-            execute_remove_liquidity(deps, env, info, position_id)
+            execute_remove_liquidity(deps, env, info, position_id, None)
         }
         ExecuteMsg::RemovePartialLiquidityByPercent {
             position_id,
@@ -377,6 +395,9 @@ pub fn execute_swap_cw20(
             Addr::unchecked(cw20_msg.sender),
             amount0,
             cw20_msg.amount,
+            None,
+            None,
+            None,
         ),
         Ok(Cw20HookMsg::AddToPosition {
             position_id,
@@ -389,36 +410,12 @@ pub fn execute_swap_cw20(
             position_id,
             amount0,
             cw20_msg.amount,
+            None,
+            None,
+            None,
         ),
         Err(err) => Err(ContractError::Std(err)),
     }
-}
-
-/// ## Description
-/// Returns the amount of pool assets that correspond to an amount of LP tokens.
-/// ## Params
-/// * **pools** are an array of [`Asset`] type items. These are the assets in the pool.
-///
-/// * **amount** is an object of type [`Uint128`]. This is the amount of LP tokens to compute a corresponding amount of assets for.
-///
-/// * **total_share** is an object of type [`Uint128`]. This is the total amount of LP tokens currently minted.
-pub fn get_share_in_assets(
-    pools: &[Asset; 2],
-    amount: Uint128,
-    total_share: Uint128,
-) -> Vec<Asset> {
-    let mut share_ratio = Decimal::zero();
-    if !total_share.is_zero() {
-        share_ratio = Decimal::from_ratio(amount, total_share);
-    }
-
-    pools
-        .iter()
-        .map(|a| Asset {
-            info: a.info.clone(),
-            amount: a.amount * share_ratio.numerator() / share_ratio.denominator(),
-        })
-        .collect()
 }
 
 /// ## Description
@@ -464,20 +461,18 @@ pub fn simple_swap(
     let pool_specs = POOL_SPECS.load(deps.storage)?;
 
     // Query current pool balances
-    let pools = pool_info
-        .pair_info
-        .query_pools(&deps.querier, env.contract.address.clone())?;
-
-    // Validate and identify pools
-    let (offer_pool_idx, offer_pool, ask_pool) = identify_pools(&pools, &offer_asset)?;
+    let (offer_pool_idx, offer_pool, ask_pool) =
+        if offer_asset.info.equal(&pool_info.pair_info.asset_infos[0]) {
+            (0, pool_state.reserve0, pool_state.reserve1)
+        } else if offer_asset.info.equal(&pool_info.pair_info.asset_infos[1]) {
+            (1, pool_state.reserve1, pool_state.reserve0)
+        } else {
+            return Err(ContractError::AssetMismatch {});
+        };
 
     // Perform swap calculations
-    let (return_amt, spread_amt, commission_amt) = compute_swap(
-        offer_pool.amount,
-        ask_pool.amount,
-        offer_asset.amount,
-        pool_specs.lp_fee,
-    )?;
+    let (return_amt, spread_amt, commission_amt) =
+        compute_swap(offer_pool, ask_pool, offer_asset.amount, pool_specs.lp_fee)?;
 
     // Validate slippage
     assert_max_spread(
@@ -488,8 +483,8 @@ pub fn simple_swap(
         spread_amt,
     )?;
 
-    let offer_pool_post = offer_pool.amount.checked_add(offer_asset.amount)?;
-    let ask_pool_post = ask_pool.amount.checked_sub(return_amt)?;
+    let offer_pool_post = offer_pool.checked_add(offer_asset.amount)?;
+    let ask_pool_post = ask_pool.checked_sub(return_amt)?;
 
     if offer_pool_idx == 0 {
         pool_state.reserve0 = offer_pool_post;
@@ -514,10 +509,15 @@ pub fn simple_swap(
     // Save updated state
     POOL_STATE.save(deps.storage, &pool_state)?;
 
-    // Prepare return transfer
+    let ask_asset_info = if offer_pool_idx == 0 {
+        pool_info.pair_info.asset_infos[1].clone()
+    } else {
+        pool_info.pair_info.asset_infos[0].clone()
+    };
+
     let msgs = if !return_amt.is_zero() {
         vec![Asset {
-            info: ask_pool.info.clone(),
+            info: ask_asset_info,
             amount: return_amt,
         }
         .into_msg(&deps.querier, to.unwrap_or(sender.clone()))?]
@@ -530,7 +530,7 @@ pub fn simple_swap(
         .add_attribute("action", "swap")
         .add_attribute("sender", sender)
         .add_attribute("offer_asset", offer_asset.info.to_string())
-        .add_attribute("ask_asset", ask_pool.info.to_string())
+        .add_attribute("ask_asset", ask_asset_info.to_string())
         .add_attribute("offer_amount", offer_asset.amount.to_string())
         .add_attribute("return_amount", return_amt.to_string())
         .add_attribute("spread_amount", spread_amt.to_string())
@@ -548,6 +548,7 @@ pub fn simple_swap(
                 .unwrap_or("none".to_string()),
         ))
 }
+
 fn identify_pools(
     pools: &[Asset; 2],
     offer_asset: &Asset,
@@ -853,22 +854,13 @@ pub fn execute_commit_logic(
             let mut pool_fee_state = POOL_FEE_STATE.load(deps.storage)?;
 
             // Load current pool balances
-            let pools = pool_info
-                .pair_info
-                .query_pools(&deps.querier, env.contract.address.clone())?;
-
-            // Since only native can be used for commit, we know:
-            // pools[0] is native (offer), pools[1] is CW20 (ask)
-            let offer_pool = pools[0].clone();
-            let ask_pool = pools[1].clone();
+            let offer_pool = pool_state.reserve0;
+            let ask_pool = pool_state.reserve1;
 
             // Calculate swap output
-            let (return_amt, spread_amt, commission_amt) = compute_swap(
-                offer_pool.amount,
-                ask_pool.amount,
-                net_amount,
-                pool_specs.lp_fee,
-            )?;
+          update_liquidity_providing
+            let (return_amt, _spread_amt, commission_amt) =
+                compute_swap(offer_pool, ask_pool, net_amount, pool_specs.lp_fee)?;
 
             assert_max_spread(
                 belief_price,
@@ -880,8 +872,8 @@ pub fn execute_commit_logic(
 
             // UPDATE RESERVES
             // Native (token0) increases, CW20 (token1) decreases
-            pool_state.reserve0 = offer_pool.amount.checked_add(net_amount)?;
-            pool_state.reserve1 = ask_pool.amount.checked_sub(return_amt)?;
+            pool_state.reserve0 = offer_pool.checked_add(net_amount)?;
+            pool_state.reserve1 = ask_pool.checked_sub(return_amt)?;
 
             // UPDATE FEE GROWTH
             update_fee_growth(
@@ -1021,7 +1013,12 @@ pub fn execute_deposit_liquidity(
     user: Addr,
     amount0: Uint128, // native amount
     amount1: Uint128, // CW20 amount
+    min_amount0: Option<Uint128>,
+    min_amount1: Option<Uint128>,
+    deadline: Option<Timestamp>,
 ) -> Result<Response, ContractError> {
+    enforce_deadline(env.block.time, deadline)?;
+
     // 1. Validate the native deposit (token0)
     const NATIVE_DENOM: &str = "stake";
     let paid_native = info
@@ -1051,12 +1048,32 @@ pub fn execute_deposit_liquidity(
             ))?,
             funds: vec![],
         };
-        messages.push(CosmosMsg::Wasm(accept_msg)); // Add to messages
+        messages.push(CosmosMsg::Wasm(accept_msg));
         pool_state.nft_ownership_accepted = true;
     }
     // 4. Compute liquidity amount
     let (liquidity, actual_amount0, actual_amount1) =
         calc_liquidity_for_deposit(deps.as_ref(), &env, amount0, amount1)?;
+
+    if let Some(min0) = min_amount0 {
+        if actual_amount0 < min0 {
+            return Err(ContractError::SlippageExceeded {
+                expected: min0,
+                actual: actual_amount0,
+                token: "native".to_string(),
+            });
+        }
+    }
+
+    if let Some(min1) = min_amount1 {
+        if actual_amount1 < min1 {
+            return Err(ContractError::SlippageExceeded {
+                expected: min1,
+                actual: actual_amount1,
+                token: "cw20".to_string(),
+            });
+        }
+    }
 
     // Transfer only the actual CW20 amount needed
     if !actual_amount1.is_zero() {
@@ -1128,6 +1145,7 @@ pub fn execute_deposit_liquidity(
     pool_state.reserve0 = pool_state.reserve0.checked_add(actual_amount0)?;
     pool_state.reserve1 = pool_state.reserve1.checked_add(actual_amount1)?;
     pool_state.total_liquidity = pool_state.total_liquidity.checked_add(liquidity)?;
+    update_price_accumulator(&mut pool_state, env.block.time.seconds())?;
     POOL_STATE.save(deps.storage, &pool_state)?;
 
     Ok(Response::new()
@@ -1139,9 +1157,8 @@ pub fn execute_deposit_liquidity(
         .add_attribute("actual_amount0", actual_amount0.to_string())
         .add_attribute("actual_amount1", actual_amount1.to_string())
         .add_attribute("refunded_amount0", refund_amount.to_string())
-        .add_attribute("liquidity", liquidity.to_string())
-        .add_attribute("amount0", amount0.to_string())
-        .add_attribute("amount1", amount1.to_string()))
+        .add_attribute("offered_amount0", amount0.to_string())
+        .add_attribute("offered_amount1", amount1.to_string()))
 }
 
 pub fn execute_collect_fees(
@@ -1225,7 +1242,12 @@ pub fn execute_add_to_position(
     position_id: String,
     amount0: Uint128, // native amount to add
     amount1: Uint128, // CW20 amount to add
+    min_amount0: Option<Uint128>,
+    min_amount1: Option<Uint128>,
+    deadline: Option<Timestamp>,
 ) -> Result<Response, ContractError> {
+    enforce_deadline(env.block.time, deadline)?;
+
     // 1. Validate the native deposit (token0)
     const NATIVE_DENOM: &str = "stake";
     let paid_native = info
@@ -1273,6 +1295,25 @@ pub fn execute_add_to_position(
     let (additional_liquidity, actual_amount0, actual_amount1) =
         calc_liquidity_for_deposit(deps.as_ref(), &env, amount0, amount1)?;
 
+    if let Some(min0) = min_amount0 {
+        if actual_amount0 < min0 {
+            return Err(ContractError::SlippageExceeded {
+                expected: min0,
+                actual: actual_amount0,
+                token: "native".to_string(),
+            });
+        }
+    }
+
+    if let Some(min1) = min_amount1 {
+        if actual_amount1 < min1 {
+            return Err(ContractError::SlippageExceeded {
+                expected: min1,
+                actual: actual_amount1,
+                token: "cw20".to_string(),
+            });
+        }
+    }
     // 7. Transfer only the actual CW20 amount needed
     if !actual_amount1.is_zero() {
         let transfer_cw20_msg = WasmMsg::Execute {
@@ -1280,7 +1321,7 @@ pub fn execute_add_to_position(
             msg: to_json_binary(&cw20::Cw20ExecuteMsg::TransferFrom {
                 owner: info.sender.to_string(),
                 recipient: env.contract.address.to_string(),
-                amount: actual_amount1, // Use actual amount
+                amount: actual_amount1,
             })?,
             funds: vec![],
         };
@@ -1308,6 +1349,9 @@ pub fn execute_add_to_position(
 
     // 8. Update config state (just total liquidity)
     pool_state.total_liquidity += additional_liquidity;
+    pool_state.reserve0 = pool_state.reserve0.checked_add(actual_amount0)?;
+    pool_state.reserve1 = pool_state.reserve1.checked_add(actual_amount1)?;
+    update_price_accumulator(&mut pool_state, env.block.time.seconds())?;
     POOL_STATE.save(deps.storage, &pool_state)?;
 
     // 9. Save updated position
@@ -1323,10 +1367,10 @@ pub fn execute_add_to_position(
         .add_attribute("position_id", position_id)
         .add_attribute("additional_liquidity", additional_liquidity.to_string())
         .add_attribute("total_liquidity", liquidity_position.liquidity.to_string())
-        .add_attribute("amount0_added", amount0)
-        .add_attribute("amount1_added", amount1)
-        .add_attribute("actual_amount0", actual_amount0.to_string())
-        .add_attribute("actual_amount1", actual_amount1.to_string())
+        .add_attribute("amount0_requested", amount0)
+        .add_attribute("amount1_requested", amount1)
+        .add_attribute("actual_amount0_added", actual_amount0.to_string())
+        .add_attribute("actual_amount1_added", actual_amount1.to_string())
         .add_attribute("refunded_amount0", refund_amount.to_string())
         .add_attribute("fees_collected_0", fees_owed_0)
         .add_attribute("fees_collected_1", fees_owed_1);
@@ -1364,7 +1408,10 @@ pub fn execute_remove_liquidity(
     env: Env,
     info: MessageInfo,
     position_id: String,
+    deadline: Option<Timestamp>,
 ) -> Result<Response, ContractError> {
+    enforce_deadline(env.block.time, deadline)?;
+
     // 1. Load config
     let pool_fee_state = POOL_FEE_STATE.load(deps.storage)?;
     let pool_info = POOL_INFO.load(deps.storage)?;
@@ -1382,11 +1429,9 @@ pub fn execute_remove_liquidity(
     )?;
 
     // 4. Get current pool reserves
-    let pools = pool_info
-        .pair_info
-        .query_pools(&deps.querier, env.contract.address.clone())?;
-    let current_reserve0 = pools[0].amount;
-    let current_reserve1 = pools[1].amount;
+
+    let current_reserve0 = pool_state.reserve0;
+    let current_reserve1 = pool_state.reserve1;
 
     // 5. Calculate user's share of the pool (using your decimal logic)
     let user_share_0 =
@@ -1415,9 +1460,6 @@ pub fn execute_remove_liquidity(
     pool_state.total_liquidity = pool_state
         .total_liquidity
         .checked_sub(liquidity_to_subtract)?;
-    POOL_STATE.save(deps.storage, &pool_state)?;
-
-    // Note: Pool reserves will be automatically updated when tokens are transferred out
 
     // 9. Burn the NFT (on external NFT contract)
     /* let burn_msg = WasmMsg::Execute {
@@ -1429,6 +1471,10 @@ pub fn execute_remove_liquidity(
     };*/
 
     // 10. Remove position from storage
+    pool_state.reserve0 = pool_state.reserve0.checked_sub(user_share_0)?;
+    pool_state.reserve1 = pool_state.reserve1.checked_sub(user_share_1)?;
+    update_price_accumulator(&mut pool_state, env.block.time.seconds())?;
+    POOL_STATE.save(deps.storage, &pool_state)?;
     LIQUIDITY_POSITIONS.remove(deps.storage, &position_id);
 
     // 11. Prepare response with token transfers
@@ -1479,9 +1525,11 @@ pub fn execute_remove_partial_liquidity(
     env: Env,
     info: MessageInfo,
     position_id: String,
-    liquidity_to_remove: Uint128, // Specific amount of liquidity to remove
+    liquidity_to_remove: Uint128,
+    deadline: Option<Timestamp>,
+    // Specific amount of liquidity to remove
 ) -> Result<Response, ContractError> {
-    // 1. Load config
+    enforce_deadline(env.block.time, deadline)?;
 
     // 2. Load and validate position
     let mut liquidity_position = LIQUIDITY_POSITIONS.load(deps.storage, &position_id)?;
@@ -1508,11 +1556,8 @@ pub fn execute_remove_partial_liquidity(
     }
 
     // 5. Get current pool reserves
-    let pools = pool_info
-        .pair_info
-        .query_pools(&deps.querier, env.contract.address.clone())?;
-    let current_reserve0 = pools[0].amount;
-    let current_reserve1 = pools[1].amount;
+    let current_reserve0 = pool_state.reserve0;
+    let current_reserve1 = pool_state.reserve1;
 
     // 6. Calculate ALL pending fees first (before any changes)
     let fees_owed_0 = calculate_fees_owed(
@@ -1543,9 +1588,12 @@ pub fn execute_remove_partial_liquidity(
     let total_amount_1 = withdrawal_amount_1 + fees_owed_1;
 
     // 9. Update pool state
+    pool_state.reserve0 = pool_state.reserve0.checked_sub(withdrawal_amount_0)?;
+    pool_state.reserve1 = pool_state.reserve1.checked_sub(withdrawal_amount_1)?;
     pool_state.total_liquidity = pool_state
         .total_liquidity
         .checked_sub(liquidity_to_remove)?;
+    update_price_accumulator(&mut pool_state, env.block.time.seconds())?;
     POOL_STATE.save(deps.storage, &pool_state)?;
 
     // 10. Update position
@@ -1599,6 +1647,15 @@ pub fn execute_remove_partial_liquidity(
     Ok(response)
 }
 
+fn enforce_deadline(current: Timestamp, deadline: Option<Timestamp>) -> Result<(), ContractError> {
+    if let Some(dl) = deadline {
+        if current > dl {
+            return Err(ContractError::MismatchAmount {});
+        }
+    }
+    Ok(())
+}
+
 pub fn execute_remove_partial_liquidity_by_percent(
     deps: DepsMut,
     env: Env,
@@ -1621,7 +1678,7 @@ pub fn execute_remove_partial_liquidity_by_percent(
         .checked_div(Uint128::from(100u128))
         .map_err(|_| ContractError::DivideByZero)?;
     // Call the main partial removal function
-    execute_remove_partial_liquidity(deps, env, info, position_id, liquidity_to_remove)
+    execute_remove_partial_liquidity(deps, env, info, position_id, liquidity_to_remove, None)
 }
 
 // Helper function to calculate liquidity for deposits
@@ -1634,78 +1691,40 @@ fn calc_liquidity_for_deposit(
     // Changed return type to Decimal
     let pool_state = POOL_STATE.load(deps.storage)?;
     let pool_info = POOL_INFO.load(deps.storage)?;
-    let pools = pool_info.pair_info.query_pools(
-        &deps.querier,
-        deps.api.addr_validate(&env.contract.address.to_string())?,
-    )?;
-    let reserve0 = pools[0].amount;
-    let reserve1 = pools[1].amount;
-    // If this is the first deposit (empty pool), use geometric mean
-    if pool_state.total_liquidity.is_zero() {
-        // First liquidity provider gets sqrt(amount0 * amount1)
-        // This is the standard AMM approach (like Uniswap V2)
-        let product = amount0.checked_mul(amount1)?;
-        let liquidity_uint = integer_sqrt(product);
+    let current_reserve0 = pool_state.reserve0;
+    let current_reserve1 = pool_state.reserve1;
+    if current_reserve0.is_zero() || current_reserve1.is_zero() {
+        return Err(ContractError::InsufficientLiquidity {});
+    }
 
-        // Ensure minimum liquidity (prevent division by zero issues)
-        if liquidity_uint < Uint128::from(1000u128) {
-            return Err(ContractError::InsufficientLiquidity {});
-        }
-        Ok((liquidity_uint, amount0, amount1))
+    if amount0.is_zero() || amount1.is_zero() {
+        return Err(ContractError::InsufficientLiquidity {});
+    }
+
+    let optimal_amount1_for_amount0 = (amount0 * current_reserve1) / current_reserve0; // "If I use all of amount0, how much amount1 do I need?"
+    let optimal_amount0_for_amount1 = (amount1 * current_reserve0) / current_reserve1; // "If I use all of amount1, how much amount0 do I need?"
+
+    let (final_amount0, final_amount1) = if optimal_amount1_for_amount0 <= amount1 {
+        // User provided enough amount1, use all of amount0
+        (amount0, optimal_amount1_for_amount0)
     } else {
-        // Subsequent deposits: maintain proportional share
-        // liquidity = min(amount0/reserve0, amount1/reserve1) * total_liquidity
+        // User didn't provide enough amount1, use all of amount1
+        (optimal_amount0_for_amount1, amount1)
+    };
 
-        if reserve0.is_zero() || reserve1.is_zero() {
-            return Err(ContractError::InsufficientLiquidity {});
-        }
-
-        if amount0.is_zero() || amount1.is_zero() {
-            return Err(ContractError::InsufficientLiquidity {});
-        }
-
-        let optimal_amount1_for_amount0 = (amount0 * reserve1) / reserve0; // "If I use all of amount0, how much amount1 do I need?"
-        let optimal_amount0_for_amount1 = (amount1 * reserve0) / reserve1; // "If I use all of amount1, how much amount0 do I need?"
-
-        let (final_amount0, final_amount1) = if optimal_amount1_for_amount0 <= amount1 {
-            // User provided enough amount1, use all of amount0
-            (amount0, optimal_amount1_for_amount0)
-        } else {
-            // User didn't provide enough amount1, use all of amount1
-            (optimal_amount0_for_amount1, amount1)
-        };
-
-        // Sanity check the final amounts
-        if final_amount0.is_zero() || final_amount1.is_zero() {
-            return Err(ContractError::InsufficientLiquidity {});
-        }
-
-        // Calculate liquidity with the adjusted amounts
-        let liquidity_uint = (final_amount0 * pool_state.total_liquidity) / reserve0;
-
-        if liquidity_uint.is_zero() {
-            return Err(ContractError::InsufficientLiquidity {});
-        }
-
-        Ok((liquidity_uint, final_amount0, final_amount1))
-    }
-}
-
-// Helper function for integer square root (for first deposit)
-fn integer_sqrt(value: Uint128) -> Uint128 {
-    if value.is_zero() {
-        return Uint128::zero();
+    // Sanity check the final amounts
+    if final_amount0.is_zero() || final_amount1.is_zero() {
+        return Err(ContractError::InsufficientLiquidity {});
     }
 
-    let mut x = value;
-    let mut y = (value + Uint128::one()) / Uint128::from(2u128);
+    // Calculate liquidity with the adjusted amounts
+    let liquidity_uint = (final_amount0 * pool_state.total_liquidity) / current_reserve0;
 
-    while y < x {
-        x = y;
-        y = (x + value / x) / Uint128::from(2u128);
+    if liquidity_uint.is_zero() {
+        return Err(ContractError::InsufficientLiquidity {});
     }
 
-    x
+    Ok((liquidity_uint, final_amount0, final_amount1))
 }
 
 /// ## Description

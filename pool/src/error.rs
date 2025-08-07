@@ -44,6 +44,13 @@ pub enum ContractError {
     #[error("belief_price cannot be zero")]
     InvalidBeliefPrice {},
 
+    #[error("Slippage exceeded: expected at least {expected} {token}, got {actual}")]
+    SlippageExceeded {
+        expected: Uint128,
+        actual: Uint128,
+        token: String,
+    },
+
     #[error("invalid amount of tokens")]
     InvalidAmount {},
 
