@@ -978,6 +978,8 @@ pub fn execute_deposit_liquidity(
     min_amount1: Option<Uint128>,
     deadline: Option<Timestamp>,
 ) -> Result<Response, ContractError> {
+    enforce_deadline(env.block.time, deadline)?;
+
     // 1. Validate the native deposit (token0)
     const NATIVE_DENOM: &str = "stake";
     let paid_native = info
@@ -1205,6 +1207,8 @@ pub fn execute_add_to_position(
     min_amount1: Option<Uint128>,
     deadline: Option<Timestamp>,
 ) -> Result<Response, ContractError> {
+    enforce_deadline(env.block.time, deadline)?;
+
     // 1. Validate the native deposit (token0)
     const NATIVE_DENOM: &str = "stake";
     let paid_native = info
@@ -1367,6 +1371,8 @@ pub fn execute_remove_liquidity(
     position_id: String,
     deadline: Option<Timestamp>,
 ) -> Result<Response, ContractError> {
+    enforce_deadline(env.block.time, deadline)?;
+
     // 1. Load config
     let pool_fee_state = POOL_FEE_STATE.load(deps.storage)?;
     let pool_info = POOL_INFO.load(deps.storage)?;
@@ -1484,7 +1490,7 @@ pub fn execute_remove_partial_liquidity(
     deadline: Option<Timestamp>,
     // Specific amount of liquidity to remove
 ) -> Result<Response, ContractError> {
-    // 1. Load config
+    enforce_deadline(env.block.time, deadline)?;
 
     // 2. Load and validate position
     let mut liquidity_position = LIQUIDITY_POSITIONS.load(deps.storage, &position_id)?;
@@ -1600,6 +1606,15 @@ pub fn execute_remove_partial_liquidity(
     }
 
     Ok(response)
+}
+
+fn enforce_deadline(current: Timestamp, deadline: Option<Timestamp>) -> Result<(), ContractError> {
+    if let Some(dl) = deadline {
+        if current > dl {
+            return Err(ContractError::MismatchAmount {});
+        }
+    }
+    Ok(())
 }
 
 pub fn execute_remove_partial_liquidity_by_percent(
