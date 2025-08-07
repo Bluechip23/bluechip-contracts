@@ -24,6 +24,7 @@ pub enum ExecuteMsg {
         belief_price: Option<Decimal>,
         max_spread: Option<Decimal>,
         to: Option<String>,
+        deadline: Option<Timestamp>,
     },
     /// Update the pair configuration
     UpdateConfig {

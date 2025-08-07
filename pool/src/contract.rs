@@ -196,13 +196,19 @@ pub fn execute(
     match msg {
         ExecuteMsg::UpdateConfig { .. } => Err(ContractError::NonSupported {}),
 
-        ExecuteMsg::Commit { asset, amount, belief_price, max_spread } => commit(deps, env, info, asset, amount, None),
+        ExecuteMsg::Commit {
+            asset,
+            amount,
+            belief_price,
+            max_spread,
+        } => commit(deps, env, info, asset, amount, None),
         // ── standard swap via native coin ──────────────────
         ExecuteMsg::SimpleSwap {
             offer_asset,
             belief_price,
             max_spread,
             to,
+            deadline,
         } => {
             // only allow swap once commit_limit_usd has been reached
             if !query_check_commit(deps.as_ref())? {
@@ -224,6 +230,7 @@ pub fn execute(
                 belief_price,
                 max_spread,
                 to_addr,
+                None,
             )
         }
         ExecuteMsg::Receive(cw20_msg) => execute_swap_cw20(deps, env, info, cw20_msg),
@@ -360,6 +367,7 @@ pub fn execute_swap_cw20(
                 belief_price,
                 max_spread,
                 to_addr,
+                None,
             )
         }
         Ok(Cw20HookMsg::DepositLiquidity { amount0 }) => execute_deposit_liquidity(
@@ -444,7 +452,14 @@ pub fn simple_swap(
     belief_price: Option<Decimal>,
     max_spread: Option<Decimal>,
     to: Option<Addr>,
+    deadline: Option<Timestamp>,
 ) -> Result<Response, ContractError> {
+    if let Some(dl) = deadline {
+        if env.block.time > dl {
+            return Err(ContractError::TransactionExpired {});
+        }
+    }
+
     // Load necessary data
     let pool_info = POOL_INFO.load(deps.storage)?;
     let mut pool_state = POOL_STATE.load(deps.storage)?;
@@ -522,7 +537,19 @@ pub fn simple_swap(
         .add_attribute("offer_amount", offer_asset.amount.to_string())
         .add_attribute("return_amount", return_amt.to_string())
         .add_attribute("spread_amount", spread_amt.to_string())
-        .add_attribute("commission_amount", commission_amt.to_string()))
+        .add_attribute("commission_amount", commission_amt.to_string())
+        .add_attribute(
+            "belief_price",
+            belief_price
+                .map(|p| p.to_string())
+                .unwrap_or("none".to_string()),
+        )
+        .add_attribute(
+            "max_spread",
+            max_spread
+                .map(|s| s.to_string())
+                .unwrap_or("none".to_string()),
+        ))
 }
 fn identify_pools(
     pools: &[Asset; 2],
@@ -626,7 +653,7 @@ pub fn commit(
     if let Some(dl) = deadline {
         if env.block.time > dl {
             REENTRANCY_GUARD.save(deps.storage, &false)?;
-            return Err(ContractError::CommitExpired {});
+            return Err(ContractError::TransactionExpired {});
         }
     }
 
