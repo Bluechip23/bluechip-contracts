@@ -41,7 +41,7 @@ use crate::state::{
 use cosmwasm_std::{
     entry_point, from_json, to_json_binary, Addr, BankMsg, Binary, Coin, CosmosMsg, Decimal,
     Decimal256, Deps, DepsMut, Empty, Env, Fraction, MessageInfo, Order, QuerierWrapper, Reply,
-    Response, StdError, StdResult, Storage, SubMsgResult, Uint128, Uint256, WasmMsg,
+    Response, StdError, StdResult, Storage, SubMsgResult, Timestamp, Uint128, Uint256, WasmMsg,
 };
 use cw2::{get_contract_version, set_contract_version};
 use cw20::{Cw20ExecuteMsg, Cw20ReceiveMsg};
@@ -196,7 +196,7 @@ pub fn execute(
     match msg {
         ExecuteMsg::UpdateConfig { .. } => Err(ContractError::NonSupported {}),
 
-        ExecuteMsg::Commit { asset, amount } => commit(deps, env, info, asset, amount),
+        ExecuteMsg::Commit { asset, amount, belief_price, max_spread } => commit(deps, env, info, asset, amount, None),
         // ── standard swap via native coin ──────────────────
         ExecuteMsg::SimpleSwap {
             offer_asset,
@@ -606,6 +606,7 @@ pub fn commit(
     info: MessageInfo,
     asset: Asset,
     amount: Uint128,
+    deadline: Option<Timestamp>,
 ) -> Result<Response, ContractError> {
     // Reentrancy protection - check and set guard
     let reentrancy_guard = REENTRANCY_GUARD.may_load(deps.storage)?.unwrap_or(false);
@@ -621,8 +622,16 @@ pub fn commit(
         REENTRANCY_GUARD.save(deps.storage, &false)?;
         return Err(e);
     }
+
+    if let Some(dl) = deadline {
+        if env.block.time > dl {
+            REENTRANCY_GUARD.save(deps.storage, &false)?;
+            return Err(ContractError::CommitExpired {});
+        }
+    }
+
     // Your existing function logic here...
-    let result = execute_commit_logic(&mut deps, env, info, asset, amount);
+    let result = execute_commit_logic(&mut deps, env, info, asset, amount, None, None);
 
     // Always clear the guard before returning (even on error)
     REENTRANCY_GUARD.save(deps.storage, &false)?;
@@ -657,6 +666,8 @@ pub fn execute_commit_logic(
     info: MessageInfo,
     asset: Asset,
     amount: Uint128,
+    belief_price: Option<Decimal>, // Add belief price parameter
+    max_spread: Option<Decimal>,
 ) -> Result<Response, ContractError> {
     // Load all necessary data from separate storage
     let pool_info = POOL_INFO.load(deps.storage)?;
@@ -704,6 +715,7 @@ pub fn execute_commit_logic(
                 &oracle_info.oracle_symbol,
                 asset.amount,
             )?;
+
             // Payment validation
             // Initialize messages vector for transfers
             let mut messages: Vec<CosmosMsg> = Vec::new();
@@ -833,11 +845,19 @@ pub fn execute_commit_logic(
             let ask_pool = pools[1].clone();
 
             // Calculate swap output
-            let (return_amt, _spread_amt, commission_amt) = compute_swap(
+            let (return_amt, spread_amt, commission_amt) = compute_swap(
                 offer_pool.amount,
                 ask_pool.amount,
                 net_amount,
                 pool_specs.lp_fee,
+            )?;
+
+            assert_max_spread(
+                belief_price,
+                max_spread,
+                net_amount, // offer_amount (what we're swapping)
+                return_amt, // return_amount (what we're getting back)
+                spread_amt, // spread_amount from compute_swap
             )?;
 
             // UPDATE RESERVES

@@ -1,6 +1,6 @@
 use cosmwasm_schema::{cw_serde, QueryResponses};
 
-use crate::asset::{Asset, AssetInfo, PairInfo, };
+use crate::asset::{Asset, AssetInfo, PairInfo};
 use crate::state::Subscription;
 use cosmwasm_std::{Addr, Binary, Decimal, Timestamp, Uint128};
 use cw20::Cw20ReceiveMsg;
@@ -33,6 +33,8 @@ pub enum ExecuteMsg {
     Commit {
         asset: Asset,
         amount: Uint128,
+        belief_price: Option<Decimal>, // Add these
+        max_spread: Option<Decimal>,
     },
     DepositLiquidity {
         amount0: Uint128,
@@ -58,8 +60,6 @@ pub enum ExecuteMsg {
     RemoveLiquidity {
         position_id: String,
     },
-
-  
 }
 
 /// This structure describes a CW20 hook message.
@@ -84,7 +84,6 @@ pub enum Cw20HookMsg {
 #[cw_serde]
 #[derive(QueryResponses)]
 pub enum QueryMsg {
-
     /// Returns information about a pair in an object of type [`super::asset::PairInfo`].
     #[returns(PairInfo)]
     Pair {},
