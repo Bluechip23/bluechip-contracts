@@ -60,6 +60,9 @@ pub enum ContractError {
     #[error("the pool is missing needed liquidity to carry out transaction")]
     InsufficientLiquidity {},
 
+    #[error("Insufficient liquidity minted")]
+    InsufficientLiquidityMinted {},
+
     #[error("Unauthorized: Only creator can perform this action")]
     UnauthorizedNotCreator {},
 
@@ -107,6 +110,9 @@ pub enum ContractError {
 
     #[error("InsufficientFunds")]
     InsufficientFunds {},
+
+    #[error("pool can not cover reserves")]
+    InsufficientReserves {},
 
     #[error("Incorrect native denom: provided: {provided}, required: {required}")]
     IncorrectNativeDenom { provided: String, required: String },

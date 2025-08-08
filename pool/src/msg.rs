@@ -315,8 +315,8 @@ pub struct PositionResponse {
     pub position_id: String,
     pub liquidity: Uint128,
     pub owner: Addr,
-    pub fee_growth_inside_0_last: Decimal,
-    pub fee_growth_inside_1_last: Decimal,
+    pub fee_growth_inside_0_last: Decimal,  // What fee_growth_global_0 was when position last collected
+    pub fee_growth_inside_1_last: Decimal,  // What fee_growth_global_1 was when position last collected
     pub created_at: u64,
     pub last_fee_collection: u64,
     pub unclaimed_fees_0: Uint128, // Calculate if needed

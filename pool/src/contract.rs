@@ -286,7 +286,7 @@ pub fn execute(
         ),
 
         ExecuteMsg::RemoveLiquidity { position_id } => {
-            execute_remove_liquidity(deps, env, info, position_id, None)
+            execute_remove_liquidity(deps, env, info, position_id, None, None, None)
         }
         ExecuteMsg::RemovePartialLiquidityByPercent {
             position_id,
@@ -618,6 +618,7 @@ pub fn commit(
     amount: Uint128,
     deadline: Option<Timestamp>,
 ) -> Result<Response, ContractError> {
+    enforce_deadline(env.block.time, deadline)?;
     // Reentrancy protection - check and set guard
     let reentrancy_guard = REENTRANCY_GUARD.may_load(deps.storage)?.unwrap_or(false);
     if reentrancy_guard {
@@ -632,7 +633,6 @@ pub fn commit(
         REENTRANCY_GUARD.save(deps.storage, &false)?;
         return Err(e);
     }
-    enforce_deadline(env.block.time, deadline)?;
     // Your existing function logic here...
     let result = execute_commit_logic(&mut deps, env, info, asset, amount, None, None);
 
@@ -669,7 +669,7 @@ pub fn execute_commit_logic(
     info: MessageInfo,
     asset: Asset,
     amount: Uint128,
-    belief_price: Option<Decimal>, // Add belief price parameter
+    belief_price: Option<Decimal>,
     max_spread: Option<Decimal>,
 ) -> Result<Response, ContractError> {
     // Load all necessary data from separate storage
@@ -1010,8 +1010,31 @@ pub fn execute_deposit_liquidity(
         .map(|c| c.amount)
         .unwrap_or_default();
 
-    if paid_native < amount0 {
+    let (liquidity, actual_amount0, actual_amount1) =
+        calc_liquidity_for_deposit(deps.as_ref(), &env, amount0, amount1)?;
+    // Ensure the user sent enough native tokens
+    if paid_native < actual_amount0 {
         return Err(ContractError::InvalidNativeAmount {});
+    }
+
+    if let Some(min0) = min_amount0 {
+        if actual_amount0 < min0 {
+            return Err(ContractError::SlippageExceeded {
+                expected: min0,
+                actual: actual_amount0,
+                token: "native".to_string(),
+            });
+        }
+    }
+
+    if let Some(min1) = min_amount1 {
+        if actual_amount1 < min1 {
+            return Err(ContractError::SlippageExceeded {
+                expected: min1,
+                actual: actual_amount1,
+                token: "cw20".to_string(),
+            });
+        }
     }
 
     // 2. Load the pool and update fee tracking
@@ -1034,28 +1057,6 @@ pub fn execute_deposit_liquidity(
         pool_state.nft_ownership_accepted = true;
     }
     // 4. Compute liquidity amount
-    let (liquidity, actual_amount0, actual_amount1) =
-        calc_liquidity_for_deposit(deps.as_ref(), &env, amount0, amount1)?;
-
-    if let Some(min0) = min_amount0 {
-        if actual_amount0 < min0 {
-            return Err(ContractError::SlippageExceeded {
-                expected: min0,
-                actual: actual_amount0,
-                token: "native".to_string(),
-            });
-        }
-    }
-
-    if let Some(min1) = min_amount1 {
-        if actual_amount1 < min1 {
-            return Err(ContractError::SlippageExceeded {
-                expected: min1,
-                actual: actual_amount1,
-                token: "cw20".to_string(),
-            });
-        }
-    }
 
     // Transfer only the actual CW20 amount needed
     if !actual_amount1.is_zero() {
@@ -1151,11 +1152,12 @@ pub fn execute_collect_fees(
 ) -> Result<Response, ContractError> {
     // 1. Load config
     let pool_fee_state = POOL_FEE_STATE.load(deps.storage)?;
-    let pool_Info = POOL_INFO.load(deps.storage)?;
+    let pool_info = POOL_INFO.load(deps.storage)?;
+    let mut pool_state = POOL_STATE.load(deps.storage)?;
     // 2. Verify NFT ownership through external NFT contract
     verify_position_ownership(
         deps.as_ref(),
-        &pool_Info.position_nft_address,
+        &pool_info.position_nft_address,
         &position_id,
         &info.sender,
     )?;
@@ -1180,7 +1182,7 @@ pub fn execute_collect_fees(
     liquidity_position.last_fee_collection = env.block.time.seconds();
 
     LIQUIDITY_POSITIONS.save(deps.storage, &position_id, &liquidity_position)?;
-
+    POOL_STATE.save(deps.storage, &pool_state)?;
     // 6. Prepare fee payments
     let mut response = Response::new()
         .add_attribute("action", "collect_fees")
@@ -1203,7 +1205,7 @@ pub fn execute_collect_fees(
     // 8. Send CW20 token fees (token1)
     if !fees_owed_1.is_zero() {
         let cw20_msg = WasmMsg::Execute {
-            contract_addr: pool_Info.token_address.to_string(), // Using config.token_address
+            contract_addr: pool_info.token_address.to_string(), // Using config.token_address
             msg: to_json_binary(&cw20::Cw20ExecuteMsg::Transfer {
                 recipient: info.sender.to_string(),
                 amount: fees_owed_1,
@@ -1239,10 +1241,6 @@ pub fn execute_add_to_position(
         .map(|c| c.amount)
         .unwrap_or_default();
 
-    if paid_native != amount0 {
-        return Err(ContractError::InvalidNativeAmount {});
-    }
-
     // 2. Load config
     let pool_fee_state = POOL_FEE_STATE.load(deps.storage)?;
     let pool_info = POOL_INFO.load(deps.storage)?;
@@ -1256,6 +1254,12 @@ pub fn execute_add_to_position(
         &info.sender,
     )?;
 
+    let (additional_liquidity, actual_amount0, actual_amount1) =
+        calc_liquidity_for_deposit(deps.as_ref(), &env, amount0, amount1)?;
+
+    if paid_native < actual_amount0 {
+        return Err(ContractError::InvalidNativeAmount {});
+    }
     // 4. Load position
     let mut liquidity_position = LIQUIDITY_POSITIONS.load(deps.storage, &position_id)?;
     let mut messages: Vec<CosmosMsg> = vec![];
@@ -1274,8 +1278,6 @@ pub fn execute_add_to_position(
     );
 
     // 6. Calculate new liquidity for the additional deposit
-    let (additional_liquidity, actual_amount0, actual_amount1) =
-        calc_liquidity_for_deposit(deps.as_ref(), &env, amount0, amount1)?;
 
     if let Some(min0) = min_amount0 {
         if actual_amount0 < min0 {
@@ -1331,8 +1333,11 @@ pub fn execute_add_to_position(
 
     // 8. Update config state (just total liquidity)
     pool_state.total_liquidity += additional_liquidity;
+  
+    // add actual deposit amounts
     pool_state.reserve0 = pool_state.reserve0.checked_add(actual_amount0)?;
     pool_state.reserve1 = pool_state.reserve1.checked_add(actual_amount1)?;
+
     update_price_accumulator(&mut pool_state, env.block.time.seconds())?;
     POOL_STATE.save(deps.storage, &pool_state)?;
 
@@ -1391,6 +1396,8 @@ pub fn execute_remove_liquidity(
     info: MessageInfo,
     position_id: String,
     deadline: Option<Timestamp>,
+    min_amount0: Option<Uint128>,
+    min_amount1: Option<Uint128>,
 ) -> Result<Response, ContractError> {
     enforce_deadline(env.block.time, deadline)?;
 
@@ -1400,7 +1407,7 @@ pub fn execute_remove_liquidity(
     let mut pool_state = POOL_STATE.load(deps.storage)?;
 
     // 2. Load and validate position
-    let liquidity_position = LIQUIDITY_POSITIONS.load(deps.storage, &position_id)?;
+    let mut liquidity_position = LIQUIDITY_POSITIONS.load(deps.storage, &position_id)?;
 
     // 3. Verify NFT ownership through external NFT contract
     verify_position_ownership(
@@ -1420,6 +1427,27 @@ pub fn execute_remove_liquidity(
         (liquidity_position.liquidity * current_reserve0) / pool_state.total_liquidity;
     let user_share_1 =
         (liquidity_position.liquidity * current_reserve1) / pool_state.total_liquidity;
+
+    if let Some(min0) = min_amount0 {
+        if user_share_0 < min0 {
+            return Err(ContractError::SlippageExceeded {
+                expected: min0,
+                actual: user_share_0,
+                token: "native".to_string(),
+            });
+        }
+    }
+
+    if let Some(min1) = min_amount1 {
+        if user_share_1 < min1 {
+            return Err(ContractError::SlippageExceeded {
+                expected: min1,
+                actual: user_share_1,
+                token: "cw20".to_string(),
+            });
+        }
+    }
+
     // 6. Calculate any remaining fees owed
     let fees_owed_0 = calculate_fees_owed(
         liquidity_position.liquidity,
@@ -1453,6 +1481,8 @@ pub fn execute_remove_liquidity(
     };*/
 
     // 10. Remove position from storage
+    liquidity_position.fee_growth_inside_0_last = pool_fee_state.fee_growth_global_0;
+    liquidity_position.fee_growth_inside_1_last = pool_fee_state.fee_growth_global_1;
     pool_state.reserve0 = pool_state.reserve0.checked_sub(user_share_0)?;
     pool_state.reserve1 = pool_state.reserve1.checked_sub(user_share_1)?;
     update_price_accumulator(&mut pool_state, env.block.time.seconds())?;
@@ -1532,24 +1562,26 @@ pub fn execute_remove_partial_liquidity(
         return Err(ContractError::InvalidAmount {});
     }
 
-    if liquidity_to_remove >= liquidity_position.liquidity {
-        //need a decimnal here
-        return Err(ContractError::InvalidAmount {});
+    if liquidity_to_remove == liquidity_position.liquidity {
+        return execute_remove_liquidity(deps, env, info, position_id, None, None, None);
+    }
+
+    if liquidity_to_remove > liquidity_position.liquidity {
+        return Err(ContractError::InsufficientLiquidity {});
     }
 
     // 5. Get current pool reserves
     let current_reserve0 = pool_state.reserve0;
     let current_reserve1 = pool_state.reserve1;
-
-    // 6. Calculate ALL pending fees first (before any changes)
+    // 6. Calculate propotional pending fees first (before any changes)
     let fees_owed_0 = calculate_fees_owed(
-        liquidity_position.liquidity,
+        liquidity_to_remove,
         pool_fee_state.fee_growth_global_0,
         liquidity_position.fee_growth_inside_0_last,
     );
 
     let fees_owed_1 = calculate_fees_owed(
-        liquidity_position.liquidity,
+        liquidity_to_remove,
         pool_fee_state.fee_growth_global_1,
         liquidity_position.fee_growth_inside_1_last,
     );
@@ -1565,7 +1597,7 @@ pub fn execute_remove_partial_liquidity(
         .checked_div(pool_state.total_liquidity)
         .map_err(|_| ContractError::DivideByZero)?;
 
-    // 8. Total amounts to send (partial principal + all accumulated fees)
+    // 8. Total amounts to send (partial principal + designated portion of accumulated fees)
     let total_amount_0 = withdrawal_amount_0 + fees_owed_0;
     let total_amount_1 = withdrawal_amount_1 + fees_owed_1;
 
@@ -1601,7 +1633,7 @@ pub fn execute_remove_partial_liquidity(
         .add_attribute("total_0", total_amount_0)
         .add_attribute("total_1", total_amount_1);
 
-    // 12. Send native token (token0) - partial principal + fees
+    // 12. Send native token (token0) - partial principal + partial fees
     if !total_amount_0.is_zero() {
         let native_msg = BankMsg::Send {
             to_address: info.sender.to_string(),
@@ -1613,7 +1645,7 @@ pub fn execute_remove_partial_liquidity(
         response = response.add_message(native_msg);
     }
 
-    // 13. Send CW20 token (token1) - partial principal + fees
+    // 13. Send CW20 token (token1) - partial principal + partial fees
     if !total_amount_1.is_zero() {
         let cw20_msg = WasmMsg::Execute {
             contract_addr: pool_info.token_address.to_string(), // Using config.token_address
@@ -1646,8 +1678,13 @@ pub fn execute_remove_partial_liquidity_by_percent(
     percentage: u64,
 ) -> Result<Response, ContractError> {
     // Validate percentage
-    if percentage == 0 || percentage >= 100 {
+    if percentage == 0 {
         return Err(ContractError::InvalidPercent {});
+    }
+
+    if percentage >= 100 {
+        // Redirect to full removal
+        return execute_remove_liquidity(deps, env, info, position_id, None, None, None);
     }
 
     // Load position to calculate absolute amount
@@ -1690,7 +1727,7 @@ fn calc_liquidity_for_deposit(
         // User provided enough amount1, use all of amount0
         (amount0, optimal_amount1_for_amount0)
     } else {
-        // User didn't provide enough amount1, use all of amount1
+        // User didn't provide enough amount1, use all their amount1 and scale down amount0
         (optimal_amount0_for_amount1, amount1)
     };
 
@@ -1700,13 +1737,23 @@ fn calc_liquidity_for_deposit(
     }
 
     // Calculate liquidity with the adjusted amounts
-    let liquidity_uint = (final_amount0 * pool_state.total_liquidity) / current_reserve0;
+    let liquidity_from_amount0 = final_amount0
+        .checked_mul(pool_state.total_liquidity)?
+        .checked_div(current_reserve0)
+        .map_err(|_| ContractError::DivideByZero)?;
 
-    if liquidity_uint.is_zero() {
-        return Err(ContractError::InsufficientLiquidity {});
+    let liquidity_from_amount1 = final_amount1
+        .checked_mul(pool_state.total_liquidity)?
+        .checked_div(current_reserve1)
+        .map_err(|_| ContractError::DivideByZero)?;
+
+    let liquidity = std::cmp::min(liquidity_from_amount0, liquidity_from_amount1);
+
+    if liquidity.is_zero() {
+        return Err(ContractError::InsufficientLiquidityMinted {});
     }
 
-    Ok((liquidity_uint, final_amount0, final_amount1))
+    Ok((liquidity, final_amount0, final_amount1))
 }
 
 /// ## Description
