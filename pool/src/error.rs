@@ -12,6 +12,9 @@ pub enum ContractError {
     #[error("Unauthorized")]
     Unauthorized {},
 
+    #[error("Invalid threshold parameters: {msg}")]
+    InvalidThresholdParams { msg: String },
+
     #[error("Reentrancy detected")]
     ReentrancyGuard {},
 

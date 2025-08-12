@@ -430,7 +430,7 @@ impl AssetInfoExt for AssetInfo {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use cosmwasm_std::testing::message_info;
+    use cosmwasm_std::testing::mock_info;
     use cosmwasm_std::{coin, coins};
 
     #[test]
@@ -438,11 +438,11 @@ mod tests {
         let asset = native_asset_info("uusd".to_string()).with_balance(1000u16);
         let addr = Addr::unchecked("addr0000");
 
-        let info = message_info(&addr, &coins(1000, "random"));
+        let info = mock_info(&addr.as_str(), &coins(1000, "random"));
         let err = asset.assert_sent_native_token_balance(&info).unwrap_err();
         assert_eq!(err, StdError::generic_err("Must send reserve token 'uusd'"));
 
-        let info = message_info(&addr, &coins(100, "uusd"));
+        let info = mock_info(&addr.as_str(), &coins(100, "uusd"));
         let err = asset.assert_sent_native_token_balance(&info).unwrap_err();
         assert_eq!(
             err,
@@ -451,7 +451,7 @@ mod tests {
             )
         );
 
-        let info = message_info(&addr, &coins(1000, "uusd"));
+        let info = mock_info(&addr.as_str(), &coins(1000, "uusd"));
         asset.assert_sent_native_token_balance(&info).unwrap();
     }
 

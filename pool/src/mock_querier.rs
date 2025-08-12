@@ -118,7 +118,7 @@ impl WasmMockQuerier {
                 }
 
                 // 2) pool reserves
-                if let Ok(QueryMsg::Pool {}) = from_json(&msg) {
+                if let Ok(QueryMsg::PoolInfo {}) = from_json(&msg) {
                     // native balance from bank
                     let native = QuerierWrapper::<Empty>::new(&self.base)
                         .query_balance(contract_addr.clone(), "ubluechip".to_string())
