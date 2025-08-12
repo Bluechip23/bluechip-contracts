@@ -1,10 +1,18 @@
 
 use cosmwasm_std::{
-    testing::{mock_dependencies, mock_env, mock_info, MockApi, MockQuerier, MockStorage, MOCK_CONTRACT_ADDR}, to_json_binary, Addr, BankMsg, Binary, Coin, ContractResult, CosmosMsg, Decimal, OwnedDeps, SystemError, SystemResult, Timestamp, Uint128, WasmMsg, WasmQuery
+    testing::{mock_dependencies, mock_env, mock_info, MockApi, MockQuerier, MockStorage, MOCK_CONTRACT_ADDR}, 
+    to_json_binary, Addr, BankMsg, Binary, Coin, ContractResult, CosmosMsg, Decimal, OwnedDeps, SystemError, 
+    SystemResult, Timestamp, Uint128, WasmMsg, WasmQuery
 };
 use cw20::Cw20ReceiveMsg;
 use cw721::OwnerOfResponse;
-use crate::{asset::PairType, contract::{execute, execute_add_to_position, execute_collect_fees, execute_deposit_liquidity, execute_remove_liquidity, execute_swap_cw20}, msg::{Cw20HookMsg, FeeInfo}, oracle::PriceResponse, state::{CommitInfo, OracleInfo, PoolFeeState, PoolInfo, PoolSpecs, PoolState, ThresholdPayout, COMMITSTATUS, COMMIT_CONFIG, FEEINFO, LIQUIDITY_POSITIONS, NATIVE_RAISED, ORACLE_INFO, POOL_INFO, POOL_SPECS, THRESHOLD_PAYOUT}};
+use crate::{asset::PairType, 
+    contract::{execute, execute_add_to_position, execute_collect_fees, execute_deposit_liquidity, execute_remove_liquidity, execute_swap_cw20, instantiate, trigger_threshold_payout}, 
+    msg::{Cw20HookMsg, FeeInfo, PoolInstantiateMsg}, 
+    oracle::PriceResponse, 
+    state::{CommitInfo, OracleInfo, PoolFeeState, PoolInfo, PoolSpecs, PoolState, ThresholdPayout, COMMITSTATUS, 
+        COMMIT_CONFIG, FEEINFO, LIQUIDITY_POSITIONS, NATIVE_RAISED, ORACLE_INFO, POOL_INFO, POOL_SPECS, THRESHOLD_PAYOUT
+    }};
 use crate::msg::ExecuteMsg;
 use crate::state::{
     THRESHOLD_HIT, USD_RAISED, COMMIT_LEDGER, REENTRANCY_GUARD,
@@ -187,6 +195,38 @@ fn test_commit_post_threshold_swap() {
     let fee_state = POOL_FEE_STATE.load(&deps.storage).unwrap();
     assert!(fee_state.fee_growth_global_0 > Decimal::zero());
     assert!(fee_state.total_fees_collected_0 > Uint128::zero());
+}
+
+#[test]
+fn test_threshold_payout_integrity_check() {
+    let mut deps = mock_dependencies();
+    setup_pool_storage(&mut deps);
+    
+    // Corrupt the threshold payout state
+    let mut bad_payout = THRESHOLD_PAYOUT.load(&deps.storage).unwrap();
+    bad_payout.creator_amount = Uint128::new(999_999_999_999); // Wrong!
+    THRESHOLD_PAYOUT.save(&mut deps.storage, &bad_payout).unwrap();
+    
+    // Try to trigger threshold
+    let pool_info = POOL_INFO.load(&deps.storage).unwrap();
+    let mut pool_state = POOL_STATE.load(&deps.storage).unwrap();
+    let mut pool_fee_state = POOL_FEE_STATE.load(&deps.storage).unwrap();
+    let commit_config = COMMIT_CONFIG.load(&deps.storage).unwrap();
+    let fee_info = FEEINFO.load(&deps.storage).unwrap();
+    
+    let result = trigger_threshold_payout(
+        &mut deps.storage,
+        &pool_info,
+        &mut pool_state,
+        &mut pool_fee_state,
+        &commit_config,
+        &bad_payout,
+        &fee_info,
+        &mock_env(),
+    );
+    
+    assert!(result.is_err());
+    assert!(result.unwrap_err().to_string().contains("corruption"));
 }
 
 #[test]
@@ -1465,10 +1505,10 @@ pub fn setup_pool_storage(deps: &mut OwnedDeps<MockStorage, MockApi, MockQuerier
 
     // Set up ThresholdPayout
     let threshold_payout = ThresholdPayout {
-        creator_amount: Uint128::new(325_000_000), // 325k tokens
-        bluechip_amount: Uint128::new(25_000_000), // 25k tokens
-        pool_amount: Uint128::new(350_000_000),     // 350k tokens
-        commit_amount: Uint128::new(500_000_000),   // 500k tokens
+        creator_amount: Uint128::new(325_000_000_000), // 325k tokens
+        bluechip_amount: Uint128::new(25_000_000_000), // 25k tokens
+        pool_amount: Uint128::new(350_000_000_000),     // 350k tokens
+        commit_amount: Uint128::new(500_000_000_000),   // 500k tokens
     };
     THRESHOLD_PAYOUT.save(&mut deps.storage, &threshold_payout).unwrap();
 
@@ -1517,6 +1557,49 @@ pub fn setup_pool_post_threshold(deps: &mut OwnedDeps<MockStorage, MockApi, Mock
     };
     POOL_STATE.save(&mut deps.storage, &pool_state).unwrap();
 }
+
+#[test]
+fn test_factory_impersonation_prevented() {
+    let mut deps = mock_dependencies();
+    
+    // Try to instantiate from non-factory address
+      let msg = PoolInstantiateMsg {
+        pool_id: 1u64,
+        asset_infos: [
+                AssetInfo::NativeToken {
+                    denom: "bluechip".to_string(),
+                },
+                AssetInfo::Token {
+                    contract_addr: Addr::unchecked("WILL_BE_CREATED_BY_FACTORY"),
+                },
+            ],
+        token_code_id: 2u64,
+        factory_addr: Addr::unchecked("factory_contract"),
+        init_params: None,
+        fee_info: FeeInfo {
+                bluechip_address: Addr::unchecked("bluechip"),
+                creator_address: Addr::unchecked("addr0000"),
+                bluechip_fee: Decimal::from_ratio(10u128, 100u128),
+                creator_fee: Decimal::from_ratio(10u128, 100u128),
+            },
+        commit_limit: Uint128::new(350_000_000_000),
+        commit_limit_usd: Uint128::new(350_000_000_000),
+        position_nft_address: Addr::unchecked("NFT_contract"),
+        oracle_addr: Addr::unchecked("oracle_contract"),
+        oracle_symbol: "BLUECHIP".to_string(),
+        token_address: Addr::unchecked("token_contract"),
+        available_payment: vec![Uint128::new(1_000_000)],
+        available_payment_usd: vec![Uint128::new(1_000_000)],
+    };
+    let info = mock_info("fake_factory", &[]); // Wrong sender!
+    let err = instantiate(deps.as_mut(), mock_env(), info, msg).unwrap_err();
+    
+    match err {
+        ContractError::Unauthorized {} => (),
+        _ => panic!("Expected Unauthorized error"),
+    }
+}
+
 
 /// Creates a test liquidity position with specified parameters
 pub fn create_test_position(

@@ -13,13 +13,9 @@ use crate::msg::{ExecuteMsg, OfficialInstantiateMsg, TokenInfo};
 use crate::pair::{FeeInfo, PairInstantiateMsg};
 use cosmwasm_std::testing::{mock_env, mock_info, MockApi, MockStorage};
 
-use crate::error::ContractError;
 
-use crate::response::MsgInstantiateContractResponse;
-use protobuf::Message;
 
 const ADMIN: &str = "admin";
-const USER: &str = "user";
 
 fn create_default_instantiate_msg() -> OfficialInstantiateMsg {
     OfficialInstantiateMsg {
@@ -607,6 +603,7 @@ fn test_update_config() {
     assert_eq!(1, res.attributes.len());
     assert_eq!(("action", "update_config"), res.attributes[0]);
 }
+
 
 #[test]
 fn test_reply_handling() {

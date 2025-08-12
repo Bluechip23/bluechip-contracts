@@ -67,6 +67,7 @@ pub const THRESHOLD_HIT: Item<bool> = Item::new("threshold_hit");
 pub const COMMIT_LEDGER: cw_storage_plus::Map<&Addr, Uint128> =
     cw_storage_plus::Map::new("commit_usd");
 pub const SUB_INFO: Map<&Addr, Subscription> = Map::new("sub_info");
+pub const EXPECTED_FACTORY: Item<ExpectedFactory> = Item::new("expected_factory");
 pub const USER_LAST_COMMIT: Map<&Addr, u64> = Map::new("user_last_commit");
 pub const POOL_INFO: Item<PoolInfo> = Item::new("pool_info");
 pub const POOL_STATE: Item<PoolState> = Item::new("pool_state");
@@ -107,6 +108,11 @@ pub struct PoolFeeState {
     pub fee_growth_global_1: Decimal,
     pub total_fees_collected_0: Uint128,
     pub total_fees_collected_1: Uint128,
+}
+
+#[cw_serde]
+pub struct ExpectedFactory {
+    pub expected_factory_address: Addr,
 }
 
 #[cw_serde]

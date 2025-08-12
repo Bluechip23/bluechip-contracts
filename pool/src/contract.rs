@@ -11,28 +11,7 @@ use crate::msg::{
 use crate::oracle::{PriceResponse, PythQueryMsg};
 use crate::response::MsgInstantiateContractResponse;
 use crate::state::{
-    CommitInfo,
-    OracleInfo,
-    PairInfo,
-    PoolFeeState,
-    PoolInfo,
-    PoolSpecs,
-    ThresholdPayout,
-    COMMITSTATUS,
-    COMMIT_CONFIG,
-    COMMIT_LEDGER,
-    FEEINFO,
-    NATIVE_RAISED,
-    ORACLE_INFO,
-    POOL_FEE_STATE,
-    POOL_INFO,
-    POOL_SPECS,
-    POOL_STATE,
-    REENTRANCY_GUARD,
-    THRESHOLD_HIT,
-    THRESHOLD_PAYOUT,
-    USD_RAISED,
-    USER_LAST_COMMIT, //ACCUMULATED_BLUECHIP_FEES, ACCUMULATED_CREATOR_FEES,
+    CommitInfo, ExpectedFactory, OracleInfo, PairInfo, PoolFeeState, PoolInfo, PoolSpecs, ThresholdPayout, COMMITSTATUS, COMMIT_CONFIG, COMMIT_LEDGER, EXPECTED_FACTORY, FEEINFO, NATIVE_RAISED, ORACLE_INFO, POOL_FEE_STATE, POOL_INFO, POOL_SPECS, POOL_STATE, REENTRANCY_GUARD, THRESHOLD_HIT, THRESHOLD_PAYOUT, USD_RAISED, USER_LAST_COMMIT //ACCUMULATED_BLUECHIP_FEES, ACCUMULATED_CREATOR_FEES,
 };
 use crate::state::{
     PoolState, Position, Subscription, TokenMetadata, LIQUIDITY_POSITIONS, NEXT_POSITION_ID,
@@ -80,10 +59,24 @@ const CONTRACT_VERSION: &str = env!("CARGO_PKG_VERSION");
 pub fn instantiate(
     deps: DepsMut,
     env: Env,
-    _info: MessageInfo,
+    info: MessageInfo,
     msg: PoolInstantiateMsg,
 ) -> Result<Response, ContractError> {
-    //++++++++++++++++++++++++++++++++++++++++++++++need to check if the asset info is valid++++++++++++++++++++++++++++++++++++++++++++++++++++++++
+
+   let cfg = ExpectedFactory {
+        expected_factory_address: msg.factory_addr.clone(),
+    };
+    EXPECTED_FACTORY.save(deps.storage, &cfg)?;
+
+    let real_factory = EXPECTED_FACTORY.load(deps.storage)?;
+
+    // Validate factory address stored matches message factory_addr (optional)
+    validate_factory_address(&real_factory.expected_factory_address, &msg.factory_addr)?;
+
+    // **Here is the critical check: does the caller equal the stored factory?**
+    if info.sender != real_factory.expected_factory_address {
+        return Err(ContractError::Unauthorized {});
+    }
     msg.asset_infos[0].check(deps.api)?;
     msg.asset_infos[1].check(deps.api)?;
 
@@ -2084,6 +2077,15 @@ pub fn compute_swap(
     ))
 }
 
+pub fn validate_factory_address(
+    stored_factory_addr: &Addr,
+    candidate_factory_addr: &Addr,
+) -> Result<(), ContractError> {
+    if stored_factory_addr != candidate_factory_addr {
+        return Err(ContractError::InvalidFactory {});
+    }
+    Ok(())
+}
 /// ## Description
 /// Returns an amount of offer assets for a specified amount of ask assets.
 /// ## Params
@@ -2126,7 +2128,7 @@ fn compute_offer_amount(
     ))
 }
 
-fn trigger_threshold_payout(
+pub fn trigger_threshold_payout(
     storage: &mut dyn Storage,
     pool_info: &PoolInfo,
     pool_state: &mut PoolState,
