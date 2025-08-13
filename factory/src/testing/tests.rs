@@ -1,19 +1,20 @@
 use crate::state::{
-    Config, NEXT_POOL_ID, POOLS_BY_ID, SUBSCRIBE, TEMPCREATOR, TEMPNFTADDR, TEMPPAIRINFO,
-    TEMPPOOLID, TEMPTOKENADDR,
+    Config, CreationState, CreationStatus, CREATION_STATES, NEXT_POOL_ID, POOLS_BY_ID, SUBSCRIBE,
+    TEMPCREATOR, TEMPNFTADDR, TEMPPAIRINFO, TEMPPOOLID, TEMPTOKENADDR,
 };
 use cosmwasm_std::{
-    Addr, Binary, Decimal, Env, Event, OwnedDeps, Reply, SubMsgResponse, SubMsgResult, Uint128
+    Addr, Binary, Decimal, Env, Event, OwnedDeps, Reply, SubMsgResponse, SubMsgResult, Uint128,
 };
 
 use crate::asset::{Asset, AssetInfo, PairInfo, PairType};
-use crate::execute::{execute, instantiate, reply};
+use crate::execute::{
+    execute, instantiate, reply, INSTANTIATE_NFT_REPLY_ID, INSTANTIATE_POOL_REPLY_ID,
+    INSTANTIATE_TOKEN_REPLY_ID,
+};
 use crate::mock_querier::{mock_dependencies, WasmMockQuerier};
 use crate::msg::{ExecuteMsg, OfficialInstantiateMsg, TokenInfo};
 use crate::pair::{FeeInfo, PairInstantiateMsg};
 use cosmwasm_std::testing::{mock_env, mock_info, MockApi, MockStorage};
-
-
 
 const ADMIN: &str = "admin";
 
@@ -277,23 +278,29 @@ fn create_pool_msg(token_name: &str) -> ExecuteMsg {
     }
 }
 
-fn simulate_complete_reply_chain(
-    deps: &mut OwnedDeps<MockStorage, MockApi, WasmMockQuerier>,
-    env: Env,
-    pool_id: u64,
-) {
-    // Simulate token reply
-    let token_reply = create_instantiate_reply(1, &format!("token_address_{}", pool_id));
+fn simulate_complete_reply_chain(deps: &mut OwnedDeps<MockStorage, MockApi, WasmMockQuerier>, env: Env, pool_id: u64) {
+    // Token reply
+    let token_reply = create_instantiate_reply(
+        INSTANTIATE_TOKEN_REPLY_ID, 
+        &format!("token_address_{}", pool_id)
+    );
     reply(deps.as_mut(), env.clone(), token_reply).unwrap();
 
-    // Simulate NFT reply
-    let nft_reply = create_instantiate_reply(2, &format!("nft_address_{}", pool_id));
+    // NFT reply  
+    let nft_reply = create_instantiate_reply(
+        INSTANTIATE_NFT_REPLY_ID,
+        &format!("nft_address_{}", pool_id)
+    );
     reply(deps.as_mut(), env.clone(), nft_reply).unwrap();
 
-    // Simulate pool reply
-    let pool_reply = create_instantiate_reply(3, &format!("pool_address_{}", pool_id));
+    // Pool reply
+    let pool_reply = create_instantiate_reply(
+        INSTANTIATE_POOL_REPLY_ID,
+        &format!("pool_address_{}", pool_id)
+    );
     reply(deps.as_mut(), env.clone(), pool_reply).unwrap();
 }
+
 // Keep all your existing test functions below...
 #[test]
 fn test_asset_info() {
@@ -318,13 +325,13 @@ fn create_instantiate_reply(id: u64, contract_addr: &str) -> Reply {
         id,
         result: SubMsgResult::Ok(SubMsgResponse {
             events: vec![
-                Event::new("instantiate")
-                    .add_attribute("_contract_address", contract_addr)
+                Event::new("instantiate").add_attribute("_contract_address", contract_addr)
             ],
             data: None,
         }),
     }
 }
+
 #[test]
 fn test_multiple_pool_creation() {
     let mut deps = mock_dependencies(&[]);
@@ -340,18 +347,38 @@ fn test_multiple_pool_creation() {
         // Create pool
         let create_msg = create_pool_msg(&format!("Token{}", expected_id));
         let info = mock_info(ADMIN, &[]);
-        execute(deps.as_mut(), env.clone(), info, create_msg).unwrap();
+        let res = execute(deps.as_mut(), env.clone(), info, create_msg).unwrap();
 
         // Verify pool ID was set correctly in TEMP storage
-        assert_eq!(TEMPPOOLID.load(&deps.storage).unwrap(), expected_id);
+        let pool_id = TEMPPOOLID.load(&deps.storage).unwrap();
+        assert_eq!(pool_id, expected_id);
+        
+        // SET UP CREATION STATE - This is what's missing!
+        let creator = TEMPCREATOR.load(&deps.storage).unwrap();
+        let creation_state = CreationState {
+            pool_id,
+            creator: creator.clone(),
+            token_address: None,
+            nft_address: None,
+            pool_address: None,
+            creation_time: env.block.time,
+            status: CreationStatus::Started,
+            retry_count: 0,
+        };
+        CREATION_STATES.save(deps.as_mut().storage, pool_id, &creation_state).unwrap();
 
         // Simulate complete reply chain
         simulate_complete_reply_chain(&mut deps, env.clone(), expected_id);
 
         // Verify next pool ID incremented
         assert_eq!(NEXT_POOL_ID.load(&deps.storage).unwrap(), expected_id + 1);
+        
+        // Verify creation state shows completed
+        let final_state = CREATION_STATES.load(&deps.storage, pool_id).unwrap();
+        assert_eq!(final_state.status, CreationStatus::Completed);
     }
 }
+
 #[test]
 fn test_complete_pool_creation_flow() {
     let mut deps = mock_dependencies(&[]);
@@ -413,14 +440,41 @@ fn test_complete_pool_creation_flow() {
 
     let info = mock_info(ADMIN, &[]);
     let res = execute(deps.as_mut(), env.clone(), info, create_msg).unwrap();
-
+    assert!(
+        !res.attributes.is_empty(),
+        "Should have response attributes"
+    );
+    assert_eq!(
+        res.messages.len(),
+        1,
+        "Should have exactly one submessage for token instantiation"
+    );
     // Verify TEMP states are set
     assert!(TEMPPOOLID.load(&deps.storage).is_ok());
     assert!(TEMPPAIRINFO.load(&deps.storage).is_ok());
     assert!(TEMPCREATOR.load(&deps.storage).is_ok());
 
+    // GET THE POOL ID AND SET UP CREATION STATE
+    let pool_id = TEMPPOOLID.load(&deps.storage).unwrap();
+    let creator = TEMPCREATOR.load(&deps.storage).unwrap();
+
+    // Create the CreationState that your new code expects
+    let creation_state = CreationState {
+        pool_id,
+        creator: creator.clone(),
+        token_address: None,
+        nft_address: None,
+        pool_address: None,
+        creation_time: env.block.time,
+        status: CreationStatus::Started,
+        retry_count: 0,
+    };
+    CREATION_STATES
+        .save(deps.as_mut().storage, pool_id, &creation_state)
+        .unwrap();
+
     // Simulate token instantiation reply
-    let token_reply = create_instantiate_reply(1, "token_address");
+    let token_reply = create_instantiate_reply(INSTANTIATE_TOKEN_REPLY_ID, "token_address");
     let res = reply(deps.as_mut(), env.clone(), token_reply).unwrap();
 
     // Verify token address saved and NFT instantiation triggered
@@ -430,8 +484,16 @@ fn test_complete_pool_creation_flow() {
     );
     assert_eq!(res.messages.len(), 1); // NFT instantiate message
 
+    // Verify creation state was updated
+    let updated_state = CREATION_STATES.load(&deps.storage, pool_id).unwrap();
+    assert_eq!(updated_state.status, CreationStatus::TokenCreated);
+    assert_eq!(
+        updated_state.token_address,
+        Some(Addr::unchecked("token_address"))
+    );
+
     // Simulate NFT instantiation reply
-    let nft_reply = create_instantiate_reply(2, "nft_address");
+    let nft_reply = create_instantiate_reply(INSTANTIATE_NFT_REPLY_ID, "nft_address");
     let res = reply(deps.as_mut(), env.clone(), nft_reply).unwrap();
 
     // Verify NFT address saved and pool instantiation triggered
@@ -441,18 +503,26 @@ fn test_complete_pool_creation_flow() {
     );
     assert_eq!(res.messages.len(), 1); // Pool instantiate message
 
+    // Verify creation state was updated
+    let updated_state = CREATION_STATES.load(&deps.storage, pool_id).unwrap();
+    assert_eq!(updated_state.status, CreationStatus::NftCreated);
+    assert_eq!(
+        updated_state.nft_address,
+        Some(Addr::unchecked("nft_address"))
+    );
+
     // Simulate pool instantiation reply
-    let pool_reply = create_instantiate_reply(3, "pool_address");
+    let pool_reply = create_instantiate_reply(INSTANTIATE_POOL_REPLY_ID, "pool_address");
     let res = reply(deps.as_mut(), env.clone(), pool_reply).unwrap();
 
     // Verify subscription saved
     let creator = Addr::unchecked(ADMIN);
     let subscribe_info = SUBSCRIBE.load(&deps.storage, &creator.to_string()).unwrap();
-    assert_eq!(subscribe_info.pool_id, 1u64);
+    assert_eq!(subscribe_info.pool_id, pool_id);
     assert_eq!(subscribe_info.pool_addr, Addr::unchecked("pool_address"));
 
     // Verify pool saved by ID
-    let pool_by_id = POOLS_BY_ID.load(&deps.storage, 1u64).unwrap();
+    let pool_by_id = POOLS_BY_ID.load(&deps.storage, pool_id).unwrap();
     assert_eq!(pool_by_id.pool_addr, Addr::unchecked("pool_address"));
 
     // Verify TEMP states cleared
@@ -461,6 +531,14 @@ fn test_complete_pool_creation_flow() {
     assert!(TEMPCREATOR.load(&deps.storage).is_err());
     assert!(TEMPTOKENADDR.load(&deps.storage).is_err());
     assert!(TEMPNFTADDR.load(&deps.storage).is_err());
+
+    // Verify creation state shows completed
+    let final_state = CREATION_STATES.load(&deps.storage, pool_id).unwrap();
+    assert_eq!(final_state.status, CreationStatus::Completed);
+    assert_eq!(
+        final_state.pool_address,
+        Some(Addr::unchecked("pool_address"))
+    );
 
     // Verify minter update messages sent
     assert_eq!(res.messages.len(), 2); // token minter + NFT ownership
@@ -604,7 +682,6 @@ fn test_update_config() {
     assert_eq!(("action", "update_config"), res.attributes[0]);
 }
 
-
 #[test]
 fn test_reply_handling() {
     let mut deps = mock_dependencies(&[]);
@@ -632,23 +709,26 @@ fn test_reply_handling() {
 
     let _res = instantiate(deps.as_mut(), env.clone(), info, msg).unwrap();
 
-    // Create token instantiation reply with events (not data)
-    let contract_addr = "token_contract_address";
-    
-    let reply_msg = Reply {
-        id: 1,
-        result: SubMsgResult::Ok(SubMsgResponse {
-            events: vec![
-                Event::new("instantiate")
-                    .add_attribute("_contract_address", contract_addr)
-            ],
-            data: None, // Your contract doesn't use data, it uses events
-        }),
-    };
+    // Set up the pool ID first
+    let pool_id = 1u64;
+    TEMPPOOLID.save(deps.as_mut().storage, &pool_id).unwrap();
 
-    // Set up temporary storage for reply
-    TEMPPOOLID.save(deps.as_mut().storage, &1u64).unwrap(); // Add pool ID
-    
+    // CREATE THE MISSING CREATION STATE - This is what's causing the failure
+    let creation_state = CreationState {
+        pool_id,
+        creator: addr.clone(),
+        token_address: None, // Will be set during token reply
+        nft_address: None,
+        pool_address: None,
+        creation_time: env.block.time,
+        status: CreationStatus::Started,
+        retry_count: 0,
+    };
+    CREATION_STATES
+        .save(deps.as_mut().storage, pool_id, &creation_state)
+        .unwrap();
+
+    // Set up other temporary storage
     let pair_msg = PairInstantiateMsg {
         asset_infos: [
             AssetInfo::NativeToken {
@@ -679,10 +759,38 @@ fn test_reply_handling() {
     TEMPPAIRINFO.save(deps.as_mut().storage, &pair_msg).unwrap();
     TEMPCREATOR.save(deps.as_mut().storage, &addr).unwrap();
 
+    // Create token instantiation reply with events
+    let contract_addr = "token_contract_address";
+
+    let reply_msg = Reply {
+        id: INSTANTIATE_TOKEN_REPLY_ID, // Use the constant instead of hardcoded 1
+        result: SubMsgResult::Ok(SubMsgResponse {
+            events: vec![
+                Event::new("instantiate").add_attribute("_contract_address", contract_addr)
+            ],
+            data: None,
+        }),
+    };
+
     let res = reply(deps.as_mut(), env.clone(), reply_msg).unwrap();
+
     
-    // Check the correct attributes
-    assert_eq!(res.attributes.len(), 2);
-    assert_eq!(res.attributes[0], ("action", "instantiate_token_reply"));
+    assert_eq!(res.attributes.len(), 3); 
+    assert_eq!(res.attributes[0], ("action", "token_created_successfully")); // Updated message
     assert_eq!(res.attributes[1], ("token_address", contract_addr));
+    assert_eq!(res.attributes[2], ("pool_id", "1"));
+
+    // Verify the creation state was updated
+    let updated_state = CREATION_STATES
+        .load(deps.as_ref().storage, pool_id)
+        .unwrap();
+    assert_eq!(updated_state.status, CreationStatus::TokenCreated);
+    assert_eq!(
+        updated_state.token_address,
+        Some(Addr::unchecked(contract_addr))
+    );
+
+    // Verify temp storage was updated
+    let temp_token = TEMPTOKENADDR.load(deps.as_ref().storage).unwrap();
+    assert_eq!(temp_token, Addr::unchecked(contract_addr));
 }

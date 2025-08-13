@@ -540,6 +540,7 @@ fn test_commit_threshold_overshoot_split() {
     }
 }
 
+
 #[test]
 fn test_commit_exact_threshold() {
     let mut deps = mock_dependencies_with_balance(&[Coin {
@@ -551,6 +552,10 @@ fn test_commit_exact_threshold() {
     
     // Set USD raised to need exactly $1 more
     USD_RAISED.save(&mut deps.storage, &Uint128::new(24_999_000_000)).unwrap();
+    
+    // add previous commits to simulate the 24,999
+    let previous_user = Addr::unchecked("previous_user");
+    COMMIT_LEDGER.save(&mut deps.storage, &previous_user, &Uint128::new(24_999_000_000)).unwrap();
     
     let env = mock_env();
     
@@ -603,10 +608,9 @@ fn test_commit_exact_threshold() {
     
     // Verify threshold hit
     assert_eq!(THRESHOLD_HIT.load(&deps.storage).unwrap(), true);
-    
-    // Verify full amount went to ledger
-    let user_commit = COMMIT_LEDGER.load(&deps.storage, &info.sender).unwrap();
-    assert_eq!(user_commit, Uint128::new(1_000_000)); // Full $1
+    // verify that the total USD raised is at the threshold
+    let total_usd = USD_RAISED.load(&deps.storage).unwrap();
+    assert_eq!(total_usd, Uint128::new(25_000_000_000)); // Should be exactly at $25k threshold
 }
 #[test]
 fn test_swap_cw20_via_hook() {

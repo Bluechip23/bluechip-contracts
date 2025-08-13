@@ -24,9 +24,9 @@ use cw721_base::Action;
 const CONTRACT_NAME: &str = "bluechip_factory";
 const CONTRACT_VERSION: &str = env!("CARGO_PKG_VERSION");
 const BURN_ADDRESS: &str = "cosmos1dead000000000000000000000000000000dead";
-const INSTANTIATE_TOKEN_REPLY_ID: u64 = 1;
-const INSTANTIATE_NFT_REPLY_ID: u64 = 3;
-const INSTANTIATE_POOL_REPLY_ID: u64 = 2;
+pub const INSTANTIATE_TOKEN_REPLY_ID: u64 = 1;
+pub const INSTANTIATE_NFT_REPLY_ID: u64 = 3;
+pub const INSTANTIATE_POOL_REPLY_ID: u64 = 2;
 pub const CLEANUP_TOKEN_REPLY_ID: u64 = 100;
 pub const CLEANUP_NFT_REPLY_ID: u64 = 101;
 
@@ -40,7 +40,7 @@ pub fn instantiate(
     cw2::set_contract_version(deps.storage, CONTRACT_NAME, CONTRACT_VERSION)?;
     /* Validate addresses */
     CONFIG.save(deps.storage, &msg.config)?;
-    NEXT_POOL_ID.save(deps.storage, &0u64)?;
+    NEXT_POOL_ID.save(deps.storage, &1u64)?;
     Ok(Response::new().add_attribute("action", "init_contract"))
 }
 
