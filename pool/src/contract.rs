@@ -1932,15 +1932,16 @@ pub fn execute_remove_partial_liquidity_by_percent(
 }
 
 // Helper function to calculate liquidity for deposits
+
 fn calc_liquidity_for_deposit(
     deps: Deps,
     amount0: Uint128,
     amount1: Uint128,
 ) -> Result<(Uint128, Uint128, Uint128), ContractError> {
-    // Changed return type to Decimal
     let pool_state = POOL_STATE.load(deps.storage)?;
     let current_reserve0 = pool_state.reserve0;
     let current_reserve1 = pool_state.reserve1;
+    
     if current_reserve0.is_zero() || current_reserve1.is_zero() {
         return Err(ContractError::InsufficientLiquidity {});
     }
@@ -1949,8 +1950,10 @@ fn calc_liquidity_for_deposit(
         return Err(ContractError::InsufficientLiquidity {});
     }
 
-    let optimal_amount1_for_amount0 = (amount0 * current_reserve1) / current_reserve0; // "If I use all of amount0, how much amount1 do I need?"
-    let optimal_amount0_for_amount1 = (amount1 * current_reserve0) / current_reserve1; // "If I use all of amount1, how much amount0 do I need?"
+    // 1. PROPORTIONAL DEPOSIT REQUIREMENT
+    // Force deposits to maintain current pool ratio
+    let optimal_amount1_for_amount0 = (amount0 * current_reserve1) / current_reserve0;
+    let optimal_amount0_for_amount1 = (amount1 * current_reserve0) / current_reserve1;
 
     let (final_amount0, final_amount1) = if optimal_amount1_for_amount0 <= amount1 {
         // User provided enough amount1, use all of amount0
@@ -1960,23 +1963,14 @@ fn calc_liquidity_for_deposit(
         (optimal_amount0_for_amount1, amount1)
     };
 
-    // Sanity check the final amounts
     if final_amount0.is_zero() || final_amount1.is_zero() {
         return Err(ContractError::InsufficientLiquidity {});
     }
 
-    // Calculate liquidity with the adjusted amounts
-    let liquidity_from_amount0 = final_amount0
-        .checked_mul(pool_state.total_liquidity)?
-        .checked_div(current_reserve0)
-        .map_err(|_| ContractError::DivideByZero)?;
-
-    let liquidity_from_amount1 = final_amount1
-        .checked_mul(pool_state.total_liquidity)?
-        .checked_div(current_reserve1)
-        .map_err(|_| ContractError::DivideByZero)?;
-
-    let liquidity = std::cmp::min(liquidity_from_amount0, liquidity_from_amount1);
+    // 2. GEOMETRIC MEAN SHARE CALCULATION
+    // Always use geometric mean for liquidity calculation (for ALL deposits)
+    let product = final_amount0.checked_mul(final_amount1)?;
+    let liquidity = integer_sqrt(product).max(Uint128::new(1));
 
     if liquidity.is_zero() {
         return Err(ContractError::InsufficientLiquidityMinted {});
@@ -1997,6 +1991,22 @@ fn calc_liquidity_for_deposit(
 /// * **x** is an object of type [`Uint128`]. This is the balance of asset\[\0] in the pool.
 ///
 /// * **y** is an object of type [`Uint128`]. This is the balance of asset\[\1] in the pool.
+/// 
+fn integer_sqrt(value: Uint128) -> Uint128 {
+    if value.is_zero() {
+        return Uint128::zero();
+    }
+    
+    let mut x = value;
+    let mut y = (value + Uint128::one()) / Uint128::new(2);
+    
+    while y < x {
+        x = y;
+        y = (y + value / y) / Uint128::new(2);
+    }
+    
+    x
+}
 pub fn accumulate_prices(
     env: Env,
     pool_state: &PoolState,
@@ -2198,7 +2208,7 @@ pub fn trigger_threshold_payout(
         AssetInfo::NativeToken { denom, .. } => denom,
         _ => "stake", // fallback if first asset isn't native
     };
-    let native_seed = Uint128::new(23_500_000_000); // Corrected comment
+    let native_seed = Uint128::new(23_500); // Corrected comment
     msgs.push(get_bank_transfer_to_msg(
         &env.contract.address,
         denom,
