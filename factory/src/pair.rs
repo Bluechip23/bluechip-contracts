@@ -1,6 +1,6 @@
 use cosmwasm_schema::{cw_serde, QueryResponses};
 
-use crate::asset::{AssetInfo,};
+use crate::asset::{AssetInfo, PairInfo};
 
 use cosmwasm_std::{Addr, Binary, Decimal, Uint128};
 
@@ -75,6 +75,8 @@ pub enum Cw20HookMsg {
 #[derive(QueryResponses)]
 pub enum QueryMsg {
     
+    #[returns(PairInfo)]
+    Pair {},
     /// Returns contract configuration settings in a custom [`ConfigResponse`] structure.
     #[returns(ConfigResponse)]
     Config {},
