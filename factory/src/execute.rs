@@ -23,7 +23,7 @@ use cw721_base::Action;
 
 const CONTRACT_NAME: &str = "bluechip_factory";
 const CONTRACT_VERSION: &str = env!("CARGO_PKG_VERSION");
-const BURN_ADDRESS: &str = "cosmos1dead000000000000000000000000000000dead";
+const BURN_ADDRESS: &str = "cosmos1qqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqnrql8a";
 pub const INSTANTIATE_TOKEN_REPLY_ID: u64 = 1;
 pub const INSTANTIATE_NFT_REPLY_ID: u64 = 3;
 pub const INSTANTIATE_POOL_REPLY_ID: u64 = 2;
