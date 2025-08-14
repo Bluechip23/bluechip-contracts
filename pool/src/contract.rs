@@ -1595,6 +1595,7 @@ pub fn execute_add_to_position(
     liquidity_position.fee_growth_inside_0_last = pool_fee_state.fee_growth_global_0;
     liquidity_position.fee_growth_inside_1_last = pool_fee_state.fee_growth_global_1;
     liquidity_position.last_fee_collection = env.block.time.seconds();
+    liquidity_position.fee_multiplier = calculate_fee_multiplier(liquidity_position.liquidity);
 
     // 8. Update config state (just total liquidity)
     pool_state.total_liquidity += additional_liquidity;
@@ -1605,7 +1606,6 @@ pub fn execute_add_to_position(
 
     update_price_accumulator(&mut pool_state, env.block.time.seconds())?;
     POOL_STATE.save(deps.storage, &pool_state)?;
-
     // 9. Save updated position
     LIQUIDITY_POSITIONS.save(deps.storage, &position_id, &liquidity_position)?;
 
