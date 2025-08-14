@@ -12,6 +12,12 @@ pub enum ContractError {
     #[error("Unauthorized")]
     Unauthorized {},
 
+    #[error("The Factory address used is not permitted to create a pool")]
+    InvalidFactory {},
+
+    #[error("Invalid threshold parameters: {msg}")]
+    InvalidThresholdParams { msg: String },
+
     #[error("Reentrancy detected")]
     ReentrancyGuard {},
 

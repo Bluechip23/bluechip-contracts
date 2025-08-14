@@ -19,4 +19,19 @@ pub enum ContractError {
 
     #[error("Wrong configuration")]
     WrongConfiguration {},
+
+    #[error("Contract Address Can Not Be Found")]
+    ContractAddressNotFound {},
+
+     #[error("Contract Failed Creating Token {}", pool_id)]
+    TokenCreationFailed {
+        pool_id: u64,
+        reason: String,
+    },
+
+    #[error("Contract Failed Creating  {}", id)]
+    UnknownReplyId {
+        id: u64,
+    }
+
 }

@@ -34,8 +34,7 @@ pub enum ExecuteMsg {
     Commit {
         asset: Asset,
         amount: Uint128,
-        belief_price: Option<Decimal>, // Add these
-        max_spread: Option<Decimal>,
+        deadline: Option<Timestamp>,
     },
     DepositLiquidity {
         amount0: Uint128,
@@ -48,11 +47,15 @@ pub enum ExecuteMsg {
     AddToPosition {
         position_id: String,
         amount0: Uint128, // native token amount
-        amount1: Uint128, // cw20 token amount
+        amount1: Uint128,
+        min_amount0: Option<Uint128>,
+        min_amount1: Option<Uint128>,
+        deadline: Option<Timestamp>,
     },
     RemovePartialLiquidity {
         position_id: String,
-        liquidity_to_remove: Uint128, // Specific amount of liquidity to remove
+        liquidity_to_remove: Uint128,
+        deadline: Option<Timestamp> // Specific amount of liquidity to remove
     },
     RemovePartialLiquidityByPercent {
         position_id: String,
@@ -60,6 +63,9 @@ pub enum ExecuteMsg {
     },
     RemoveLiquidity {
         position_id: String,
+        deadline: Option<Timestamp>,
+        min_amount0: Option<Uint128>,
+        min_amount1: Option<Uint128>,
     },
 }
 
@@ -315,8 +321,8 @@ pub struct PositionResponse {
     pub position_id: String,
     pub liquidity: Uint128,
     pub owner: Addr,
-    pub fee_growth_inside_0_last: Decimal,  // What fee_growth_global_0 was when position last collected
-    pub fee_growth_inside_1_last: Decimal,  // What fee_growth_global_1 was when position last collected
+    pub fee_growth_inside_0_last: Decimal, // What fee_growth_global_0 was when position last collected
+    pub fee_growth_inside_1_last: Decimal, // What fee_growth_global_1 was when position last collected
     pub created_at: u64,
     pub last_fee_collection: u64,
     pub unclaimed_fees_0: Uint128, // Calculate if needed

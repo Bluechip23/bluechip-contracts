@@ -1,6 +1,6 @@
 use crate::pair::PairInstantiateMsg;
 use cosmwasm_schema::cw_serde;
-use cosmwasm_std::{Addr, Decimal, Uint128};
+use cosmwasm_std::{Addr, Decimal, Timestamp, Uint128};
 use cw_storage_plus::{Item, Map};
 
 pub const CONFIG: Item<Config> = Item::new("config");
@@ -12,6 +12,7 @@ pub const TEMPNFTADDR: Item<Addr> = Item::new("temp_nft_addr");
 pub const SUBSCRIBE: Map<&str, SubscribeInfo> = Map::new("subscription_info");
 pub const NEXT_POOL_ID: Item<u64> = Item::new("next_pool_id");
 pub const POOLS_BY_ID: Map<u64, SubscribeInfo> = Map::new("pools_by_id");
+pub const CREATION_STATES: Map<u64, CreationState> = Map::new("creation_states");
 
 #[cw_serde]
 pub struct Config {
@@ -34,4 +35,28 @@ pub struct SubscribeInfo {
     pub creator: Addr,
     pub token_addr: Addr,
     pub pool_addr: Addr,
+}
+
+
+#[cw_serde]
+pub struct CreationState {
+    pub pool_id: u64,
+    pub creator: Addr,
+    pub token_address: Option<Addr>,
+    pub nft_address: Option<Addr>,
+    pub pool_address: Option<Addr>,
+    pub creation_time: Timestamp,
+    pub status: CreationStatus,
+    pub retry_count: u8, // Track retries
+}
+
+#[cw_serde]
+pub enum CreationStatus {
+    Started,
+    TokenCreated,
+    NftCreated,
+    PoolCreated,
+    Completed,
+    Failed,
+    CleaningUp,
 }

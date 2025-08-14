@@ -58,7 +58,7 @@ pub struct TokenMetadata {
 /// ## Description
 /// Stores the config struct at the given key
 pub const USD_RAISED: Item<Uint128> = Item::new("usd_raised");
-
+pub const MAX_ORACLE_AGE: u64 = 300;
 pub const FEEINFO: Item<FeeInfo> = Item::new("fee_info");
 pub const COMMITSTATUS: Item<Uint128> = Item::new("commit_status");
 pub const NATIVE_RAISED: Item<Uint128> = Item::new("native_raised");
@@ -67,6 +67,7 @@ pub const THRESHOLD_HIT: Item<bool> = Item::new("threshold_hit");
 pub const COMMIT_LEDGER: cw_storage_plus::Map<&Addr, Uint128> =
     cw_storage_plus::Map::new("commit_usd");
 pub const SUB_INFO: Map<&Addr, Subscription> = Map::new("sub_info");
+pub const EXPECTED_FACTORY: Item<ExpectedFactory> = Item::new("expected_factory");
 pub const USER_LAST_COMMIT: Map<&Addr, u64> = Map::new("user_last_commit");
 pub const POOL_INFO: Item<PoolInfo> = Item::new("pool_info");
 pub const POOL_STATE: Item<PoolState> = Item::new("pool_state");
@@ -110,6 +111,11 @@ pub struct PoolFeeState {
 }
 
 #[cw_serde]
+pub struct ExpectedFactory {
+    pub expected_factory_address: Addr,
+}
+
+#[cw_serde]
 pub struct PoolSpecs {
     pub subscription_period: u64,
     pub lp_fee: Decimal,
@@ -137,11 +143,7 @@ pub struct PairInfo {
     /// The pool type (xyk, stableswap etc) available in [`PairType`]
     pub pair_type: PairType,
 }
-#[cw_serde]
-pub struct CachedOracleRate {
-    pub rate: Uint128,  // Rate in micro units (1 NATIVE = rate USD)
-    pub timestamp: u64, // Block timestamp when cached
-}
+
 #[cw_serde]
 pub struct OracleInfo {
     pub oracle_addr: Addr,
@@ -174,6 +176,7 @@ pub struct Position {
     // Timestamps for better tracking
     pub created_at: u64,
     pub last_fee_collection: u64,
+    pub fee_multiplier: Decimal,
 }
 
 impl PairInfo {

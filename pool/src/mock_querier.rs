@@ -3,15 +3,13 @@
 use crate::oracle::{PriceResponse, PythQueryMsg};
 use cosmwasm_std::testing::{MockApi, MockQuerier, MockStorage, MOCK_CONTRACT_ADDR};
 use cosmwasm_std::{
-
-    from_json, to_json_binary, Addr, Coin, Decimal, Empty, OwnedDeps, Querier,
-
-    QuerierResult, QueryRequest, SystemError, SystemResult, Uint128, WasmQuery, QuerierWrapper,
+    from_json, to_json_binary, Addr, Coin, Decimal, Empty, OwnedDeps, Querier, QuerierResult,
+    QuerierWrapper, QueryRequest, SystemError, SystemResult, Uint128, WasmQuery,
 };
-use std::collections::HashMap;
 use cw20::{BalanceResponse, Cw20QueryMsg, TokenInfoResponse};
+use std::collections::HashMap;
 
-use crate::msg::{FeeInfo, QueryMsg, PoolResponse, FeeInfoResponse};
+use crate::msg::{FeeInfo, FeeInfoResponse, PoolResponse, QueryMsg};
 
 /// mock_dependencies is a drop-in replacement for cosmwasm_std::testing::mock_dependencies.
 /// This uses the BETFI CustomQuerier.
@@ -114,45 +112,60 @@ impl WasmMockQuerier {
                         let bin = to_json_binary(&resp).unwrap();
                         return SystemResult::Ok(cosmwasm_std::ContractResult::Ok(bin));
                     }
-                    panic!("Unexpected query to factory: {}", String::from_utf8_lossy(msg));
+                    panic!(
+                        "Unexpected query to factory: {}",
+                        String::from_utf8_lossy(msg)
+                    );
                 }
 
                 // 2) pool reserves
-                if let Ok(QueryMsg::Pool {}) = from_json(&msg) {
+                if let Ok(QueryMsg::PoolInfo {}) = from_json(&msg) {
                     // native balance from bank
                     let native = QuerierWrapper::<Empty>::new(&self.base)
                         .query_balance(contract_addr.clone(), "ubluechip".to_string())
                         .unwrap();
                     // cw20 balance via smart query
-                  let wrapper = QuerierWrapper::<Empty>::new(&self.base);
-                  let raw: BalanceResponse = wrapper
-                        .query_wasm_smart(contract_addr.clone(),&Cw20QueryMsg::Balance { address: contract_addr.clone() },)
+                    let wrapper = QuerierWrapper::<Empty>::new(&self.base);
+                    let raw: BalanceResponse = wrapper
+                        .query_wasm_smart(
+                            contract_addr.clone(),
+                            &Cw20QueryMsg::Balance {
+                                address: contract_addr.clone(),
+                            },
+                        )
                         .unwrap();
-                        let cw20_amount = raw.balance;
+                    let cw20_amount = raw.balance;
                     let resp = PoolResponse {
                         assets: [
                             crate::asset::native_asset("ubluechip".to_string(), native.amount),
-                            crate::asset::token_asset(Addr::unchecked(contract_addr.clone()), cw20_amount),
+                            crate::asset::token_asset(
+                                Addr::unchecked(contract_addr.clone()),
+                                cw20_amount,
+                            ),
                         ],
                     };
                     let bin = to_json_binary(&resp).unwrap();
                     return SystemResult::Ok(cosmwasm_std::ContractResult::Ok(bin));
-                }
-            else if contract_addr == "oracle0000" {
-                  match from_json(&msg).unwrap() {
-                    PythQueryMsg::GetPrice { price_id: _ } => {
-                      let resp = PriceResponse {
-                        // e.g. 1.00 USD == 100_000_000 (8 decimals)
-                        price: Uint128::new(100_000_000),
-                      };
-                     return SystemResult::Ok(cosmwasm_std::ContractResult::Ok(to_json_binary(&resp).unwrap()));
+                } else if contract_addr == "oracle0000" {
+                    match from_json(&msg).unwrap() {
+                        PythQueryMsg::GetPrice { price_id: _ } => {
+                            let resp = PriceResponse {
+                                price: 100_000_000,
+                                conf: Uint128::new(100_000),      
+                                expo: -8,        
+                                publish_time: 1234567890,
+                            };
+                            return SystemResult::Ok(cosmwasm_std::ContractResult::Ok(
+                                to_json_binary(&resp).unwrap(),
+                            ));
+                        }
                     }
-                  }
                 }
                 // 3) CW20 canonical queries
                 match from_json(&msg).unwrap() {
                     Cw20QueryMsg::TokenInfo {} => {
-                        let supply = self.token_querier
+                        let supply = self
+                            .token_querier
                             .balances
                             .get(contract_addr)
                             .map(|m| m.values().copied().sum())
@@ -167,7 +180,8 @@ impl WasmMockQuerier {
                         SystemResult::Ok(cosmwasm_std::ContractResult::Ok(bin))
                     }
                     Cw20QueryMsg::Balance { address } => {
-                        let bal = self.token_querier
+                        let bal = self
+                            .token_querier
                             .balances
                             .get(contract_addr)
                             .and_then(|m| m.get(&address))
@@ -191,6 +205,3 @@ impl WasmMockQuerier {
         }
     }
 }
-
-
-
