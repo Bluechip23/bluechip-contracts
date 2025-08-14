@@ -2334,7 +2334,6 @@ pub fn migrate(deps: DepsMut, _env: Env, _msg: MigrateMsg) -> Result<Response, C
             previous_contract: version.contract,
         });
     }
-
     Ok(Response::new()
         .add_attribute("previous_contract_name", &version.contract)
         .add_attribute("previous_contract_version", &version.version)
