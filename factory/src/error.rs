@@ -26,6 +26,7 @@ pub enum ContractError {
      #[error("Contract Failed Creating Token {}", pool_id)]
     TokenCreationFailed {
         pool_id: u64,
+        reason: String,
     },
 
     #[error("Contract Failed Creating  {}", id)]

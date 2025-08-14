@@ -278,25 +278,29 @@ fn create_pool_msg(token_name: &str) -> ExecuteMsg {
     }
 }
 
-fn simulate_complete_reply_chain(deps: &mut OwnedDeps<MockStorage, MockApi, WasmMockQuerier>, env: Env, pool_id: u64) {
+fn simulate_complete_reply_chain(
+    deps: &mut OwnedDeps<MockStorage, MockApi, WasmMockQuerier>,
+    env: Env,
+    pool_id: u64,
+) {
     // Token reply
     let token_reply = create_instantiate_reply(
-        INSTANTIATE_TOKEN_REPLY_ID, 
-        &format!("token_address_{}", pool_id)
+        INSTANTIATE_TOKEN_REPLY_ID,
+        &format!("token_address_{}", pool_id),
     );
     reply(deps.as_mut(), env.clone(), token_reply).unwrap();
 
-    // NFT reply  
+    // NFT reply
     let nft_reply = create_instantiate_reply(
         INSTANTIATE_NFT_REPLY_ID,
-        &format!("nft_address_{}", pool_id)
+        &format!("nft_address_{}", pool_id),
     );
     reply(deps.as_mut(), env.clone(), nft_reply).unwrap();
 
     // Pool reply
     let pool_reply = create_instantiate_reply(
         INSTANTIATE_POOL_REPLY_ID,
-        &format!("pool_address_{}", pool_id)
+        &format!("pool_address_{}", pool_id),
     );
     reply(deps.as_mut(), env.clone(), pool_reply).unwrap();
 }
@@ -348,11 +352,16 @@ fn test_multiple_pool_creation() {
         let create_msg = create_pool_msg(&format!("Token{}", expected_id));
         let info = mock_info(ADMIN, &[]);
         let res = execute(deps.as_mut(), env.clone(), info, create_msg).unwrap();
-
+        assert!(//this fails
+            res.attributes
+                .iter()
+                .any(|attr| attr.key == "pool_id" && attr.value == expected_id.to_string()),
+            "Response should contain pool_id attribute"
+        );
         // Verify pool ID was set correctly in TEMP storage
-        let pool_id = TEMPPOOLID.load(&deps.storage).unwrap();
+        let pool_id = TEMPPOOLID.load(&deps.storage).unwrap(); //this does not
         assert_eq!(pool_id, expected_id);
-        
+
         // SET UP CREATION STATE - This is what's missing!
         let creator = TEMPCREATOR.load(&deps.storage).unwrap();
         let creation_state = CreationState {
@@ -365,14 +374,16 @@ fn test_multiple_pool_creation() {
             status: CreationStatus::Started,
             retry_count: 0,
         };
-        CREATION_STATES.save(deps.as_mut().storage, pool_id, &creation_state).unwrap();
+        CREATION_STATES
+            .save(deps.as_mut().storage, pool_id, &creation_state)
+            .unwrap();
 
         // Simulate complete reply chain
         simulate_complete_reply_chain(&mut deps, env.clone(), expected_id);
 
         // Verify next pool ID incremented
         assert_eq!(NEXT_POOL_ID.load(&deps.storage).unwrap(), expected_id + 1);
-        
+
         // Verify creation state shows completed
         let final_state = CREATION_STATES.load(&deps.storage, pool_id).unwrap();
         assert_eq!(final_state.status, CreationStatus::Completed);
@@ -774,8 +785,7 @@ fn test_reply_handling() {
 
     let res = reply(deps.as_mut(), env.clone(), reply_msg).unwrap();
 
-    
-    assert_eq!(res.attributes.len(), 3); 
+    assert_eq!(res.attributes.len(), 3);
     assert_eq!(res.attributes[0], ("action", "token_created_successfully")); // Updated message
     assert_eq!(res.attributes[1], ("token_address", contract_addr));
     assert_eq!(res.attributes[2], ("pool_id", "1"));

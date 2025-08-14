@@ -58,7 +58,7 @@ pub struct TokenMetadata {
 /// ## Description
 /// Stores the config struct at the given key
 pub const USD_RAISED: Item<Uint128> = Item::new("usd_raised");
-
+pub const MAX_ORACLE_AGE: u64 = 300;
 pub const FEEINFO: Item<FeeInfo> = Item::new("fee_info");
 pub const COMMITSTATUS: Item<Uint128> = Item::new("commit_status");
 pub const NATIVE_RAISED: Item<Uint128> = Item::new("native_raised");
@@ -143,11 +143,7 @@ pub struct PairInfo {
     /// The pool type (xyk, stableswap etc) available in [`PairType`]
     pub pair_type: PairType,
 }
-#[cw_serde]
-pub struct CachedOracleRate {
-    pub rate: Uint128,  // Rate in micro units (1 NATIVE = rate USD)
-    pub timestamp: u64, // Block timestamp when cached
-}
+
 #[cw_serde]
 pub struct OracleInfo {
     pub oracle_addr: Addr,

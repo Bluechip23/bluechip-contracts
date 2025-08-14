@@ -33,13 +33,13 @@ fn mock_dependencies_with_balance(balances: &[Coin]) -> OwnedDeps<MockStorage, M
 }
     
     // Removed as_ref: OwnedDeps expects owned types, not references.
-fn with_oracle_price(deps: &mut OwnedDeps<MockStorage, MockApi, MockQuerier>, price: Uint128) {
+fn with_oracle_price(deps: &mut OwnedDeps<MockStorage, MockApi, MockQuerier>, price: i64, publish_time: u64, expo: i32, conf: Uint128 ) {
     deps.querier.update_wasm(move |query| {
         match query {
             WasmQuery::Smart { contract_addr, msg } => {
                 if contract_addr == "oracle_contract" {
                     // Return the hardcoded price
-                    let response = PriceResponse { price };
+                    let response = PriceResponse { price, publish_time, expo, conf };
                     SystemResult::Ok(ContractResult::Ok(
                         to_json_binary(&response).unwrap()
                     ))
@@ -69,7 +69,8 @@ fn test_commit_pre_threshold_basic() {
     let commit_amount = Uint128::new(1_000_000_000); // 1k bluechip
     
     // Mock oracle response for $1 per bluechip
-    with_oracle_price(&mut deps, Uint128::new(100_000_000));// $1 with 8 decimals
+    with_oracle_price(&mut deps,  100_000_000, 10000000000000, -8, Uint128::new(100_000),);// $1 with 8 decimals
+
     
     let info = mock_info("user1", &[Coin {
         denom: "stake".to_string(),
@@ -123,7 +124,8 @@ fn test_commit_crosses_threshold() {
     let commit_amount = Uint128::new(200_000_000); // 200 bluechip = $200
     
     // Mock oracle response
-    with_oracle_price(&mut deps, Uint128::new(100_000_000)); // $1
+        with_oracle_price(&mut deps,  100_000_000, 10000000000000, -8, Uint128::new(100_000),);// $1 with 8 decimals
+// $1
     
     let info = mock_info("whale", &[Coin {
         denom: "stake".to_string(),
@@ -165,7 +167,9 @@ fn test_commit_post_threshold_swap() {
     let commit_amount = Uint128::new(100_000_000); // 100 bluechip
     
     // Mock oracle response
-    with_oracle_price(&mut deps, Uint128::new(100_000_000)); // $1
+    with_oracle_price(&mut deps,  100_000_000, 10000000000000, -8, Uint128::new(100_000),);// $1 with 8 decimals
+// $1 with 8 decimals
+ // $1
     
     let info = mock_info("subscriber", &[Coin {
         denom: "stake".to_string(),
@@ -276,7 +280,9 @@ fn test_commit_rate_limiting() {
         amount: Uint128::new(1_000_000),
     }]);
     
-    with_oracle_price(&mut deps, Uint128::new(100_000_000));
+    with_oracle_price(&mut deps,  100_000_000, 10000000000000, -8, Uint128::new(100_000),);// $1 with 8 decimals
+
+
     
     let msg = ExecuteMsg::Commit {
         asset: Asset {
@@ -431,7 +437,10 @@ fn test_commit_threshold_overshoot_split() {
             WasmQuery::Smart { contract_addr, msg } => {
                 if contract_addr == "oracle_contract" {
                     let response = PriceResponse {
-                        price: Uint128::new(100_000_000), // $1 with 8 decimals
+                       price: 100_000_000,// $1 with 8 decimals
+                       conf: Uint128::new(100_000),      
+                       expo: -8, //so we can check the right amount of decimals.
+                       publish_time: 1000000000000, //this value is to small so it was failing. 
                     };
                     SystemResult::Ok(ContractResult::Ok(
                         to_json_binary(&response).unwrap()
@@ -565,7 +574,10 @@ fn test_commit_exact_threshold() {
             WasmQuery::Smart { contract_addr, msg } => {
                 if contract_addr == "oracle_contract" {
                     let response = PriceResponse {
-                        price: Uint128::new(100_000_000), // $1
+                        price: 100_000_000,
+                        conf: Uint128::new(100_000),      
+                        expo: -8,        
+                        publish_time: 1000000000000,
                     };
                     SystemResult::Ok(ContractResult::Ok(
                         to_json_binary(&response).unwrap()
@@ -1643,14 +1655,17 @@ pub fn setup_multiple_positions(
 
 /// Mock dependencies with custom querier for oracle prices
 pub fn mock_dependencies_with_oracle(
-    oracle_price: Uint128,
+    oracle_price: i64,
+    publish_time: u64,
+    expo: i32,
+    conf: Uint128
 ) -> OwnedDeps<MockStorage, MockApi, MockQuerier> {
     let mut deps = mock_dependencies();
 
     deps.querier.update_wasm(move |query| match query {
         WasmQuery::Smart { contract_addr, msg: _ } => {
             if contract_addr == "oracle_contract" {
-                let response = PriceResponse { price: oracle_price };
+                let response = PriceResponse { price: oracle_price, publish_time: publish_time, expo: expo, conf: conf };
                 SystemResult::Ok(ContractResult::Ok(to_json_binary(&response).unwrap()))
             } else {
                 SystemResult::Err(cosmwasm_std::SystemError::InvalidRequest {

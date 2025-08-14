@@ -135,6 +135,7 @@ fn execute_create(
     Ok(Response::new()
         .add_attribute("action", "create")
         .add_attribute("creator", sender.to_string())
+        .add_attribute("pool_id", pool_id.to_string())
         .add_submessages(sub_msg))
 }
 
@@ -196,7 +197,10 @@ fn handle_token_reply(deps: DepsMut, env: Env, msg: Reply) -> Result<Response, C
             CREATION_STATES.save(deps.storage, pool_id, &creation_state)?;
             cleanup_temp_state(deps.storage)?;
 
-            Err(ContractError::TokenCreationFailed { pool_id })
+            Err(ContractError::TokenCreationFailed {
+                pool_id,
+                reason: err,
+            })
         }
     }
 }
@@ -293,7 +297,7 @@ fn handle_nft_reply(deps: DepsMut, env: Env, msg: Reply) -> Result<Response, Con
     }
 }
 
-fn handle_pool_reply(deps: DepsMut, env: Env, msg: Reply) -> Result<Response, ContractError> {
+fn handle_pool_reply(deps: DepsMut, _env: Env, msg: Reply) -> Result<Response, ContractError> {
     let pool_id = TEMPPOOLID.load(deps.storage)?;
     let mut creation_state = CREATION_STATES.load(deps.storage, pool_id)?;
 
@@ -379,11 +383,10 @@ fn cleanup_temp_state(storage: &mut dyn Storage) -> Result<(), ContractError> {
     Ok(())
 }
 
-fn create_cleanup_messages(
-    creation_state: &CreationState,
-) -> Result<Vec<SubMsg>, ContractError> {  // Changed return type to Vec<SubMsg>
+fn create_cleanup_messages(creation_state: &CreationState) -> Result<Vec<SubMsg>, ContractError> {
+    // Changed return type to Vec<SubMsg>
     let mut messages = vec![];
-    
+
     // If token was created, disable it
     if let Some(token_addr) = &creation_state.token_address {
         let disable_token_msg = WasmMsg::Execute {
@@ -393,12 +396,12 @@ fn create_cleanup_messages(
             })?,
             funds: vec![],
         };
-        
+
         // Create SubMsg that will trigger reply handler
         let sub_msg: SubMsg = SubMsg::reply_on_error(disable_token_msg, CLEANUP_TOKEN_REPLY_ID);
         messages.push(sub_msg);
     }
-    
+
     // If NFT was created, disable it
     if let Some(nft_addr) = &creation_state.nft_address {
         let disable_nft_msg = WasmMsg::Execute {
@@ -407,16 +410,16 @@ fn create_cleanup_messages(
                 Action::TransferOwnership {
                     new_owner: BURN_ADDRESS.to_string(),
                     expiry: None,
-                }
+                },
             ))?,
             funds: vec![],
         };
-        
+
         // Create SubMsg that will trigger reply handler
         let sub_msg: SubMsg = SubMsg::reply_on_error(disable_nft_msg, CLEANUP_NFT_REPLY_ID);
         messages.push(sub_msg);
     }
-    
+
     Ok(messages)
 }
 
@@ -461,9 +464,7 @@ fn extract_contract_address(result: &SubMsgResponse) -> Result<Addr, ContractErr
                 .map(|attr| attr.value.clone())
         })
         .ok_or_else(|| ContractError::ContractAddressNotFound {})
-        .and_then(|addr_str| {
-            Ok(Addr::unchecked(addr_str))
-        })
+        .and_then(|addr_str| Ok(Addr::unchecked(addr_str)))
 }
 
 fn create_ownership_transfer_messages(

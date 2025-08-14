@@ -8,10 +8,34 @@ use crate::msg::{
     PositionResponse, PositionsResponse, QueryMsg, ReverseSimulationResponse, SimulationResponse,
     SubscriberInfo,
 };
-use crate::oracle::{PriceResponse, PythQueryMsg};
+use crate::oracle::{OracleData, PriceResponse, PythQueryMsg};
 use crate::response::MsgInstantiateContractResponse;
 use crate::state::{
-    CommitInfo, ExpectedFactory, OracleInfo, PairInfo, PoolFeeState, PoolInfo, PoolSpecs, ThresholdPayout, COMMITSTATUS, COMMIT_CONFIG, COMMIT_LEDGER, EXPECTED_FACTORY, FEEINFO, NATIVE_RAISED, ORACLE_INFO, POOL_FEE_STATE, POOL_INFO, POOL_SPECS, POOL_STATE, REENTRANCY_GUARD, THRESHOLD_HIT, THRESHOLD_PAYOUT, USD_RAISED, USER_LAST_COMMIT //ACCUMULATED_BLUECHIP_FEES, ACCUMULATED_CREATOR_FEES,
+    CommitInfo,
+    ExpectedFactory,
+    OracleInfo,
+    PairInfo,
+    PoolFeeState,
+    PoolInfo,
+    PoolSpecs,
+    ThresholdPayout,
+    COMMITSTATUS,
+    COMMIT_CONFIG,
+    COMMIT_LEDGER,
+    EXPECTED_FACTORY,
+    FEEINFO,
+    MAX_ORACLE_AGE,
+    NATIVE_RAISED,
+    ORACLE_INFO,
+    POOL_FEE_STATE,
+    POOL_INFO,
+    POOL_SPECS,
+    POOL_STATE,
+    REENTRANCY_GUARD,
+    THRESHOLD_HIT,
+    THRESHOLD_PAYOUT,
+    USD_RAISED,
+    USER_LAST_COMMIT, //ACCUMULATED_BLUECHIP_FEES, ACCUMULATED_CREATOR_FEES,
 };
 use crate::state::{
     PoolState, Position, Subscription, TokenMetadata, LIQUIDITY_POSITIONS, NEXT_POSITION_ID,
@@ -62,8 +86,7 @@ pub fn instantiate(
     info: MessageInfo,
     msg: PoolInstantiateMsg,
 ) -> Result<Response, ContractError> {
-
-   let cfg = ExpectedFactory {
+    let cfg = ExpectedFactory {
         expected_factory_address: msg.factory_addr.clone(),
     };
     EXPECTED_FACTORY.save(deps.storage, &cfg)?;
@@ -93,8 +116,8 @@ pub fn instantiate(
         validate_pool_init_params(&params)?;
         params
     } else {
-        return Err(ContractError::InvalidThresholdParams { 
-            msg: format!("Your params could not be validated during pool instantiation.") 
+        return Err(ContractError::InvalidThresholdParams {
+            msg: format!("Your params could not be validated during pool instantiation."),
         });
     };
     set_contract_version(deps.storage, CONTRACT_NAME, CONTRACT_VERSION)?;
@@ -756,6 +779,14 @@ pub fn execute_commit_logic(
         return Err(ContractError::ZeroAmount {});
     }
 
+    let oracle_data = get_and_validate_oracle_price(
+        &deps.querier,
+        &oracle_info.oracle_addr,
+        &oracle_info.oracle_symbol,
+        env.block.time.seconds(),
+    )?;
+    let usd_value = native_to_usd(oracle_data.price, asset.amount, oracle_data.expo)?;
+
     match asset.info {
         AssetInfo::NativeToken { denom } if denom == "stake" => {
             // Verify funds were actually sent
@@ -769,12 +800,6 @@ pub fn execute_commit_logic(
                 return Err(ContractError::MismatchAmount {});
             }
 
-            let usd_value = native_to_usd(
-                &deps.querier,
-                &oracle_info.oracle_addr,
-                &oracle_info.oracle_symbol,
-                asset.amount,
-            )?;
             // Payment validation
             // Initialize messages vector for transfers
             let mut messages: Vec<CosmosMsg> = Vec::new();
@@ -833,12 +858,7 @@ pub fn execute_commit_logic(
                 if usd_value > usd_to_threshold && usd_to_threshold > Uint128::zero() {
                     // SPLIT COMMIT SCENARIO
                     // Calculate the native amount that corresponds to reaching exactly $25k
-                    let native_to_threshold = usd_to_native(
-                        &deps.querier,
-                        &oracle_info.oracle_addr,
-                        &oracle_info.oracle_symbol,
-                        usd_to_threshold,
-                    )?;
+                    let native_to_threshold = usd_to_native(usd_to_threshold, oracle_data.price)?;
 
                     // Calculate the excess that will be swapped
                     let native_excess = asset.amount.checked_sub(native_to_threshold)?;
@@ -1165,37 +1185,42 @@ pub fn execute_commit_logic(
 }
 
 fn native_to_usd(
-    querier: &QuerierWrapper,
-    oracle_addr: &Addr,
-    symbol: &str,
-    native_amount: Uint128, // micro-native
+    cached_price: Uint128,
+    native_amount: Uint128,
+    expo: i32, // micro-native
 ) -> StdResult<Uint128> {
-    // 1. query oracle
-    let resp: PriceResponse = querier
-        .query_wasm_smart(
-            oracle_addr.clone(),
-            &PythQueryMsg::GetPrice {
-                price_id: symbol.into(),
-            },
-        )
-        .map_err(|e| StdError::generic_err(format!("Oracle query failed: {}", e)))?;
-    let price_8dec = resp.price; // e.g. 1.25 USD = 125_000_000
-
+    if expo != -8 {
+        return Err(StdError::generic_err(format!(
+            "Unexpected price exponent: {}. Expected: -8",
+            expo
+        )));
+    }
     // 2. convert: (µnative × price) / 10^(8-6) = µUSD
-    let usd_micro_u256 =
-        (Uint256::from(native_amount) * Uint256::from(price_8dec)) / Uint256::from(100_000_000u128); // 10^(8-6) = 100
+    let usd_micro_u256 = (Uint256::from(native_amount) * Uint256::from(cached_price))
+        / Uint256::from(100_000_000u128); // 10^(8-6) = 100
 
     let usd_micro = Uint128::try_from(usd_micro_u256)?;
     Ok(usd_micro)
 }
 
 pub fn usd_to_native(
+    usd_amount: Uint128,
+    cached_price: Uint128, // micro-USD (6 decimals)
+) -> StdResult<Uint128> {
+    if cached_price.is_zero() {
+        return Err(StdError::generic_err("Invalid zero price"));
+    }
+    let native_micro_u256 =
+        (Uint256::from(usd_amount) * Uint256::from(100u128)) / Uint256::from(cached_price);
+    Uint128::try_from(native_micro_u256).map_err(|_| StdError::generic_err("Overflow"))
+}
+
+pub fn get_and_validate_oracle_price(
     querier: &QuerierWrapper,
     oracle_addr: &Addr,
     symbol: &str,
-    usd_amount: Uint128, // micro-USD (6 decimals)
-) -> StdResult<Uint128> {
-    // 1. Query oracle - same as native_to_usd
+    current_time: u64,
+) -> StdResult<OracleData> {
     let resp: PriceResponse = querier
         .query_wasm_smart(
             oracle_addr.clone(),
@@ -1204,20 +1229,24 @@ pub fn usd_to_native(
             },
         )
         .map_err(|e| StdError::generic_err(format!("Oracle query failed: {}", e)))?;
-    let price_8dec = resp.price; // e.g. 1.25 USD = 125_000_000
 
-    // 2. Reverse conversion: µnative = (µUSD × 10^2) / price
-    // If native_to_usd: µUSD = (µnative × price) / 100
-    // Then usd_to_native: µnative = (µUSD × 100) / price
+    // Staleness check - STANDARD PRACTICE
 
-    let native_micro_u256 =
-        (Uint256::from(usd_amount) * Uint256::from(100u128)) / Uint256::from(price_8dec);
+    if resp.price <= 0 {
+        return Err(StdError::generic_err(
+            "Invalid zero or negative price from oracle",
+        ));
+    }
 
-    let native_micro = Uint128::try_from(native_micro_u256)
-        .map_err(|_| StdError::generic_err("Overflow in USD to native conversion"))?;
-
-    Ok(native_micro)
+    if current_time.saturating_sub(resp.publish_time) > MAX_ORACLE_AGE {
+        return Err(StdError::generic_err("Oracle price too stale"));
+    }
+    Ok(OracleData {
+        price: Uint128::from(resp.price as u64),
+        expo: resp.expo,
+    })
 }
+
 //deposit liquidity in pool
 pub fn execute_deposit_liquidity(
     deps: DepsMut,
@@ -1941,7 +1970,7 @@ fn calc_liquidity_for_deposit(
     let pool_state = POOL_STATE.load(deps.storage)?;
     let current_reserve0 = pool_state.reserve0;
     let current_reserve1 = pool_state.reserve1;
-    
+
     if current_reserve0.is_zero() || current_reserve1.is_zero() {
         return Err(ContractError::InsufficientLiquidity {});
     }
@@ -1991,20 +2020,20 @@ fn calc_liquidity_for_deposit(
 /// * **x** is an object of type [`Uint128`]. This is the balance of asset\[\0] in the pool.
 ///
 /// * **y** is an object of type [`Uint128`]. This is the balance of asset\[\1] in the pool.
-/// 
+///
 fn integer_sqrt(value: Uint128) -> Uint128 {
     if value.is_zero() {
         return Uint128::zero();
     }
-    
+
     let mut x = value;
     let mut y = (value + Uint128::one()) / Uint128::new(2);
-    
+
     while y < x {
         x = y;
         y = (y + value / y) / Uint128::new(2);
     }
-    
+
     x
 }
 pub fn accumulate_prices(
@@ -2750,7 +2779,7 @@ fn query_positions(
         .range(deps.storage, start, None, Order::Ascending)
         .take(limit)
         .map(|item| {
-            let (position_id, position) = item?;
+            let (position_id, _position) = item?;
             query_position(deps, position_id)
         })
         .collect();
@@ -2779,7 +2808,7 @@ fn query_positions_by_owner(
         })
         .take(limit)
         .map(|item| {
-            let (position_id, position) = item?;
+            let (position_id, _position) = item?;
             query_position(deps, position_id)
         })
         .collect();
