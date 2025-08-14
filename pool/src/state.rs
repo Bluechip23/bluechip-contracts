@@ -176,6 +176,7 @@ pub struct Position {
     // Timestamps for better tracking
     pub created_at: u64,
     pub last_fee_collection: u64,
+    pub fee_multiplier: Decimal,
 }
 
 impl PairInfo {

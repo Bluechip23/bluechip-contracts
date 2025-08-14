@@ -1,4 +1,6 @@
 
+use std::str::FromStr;
+
 use cosmwasm_std::{
     testing::{mock_dependencies, mock_env, mock_info, MockApi, MockQuerier, MockStorage, MOCK_CONTRACT_ADDR}, 
     to_json_binary, Addr, BankMsg, Binary, Coin, ContractResult, CosmosMsg, Decimal, OwnedDeps, SystemError, 
@@ -7,7 +9,7 @@ use cosmwasm_std::{
 use cw20::Cw20ReceiveMsg;
 use cw721::OwnerOfResponse;
 use crate::{asset::PairType, 
-    contract::{execute, execute_add_to_position, execute_collect_fees, execute_deposit_liquidity, execute_remove_liquidity, execute_swap_cw20, instantiate, trigger_threshold_payout}, 
+    contract::{calculate_fee_multiplier, execute, execute_add_to_position, execute_collect_fees, execute_deposit_liquidity, execute_remove_liquidity, execute_swap_cw20, instantiate, trigger_threshold_payout}, 
     msg::{Cw20HookMsg, FeeInfo, PoolInstantiateMsg}, 
     oracle::PriceResponse, 
     state::{CommitInfo, OracleInfo, PoolFeeState, PoolInfo, PoolSpecs, PoolState, ThresholdPayout, COMMITSTATUS, 
@@ -20,11 +22,8 @@ use crate::state::{
 };
 use crate::error::ContractError;
 use crate::asset::{Asset, AssetInfo};
-
-// ============= COMMIT TESTS =============
-
-
-
+const OPTIMAL_LIQUIDITY: u128 = 1_000_000;
+const MIN_MULTIPLIER: &str = "0.1";
 fn mock_dependencies_with_balance(balances: &[Coin]) -> OwnedDeps<MockStorage, MockApi, MockQuerier> {
     let mut deps = mock_dependencies();
     // Give the contract some balance
@@ -107,6 +106,7 @@ fn test_commit_pre_threshold_basic() {
     let sub = SUB_INFO.load(&deps.storage, &user_addr).unwrap();
     assert_eq!(sub.total_paid_native, commit_amount);
     assert_eq!(sub.total_paid_usd, Uint128::new(1_000_000_000));
+    
 }
 
 #[test]
@@ -1631,6 +1631,7 @@ pub fn create_test_position(
         fee_growth_inside_1_last: Decimal::zero(),
         created_at: 1_600_000_000,
         last_fee_collection: 1_600_000_000,
+        fee_multiplier: Decimal::percent(1)
     };
     
     LIQUIDITY_POSITIONS.save(&mut deps.storage, &position_id.to_string(), &position).unwrap();
@@ -1641,3 +1642,265 @@ pub fn create_test_position(
         Ok(state)
     }).unwrap();
 }
+
+#[test]
+    fn test_zero_liquidity_gets_minimum_multiplier() {
+        let liquidity = Uint128::zero();
+        let multiplier = calculate_fee_multiplier(liquidity);
+        
+        assert_eq!(multiplier, Decimal::from_str(MIN_MULTIPLIER).unwrap());
+    }
+
+    #[test]
+    fn test_optimal_liquidity_gets_full_multiplier() {
+        let liquidity = Uint128::new(OPTIMAL_LIQUIDITY);
+        let multiplier = calculate_fee_multiplier(liquidity);
+        
+        assert_eq!(multiplier, Decimal::one());
+    }
+
+    #[test]
+    fn test_above_optimal_liquidity_still_gets_full_multiplier() {
+        // Test various amounts above optimal
+        let test_cases = vec![
+            OPTIMAL_LIQUIDITY + 1,
+            OPTIMAL_LIQUIDITY * 2,
+            OPTIMAL_LIQUIDITY * 10,
+            OPTIMAL_LIQUIDITY * 1000,
+        ];
+
+        for liquidity_amount in test_cases {
+            let liquidity = Uint128::new(liquidity_amount);
+            let multiplier = calculate_fee_multiplier(liquidity);
+            
+            assert_eq!(
+                multiplier, 
+                Decimal::one(),
+                "Liquidity {} should get 100% multiplier",
+                liquidity_amount
+            );
+        }
+    }
+
+      #[test]
+    fn test_linear_scaling_between_min_and_optimal() {
+        // Test 25% of optimal liquidity
+        let liquidity_25_percent = Uint128::new(OPTIMAL_LIQUIDITY / 4);
+        let multiplier_25 = calculate_fee_multiplier(liquidity_25_percent);
+        let expected_25 = Decimal::from_str("0.325").unwrap(); // 0.1 + (0.9 * 0.25)
+        assert_eq!(multiplier_25, expected_25);
+
+        // Test 50% of optimal liquidity
+        let liquidity_50_percent = Uint128::new(OPTIMAL_LIQUIDITY / 2);
+        let multiplier_50 = calculate_fee_multiplier(liquidity_50_percent);
+        let expected_50 = Decimal::from_str("0.55").unwrap(); // 0.1 + (0.9 * 0.5)
+        assert_eq!(multiplier_50, expected_50);
+
+        // Test 75% of optimal liquidity
+        let liquidity_75_percent = Uint128::new(OPTIMAL_LIQUIDITY * 3 / 4);
+        let multiplier_75 = calculate_fee_multiplier(liquidity_75_percent);
+        let expected_75 = Decimal::from_str("0.775").unwrap(); // 0.1 + (0.9 * 0.75)
+        assert_eq!(multiplier_75, expected_75);
+    }
+
+    #[test]
+    fn test_dust_positions_get_heavily_penalized() {
+        // Test tiny positions
+        let dust_positions = vec![
+            1u128,
+            10u128,
+            100u128,
+            1000u128,
+        ];
+
+        for dust_amount in dust_positions {
+            let liquidity = Uint128::new(dust_amount);
+            let multiplier = calculate_fee_multiplier(liquidity);
+            
+            // Calculate expected multiplier
+            let ratio = Decimal::from_ratio(dust_amount, OPTIMAL_LIQUIDITY);
+            let min_mult = Decimal::from_str(MIN_MULTIPLIER).unwrap();
+            let expected = min_mult + (Decimal::one() - min_mult) * ratio;
+            
+            assert_eq!(
+                multiplier, 
+                expected,
+                "Dust position {} should get correct multiplier",
+                dust_amount
+            );
+            
+            // Verify it's significantly less than 100%
+            assert!(
+                multiplier < Decimal::from_str("0.2").unwrap(),
+                "Dust position {} should get less than 20% multiplier",
+                dust_amount
+            );
+        }
+    }
+
+    #[test]
+    fn test_specific_multiplier_values() {
+        // Test specific values for documentation/reference
+        struct TestCase {
+            liquidity: u128,
+            expected_multiplier: &'static str,
+            description: &'static str,
+        }
+
+        let test_cases = vec![
+            TestCase {
+                liquidity: 0,
+                expected_multiplier: "0.1",
+                description: "Zero liquidity",
+            },
+            TestCase {
+                liquidity: 100_000,
+                expected_multiplier: "0.19",
+                description: "10% of optimal",
+            },
+            TestCase {
+                liquidity: 200_000,
+                expected_multiplier: "0.28",
+                description: "20% of optimal",
+            },
+            TestCase {
+                liquidity: 333_333,
+                expected_multiplier: "0.399999",
+                description: "~33% of optimal",
+            },
+            TestCase {
+                liquidity: 500_000,
+                expected_multiplier: "0.55",
+                description: "50% of optimal",
+            },
+            TestCase {
+                liquidity: 900_000,
+                expected_multiplier: "0.91",
+                description: "90% of optimal",
+            },
+            TestCase {
+                liquidity: 999_999,
+                expected_multiplier: "0.999999",
+                description: "Just below optimal",
+            },
+            TestCase {
+                liquidity: 1_000_000,
+                expected_multiplier: "1",
+                description: "Exactly optimal",
+            },
+            TestCase {
+                liquidity: 10_000_000,
+                expected_multiplier: "1",
+                description: "10x optimal",
+            },
+        ];
+
+        for test in test_cases {
+            let liquidity = Uint128::new(test.liquidity);
+            let multiplier = calculate_fee_multiplier(liquidity);
+            let expected = Decimal::from_str(test.expected_multiplier).unwrap();
+            
+            // Use approximate equality for floating point precision
+            let diff = if multiplier > expected {
+                multiplier - expected
+            } else {
+                expected - multiplier
+            };
+            
+            assert!(
+                diff < Decimal::from_str("0.000001").unwrap(),
+                "{}: Expected multiplier ~{}, got {}",
+                test.description,
+                test.expected_multiplier,
+                multiplier
+            );
+        }
+    }
+
+     #[test]
+    fn test_multiplier_monotonically_increases() {
+        // Ensure multiplier always increases with liquidity up to optimal
+        let mut prev_multiplier = calculate_fee_multiplier(Uint128::zero());
+        
+        for i in 1..=100 {
+            let liquidity = Uint128::new(OPTIMAL_LIQUIDITY * i / 100);
+            let multiplier = calculate_fee_multiplier(liquidity);
+            
+            assert!(
+                multiplier >= prev_multiplier,
+                "Multiplier should increase: {} -> {} at liquidity {}",
+                prev_multiplier,
+                multiplier,
+                liquidity
+            );
+            
+            prev_multiplier = multiplier;
+        }
+    }
+
+       #[test]
+    fn test_multiplier_bounds() {
+        // Test many random values to ensure bounds are respected
+        let test_values = vec![
+            0, 1, 42, 137, 1337, 9999, 
+            50_000, 123_456, 654_321, 999_999,
+            1_000_000, 1_000_001, 2_000_000, 10_000_000,
+            100_000_000, 1_000_000_000,
+        ];
+
+        let min_bound = Decimal::from_str(MIN_MULTIPLIER).unwrap();
+        let max_bound = Decimal::one();
+
+        for value in test_values {
+            let liquidity = Uint128::new(value);
+            let multiplier = calculate_fee_multiplier(liquidity);
+            
+            assert!(
+                multiplier >= min_bound,
+                "Multiplier {} should be >= {} for liquidity {}",
+                multiplier,
+                min_bound,
+                value
+            );
+            
+            assert!(
+                multiplier <= max_bound,
+                "Multiplier {} should be <= {} for liquidity {}",
+                multiplier,
+                max_bound,
+                value
+            );
+        }
+    }
+
+    #[test]
+    fn test_edge_cases_near_optimal() {
+        // Test values right around the optimal threshold
+        let edge_cases = vec![
+            (OPTIMAL_LIQUIDITY - 2, false),
+            (OPTIMAL_LIQUIDITY - 1, false),
+            (OPTIMAL_LIQUIDITY, true),
+            (OPTIMAL_LIQUIDITY + 1, true),
+            (OPTIMAL_LIQUIDITY + 2, true),
+        ];
+
+        for (liquidity_amount, should_be_full) in edge_cases {
+            let liquidity = Uint128::new(liquidity_amount);
+            let multiplier = calculate_fee_multiplier(liquidity);
+            
+            if should_be_full {
+                assert_eq!(
+                    multiplier,
+                    Decimal::one(),
+                    "Liquidity {} should get full multiplier",
+                    liquidity_amount
+                );
+            } else {
+                assert!(
+                    multiplier < Decimal::one(),
+                    "Liquidity {} should get less than full multiplier",
+                    liquidity_amount
+                );
+            }
+        }
+    }

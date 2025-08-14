@@ -142,6 +142,7 @@ pub fn instantiate(
         fee_growth_inside_1_last: Decimal::zero(),
         created_at: env.block.time.seconds(),
         last_fee_collection: env.block.time.seconds(),
+        fee_multiplier: Decimal::one()
     };
 
     let pool_specs = PoolSpecs {
@@ -384,7 +385,6 @@ pub fn reply(deps: DepsMut, _env: Env, msg: Reply) -> Result<Response, ContractE
                 return Err(StdError::generic_err(format!("submsg error: {err}")).into())
             }
         };
-
         let data: Binary = res
             .data
             .ok_or_else(|| StdError::not_found("instantiate data"))?;
@@ -1371,7 +1371,7 @@ pub fn execute_deposit_liquidity(
         funds: vec![],
     };
     messages.push(CosmosMsg::Wasm(mint_liquidity_nft));
-
+    let fee_multiplier = calculate_fee_multiplier(liquidity);
     // 8. Create and store the position with current fee growth
     let position = Position {
         liquidity,
@@ -1380,6 +1380,7 @@ pub fn execute_deposit_liquidity(
         fee_growth_inside_1_last: pool_fee_state.fee_growth_global_1,
         created_at: env.block.time.seconds(),
         last_fee_collection: env.block.time.seconds(),
+        fee_multiplier,
     };
 
     LIQUIDITY_POSITIONS.save(deps.storage, &position_id, &position)?;
@@ -1428,12 +1429,14 @@ pub fn execute_collect_fees(
         liquidity_position.liquidity,
         pool_fee_state.fee_growth_global_0,
         liquidity_position.fee_growth_inside_0_last,
+        liquidity_position.fee_multiplier
     );
 
     let fees_owed_1 = calculate_fees_owed(
         liquidity_position.liquidity,
         pool_fee_state.fee_growth_global_1,
         liquidity_position.fee_growth_inside_1_last,
+        liquidity_position.fee_multiplier
     );
 
     // 5. Update position's fee growth tracking
@@ -1529,12 +1532,14 @@ pub fn execute_add_to_position(
         liquidity_position.liquidity,
         pool_fee_state.fee_growth_global_0,
         liquidity_position.fee_growth_inside_0_last,
+        liquidity_position.fee_multiplier
     );
 
     let fees_owed_1 = calculate_fees_owed(
         liquidity_position.liquidity,
         pool_fee_state.fee_growth_global_1,
         liquidity_position.fee_growth_inside_1_last,
+        liquidity_position.fee_multiplier
     );
 
     // 6. Calculate new liquidity for the additional deposit
@@ -1713,12 +1718,14 @@ pub fn execute_remove_liquidity(
         liquidity_position.liquidity,
         pool_fee_state.fee_growth_global_0,
         liquidity_position.fee_growth_inside_0_last,
+        liquidity_position.fee_multiplier
     );
 
     let fees_owed_1 = calculate_fees_owed(
         liquidity_position.liquidity,
         pool_fee_state.fee_growth_global_1,
         liquidity_position.fee_growth_inside_1_last,
+        liquidity_position.fee_multiplier
     );
 
     // 7. Total amounts to send (principal + fees)
@@ -1838,12 +1845,14 @@ pub fn execute_remove_partial_liquidity(
         liquidity_to_remove,
         pool_fee_state.fee_growth_global_0,
         liquidity_position.fee_growth_inside_0_last,
+        liquidity_position.fee_multiplier
     );
 
     let fees_owed_1 = calculate_fees_owed(
         liquidity_to_remove,
         pool_fee_state.fee_growth_global_1,
         liquidity_position.fee_growth_inside_1_last,
+        liquidity_position.fee_multiplier
     );
 
     // 7. Calculate partial withdrawal amounts (principal only, not fees)
@@ -2403,13 +2412,29 @@ fn calculate_fees_owed(
     liquidity: Uint128,
     fee_growth_global: Decimal,
     fee_growth_last: Decimal,
+    fee_multiplier: Decimal
 ) -> Uint128 {
     if fee_growth_global >= fee_growth_last {
         let fee_growth_delta = fee_growth_global - fee_growth_last;
-        let earned = liquidity * fee_growth_delta;
-        earned
+        let earned_base = liquidity * fee_growth_delta;
+        let earned_adjusted = earned_base * fee_multiplier; // Apply multiplier
+        earned_adjusted
     } else {
         Uint128::zero()
+    }
+}
+
+pub fn calculate_fee_multiplier(liquidity: Uint128) -> Decimal {
+    pub const OPTIMAL_LIQUIDITY: Uint128 = Uint128::new(1_000_000); // Adjust based on your token decimals
+    pub const MIN_MULTIPLIER: &str = "0.1"; // 10% fees for tiny positions
+
+    if liquidity >= OPTIMAL_LIQUIDITY {
+        Decimal::one() // Full fees
+    } else {
+        // Linear scaling from 10% to 100%
+        let ratio = Decimal::from_ratio(liquidity, OPTIMAL_LIQUIDITY);
+        let min_mult = Decimal::from_str(MIN_MULTIPLIER).unwrap();
+        min_mult + (Decimal::one() - min_mult) * ratio
     }
 }
 
