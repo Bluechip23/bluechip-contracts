@@ -2,9 +2,7 @@
 use std::str::FromStr;
 
 use cosmwasm_std::{
-    testing::{mock_dependencies, mock_env, mock_info, MockApi, MockQuerier, MockStorage, MOCK_CONTRACT_ADDR}, 
-    to_json_binary, Addr, BankMsg, Binary, Coin, ContractResult, CosmosMsg, Decimal, OwnedDeps, SystemError, 
-    SystemResult, Timestamp, Uint128, WasmMsg, WasmQuery
+    testing::{mock_dependencies, mock_env, mock_info, MockApi, MockQuerier, MockStorage, MOCK_CONTRACT_ADDR}, to_json_binary, Addr, BankMsg, Binary, Coin, ContractResult, CosmosMsg, Decimal, Order, OwnedDeps, SystemError, SystemResult, Timestamp, Uint128, WasmMsg, WasmQuery
 };
 use cw20::Cw20ReceiveMsg;
 use cw721::OwnerOfResponse;
@@ -13,7 +11,7 @@ use crate::{asset::PairType,
     msg::{Cw20HookMsg, FeeInfo, PoolInstantiateMsg}, 
     oracle::PriceResponse, 
     state::{CommitInfo, OracleInfo, PoolFeeState, PoolInfo, PoolSpecs, PoolState, ThresholdPayout, COMMITSTATUS, 
-        COMMIT_CONFIG, FEEINFO, LIQUIDITY_POSITIONS, NATIVE_RAISED, ORACLE_INFO, POOL_INFO, POOL_SPECS, THRESHOLD_PAYOUT
+        COMMIT_CONFIG, FEEINFO, LIQUIDITY_POSITIONS, NATIVE_RAISED, ORACLE_INFO, POOL_INFO, POOL_SPECS, THRESHOLD_PAYOUT, THRESHOLD_PROCESSING
     }};
 use crate::msg::ExecuteMsg;
 use crate::state::{
@@ -113,21 +111,33 @@ fn test_commit_pre_threshold_basic() {
 
 #[test]
 fn test_commit_crosses_threshold() {
-      let mut deps = mock_dependencies_with_balance(&[Coin {
+    let mut deps = mock_dependencies_with_balance(&[Coin {
         denom: "stake".to_string(),
-        amount: Uint128::new(10_000_000_000), // 10k tokens - enough for all transfers
+        amount: Uint128::new(10_000_000_000), // 10k tokens
     }]);
+    
     setup_pool_storage(&mut deps);
+    
+    // CRITICAL: Initialize the new threshold processing flag
+    THRESHOLD_PROCESSING.save(&mut deps.storage, &false).unwrap();
     
     // Set USD raised to just below threshold
     USD_RAISED.save(&mut deps.storage, &Uint128::new(24_900_000_000)).unwrap(); // $24.9k
     
-    let env = mock_env();
-    let commit_amount = Uint128::new(200_000_000); // 200 bluechip = $200
+    // Also need to set up COMMIT_CONFIG if not in setup_pool_storage
     
-    // Mock oracle response
-        with_oracle_price(&mut deps,  100_000_000, 10000000000000, -8, Uint128::new(100_000),);// $1 with 8 decimals
-// $1
+    
+    let env = mock_env();
+    let commit_amount = Uint128::new(200_000_000); // 200 tokens = $200
+    
+    // Mock oracle response for $1 per token
+    with_oracle_price(
+        &mut deps, 
+        100_000_000,  // price
+        10000000000000, 
+        -8,           // expo
+        Uint128::new(100_000),
+    );
     
     let info = mock_info("whale", &[Coin {
         denom: "stake".to_string(),
@@ -150,13 +160,24 @@ fn test_commit_crosses_threshold() {
     // Verify threshold was hit
     assert_eq!(THRESHOLD_HIT.load(&deps.storage).unwrap(), true);
     
-    // Verify multiple messages were sent (fees + threshold payouts)
-    // Should have: 2 fee transfers + 4 mints (creator, bluechip, pool, commit rewards)
-    assert!(res.messages.len() >= 6);
+    // Verify threshold processing flag was cleared
+    assert_eq!(THRESHOLD_PROCESSING.load(&deps.storage).unwrap(), false);
     
-    // Verify pool state was initialized with initial liquidity
+    // Check for threshold crossing attribute
+    assert!(res.attributes.iter().any(|attr| 
+        attr.key == "phase" && attr.value == "threshold_crossing"
+    ));
+    
+    // Verify multiple messages were sent
+    // Should have: 2 fee transfers + token mints + native seed transfer
+    assert!(res.messages.len() >= 6, "Expected at least 6 messages, got {}", res.messages.len());
+    
+    // Verify pool state was initialized
     let pool_state = POOL_STATE.load(&deps.storage).unwrap();
-    assert_eq!(pool_state.total_liquidity, Uint128::zero()); // Set to zero initially as per contract
+    assert_eq!(pool_state.total_liquidity, Uint128::zero()); // Unowned seed liquidity
+    
+    // Verify commit ledger was cleared
+    assert_eq!(COMMIT_LEDGER.keys(&deps.storage, None, None, Order::Ascending).count(), 0);
 }
 
 #[test]
@@ -437,6 +458,7 @@ fn test_commit_threshold_overshoot_split() {
     }]);
     
     setup_pool_storage(&mut deps);
+    THRESHOLD_PROCESSING.save(&mut deps.storage, &false).unwrap();
     
     // Set USD raised to just below threshold
     USD_RAISED.save(&mut deps.storage, &Uint128::new(24_999_000_000)).unwrap(); // $24,999
@@ -572,7 +594,7 @@ fn test_commit_exact_threshold() {
     }]);
     
     setup_pool_storage(&mut deps);
-    
+    THRESHOLD_PROCESSING.save(&mut deps.storage, &false).unwrap();
     // Set USD raised to need exactly $1 more
     USD_RAISED.save(&mut deps.storage, &Uint128::new(24_999_000_000)).unwrap();
     
@@ -632,7 +654,7 @@ fn test_commit_exact_threshold() {
     let res = execute(deps.as_mut(), env, info.clone(), msg).unwrap();
     
     // Should be a normal funding phase commit that triggers threshold
-    assert_eq!(res.attributes.iter().find(|a| a.key == "phase").unwrap().value, "funding");
+    assert_eq!(res.attributes.iter().find(|a| a.key == "phase").unwrap().value, "threshold_hit_exact");
     
     // Verify threshold hit
     assert_eq!(THRESHOLD_HIT.load(&deps.storage).unwrap(), true);
@@ -1569,6 +1591,7 @@ pub fn setup_pool_storage(deps: &mut OwnedDeps<MockStorage, MockApi, MockQuerier
     ORACLE_INFO.save(&mut deps.storage, &oracle_info).unwrap();
 
     // Initialize other state variables
+    THRESHOLD_PROCESSING.save(&mut deps.storage, &false).unwrap();
     THRESHOLD_HIT.save(&mut deps.storage, &false).unwrap();
     USD_RAISED.save(&mut deps.storage, &Uint128::zero()).unwrap();
     NATIVE_RAISED.save(&mut deps.storage, &Uint128::zero()).unwrap();
