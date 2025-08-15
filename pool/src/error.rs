@@ -120,6 +120,9 @@ pub enum ContractError {
     #[error("pool can not cover reserves")]
     InsufficientReserves {},
 
+    #[error("Incorrect native denom: provided: {oracle}, required: {twap}")]
+    OraclePriceDeviation { oracle: Uint128, twap: Uint128 },
+
     #[error("Incorrect native denom: provided: {provided}, required: {required}")]
     IncorrectNativeDenom { provided: String, required: String },
 

@@ -27,23 +27,24 @@ pub enum ExecuteMsg {
         deadline: Option<Timestamp>,
     },
     /// Update the pair configuration
-    UpdateConfig {
-        params: Binary,
-    },
+    UpdateConfig { params: Binary },
 
     Commit {
         asset: Asset,
         amount: Uint128,
         deadline: Option<Timestamp>,
+        belief_price: Option<Decimal>,
+        max_spread: Option<Decimal>,
     },
     DepositLiquidity {
         amount0: Uint128,
         amount1: Uint128,
+        min_amount0: Option<Uint128>,
+        min_amount1: Option<Uint128>,
+        deadline: Option<Timestamp>,
     },
     /// Collect fees owed to a given position
-    CollectFees {
-        position_id: String,
-    },
+    CollectFees { position_id: String },
     AddToPosition {
         position_id: String,
         amount0: Uint128, // native token amount
@@ -55,11 +56,16 @@ pub enum ExecuteMsg {
     RemovePartialLiquidity {
         position_id: String,
         liquidity_to_remove: Uint128,
-        deadline: Option<Timestamp> // Specific amount of liquidity to remove
+        deadline: Option<Timestamp>, // Specific amount of liquidity to remove
+        min_amount0: Option<Uint128>,
+        min_amount1: Option<Uint128>,
     },
     RemovePartialLiquidityByPercent {
         position_id: String,
-        percentage: u64, // 1-99
+        percentage: u64,
+        deadline: Option<Timestamp>,
+        min_amount0: Option<Uint128>,
+        min_amount1: Option<Uint128>, 
     },
     RemoveLiquidity {
         position_id: String,
@@ -77,13 +83,20 @@ pub enum Cw20HookMsg {
         belief_price: Option<Decimal>,
         max_spread: Option<Decimal>,
         to: Option<String>,
+        deadline: Option<Timestamp>,
     },
     DepositLiquidity {
-        amount0: Uint128, // native amount (should be sent with the message)
+        amount0: Uint128,
+        min_amount0: Option<Uint128>,
+        min_amount1: Option<Uint128>,
+        deadline: Option<Timestamp>, // native amount (should be sent with the message)
     },
     AddToPosition {
         position_id: String,
-        amount0: Uint128, // native amount (should be sent with the message)
+        amount0: Uint128,
+        min_amount0: Option<Uint128>,
+        min_amount1: Option<Uint128>,
+        deadline: Option<Timestamp>, // native amount (should be sent with the message)
     },
 }
 

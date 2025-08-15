@@ -62,7 +62,7 @@ pub const MAX_ORACLE_AGE: u64 = 300;
 pub const FEEINFO: Item<FeeInfo> = Item::new("fee_info");
 pub const COMMITSTATUS: Item<Uint128> = Item::new("commit_status");
 pub const NATIVE_RAISED: Item<Uint128> = Item::new("native_raised");
-pub const REENTRANCY_GUARD: Item<bool> = Item::new("reentrancy_guard");
+pub const RATE_LIMIT_GUARD: Item<bool> = Item::new("rate_limit_guard");
 pub const THRESHOLD_HIT: Item<bool> = Item::new("threshold_hit");
 pub const COMMIT_LEDGER: cw_storage_plus::Map<&Addr, Uint128> =
     cw_storage_plus::Map::new("commit_usd");
@@ -72,6 +72,7 @@ pub const USER_LAST_COMMIT: Map<&Addr, u64> = Map::new("user_last_commit");
 pub const POOL_INFO: Item<PoolInfo> = Item::new("pool_info");
 pub const POOL_STATE: Item<PoolState> = Item::new("pool_state");
 pub const POOL_SPECS: Item<PoolSpecs> = Item::new("pool_specs");
+pub const THRESHOLD_PROCESSING: Item<bool> = Item::new("threshold_processing");
 pub const THRESHOLD_PAYOUT: Item<ThresholdPayout> = Item::new("threshold_payout_amounts");
 pub const NEXT_POSITION_ID: Item<u64> = Item::new("next_position_id");
 pub const LIQUIDITY_POSITIONS: Map<&str, Position> = Map::new("positions");
@@ -79,7 +80,6 @@ pub const COMMIT_CONFIG: Item<CommitInfo> = Item::new("commit_config");
 pub const ORACLE_INFO: Item<OracleInfo> = Item::new("oracle_info");
 pub const POOL_PARAMS: Item<PoolSpecs> = Item::new("pool_params");
 pub const POOL_FEE_STATE: Item<PoolFeeState> = Item::new("pool_fee_state");
-pub const POOL_SUBSCRIBERS: Map<(u64, &Addr), bool> = Map::new("pool_subs");
 
 #[cw_serde]
 pub struct Subscription {
@@ -96,7 +96,7 @@ pub struct PoolState {
     pub nft_ownership_accepted: bool,
     pub reserve0: Uint128, // native token
     pub reserve1: Uint128, // cw20 token
-    pub total_liquidity: Uint128,
+    pub total_liquidity: Uint128, 
     pub block_time_last: u64,
     pub price0_cumulative_last: Uint128,
     pub price1_cumulative_last: Uint128,
@@ -117,7 +117,6 @@ pub struct ExpectedFactory {
 
 #[cw_serde]
 pub struct PoolSpecs {
-    pub subscription_period: u64,
     pub lp_fee: Decimal,
     pub min_commit_interval: u64,
     pub usd_payment_tolerance_bps: u16,
@@ -156,6 +155,13 @@ pub struct ThresholdPayout {
     pub bluechip_amount: Uint128,
     pub pool_amount: Uint128,
     pub commit_amount: Uint128,
+}
+
+#[cw_serde]
+pub struct RateLimitGuardParams {
+    pub swap: Uint128,
+    pub deposit_liquidity: Uint128,
+    pub remove_partial_liquidity: Uint128,
 }
 
 #[cw_serde]

@@ -17,7 +17,7 @@ use crate::{asset::PairType,
     }};
 use crate::msg::ExecuteMsg;
 use crate::state::{
-    THRESHOLD_HIT, USD_RAISED, COMMIT_LEDGER, REENTRANCY_GUARD,
+    THRESHOLD_HIT, USD_RAISED, COMMIT_LEDGER, RATE_LIMIT_GUARD,
     SUB_INFO, POOL_STATE, POOL_FEE_STATE, Position, NEXT_POSITION_ID, PairInfo
 };
 use crate::error::ContractError;
@@ -83,6 +83,8 @@ fn test_commit_pre_threshold_basic() {
         },
         amount: commit_amount,
         deadline: None,
+        belief_price: None,
+        max_spread: None,
     };
     
     let res = execute(deps.as_mut(), env.clone(), info, msg).unwrap();
@@ -138,7 +140,9 @@ fn test_commit_crosses_threshold() {
             amount: commit_amount,
         },
         amount: commit_amount,
-        deadline: None
+        deadline: None,
+        belief_price: None,
+        max_spread: None,
     };
     
     let res = execute(deps.as_mut(), env, info, msg).unwrap();
@@ -183,6 +187,8 @@ fn test_commit_post_threshold_swap() {
         },
         amount: commit_amount,
         deadline: None,
+        belief_price: None,
+        max_spread: None,
     };
     
     let res = execute(deps.as_mut(), env, info, msg).unwrap();
@@ -239,7 +245,7 @@ fn test_commit_reentrancy_protection() {
     setup_pool_storage(&mut deps);
     
     // Set reentrancy guard
-    REENTRANCY_GUARD.save(&mut deps.storage, &true).unwrap();
+    RATE_LIMIT_GUARD.save(&mut deps.storage, &true).unwrap();
     
     let env = mock_env();
     let info = mock_info("user", &[Coin {
@@ -254,6 +260,8 @@ fn test_commit_reentrancy_protection() {
         },
         amount: Uint128::new(1_000_000),
         deadline: None,
+        belief_price: None,
+        max_spread: None,
     };
     
     let err = execute(deps.as_mut(), env, info, msg).unwrap_err();
@@ -291,6 +299,8 @@ fn test_commit_rate_limiting() {
         },
         amount: Uint128::new(1_000_000),
         deadline: None,
+        belief_price: None,
+        max_spread: None,
     };
     
     execute(deps.as_mut(), env.clone(), info.clone(), msg.clone()).unwrap();
@@ -330,7 +340,9 @@ fn test_commit_with_deadline() {
             amount: Uint128::new(1_000_000),
         },
         amount: Uint128::new(1_000_000),
-        deadline: Some(Timestamp::from_seconds(999_999))
+        deadline: Some(Timestamp::from_seconds(999_999)),
+        belief_price: None,
+        max_spread: None,
     };
     
     let err = execute(deps.as_mut(), env, info, msg).unwrap_err();
@@ -474,6 +486,8 @@ fn test_commit_threshold_overshoot_split() {
         },
         amount: commit_amount,
         deadline: None,
+        belief_price: None,
+        max_spread: None,
     };
     
     let res = execute(deps.as_mut(), env.clone(), info.clone(), msg).unwrap();
@@ -611,6 +625,8 @@ fn test_commit_exact_threshold() {
         },
         amount: commit_amount,
         deadline: None,
+        belief_price: None,
+        max_spread: None,
     };
     
     let res = execute(deps.as_mut(), env, info.clone(), msg).unwrap();
@@ -675,6 +691,7 @@ fn test_swap_cw20_via_hook() {
             belief_price: None,
             max_spread: Some(Decimal::percent(10)), // Allow spread
             to: None,
+            deadline: None,
         }).unwrap(),
     };
     
@@ -883,8 +900,8 @@ fn test_add_to_existing_position() {
         deps.as_mut(),
         env,
         info,
-        user,
-        "1".to_string(), // position_id
+        "1".to_string(),
+        user, // position_id
         native_amount,
         token_amount,
         None, // min_amount0
@@ -944,8 +961,8 @@ fn test_add_to_position_not_owner() {
         deps.as_mut(),
         env,
         info,
-        user,
         "1".to_string(),
+        user,
         Uint128::new(1_000_000),
         Uint128::new(15_000_000),
         None,
@@ -1217,6 +1234,8 @@ fn test_remove_partial_liquidity_amount() {
         position_id: "1".to_string(),
         liquidity_to_remove: Uint128::new(300_000),
         deadline: None,
+        min_amount0: None,
+        min_amount1: None,
     };
     
     let res = execute(deps.as_mut(), env, info, msg).unwrap();
@@ -1271,7 +1290,10 @@ fn test_remove_partial_liquidity_by_percent() {
     // Remove 25% of liquidity
     let msg = ExecuteMsg::RemovePartialLiquidityByPercent {
         position_id: "1".to_string(),
-        percentage: 25, // 25%
+        percentage: 25,
+        deadline: None,
+        min_amount0: None,
+        min_amount1: None, // 25%
     };
     
     let res = execute(deps.as_mut(), env, info, msg).unwrap();
@@ -1438,7 +1460,10 @@ fn test_invalid_percentage_removal() {
     // Try to remove more than 100%
     let msg = ExecuteMsg::RemovePartialLiquidityByPercent {
         position_id: "1".to_string(),
-        percentage: 0, // Invalid
+        percentage: 0,
+        deadline: None,
+        min_amount0: None,
+        min_amount1: None, // Invalid
     };
     
     let err = execute(deps.as_mut(), env, info, msg).unwrap_err();
@@ -1495,7 +1520,6 @@ pub fn setup_pool_storage(deps: &mut OwnedDeps<MockStorage, MockApi, MockQuerier
 
     // Set up PoolSpecs
     let pool_specs = PoolSpecs {
-        subscription_period: 86400, // 1 day in seconds
         lp_fee: Decimal::percent(3) / Uint128::new(10), // 0.3% fee (3/1000)
         min_commit_interval: 60, // 1 minute minimum between commits
         usd_payment_tolerance_bps: 100, // 1% tolerance
