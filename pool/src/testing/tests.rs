@@ -110,6 +110,106 @@ fn test_commit_pre_threshold_basic() {
 }
 
 #[test]
+fn test_race_condition_commits_crossing_threshold() {
+    let mut deps = mock_dependencies_with_balance(&[Coin {
+        denom: "stake".to_string(),
+        amount: Uint128::new(20_000_000_000),
+    }]);
+
+    setup_pool_storage(&mut deps);
+    THRESHOLD_PROCESSING.save(&mut deps.storage, &false).unwrap();
+
+    // Just below threshold
+    USD_RAISED.save(&mut deps.storage, &Uint128::new(24_900_000_000)).unwrap();
+
+    // Mock oracle: $1 per token
+    with_oracle_price(
+        &mut deps, 
+        100_000_000,  
+        10000000000000, 
+        -8, 
+        Uint128::new(100_000),
+    );
+
+    let commit_amount = Uint128::new(200_000_000); // $200 per commit
+    let env = mock_env();
+
+    // -------- First Commit --------
+    let info1 = mock_info("alice", &[Coin {
+        denom: "stake".to_string(),
+        amount: commit_amount,
+    }]);
+    let msg1 = ExecuteMsg::Commit {
+        asset: Asset {
+            info: AssetInfo::NativeToken { denom: "stake".to_string() },
+            amount: commit_amount,
+        },
+        amount: commit_amount,
+        deadline: None,
+        belief_price: None,
+        max_spread: None,
+    };
+
+    // Run first commit
+    let res1 = execute(deps.as_mut(), env.clone(), info1, msg1).unwrap();
+    println!(
+        "[Commit 1] USD_RAISED: {}, THRESHOLD_HIT: {}, THRESHOLD_PROCESSING: {}, Attributes: {:?}",
+        USD_RAISED.load(&deps.storage).unwrap(),
+        THRESHOLD_HIT.load(&deps.storage).unwrap(),
+        THRESHOLD_PROCESSING.load(&deps.storage).unwrap(),
+        res1.attributes
+    );
+
+    assert!(res1.attributes.iter().any(|a| a.value == "threshold_crossing"));
+    assert_eq!(THRESHOLD_HIT.load(&deps.storage).unwrap(), true);
+    // --- Simulate race: threshold processing still TRUE ---
+    THRESHOLD_PROCESSING.save(&mut deps.storage, &true).unwrap();
+    println!(
+        "Simulated race -> USD_RAISED: {}, THRESHOLD_HIT: {}, THRESHOLD_PROCESSING: {}",
+        USD_RAISED.load(&deps.storage).unwrap(),
+        THRESHOLD_HIT.load(&deps.storage).unwrap(),
+        THRESHOLD_PROCESSING.load(&deps.storage).unwrap()
+    );
+    // -------- Second Commit (same block) --------
+    let info2 = mock_info("bob", &[Coin {
+        denom: "stake".to_string(),
+        amount: commit_amount,
+    }]);
+let msg2 = ExecuteMsg::Commit {
+    asset: Asset {
+        info: AssetInfo::NativeToken { denom: "stake".to_string() },
+        amount: commit_amount,
+    },
+    amount: commit_amount,
+    deadline: None,
+    belief_price: None,
+    max_spread: Some(Decimal::percent(50)), // 100% tolerance
+};
+    let res2 = execute(deps.as_mut(), env.clone(), info2, msg2).unwrap();
+    println!(
+        "[Commit 2] USD_RAISED: {}, THRESHOLD_HIT: {}, THRESHOLD_PROCESSING: {}, Attributes: {:?}",
+        USD_RAISED.load(&deps.storage).unwrap(),
+        THRESHOLD_HIT.load(&deps.storage).unwrap(),
+        THRESHOLD_PROCESSING.load(&deps.storage).unwrap(),
+        res2.attributes
+    );
+
+    assert!(
+        res2.attributes.iter().all(|a| a.value != "threshold_crossing"),
+        "Second commit should not run threshold logic while THRESHOLD_PROCESSING is true"
+    );
+    // Second commit should NOT trigger threshold crossing
+    assert!(
+        res2.attributes.iter().all(|a| a.value != "threshold_crossing"),
+        "Second commit should not run threshold logic while THRESHOLD_PROCESSING is true"
+    );
+
+    // At the end, reset processing flag manually for cleanup
+    THRESHOLD_PROCESSING.save(&mut deps.storage, &false).unwrap();
+}
+
+
+#[test]
 fn test_commit_crosses_threshold() {
     let mut deps = mock_dependencies_with_balance(&[Coin {
         denom: "stake".to_string(),
