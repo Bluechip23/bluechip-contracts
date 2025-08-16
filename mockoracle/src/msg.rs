@@ -18,5 +18,8 @@ pub struct InstantiateMsg {}
 
 #[cw_serde]
 pub struct PriceResponse {
-    pub price: Uint128, // 8 decimals (e.g. 1.23 USD = 123_000_000)
+    pub price: Uint128,
+    pub publish_time: u64,
+    pub expo: i32,
+    pub conf: Uint128, // 8 decimals (e.g. 1.23 USD = 123_000_000)
 }

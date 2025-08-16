@@ -58,7 +58,7 @@ pub struct TokenMetadata {
 /// ## Description
 /// Stores the config struct at the given key
 pub const USD_RAISED: Item<Uint128> = Item::new("usd_raised");
-pub const MAX_ORACLE_AGE: u64 = 300;
+pub const MAX_ORACLE_AGE: u64 = 3000000;
 pub const FEEINFO: Item<FeeInfo> = Item::new("fee_info");
 pub const COMMITSTATUS: Item<Uint128> = Item::new("commit_status");
 pub const NATIVE_RAISED: Item<Uint128> = Item::new("native_raised");

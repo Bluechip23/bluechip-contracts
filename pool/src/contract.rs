@@ -867,7 +867,7 @@ pub fn execute_commit_logic(
         &oracle_info.oracle_symbol,
         env.block.time.seconds(),
     )?;
-    //check post threshold commits only against twaps   
+    //check post threshold commits only against twaps
     if THRESHOLD_HIT.load(deps.storage)? {
         validate_oracle_price_against_twap(
             &deps.as_ref(),
@@ -947,18 +947,15 @@ pub fn execute_commit_logic(
                     // ATOMIC THRESHOLD PROCESSING
 
                     // Try to acquire the processing lock
-                    let can_process = THRESHOLD_PROCESSING.update(
-                        deps.storage,
-                        |processing| -> Result<bool, ContractError> {
-                            if processing {
-                                // Someone else is already processing the threshold
-                                Ok(false)
-                            } else {
-                                // We get to process the threshold
-                                Ok(true)
-                            }
-                        },
-                    )?;
+                    let processing = THRESHOLD_PROCESSING
+                        .may_load(deps.storage)?
+                        .unwrap_or(false);
+                    let can_process = if processing {
+                        false // Someone else is processing
+                    } else {
+                        THRESHOLD_PROCESSING.save(deps.storage, &true)?;
+                        true // We get to process
+                    };
 
                     if !can_process {
                         // Another transaction is handling the threshold crossing
@@ -1625,8 +1622,8 @@ pub fn get_and_validate_oracle_price(
         .map_err(|e| StdError::generic_err(format!("Oracle query failed: {}", e)))?;
 
     // Staleness check - STANDARD PRACTICE
-
-    if resp.price <= 0 {
+    let zero: Uint128 = Uint128::zero();
+    if resp.price <= zero {
         return Err(StdError::generic_err(
             "Invalid zero or negative price from oracle",
         ));
@@ -1636,7 +1633,7 @@ pub fn get_and_validate_oracle_price(
         return Err(StdError::generic_err("Oracle price too stale"));
     }
     Ok(OracleData {
-        price: Uint128::from(resp.price as u64),
+        price: resp.price,
         expo: resp.expo,
     })
 }
