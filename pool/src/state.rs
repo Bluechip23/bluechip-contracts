@@ -24,8 +24,6 @@ use cw_storage_plus::Map;
     //commitinfo
     pub commit_limit: Uint128,
     pub commit_limit_usd: Uint128,
-    pub available_payment: Vec<Uint128>,
-    pub available_payment_usd: Vec<Uint128>,
     //oracleinfo
     pub oracle_addr: Addr,
     pub oracle_symbol: String,
@@ -123,7 +121,7 @@ pub struct PoolInfo {
     pub pair_info: PairInfo,
     pub factory_addr: Addr,
     pub token_address: Addr,
-    pub position_nft_address: Addr,
+    pub position_nft_code_id: Addr,
 }
 
 #[cw_serde]
@@ -158,10 +156,7 @@ pub struct ThresholdPayout {
 
 #[cw_serde]
 pub struct CommitInfo {
-    pub commit_limit: Uint128,
     pub commit_limit_usd: Uint128,
-    pub available_payment: Vec<Uint128>,
-    pub available_payment_usd: Vec<Uint128>,
 }
 
 #[cw_serde]

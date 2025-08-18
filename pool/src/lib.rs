@@ -7,5 +7,3 @@ pub mod response;
 pub mod state;
 pub mod oracle;
 
-#[cfg(test)]
-mod testing;

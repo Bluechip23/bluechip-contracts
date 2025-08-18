@@ -5,13 +5,9 @@ use cw20::{Cw20Coin, MinterResponse};
 use cw20_base::msg::InstantiateMarketingInfo;
 
 use crate::asset::AssetInfo;
-use crate::pair::PairInstantiateMsg as PairInitMsg;
-use crate::state::{Config};
+use crate::pair::CreatePool;
+use crate::state::{FactoryInstantiate};
 
-#[cw_serde]
-pub struct OfficialInstantiateMsg {
-    pub config: Config,
-}
 #[cw_serde]
 pub struct FeeInfo {
     pub bluechip_address: Addr,
@@ -21,7 +17,7 @@ pub struct FeeInfo {
 }
 
 #[cw_serde]
-pub struct CreatePoolInstantiateMsg {
+pub struct CreatePoolReplyMsg {
     pub pool_id: u64,
     /// Information about the two assets in the pool
     pub asset_infos: [AssetInfo; 2],
@@ -31,25 +27,22 @@ pub struct CreatePoolInstantiateMsg {
     pub factory_addr: Addr,
     /// Optional binary serialised parameters for custom pool types
     pub init_params: Option<Binary>,
-    
     pub fee_info: FeeInfo,
-    pub commit_limit: Uint128,
     pub commit_limit_usd: Uint128,
     pub oracle_addr: Addr,
     pub oracle_symbol: String,
     pub token_address: Addr,
+    //address called by the pool to mint new liquidity position NFTs.
     pub position_nft_address: Addr,
-    pub available_payment: Vec<Uint128>,
-    pub available_payment_usd: Vec<Uint128>,
 }
 
 #[cw_serde]
 pub enum ExecuteMsg {
     UpdateConfig {
-        config: Config,
+        config: FactoryInstantiate,
     },
     Create {
-        pair_msg: PairInitMsg,
+        create_pool_msg: CreatePool,
         token_info: TokenInfo,
     },
 }
@@ -59,7 +52,7 @@ pub struct MigrateMsg {}
 
 #[cw_serde]
 pub struct ConfigResponse {
-    pub config: Config,
+    pub config: FactoryInstantiate,
 }
 
 
@@ -74,15 +67,18 @@ pub struct TokenInstantiateMsg {
     pub decimals: u8,
     /// Initial token balances
     pub initial_balances: Vec<Cw20Coin>,
-    /// Minting controls specified in a [`MinterResponse`] structure
+    
     pub mint: Option<MinterResponse>,
-    /// the marketing info of type [`InstantiateMarketingInfo`]
+
     pub marketing: Option<InstantiateMarketingInfo>,
 }
 
 #[cw_serde]
 pub struct TokenInfo {
+    //name of creator token - set by creator
     pub name: String,
+    //symbol of creator token - set by
     pub symbol: String,
+    // number of decimals 100000000 =$1 for 8 decimals
     pub decimal: u8,
 }

@@ -312,11 +312,6 @@ pub struct PairInfo {
     pub assets: [Asset; 2],
 }
 
-#[cw_serde]
-pub struct PaymentInfoResponse {
-    pub creator: Addr,
-    pub available_payment_tiers: Vec<Uint128>,
-}
 
 #[cw_serde]
 pub struct USDTierInfoWithTolerance {

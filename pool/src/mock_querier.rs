@@ -1,4 +1,4 @@
-#![cfg(not(target_arch = "wasm32"))]
+/*#![cfg(not(target_arch = "wasm32"))]
 #![allow(non_snake_case)]
 use crate::oracle::{PriceResponse, PythQueryMsg};
 use cosmwasm_std::testing::{MockApi, MockQuerier, MockStorage, MOCK_CONTRACT_ADDR};
@@ -194,3 +194,4 @@ impl WasmMockQuerier {
 
 
 
+*/

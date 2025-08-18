@@ -3,13 +3,13 @@ use std::env;
 use crate::asset::AssetInfo;
 use crate::error::ContractError;
 use crate::msg::{
-    CreatePoolInstantiateMsg, ExecuteMsg, FeeInfo, MigrateMsg, OfficialInstantiateMsg, TokenInfo,
+    CreatePoolReplyMsg, ExecuteMsg, FeeInfo, MigrateMsg, TokenInfo,
     TokenInstantiateMsg,
 };
-use crate::pair::{PairInstantiateMsg, PoolInitParams};
+use crate::pair::{CreatePool, ThresholdPayout};
 use crate::state::{
-    Config, SubscribeInfo, CONFIG, NEXT_POOL_ID, POOLS_BY_ID, SUBSCRIBE, TEMPCREATOR, TEMPNFTADDR,
-    TEMPPAIRINFO, TEMPPOOLID, TEMPTOKENADDR,
+    FactoryInstantiate, SubscribeInfo, CONFIG, NEXT_POOL_ID, POOLS_BY_ID, SUBSCRIBE, TEMPCREATOR, TEMPNFTADDR,
+    TEMPPOOLINFO, TEMPPOOLID, TEMPTOKENADDR,
 };
 #[cfg(not(feature = "library"))]
 use cosmwasm_std::entry_point;
@@ -18,7 +18,7 @@ use cosmwasm_std::{
     StdError, StdResult, SubMsg, SubMsgResult, Uint128, WasmMsg,
 };
 use cw20::{Cw20ExecuteMsg, MinterResponse};
-use cw721_base::msg::InstantiateMsg as Cw721InstantiateMsg;
+use cw721_base::msg::InstantiateMsg;
 use cw721_base::Action;
 
 const CONTRACT_NAME: &str = "bluechip_factory";
@@ -29,16 +29,25 @@ const INSTANTIATE_NFT_REPLY_ID: u64 = 3;
 const INSTANTIATE_POOL_REPLY_ID: u64 = 2;
 
 #[cfg_attr(not(feature = "library"), entry_point)]
+//Pools use the factory as almost a launch pad. I guess the best way to think of it is as a literal factory. 
+//it creates a template and holds logic for each new pool and gives the newly created pool new abilities like minting rights and other things. 
+//It takes in parameters set by a json file once, so it becomes easy to set standards across all pools. Basically making it very repeatable.
+//the factory is also the central entity pools can potentially recieve upgrades from. factory = bill gates pools = pcs running on windows.
+
+
+//instantiates the factory for pools to use. 
 pub fn instantiate(
     deps: DepsMut,
     _env: Env,
     _info: MessageInfo,
-    msg: OfficialInstantiateMsg,
+    msg: FactoryInstantiate,
 ) -> Result<Response, ContractError> {
     cw2::set_contract_version(deps.storage, CONTRACT_NAME, CONTRACT_VERSION)?;
-    /* Validate addresses */
-    CONFIG.save(deps.storage, &msg.config)?;
-    NEXT_POOL_ID.save(deps.storage, &0u64)?;
+    //saves the factory parameters set in the json file
+    CONFIG.save(deps.storage, &msg)?;
+    //sets the first pool created by this factory to 1
+    NEXT_POOL_ID.save(deps.storage, &1u64)?;
+    //viola
     Ok(Response::new().add_attribute("action", "init_contract"))
 }
 
@@ -63,18 +72,20 @@ pub fn execute(
     msg: ExecuteMsg,
 ) -> Result<Response, ContractError> {
     match msg {
+        //edit factory parameters - only bluechip can (updates etc) - does not touch existing pools unless we do a chain wide change
         ExecuteMsg::UpdateConfig { config } => execute_update_config(deps, info, config),
+        //creates new pool
         ExecuteMsg::Create {
-            pair_msg,
+            create_pool_msg,
             token_info,
-        } => execute_create(deps, env, info, pair_msg, token_info),
+        } => execute_create(deps, env, info, create_pool_msg, token_info),
     }
 }
 
 fn execute_update_config(
     deps: DepsMut,
     info: MessageInfo,
-    config: Config,
+    config: FactoryInstantiate,
 ) -> Result<Response, ContractError> {
     assert_is_admin(deps.as_ref(), info)?;
 
@@ -82,21 +93,24 @@ fn execute_update_config(
 
     Ok(Response::new().add_attribute("action", "update_config"))
 }
-
+//create pool
 fn execute_create(
     deps: DepsMut,
     env: Env,
     info: MessageInfo,
-    pair_msg: PairInstantiateMsg,
+    create_pool: CreatePool,
     token_info: TokenInfo,
 ) -> Result<Response, ContractError> {
     assert_is_admin(deps.as_ref(), info.clone())?;
     let config = CONFIG.load(deps.storage)?;
     let sender = info.sender;
     let pool_id = NEXT_POOL_ID.load(deps.storage)?;
+    //incriments next pool
     NEXT_POOL_ID.save(deps.storage, &(pool_id + 1))?;
+    //saves incrimented pool
     TEMPPOOLID.save(deps.storage, &pool_id)?;
-    TEMPPAIRINFO.save(deps.storage, &pair_msg)?;
+    //temporary pool data, will get updated in reply
+    TEMPPOOLINFO.save(deps.storage, &create_pool)?;
     TEMPCREATOR.save(deps.storage, &sender)?;
     let msg = WasmMsg::Instantiate {
         code_id: config.token_id,
@@ -163,7 +177,7 @@ pub fn reply(deps: DepsMut, env: Env, msg: Reply) -> Result<Response, ContractEr
             TEMPTOKENADDR.save(deps.storage, &token_address)?;
 
             // Create NFT instantiate message
-            let nft_instantiate_msg = to_json_binary(&Cw721InstantiateMsg {
+            let nft_instantiate_msg = to_json_binary(&InstantiateMsg {
                 name: "AMM LP Positions".to_string(),
                 symbol: "AMM-LP".to_string(),
                 minter: env.contract.address.to_string(),
@@ -187,7 +201,7 @@ pub fn reply(deps: DepsMut, env: Env, msg: Reply) -> Result<Response, ContractEr
 
         INSTANTIATE_NFT_REPLY_ID => {
             let config = CONFIG.load(deps.storage)?;
-            let temp_pool_info = TEMPPAIRINFO.load(deps.storage)?;
+            let temp_pool_info = TEMPPOOLINFO.load(deps.storage)?;
             let temp_creator = TEMPCREATOR.load(deps.storage)?;
             let token_address = TEMPTOKENADDR.load(deps.storage)?;
 
@@ -222,13 +236,13 @@ pub fn reply(deps: DepsMut, env: Env, msg: Reply) -> Result<Response, ContractEr
             TEMPNFTADDR.save(deps.storage, &nft_address)?;
 
             // Prepare pool instantiation (your existing code)
-            let pool_init_params = PoolInitParams {
+            let pool_init_params = ThresholdPayout {
                 creator_amount: Uint128::new(325_000_000_000),
                 bluechip_amount: Uint128::new(25_000_000_000),
                 pool_amount: Uint128::new(350_000_000_000),
                 commit_amount: Uint128::new(500_000_000_000),
             };
-            let init_params_binary = to_json_binary(&pool_init_params)?;
+            let pool_params_json = to_json_binary(&pool_init_params)?;
 
             let mut updated_asset_infos = temp_pool_info.asset_infos;
             for asset_info in updated_asset_infos.iter_mut() {
@@ -242,12 +256,12 @@ pub fn reply(deps: DepsMut, env: Env, msg: Reply) -> Result<Response, ContractEr
             // Instantiate the pool
             let pool_msg = WasmMsg::Instantiate {
                 code_id: config.pair_id,
-                msg: to_json_binary(&CreatePoolInstantiateMsg {
+                msg: to_json_binary(&CreatePoolReplyMsg {
                     pool_id,
                     asset_infos: updated_asset_infos,
                     factory_addr: env.contract.address,
                     token_code_id: config.token_id,
-                    init_params: Some(init_params_binary),
+                    init_params: Some(pool_params_json),
                     fee_info: FeeInfo {
                         bluechip_address: config.bluechip_address.clone(),
                         creator_address: temp_creator.clone(),
@@ -255,13 +269,10 @@ pub fn reply(deps: DepsMut, env: Env, msg: Reply) -> Result<Response, ContractEr
                         creator_fee: config.creator_fee,
                     },
                     commit_limit_usd: config.commit_limit_usd,
-                    commit_limit: config.commit_limit,
                     oracle_addr: config.oracle_addr.clone(),
                     oracle_symbol: config.oracle_symbol.clone(),
                     token_address: token_address,
                     position_nft_address: nft_address.clone(),
-                    available_payment: temp_pool_info.available_payment,
-                    available_payment_usd: temp_pool_info.available_payment_usd.clone(),
                 })?,
                 funds: vec![],
                 admin: None,
@@ -322,9 +333,9 @@ pub fn reply(deps: DepsMut, env: Env, msg: Reply) -> Result<Response, ContractEr
             // Save by creator address (existing)
             SUBSCRIBE.save(deps.storage, &temp_creator.to_string(), &subscribe_info)?;
 
-            // Also save by pool_id for easy lookup
+            // save pool id for queries
             POOLS_BY_ID.save(deps.storage, pool_id, &subscribe_info)?;
-            // Update CW20 minter
+            // make pool cw20 and cw721 (nft) minter for future responsibilities after crossing
             let update_token_minter = WasmMsg::Execute {
                 contract_addr: temp_token_address.to_string(),
                 msg: to_json_binary(&Cw20ExecuteMsg::UpdateMinter {
@@ -344,7 +355,7 @@ pub fn reply(deps: DepsMut, env: Env, msg: Reply) -> Result<Response, ContractEr
             };
             // Clean up temp storage
             TEMPPOOLID.remove(deps.storage);
-            TEMPPAIRINFO.remove(deps.storage);
+            TEMPPOOLINFO.remove(deps.storage);
             TEMPCREATOR.remove(deps.storage);
             TEMPTOKENADDR.remove(deps.storage);
             TEMPNFTADDR.remove(deps.storage);

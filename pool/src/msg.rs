@@ -2,7 +2,7 @@ use cosmwasm_schema::{cw_serde, QueryResponses};
 
 use crate::asset::{Asset, AssetInfo, PairInfo, };
 
-use cosmwasm_std::{Addr, Binary, Decimal, Timestamp, Uint128};
+use cosmwasm_std::{Addr, Binary, Decimal, Uint128};
 
 
 /// The default swap slippage
@@ -13,7 +13,6 @@ pub const MAX_ALLOWED_SLIPPAGE: &str = "0.5";
 // Decimal precision for TWAP results
 pub const TWAP_PRECISION: u8 = 6;
 
-/// This structure describes the execute messages available in the contract.
 #[cw_serde]
 pub enum ExecuteMsg {
     /// Receives a message of type [`Cw20ReceiveMsg`]
@@ -57,59 +56,56 @@ pub enum QueryMsg {
     #[returns(FeeInfoResponse)]
     FeeInfo {},
 
-    #[returns(PoolInfoResponse)]
-    PoolInfo {},
 }
 
 #[cw_serde]
 pub struct PoolInstantiateMsg {
+    // tracks the pool and used for querys.
     pub pool_id: u64,
-    /// Information about the two assets in the pool
+    /// the creator token and bluechip.The creator token will be Token and bluechip will be Native
     pub asset_infos: [AssetInfo; 2],
-    /// The token contract code ID used for the tokens in the pool
+    /// CW20 contract code ID the pools use to copy into their logic. 
     pub token_code_id: u64,
-    /// The factory contract address
+     /// CW721 contract code ID the pools use to copy into their logic.
+     pub position_nft_code_id: Addr,
+    /// The factory contract address being used to create the creator pool
     pub factory_addr: Addr,
-    /// Optional binary serialised parameters for custom pool types
+    //this will be fed into the factory's reply function. It is the threshold payout amounts.
     pub init_params: Option<Binary>,
+    //the fee amount going to the creator (5%) and bluechip (1%)
     pub fee_info: FeeInfo,
-    pub commit_limit: Uint128,
-    pub commit_limit_usd: Uint128,
-    pub position_nft_address: Addr,
-    pub oracle_addr: Addr,
-    pub oracle_symbol: String,
+    // address for the newly created creator token. Autopopulated by the factory reply function
     pub token_address: Addr,
-    pub available_payment_usd: Vec<Uint128>,
-    pub available_payment: Vec<Uint128>,
+    //the threshold limit for the contract. Once crossed, the pool mints and distributes new creator (CW20 token) and now behaves like a normal liquidity pool
+    pub commit_limit_usd: Uint128,
+    // the contract of the oracle being used to convert prices to and from dollars
+    pub oracle_addr: Addr,
+    // the symbol the contract will be looking for for commit messages. the bluechip token's symbol    
+    pub oracle_symbol: String,
 }
+
 
 #[cw_serde]
 pub struct PoolInitParams {
+    // once the threshold is crossed, the amount distributed directly to the creator
     pub creator_amount: Uint128,
+    // once the threshold is crossed, the amount distributed directly to the BlueChip
     pub bluechip_amount: Uint128,
+    // once the threshold is crossed, the amount distributed directly to the newly formed creator pool
     pub pool_amount: Uint128,
+    // once the threshold is crossed, the amount distributed directly to the commiters before the threshold was crossed in proportion to the amount they commited.
     pub commit_amount: Uint128,
 }
 
 #[cw_serde]
-pub struct PoolSubscribersResponse {
-    pub total_count: u32,
-    pub subscribers: Vec<SubscriberInfo>,
-}
-
-#[cw_serde]
-pub struct SubscriberInfo {
-    pub wallet: String,
-    pub last_payment_native: Uint128,
-    pub last_payment_usd: Uint128,
-    pub last_subscribed: Timestamp,
-    pub total_paid_usd: Uint128,
-}
-#[cw_serde]
 pub struct FeeInfo {
+    //addres bluechip fees from commits accumulate
     pub bluechip_address: Addr,
+    //address creator fees from commits accumulate
     pub creator_address: Addr,
+    // the amount bluechip earns per commit
     pub bluechip_fee: Decimal,
+    // the amount the creator earns per commit
     pub creator_fee: Decimal,
 }
 
@@ -127,14 +123,6 @@ pub struct ConfigResponse {
     pub block_time_last: u64,
     /// The pool's parameters
     pub params: Option<Binary>,
-}
-
-#[cw_serde]
-pub struct LastSubscribedResponse {
-    pub has_subscribed: bool,
-    pub last_subscribed: Option<Timestamp>,
-    pub last_payment_native: Option<Uint128>, // Most recent payment
-    pub last_payment_usd: Option<Uint128>,
 }
 
 /// This structure holds the parameters that are returned from a swap simulation response
@@ -181,32 +169,7 @@ pub struct FeeInfoResponse {
 #[cw_serde]
 pub struct MigrateMsg {}
 
-/// This structure holds stableswap pool parameters.
-#[cw_serde]
-pub struct StablePoolParams {
-    /// The current stableswap pool amplification
-    pub amp: u64,
-}
-
-/// This structure stores a stableswap pool's configuration.
-#[cw_serde]
-pub struct StablePoolConfig {
-    /// The stableswap pool amplification
-    pub amp: Decimal,
-}
-
-/// This enum stores the options available to start and stop changing a stableswap pool's amplification.
-#[cw_serde]
-pub enum StablePoolUpdateParams {
-    StartChangingAmp { next_amp: u64, next_amp_time: u64 },
-    StopChangingAmp {},
-}
-#[cw_serde]
-pub enum CommitStatus {
-    InProgress { raised: Uint128, target: Uint128 },
-    FullyCommitted,
-}
-
+//everything below this is things you do not need to know right now. Just needs to be here for instantiation to work. 
 #[cw_serde]
 pub struct PoolStateResponse {
     pub nft_ownership_accepted: bool,
@@ -222,29 +185,4 @@ pub struct PoolFeeStateResponse {
     pub fee_growth_global_1: Decimal,
     pub total_fees_collected_0: Uint128,
     pub total_fees_collected_1: Uint128,
-}
-
-#[cw_serde]
-pub struct PositionResponse {
-    pub position_id: String,
-    pub liquidity: Uint128,
-    pub owner: Addr,
-    pub fee_growth_inside_0_last: Decimal,
-    pub fee_growth_inside_1_last: Decimal,
-    pub created_at: u64,
-    pub last_fee_collection: u64,
-    pub unclaimed_fees_0: Uint128, // Calculate if needed
-    pub unclaimed_fees_1: Uint128, // Calculate if needed
-}
-
-#[cw_serde]
-pub struct PositionsResponse {
-    pub positions: Vec<PositionResponse>,
-}
-
-#[cw_serde]
-pub struct PoolInfoResponse {
-    pub pool_state: PoolStateResponse,
-    pub fee_state: PoolFeeStateResponse,
-    pub total_positions: u64,
 }

@@ -5,8 +5,8 @@ use crate::asset::{
 use crate::error::ContractError;
 use crate::msg::{
     ConfigResponse, ExecuteMsg,
-    FeeInfoResponse,MigrateMsg, PoolFeeStateResponse, PoolInfoResponse,
-    PoolInitParams, PoolInstantiateMsg, PoolResponse, PoolStateResponse,
+    FeeInfoResponse,MigrateMsg,
+    PoolInitParams, PoolInstantiateMsg, PoolResponse,
     QueryMsg, 
    
 };
@@ -58,18 +58,6 @@ const CONTRACT_NAME: &str = "betfi-pair";
 /// Contract version that is used for migration.
 const CONTRACT_VERSION: &str = env!("CARGO_PKG_VERSION");
 
-/// ## Description
-/// Creates a new contract with the specified parameters in the [`InstantiateMsg`].
-/// Returns the [`Response`] with the specified attributes if the operation was successful, or a [`ContractError`] if
-/// the contract was not created.
-/// ## Params
-/// * **deps** is an object of type [`DepsMut`].
-///
-/// * **env** is an object of type [`Env`].
-///
-/// * **_info** is an object of type [`MessageInfo`].
-/// * **msg** is a message of type [`InstantiateMsg`] which contains the basic settings for creating a contract.
-
 #[cfg_attr(not(feature = "library"), entry_point)]
 pub fn instantiate(
     deps: DepsMut,
@@ -105,7 +93,7 @@ pub fn instantiate(
         },
         factory_addr: msg.factory_addr.clone(),
         token_address: msg.token_address.clone(),
-        position_nft_address: msg.position_nft_address.clone(),
+        position_nft_code_id: msg.position_nft_code_id.clone(),
     };
 
     let liquidity_position = Position {
@@ -132,10 +120,7 @@ pub fn instantiate(
     };
 
     let commit_config = CommitInfo {
-        commit_limit: msg.commit_limit,
         commit_limit_usd: msg.commit_limit_usd,
-        available_payment: msg.available_payment.clone(),
-        available_payment_usd: msg.available_payment_usd.clone(),
     };
 
     let oracle_info = OracleInfo {
@@ -227,41 +212,7 @@ pub fn reply(deps: DepsMut, _env: Env, msg: Reply) -> Result<Response, ContractE
     Err(StdError::generic_err("unknown reply id").into())
 }
 
-/// ## Description
-/// Calculates the amount of fees the Maker contract gets according to specified pair parameters.
-/// Returns a [`None`] if the Maker fee is zero, otherwise returns a [`Asset`] struct with the specified attributes.
-/// ## Params
-/// * **pool_info** is an object of type [`AssetInfo`]. Contains information about the pool asset for which the commission will be calculated.
-///
-/// * **commission_amount** is an object of type [`Env`]. This is the total amount of fees charged for a swap.
-///
-/// * **maker_commission_rate** is an object of type [`MessageInfo`]. This is the percentage of fees that go to the Maker contract.
 
-
-/// Returns a [`ContractError`] on failure.
-/// If `belief_price` and `max_spread` are both specified, we compute a new spread,
-/// otherwise we just use the swap spread to check `max_spread`.
-/// ## Params
-/// * **belief_price** is an object of type [`Option<Decimal>`]. This is the belief price used in the swap.
-///
-/// * **max_spread** is an object of type [`Option<Decimal>`]. This is the
-/// max spread allowed so that the swap can be executed successfuly.
-///
-/// * **offer_amount** is an object of type [`Uint128`]. This is the amount of assets to swap.
-///
-/// * **return_amount** is an object of type [`Uint128`]. This is the amount of assets to receive from the swap.
-///
-/// * **spread_amount** is an object of type [`Uint128`]. This is the spread used in the swap.
-
-
-/// ## Description
-/// Used for the contract migration. Returns a default object of type [`Response`].
-/// ## Params
-/// * **deps** is an object of type [`DepsMut`].
-///
-/// * **_env** is an object of type [`Env`].
-///
-/// * **_msg** is an object of type [`MigrateMsg`].
 #[cfg_attr(not(feature = "library"), entry_point)]
 pub fn migrate(deps: DepsMut, _env: Env, _msg: MigrateMsg) -> Result<Response, ContractError> {
     let version = get_contract_version(deps.storage)?;
@@ -286,12 +237,10 @@ pub fn migrate(deps: DepsMut, _env: Env, _msg: MigrateMsg) -> Result<Response, C
 #[cfg_attr(not(feature = "library"), entry_point)]
 pub fn query(deps: Deps, env: Env, msg: QueryMsg) -> StdResult<Binary> {
     match msg {
-        QueryMsg::PoolInfo {} => to_json_binary(&query_pool_info(deps)?),
-        QueryMsg::Pair {} => to_json_binary(&query_pair_info(deps)?),
-        QueryMsg::Config {} => to_json_binary(&query_config(deps)?),
-        QueryMsg::FeeInfo {} => to_json_binary(&query_fee_info(deps)?),
-
-    }
+        QueryMsg::Pair{}=>to_json_binary(&query_pair_info(deps)?),
+        QueryMsg::Config{}=>to_json_binary(&query_config(deps)?),
+        QueryMsg::FeeInfo{}=>to_json_binary(&query_fee_info(deps)?),
+            }
 }
 
 /// ## Description
@@ -351,28 +300,6 @@ pub fn query_check_commit(deps: Deps) -> StdResult<bool> {
     Ok(usd_raised >= commit_info.commit_limit_usd)
 }
 
-fn query_pool_info(deps: Deps) -> StdResult<PoolInfoResponse> {
-    let pool_fee_state = POOL_FEE_STATE.load(deps.storage)?;
-    let next_position_id = NEXT_POSITION_ID.load(deps.storage)?;
-    let pool_state = POOL_STATE.load(deps.storage)?;
-
-    Ok(PoolInfoResponse {
-        pool_state: PoolStateResponse {
-            nft_ownership_accepted: pool_state.nft_ownership_accepted,
-            reserve0: pool_state.reserve0,
-            reserve1: pool_state.reserve1,
-            total_liquidity: pool_state.total_liquidity,
-            block_time_last: pool_state.block_time_last,
-        },
-        fee_state: PoolFeeStateResponse {
-            fee_growth_global_0: pool_fee_state.fee_growth_global_0,
-            fee_growth_global_1: pool_fee_state.fee_growth_global_1,
-            total_fees_collected_0: pool_fee_state.total_fees_collected_0,
-            total_fees_collected_1: pool_fee_state.total_fees_collected_1,
-        },
-        total_positions: next_position_id,
-    })
-}
 
 
 // Helper function to calculate unclaimed fees

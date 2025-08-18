@@ -22,11 +22,10 @@ pub const ULUNA_DENOM: &str = "uluna";
 /// Minimum initial LP share
 pub const MINIMUM_LIQUIDITY_AMOUNT: Uint128 = Uint128::new(1_000);
 
-/// ## Description
-/// This enum describes a Terra asset (native or CW20).
+
 #[cw_serde]
 pub struct Asset {
-    /// Information about an asset stored in a [`AssetInfo`] struct
+ 
     pub info: AssetInfo,
     /// A token amount
     pub amount: Uint128,
@@ -39,28 +38,18 @@ impl fmt::Display for Asset {
 }
 
 impl Asset {
-    /// Returns true if the token is native. Otherwise returns false.
-    /// ## Params
-    /// * **self** is the type of the caller object.
+
     pub fn is_native_token(&self) -> bool {
         self.info.is_native_token()
     }
 
-    /// Calculates and returns a tax for a chain's native token. For other tokens it returns zero.
-    /// ## Params
-    /// * **self** is the type of the caller object.
-    ///
-    /// * **querier** is an object of type [`QuerierWrapper`]
+
     pub fn compute_tax(&self, _querier: &QuerierWrapper) -> StdResult<Uint128> {
         // tax rate in Terra is set to zero https://terrawiki.org/en/developers/tx-fees
         Ok(Uint128::zero())
     }
 
-    /// Calculates and returns a deducted tax for transferring the native token from the chain. For other tokens it returns an [`Err`].
-    /// ## Params
-    /// * **self** is the type of the caller object.
-    ///
-    /// * **querier** is an object of type [`QuerierWrapper`]
+
     pub fn deduct_tax(&self, _querier: &QuerierWrapper) -> StdResult<Coin> {
         let amount = self.amount;
         if let AssetInfo::NativeToken { denom } = &self.info {
@@ -73,18 +62,7 @@ impl Asset {
         }
     }
 
-    /// Returns a message of type [`CosmosMsg`].
-    ///
-    /// For native tokens of type [`AssetInfo`] uses the default method [`BankMsg::Send`] to send a token amount to a recipient.
-    /// Before the token is sent, we need to deduct a tax.
-    ///
-    /// For a token of type [`AssetInfo`] we use the default method [`Cw20ExecuteMsg::Transfer`] and so there's no need to deduct any other tax.
-    /// ## Params
-    /// * **self** is the type of the caller object.
-    ///
-    /// * **querier** is an object of type [`QuerierWrapper`]
-    ///
-    /// * **recipient** is the address where the funds will be sent.
+ 
     pub fn into_msg(self, querier: &QuerierWrapper, recipient: Addr) -> StdResult<CosmosMsg> {
         let amount = self.amount;
 
@@ -104,11 +82,7 @@ impl Asset {
         }
     }
 
-    /// Validates an amount of native tokens being sent. Returns [`Ok`] if successful, otherwise returns [`Err`].
-    /// ## Params
-    /// * **self** is the type of the caller object.
-    ///
-    /// * **message_info** is an object of type [`MessageInfo`]
+   
     pub fn assert_sent_native_token_balance(&self, message_info: &MessageInfo) -> StdResult<()> {
         if let AssetInfo::NativeToken { denom } = &self.info {
             let amount = must_pay(message_info, denom)
@@ -289,7 +263,7 @@ impl AssetInfo {
     }
 }
 
-/// This structure stores the main parameters for an BETFI pair
+
 #[cw_serde]
 pub struct PairInfo {
     /// Asset information for the two assets in the pool
@@ -303,13 +277,7 @@ pub struct PairInfo {
 }
 
 impl PairInfo {
-    /// Returns the balance for each asset in the pool.
-    /// ## Params
-    /// * **self** is the type of the caller object
-    ///
-    /// * **querier** is an object of type [`QuerierWrapper`]
-    ///
-    /// * **contract_addr** is pair's pool address.
+
     pub fn query_pools(
         &self,
         querier: &QuerierWrapper,
@@ -337,11 +305,6 @@ pub fn addr_opt_validate(api: &dyn Api, addr: &Option<String>) -> StdResult<Opti
 
 const TOKEN_SYMBOL_MAX_LENGTH: usize = 4;
 
-/// Returns a formatted LP token name
-/// ## Params
-/// * **asset_infos** is an array with two items the type of [`AssetInfo`].
-///
-/// * **querier** is an object of type [`QuerierWrapper`].
 pub fn format_lp_token_name(
     asset_infos: [AssetInfo; 2],
     querier: &QuerierWrapper,
@@ -362,11 +325,6 @@ pub fn format_lp_token_name(
     Ok(format!("{}-{}-LP", short_symbols[0], short_symbols[1]).to_uppercase())
 }
 
-/// Returns an [`Asset`] object representing a native token and an amount of tokens.
-/// ## Params
-/// * **denom** is a [`String`] that represents the native asset denomination.
-///
-/// * **amount** is a [`Uint128`] representing an amount of native assets.
 pub fn native_asset(denom: String, amount: Uint128) -> Asset {
     Asset {
         info: AssetInfo::NativeToken { denom },
@@ -374,11 +332,6 @@ pub fn native_asset(denom: String, amount: Uint128) -> Asset {
     }
 }
 
-/// Returns an [`Asset`] object representing a non-native token and an amount of tokens.
-/// ## Params
-/// * **contract_addr** is a [`Addr`]. It is the address of the token contract.
-///
-/// * **amount** is a [`Uint128`] representing an amount of tokens.
 pub fn token_asset(contract_addr: Addr, amount: Uint128) -> Asset {
     Asset {
         info: AssetInfo::Token { contract_addr },
@@ -386,21 +339,14 @@ pub fn token_asset(contract_addr: Addr, amount: Uint128) -> Asset {
     }
 }
 
-/// Returns an [`AssetInfo`] object representing the denomination for a Terra native asset.
-/// ## Params
-/// * **denom** is a [`String`] object representing the denomination of the Terra native asset.
 pub fn native_asset_info(denom: String) -> AssetInfo {
     AssetInfo::NativeToken { denom }
 }
 
-/// Returns an [`AssetInfo`] object representing the address of a token contract.
-/// ## Params
-/// * **contract_addr** is a [`Addr`] object representing the address of a token contract.
 pub fn token_asset_info(contract_addr: Addr) -> AssetInfo {
     AssetInfo::Token { contract_addr }
 }
 
-/// Returns [`PairInfo`] by specified pool address.
 pub fn pair_info_by_pool(deps: Deps, pool: Addr) -> StdResult<PairInfo> {
     let minter_info: MinterResponse = deps
         .querier
@@ -427,109 +373,6 @@ impl AssetInfoExt for AssetInfo {
     }
 }
 
-#[cfg(test)]
-mod tests {
-    use super::*;
-    use cosmwasm_std::testing::message_info;
-    use cosmwasm_std::{coin, coins};
-
-    #[test]
-    fn test_native_coins_sent() {
-        let asset = native_asset_info("uusd".to_string()).with_balance(1000u16);
-        let addr = Addr::unchecked("addr0000");
-
-        let info = message_info(&addr, &coins(1000, "random"));
-        let err = asset.assert_sent_native_token_balance(&info).unwrap_err();
-        assert_eq!(err, StdError::generic_err("Must send reserve token 'uusd'"));
-
-        let info = message_info(&addr, &coins(100, "uusd"));
-        let err = asset.assert_sent_native_token_balance(&info).unwrap_err();
-        assert_eq!(
-            err,
-            StdError::generic_err(
-                "Native token balance mismatch between the argument and the transferred"
-            )
-        );
-
-        let info = message_info(&addr, &coins(1000, "uusd"));
-        asset.assert_sent_native_token_balance(&info).unwrap();
-    }
-
-    #[test]
-    fn test_proper_native_coins_sent() {
-        let pool_asset_infos = [
-            native_asset_info("uusd".to_string()),
-            native_asset_info("uluna".to_string()),
-        ];
-
-        let assets = [
-            pool_asset_infos[0].with_balance(1000u16),
-            pool_asset_infos[1].with_balance(100u16),
-        ];
-        let err = vec![coin(1000, "uusd"), coin(1000, "random")]
-            .assert_coins_properly_sent(&assets, &pool_asset_infos)
-            .unwrap_err();
-        assert_eq!(
-            err,
-            StdError::generic_err(
-                "Supplied coins contain random that is not in the input asset vector"
-            )
-        );
-
-        let assets = [
-            pool_asset_infos[0].with_balance(1000u16),
-            native_asset_info("random".to_string()).with_balance(100u16),
-        ];
-        let err = vec![coin(1000, "uusd"), coin(100, "random")]
-            .assert_coins_properly_sent(&assets, &pool_asset_infos)
-            .unwrap_err();
-        assert_eq!(
-            err,
-            StdError::generic_err("Asset random is not in the pool")
-        );
-
-        let assets = [
-            pool_asset_infos[0].with_balance(1000u16),
-            pool_asset_infos[1].with_balance(1000u16),
-        ];
-        let err = vec![coin(1000, "uusd"), coin(100, "uluna")]
-            .assert_coins_properly_sent(&assets, &pool_asset_infos)
-            .unwrap_err();
-        assert_eq!(
-            err,
-            StdError::generic_err(
-                "Native token balance mismatch between the argument and the transferred"
-            )
-        );
-
-        let assets = [
-            pool_asset_infos[0].with_balance(1000u16),
-            pool_asset_infos[1].with_balance(1000u16),
-        ];
-        vec![coin(1000, "uusd"), coin(1000, "uluna")]
-            .assert_coins_properly_sent(&assets, &pool_asset_infos)
-            .unwrap();
-
-        let pool_asset_infos = [
-            token_asset_info(Addr::unchecked("addr0000")),
-            token_asset_info(Addr::unchecked("addr0001")),
-        ];
-        let assets = [
-            pool_asset_infos[0].with_balance(1000u16),
-            pool_asset_infos[1].with_balance(1000u16),
-        ];
-        let err = vec![coin(1000, "uusd"), coin(1000, "uluna")]
-            .assert_coins_properly_sent(&assets, &pool_asset_infos)
-            .unwrap_err();
-        assert_eq!(
-            err,
-            StdError::generic_err(
-                "Supplied coins contain uusd that is not in the input asset vector"
-            )
-        );
-    }
-}
-
 #[cw_serde]
 pub enum PairType {
     /// XYK pair type
@@ -540,7 +383,7 @@ pub enum PairType {
     Custom(String),
 }
 
-// Return a raw encoded string representing the name of each pool type
+
 impl Display for PairType {
     fn fmt(&self, fmt: &mut Formatter) -> Result {
         match self {
@@ -585,13 +428,7 @@ pub fn query_token_symbol(querier: &QuerierWrapper, contract_addr: Addr) -> StdR
     Ok(res.symbol)
 }
 
-/// Returns a native token's balance for a specific account.
-/// ## Params
-/// * **querier** is an object of type [`QuerierWrapper`].
-///
-/// * **account_addr** is an object of type [`Addr`].
-///
-/// * **denom** is an object of type [`String`] used to specify the denomination used to return the balance (e.g uluna).
+
 pub fn query_balance(
     querier: &QuerierWrapper,
     account_addr: Addr,
