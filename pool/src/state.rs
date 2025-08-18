@@ -66,7 +66,7 @@ pub const RATE_LIMIT_GUARD: Item<bool> = Item::new("rate_limit_guard");
 pub const THRESHOLD_HIT: Item<bool> = Item::new("threshold_hit");
 pub const COMMIT_LEDGER: cw_storage_plus::Map<&Addr, Uint128> =
     cw_storage_plus::Map::new("commit_usd");
-pub const SUB_INFO: Map<&Addr, Subscription> = Map::new("sub_info");
+pub const COMMIT_INFO: Map<&Addr, Commiting> = Map::new("sub_info");
 pub const EXPECTED_FACTORY: Item<ExpectedFactory> = Item::new("expected_factory");
 pub const USER_LAST_COMMIT: Map<&Addr, u64> = Map::new("user_last_commit");
 pub const POOL_INFO: Item<PoolInfo> = Item::new("pool_info");
@@ -82,7 +82,7 @@ pub const POOL_PARAMS: Item<PoolSpecs> = Item::new("pool_params");
 pub const POOL_FEE_STATE: Item<PoolFeeState> = Item::new("pool_fee_state");
 
 #[cw_serde]
-pub struct Subscription {
+pub struct Commiting {
     pub pool_id: u64,
     pub subscriber: Addr,
     pub total_paid_usd: Uint128,

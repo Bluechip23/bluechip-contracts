@@ -2,25 +2,18 @@ use cosmwasm_schema::cw_serde;
 use std::collections::{HashMap, HashSet};
 use std::fmt::{self, Display, Formatter, Result};
 
-use crate::pair::QueryMsg;
 
 use cosmwasm_std::{
-    to_json_binary, Addr, Api, BalanceResponse, BankMsg, BankQuery, Coin, CosmosMsg, Deps, MessageInfo,
+    to_json_binary, Addr, Api, BalanceResponse, BankMsg, BankQuery, Coin, CosmosMsg, MessageInfo,
     QuerierWrapper, QueryRequest, StdError, StdResult, Uint128, WasmMsg, WasmQuery,
 };
 
 use cw20::{
-    BalanceResponse as Cw20BalanceResponse, Cw20ExecuteMsg, Cw20QueryMsg, MinterResponse,
+    BalanceResponse as Cw20BalanceResponse, Cw20ExecuteMsg, Cw20QueryMsg,
     TokenInfoResponse,
 };
 
 use cw_utils::must_pay;
-
-pub const UUSD_DENOM: &str = "uusd";
-/// LUNA token denomination
-pub const ULUNA_DENOM: &str = "uluna";
-/// Minimum initial LP share
-pub const MINIMUM_LIQUIDITY_AMOUNT: Uint128 = Uint128::new(1_000);
 
 /// ## Description
 /// This enum describes a Terra asset (native or CW20).
@@ -400,18 +393,6 @@ pub fn token_asset_info(contract_addr: Addr) -> AssetInfo {
     AssetInfo::Token { contract_addr }
 }
 
-/// Returns [`PairInfo`] by specified pool address.
-pub fn pair_info_by_pool(deps: Deps, pool: Addr) -> StdResult<PairInfo> {
-    let minter_info: MinterResponse = deps
-        .querier
-        .query_wasm_smart(pool, &Cw20QueryMsg::Minter {})?;
-
-    let pair_info: PairInfo = deps
-        .querier
-        .query_wasm_smart(minter_info.minter, &QueryMsg::Pair {})?;
-
-    Ok(pair_info)
-}
 
 /// Trait extension for AssetInfo to produce [`Asset`] objects from [`AssetInfo`].
 pub trait AssetInfoExt {

@@ -150,7 +150,7 @@ impl WasmMockQuerier {
                     match from_json(&msg).unwrap() {
                         PythQueryMsg::GetPrice { price_id: _ } => {
                             let resp = PriceResponse {
-                                price: 100_000_000,
+                                price: Uint128::new(100_000_000),
                                 conf: Uint128::new(100_000),      
                                 expo: -8,        
                                 publish_time: 1234567890,

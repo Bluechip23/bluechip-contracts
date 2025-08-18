@@ -16,7 +16,7 @@ use crate::{asset::PairType,
 use crate::msg::ExecuteMsg;
 use crate::state::{
     THRESHOLD_HIT, USD_RAISED, COMMIT_LEDGER, RATE_LIMIT_GUARD,
-    SUB_INFO, POOL_STATE, POOL_FEE_STATE, Position, NEXT_POSITION_ID, PairInfo
+    COMMIT_INFO, POOL_STATE, POOL_FEE_STATE, Position, NEXT_POSITION_ID, PairInfo
 };
 use crate::error::ContractError;
 use crate::asset::{Asset, AssetInfo};
@@ -103,7 +103,7 @@ fn test_commit_pre_threshold_basic() {
     assert_eq!(THRESHOLD_HIT.load(&deps.storage).unwrap(), false);
     
     // Verify subscription created
-    let sub = SUB_INFO.load(&deps.storage, &user_addr).unwrap();
+    let sub = COMMIT_INFO.load(&deps.storage, &user_addr).unwrap();
     assert_eq!(sub.total_paid_native, commit_amount);
     assert_eq!(sub.total_paid_usd, Uint128::new(1_000_000_000));
     
@@ -593,8 +593,7 @@ fn test_commit_threshold_overshoot_split() {
         }
     });
     
-    // Commit $5 worth (5 tokens at $1 each)
-    let commit_amount = Uint128::new(5_000_000); // 5 tokens with 6 decimals
+    let commit_amount = Uint128::new(5_000_000); 
     
     let info = mock_info("whale", &[Coin {
         denom: "stake".to_string(),
@@ -646,19 +645,15 @@ fn test_commit_threshold_overshoot_split() {
         .map(|a| &a.value)
         .unwrap_or(&binding);
     println!("Return amount from attributes: {}", return_amt_str);
-    // Verify threshold was hit
     assert_eq!(THRESHOLD_HIT.load(&deps.storage).unwrap(), true);
        let pool_state = POOL_STATE.load(&deps.storage).unwrap();
     println!("\n=== Pool State After ===");
     println!("reserve0: {}", pool_state.reserve0);
     println!("reserve1: {}", pool_state.reserve1);
-    // Verify USD raised is exactly at threshold
     assert_eq!(USD_RAISED.load(&deps.storage).unwrap(), Uint128::new(25_000_000_000));
     
-    // Verify commit ledger was cleared (trigger_threshold_payout clears it)
     assert!(COMMIT_LEDGER.load(&deps.storage, &info.sender).is_err());
     
-    // Check attributes to verify split happened
     let attrs = &res.attributes;
     assert_eq!(attrs.iter().find(|a| a.key == "phase").unwrap().value, "threshold_crossing");
     assert_eq!(attrs.iter().find(|a| a.key == "threshold_amount_usd").unwrap().value, "1000000");
@@ -669,14 +664,9 @@ fn test_commit_threshold_overshoot_split() {
     println!("\n=== Swap Details ===");
     println!("Native excess to swap: {}", native_excess);
     println!("CW20 returned: {}", return_amt);
-    // Verify CW20 tokens were sent (from the swap portion)
-    // Verify subscription recorded full amount
-    let sub = SUB_INFO.load(&deps.storage, &info.sender).unwrap();
+    let sub = COMMIT_INFO.load(&deps.storage, &info.sender).unwrap();
     assert_eq!(sub.total_paid_native, commit_amount); // Full 5 tokens
     assert_eq!(sub.total_paid_usd, Uint128::new(5_000_000)); // Full $5
-    
-    // Verify that threshold payout messages were created
-    // Should have mints for: creator, bluechip, pool, and commit rewards
   
         if has_transfer {
         println!("SUCCESS: CW20 transfer found!");

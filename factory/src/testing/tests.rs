@@ -1,5 +1,5 @@
 use crate::state::{
-    Config, CreationState, CreationStatus, CREATION_STATES, NEXT_POOL_ID, POOLS_BY_ID, SUBSCRIBE,
+    FactoryInstantiate, CreationState, CreationStatus, CREATION_STATES, NEXT_POOL_ID, POOLS_BY_ID, COMMIT,
     TEMPCREATOR, TEMPNFTADDR, TEMPPAIRINFO, TEMPPOOLID, TEMPTOKENADDR,
 };
 use cosmwasm_std::{
@@ -8,22 +8,20 @@ use cosmwasm_std::{
 
 use crate::asset::{Asset, AssetInfo, PairInfo, PairType};
 use crate::execute::{
-    execute, instantiate, reply, INSTANTIATE_NFT_REPLY_ID, INSTANTIATE_POOL_REPLY_ID,
-    INSTANTIATE_TOKEN_REPLY_ID,
+    execute, instantiate, reply, MINT_CREATE_POOL, FINALIZE_POOL,
+    SET_TOKENS,
 };
 use crate::mock_querier::{mock_dependencies, WasmMockQuerier};
-use crate::msg::{ExecuteMsg, OfficialInstantiateMsg, TokenInfo};
-use crate::pair::{FeeInfo, PairInstantiateMsg};
+use crate::msg::{ExecuteMsg, TokenInfo};
+use crate::pair::{FeeInfo, CreatePool};
 use cosmwasm_std::testing::{mock_env, mock_info, MockApi, MockStorage};
 
 const ADMIN: &str = "admin";
 
-fn create_default_instantiate_msg() -> OfficialInstantiateMsg {
-    OfficialInstantiateMsg {
-        config: Config {
+fn create_default_instantiate_msg() -> FactoryInstantiate {
+     FactoryInstantiate {
             admin: Addr::unchecked(ADMIN),
             position_nft_id: 58,
-            commit_limit: Uint128::new(100),
             commit_limit_usd: Uint128::new(25_000_000_000),
             oracle_addr: Addr::unchecked("oracle0000"),
             oracle_symbol: "BLUECHIP".to_string(),
@@ -32,9 +30,8 @@ fn create_default_instantiate_msg() -> OfficialInstantiateMsg {
             bluechip_address: Addr::unchecked("bluechip"),
             bluechipe_fee: Decimal::percent(1),
             creator_fee: Decimal::percent(5),
-        },
+        }
     }
-}
 
 #[test]
 fn proper_initialization() {
@@ -42,11 +39,9 @@ fn proper_initialization() {
     let mut deps = mock_dependencies(&[]);
     let _owner = "owner0000".to_string();
 
-    let msg = OfficialInstantiateMsg {
-        config: Config {
+      let msg =  FactoryInstantiate {
             admin: Addr::unchecked(ADMIN),
             position_nft_id: 58,
-            commit_limit: Uint128::new(100),
             commit_limit_usd: Uint128::new(100),
             oracle_addr: Addr::unchecked("oracle0000"),
             oracle_symbol: "ORCL".to_string(),
@@ -55,7 +50,7 @@ fn proper_initialization() {
             bluechip_address: Addr::unchecked("bluechip"),
             bluechipe_fee: Decimal::percent(10),
             creator_fee: Decimal::percent(10),
-        },
+
     };
 
     let env = mock_env();
@@ -83,10 +78,8 @@ fn proper_initialization() {
 fn create_pair() {
     let mut deps = mock_dependencies(&[]);
 
-    let msg = OfficialInstantiateMsg {
-        config: Config {
+   let msg = FactoryInstantiate {
             admin: Addr::unchecked("addr0000"),
-            commit_limit: Uint128::new(100),
             position_nft_id: 58,
             commit_limit_usd: Uint128::new(25_000_000_000), // $25k with 6 decimals
             oracle_addr: Addr::unchecked("oracle0000"),
@@ -96,8 +89,7 @@ fn create_pair() {
             bluechip_address: Addr::unchecked("bluechip"),
             bluechipe_fee: Decimal::percent(1), // 1%
             creator_fee: Decimal::percent(5),   // 5%
-        },
-    };
+        };
 
     let env = mock_env();
     let addr = Addr::unchecked("addr0000");
@@ -125,7 +117,7 @@ fn create_pair() {
         env,
         info,
         ExecuteMsg::Create {
-            pair_msg: PairInstantiateMsg {
+            pool_msg: CreatePool {
                 asset_infos: asset_infos.clone(),
                 token_code_id: 10,
                 factory_addr: Addr::unchecked("factory"),
@@ -136,13 +128,10 @@ fn create_pair() {
                     bluechip_fee: Decimal::percent(1),
                     creator_fee: Decimal::percent(5),
                 },
-                commit_limit: Uint128::new(100),
                 commit_limit_usd: Uint128::new(25_000_000_000),
                 oracle_addr: Addr::unchecked("oracle0000"),
                 oracle_symbol: "BLUECHIP".to_string(),
                 token_address: Addr::unchecked("WILL_BE_CREATED_BY_FACTORY"),
-                available_payment: vec![Uint128::new(1_000_000)],
-                available_payment_usd: vec![Uint128::new(1_000_000)],
             },
             token_info: TokenInfo {
                 name: "Test Token".to_string(),
@@ -167,10 +156,8 @@ fn test_create_pair_with_custom_params() {
     let mut deps = mock_dependencies(&[]);
 
     // Initialize factory first
-    let msg = OfficialInstantiateMsg {
-        config: Config {
+    let msg = FactoryInstantiate {
             admin: Addr::unchecked(ADMIN),
-            commit_limit: Uint128::new(100),
             position_nft_id: 58,
             commit_limit_usd: Uint128::new(25_000_000_000),
             oracle_addr: Addr::unchecked("oracle0000"),
@@ -180,8 +167,7 @@ fn test_create_pair_with_custom_params() {
             bluechip_address: Addr::unchecked("bluechip"),
             bluechipe_fee: Decimal::percent(1),
             creator_fee: Decimal::percent(5),
-        },
-    };
+        };
 
     let env = mock_env();
     let info = mock_info(ADMIN, &[]);
@@ -191,7 +177,7 @@ fn test_create_pair_with_custom_params() {
     let custom_params = Binary::from(b"custom_pool_params");
 
     let create_msg = ExecuteMsg::Create {
-        pair_msg: PairInstantiateMsg {
+        pool_msg: CreatePool {
             asset_infos: [
                 AssetInfo::NativeToken {
                     denom: "bluechip".to_string(),
@@ -209,21 +195,10 @@ fn test_create_pair_with_custom_params() {
                 bluechip_fee: Decimal::percent(1),
                 creator_fee: Decimal::percent(5),
             },
-            commit_limit: Uint128::new(100),
             commit_limit_usd: Uint128::new(25_000_000_000),
             oracle_addr: Addr::unchecked("oracle0000"),
             oracle_symbol: "BLUECHIP".to_string(),
             token_address: Addr::unchecked("WILL_BE_CREATED_BY_FACTORY"),
-            available_payment: vec![
-                Uint128::new(1_000_000),
-                Uint128::new(5_000_000),
-                Uint128::new(10_000_000),
-            ],
-            available_payment_usd: vec![
-                Uint128::new(1_000_000_000),  // $1k
-                Uint128::new(5_000_000_000),  // $5k
-                Uint128::new(10_000_000_000), // $10k
-            ],
         },
         token_info: TokenInfo {
             name: "Custom Token".to_string(),
@@ -239,14 +214,10 @@ fn test_create_pair_with_custom_params() {
     // Verify the creation was successful
     assert_eq!(res.messages.len(), 1);
 
-    // Verify TEMP storage was set
-    let temp_pair_info = TEMPPAIRINFO.load(&deps.storage).unwrap();
-    assert_eq!(temp_pair_info.available_payment.len(), 3);
-    assert_eq!(temp_pair_info.available_payment_usd.len(), 3);
 }
 fn create_pool_msg(token_name: &str) -> ExecuteMsg {
     ExecuteMsg::Create {
-        pair_msg: PairInstantiateMsg {
+        pool_msg: CreatePool {
             asset_infos: [
                 AssetInfo::NativeToken {
                     denom: "bluechip".to_string(),
@@ -264,13 +235,10 @@ fn create_pool_msg(token_name: &str) -> ExecuteMsg {
                 bluechip_fee: Decimal::percent(1),
                 creator_fee: Decimal::percent(5),
             },
-            commit_limit: Uint128::new(100),
             commit_limit_usd: Uint128::new(25_000_000_000),
             oracle_addr: Addr::unchecked("oracle0000"),
             oracle_symbol: "BLUECHIP".to_string(),
             token_address: Addr::unchecked("WILL_BE_CREATED_BY_FACTORY"),
-            available_payment: vec![Uint128::new(1_000_000)],
-            available_payment_usd: vec![Uint128::new(1_000_000)],
         },
         token_info: TokenInfo {
             name: token_name.to_string(),
@@ -287,21 +255,21 @@ fn simulate_complete_reply_chain(
 ) {
     // Token reply
     let token_reply = create_instantiate_reply(
-        INSTANTIATE_TOKEN_REPLY_ID,
+        SET_TOKENS,
         &format!("token_address_{}", pool_id),
     );
     reply(deps.as_mut(), env.clone(), token_reply).unwrap();
 
     // NFT reply
     let nft_reply = create_instantiate_reply(
-        INSTANTIATE_NFT_REPLY_ID,
+        MINT_CREATE_POOL,
         &format!("nft_address_{}", pool_id),
     );
     reply(deps.as_mut(), env.clone(), nft_reply).unwrap();
 
     // Pool reply
     let pool_reply = create_instantiate_reply(
-        INSTANTIATE_POOL_REPLY_ID,
+        FINALIZE_POOL,
         &format!("pool_address_{}", pool_id),
     );
     reply(deps.as_mut(), env.clone(), pool_reply).unwrap();
@@ -398,11 +366,9 @@ fn test_complete_pool_creation_flow() {
     let mut deps = mock_dependencies(&[]);
 
     // Initialize factory
-    let msg = OfficialInstantiateMsg {
-        config: Config {
+    let msg = FactoryInstantiate {
             admin: Addr::unchecked(ADMIN),
             position_nft_id: 58,
-            commit_limit: Uint128::new(100),
             commit_limit_usd: Uint128::new(25_000_000_000), // $25k in 6 decimals
             oracle_addr: Addr::unchecked("oracle0000"),
             oracle_symbol: "BLUECHIP".to_string(),
@@ -411,15 +377,14 @@ fn test_complete_pool_creation_flow() {
             bluechip_address: Addr::unchecked("bluechip"),
             bluechipe_fee: Decimal::percent(1), // 1%
             creator_fee: Decimal::percent(5),   // 5%
-        },
-    };
+        };
 
     let env = mock_env();
     let info = mock_info(ADMIN, &[]);
     instantiate(deps.as_mut(), env.clone(), info, msg).unwrap();
 
     let create_msg = ExecuteMsg::Create {
-        pair_msg: PairInstantiateMsg {
+        pool_msg: CreatePool {
             asset_infos: [
                 AssetInfo::NativeToken {
                     denom: "bluechip".to_string(),
@@ -437,13 +402,10 @@ fn test_complete_pool_creation_flow() {
                 bluechip_fee: Decimal::from_ratio(10u128, 100u128),
                 creator_fee: Decimal::from_ratio(10u128, 100u128),
             },
-            commit_limit: Uint128::new(100),
             commit_limit_usd: Uint128::new(100),
             oracle_addr: Addr::unchecked("oracle0000"),
             oracle_symbol: "ORCL".to_string(),
             token_address: Addr::unchecked("token0000"),
-            available_payment: vec![Uint128::new(100)],
-            available_payment_usd: vec![Uint128::new(100)],
         },
         token_info: TokenInfo {
             name: "Test Token".to_string(),
@@ -488,7 +450,7 @@ fn test_complete_pool_creation_flow() {
         .unwrap();
 
     // Simulate token instantiation reply
-    let token_reply = create_instantiate_reply(INSTANTIATE_TOKEN_REPLY_ID, "token_address");
+    let token_reply = create_instantiate_reply(SET_TOKENS, "token_address");
     let res = reply(deps.as_mut(), env.clone(), token_reply).unwrap();
 
     // Verify token address saved and NFT instantiation triggered
@@ -507,7 +469,7 @@ fn test_complete_pool_creation_flow() {
     );
 
     // Simulate NFT instantiation reply
-    let nft_reply = create_instantiate_reply(INSTANTIATE_NFT_REPLY_ID, "nft_address");
+    let nft_reply = create_instantiate_reply(MINT_CREATE_POOL, "nft_address");
     let res = reply(deps.as_mut(), env.clone(), nft_reply).unwrap();
 
     // Verify NFT address saved and pool instantiation triggered
@@ -526,14 +488,14 @@ fn test_complete_pool_creation_flow() {
     );
 
     // Simulate pool instantiation reply
-    let pool_reply = create_instantiate_reply(INSTANTIATE_POOL_REPLY_ID, "pool_address");
+    let pool_reply = create_instantiate_reply(FINALIZE_POOL, "pool_address");
     let res = reply(deps.as_mut(), env.clone(), pool_reply).unwrap();
 
     // Verify subscription saved
     let creator = Addr::unchecked(ADMIN);
-    let subscribe_info = SUBSCRIBE.load(&deps.storage, &creator.to_string()).unwrap();
-    assert_eq!(subscribe_info.pool_id, pool_id);
-    assert_eq!(subscribe_info.pool_addr, Addr::unchecked("pool_address"));
+    let commit_info = COMMIT.load(&deps.storage, &creator.to_string()).unwrap();
+    assert_eq!(commit_info.pool_id, pool_id);
+    assert_eq!(commit_info.pool_addr, Addr::unchecked("pool_address"));
 
     // Verify pool saved by ID
     let pool_by_id = POOLS_BY_ID.load(&deps.storage, pool_id).unwrap();
@@ -608,10 +570,9 @@ fn test_pair_info() {
 
 #[test]
 fn test_config() {
-    let config = Config {
+    let config = FactoryInstantiate {
         admin: Addr::unchecked("admin1..."),
         position_nft_id: 58,
-        commit_limit: Uint128::new(100),
         commit_limit_usd: Uint128::new(100),
         oracle_addr: Addr::unchecked("oracle0000"),
         oracle_symbol: "ORCL".to_string(),
@@ -638,11 +599,9 @@ fn test_update_config() {
     let mut deps = mock_dependencies(&[]);
 
     // Initialize with first config
-    let msg = OfficialInstantiateMsg {
-        config: Config {
+    let msg = FactoryInstantiate {
             position_nft_id: 58,
             admin: Addr::unchecked("addr0000"),
-            commit_limit: Uint128::new(100),
             commit_limit_usd: Uint128::new(100),
             oracle_addr: Addr::unchecked("oracle0000"),
             oracle_symbol: "ORCL".to_string(),
@@ -651,8 +610,7 @@ fn test_update_config() {
             bluechip_address: Addr::unchecked("bluechip"),
             bluechipe_fee: Decimal::from_ratio(10u128, 100u128),
             creator_fee: Decimal::from_ratio(10u128, 100u128),
-        },
-    };
+        };
 
     let env = mock_env();
     let addr = Addr::unchecked("addr0000");
@@ -663,9 +621,8 @@ fn test_update_config() {
     // Try updating with non-admin
     let unauthorized_info = mock_info("unauthorized", &[]);
     let update_msg = ExecuteMsg::UpdateConfig {
-        config: Config {
+        config: FactoryInstantiate {
             admin: Addr::unchecked("addr0000"),
-            commit_limit: Uint128::new(100),
             position_nft_id: 58,
             commit_limit_usd: Uint128::new(100),
             oracle_addr: Addr::unchecked("oracle0000"),
@@ -701,10 +658,8 @@ fn test_reply_handling() {
     let mut deps = mock_dependencies(&[]);
 
     // Initialize contract
-    let msg = OfficialInstantiateMsg {
-        config: Config {
+   let msg = FactoryInstantiate {
             admin: Addr::unchecked("addr0000"),
-            commit_limit: Uint128::new(100),
             position_nft_id: 58,
             commit_limit_usd: Uint128::new(100),
             oracle_addr: Addr::unchecked("oracle0000"),
@@ -714,8 +669,7 @@ fn test_reply_handling() {
             bluechip_address: Addr::unchecked("bluechip"),
             bluechipe_fee: Decimal::from_ratio(10u128, 100u128),
             creator_fee: Decimal::from_ratio(10u128, 100u128),
-        },
-    };
+        };
 
     let env = mock_env();
     let addr = Addr::unchecked("addr0000");
@@ -743,7 +697,7 @@ fn test_reply_handling() {
         .unwrap();
 
     // Set up other temporary storage
-    let pair_msg = PairInstantiateMsg {
+    let pool_msg = CreatePool {
         asset_infos: [
             AssetInfo::NativeToken {
                 denom: "bluechip".to_string(),
@@ -761,23 +715,20 @@ fn test_reply_handling() {
             bluechip_fee: Decimal::from_ratio(10u128, 100u128),
             creator_fee: Decimal::from_ratio(10u128, 100u128),
         },
-        commit_limit: Uint128::new(100),
         commit_limit_usd: Uint128::new(100),
         oracle_addr: Addr::unchecked("oracle0000"),
         oracle_symbol: "ORCL".to_string(),
         token_address: Addr::unchecked("token0000"),
-        available_payment: vec![Uint128::new(100)],
-        available_payment_usd: vec![Uint128::new(100)],
     };
 
-    TEMPPAIRINFO.save(deps.as_mut().storage, &pair_msg).unwrap();
+    TEMPPAIRINFO.save(deps.as_mut().storage, &pool_msg).unwrap();
     TEMPCREATOR.save(deps.as_mut().storage, &addr).unwrap();
 
     // Create token instantiation reply with events
     let contract_addr = "token_contract_address";
 
     let reply_msg = Reply {
-        id: INSTANTIATE_TOKEN_REPLY_ID, // Use the constant instead of hardcoded 1
+        id: SET_TOKENS, 
         result: SubMsgResult::Ok(SubMsgResponse {
             events: vec![
                 Event::new("instantiate").add_attribute("_contract_address", contract_addr)

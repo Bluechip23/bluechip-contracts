@@ -5,7 +5,6 @@ pub mod mock_querier;
 pub mod msg;
 pub mod pair;
 pub mod query;
-pub mod response;
 pub mod state;
 
 #[cfg(test)]
