@@ -102,10 +102,9 @@ fn test_commit_pre_threshold_basic() {
     // Verify threshold not hit
     assert_eq!(THRESHOLD_HIT.load(&deps.storage).unwrap(), false);
     
-    // Verify subscription created
-    let sub = COMMIT_INFO.load(&deps.storage, &user_addr).unwrap();
-    assert_eq!(sub.total_paid_native, commit_amount);
-    assert_eq!(sub.total_paid_usd, Uint128::new(1_000_000_000));
+    let commiting = COMMIT_INFO.load(&deps.storage, &user_addr).unwrap();
+    assert_eq!(commiting.total_paid_native, commit_amount);
+    assert_eq!(commiting.total_paid_usd, Uint128::new(1_000_000_000));
     
 }
 
@@ -296,7 +295,7 @@ fn test_commit_post_threshold_swap() {
 // $1 with 8 decimals
  // $1
     
-    let info = mock_info("subscriber", &[Coin {
+    let info = mock_info("commiter", &[Coin {
         denom: "stake".to_string(),
         amount: commit_amount,
     }]);

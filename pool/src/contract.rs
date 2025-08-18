@@ -980,26 +980,25 @@ pub fn execute_commit_logic(
                             &env,
                         )?);
 
-                        // Update subscription with threshold portion
                         COMMIT_INFO.update(
                             deps.storage,
                             &sender,
-                            |maybe_sub| -> Result<_, ContractError> {
-                                match maybe_sub {
-                                    Some(mut sub) => {
-                                        sub.total_paid_native += native_to_threshold;
-                                        sub.total_paid_usd += usd_to_threshold;
-                                        sub.last_payment_native = native_to_threshold;
-                                        sub.last_payment_usd = usd_to_threshold;
-                                        sub.last_subscribed = env.block.time;
-                                        Ok(sub)
+                            |maybe_commiting| -> Result<_, ContractError> {
+                                match maybe_commiting {
+                                    Some(mut commit) => {
+                                        commit.total_paid_native += native_to_threshold;
+                                        commit.total_paid_usd += usd_to_threshold;
+                                        commit.last_payment_native = native_to_threshold;
+                                        commit.last_payment_usd = usd_to_threshold;
+                                        commit.last_commited = env.block.time;
+                                        Ok(commit)
                                     }
                                     None => Ok(Commiting {
                                         pool_id: pool_info.pool_id,
-                                        subscriber: sender.clone(),
+                                        commiter: sender.clone(),
                                         total_paid_native: native_to_threshold,
                                         total_paid_usd: usd_to_threshold,
-                                        last_subscribed: env.block.time,
+                                        last_commited: env.block.time,
                                         last_payment_native: native_to_threshold,
                                         last_payment_usd: usd_to_threshold,
                                     }),
@@ -1071,17 +1070,16 @@ pub fn execute_commit_logic(
                                 );
                             }
 
-                            // Update subscription with swap portion
                             COMMIT_INFO.update(
                                 deps.storage,
                                 &sender,
-                                |maybe_sub| -> Result<_, ContractError> {
-                                    if let Some(mut sub) = maybe_sub {
-                                        sub.total_paid_native += native_excess;
-                                        sub.total_paid_usd += usd_excess;
-                                        Ok(sub)
+                                |maybe_commiting| -> Result<_, ContractError> {
+                                    if let Some(mut commiting) = maybe_commiting {
+                                        commiting.total_paid_native += native_excess;
+                                        commiting.total_paid_usd += usd_excess;
+                                        Ok(commiting)
                                     } else {
-                                        unreachable!("Subscription was created above")
+                                        unreachable!("Commit was created above")
                                     }
                                 },
                             )?;
@@ -1142,26 +1140,25 @@ pub fn execute_commit_logic(
                             &env,
                         )?);
 
-                        // Update subscription
                         COMMIT_INFO.update(
                             deps.storage,
                             &sender,
-                            |maybe_sub| -> Result<_, ContractError> {
-                                match maybe_sub {
-                                    Some(mut sub) => {
-                                        sub.total_paid_native += asset.amount;
-                                        sub.total_paid_usd += usd_value;
-                                        sub.last_payment_native = asset.amount;
-                                        sub.last_payment_usd = usd_value;
-                                        sub.last_subscribed = env.block.time;
-                                        Ok(sub)
+                            |maybe_commiting| -> Result<_, ContractError> {
+                                match maybe_commiting {
+                                    Some(mut commiting) => {
+                                        commiting.total_paid_native += asset.amount;
+                                        commiting.total_paid_usd += usd_value;
+                                        commiting.last_payment_native = asset.amount;
+                                        commiting.last_payment_usd = usd_value;
+                                        commiting.last_commited = env.block.time;
+                                        Ok(commiting)
                                     }
                                     None => Ok(Commiting {
                                         pool_id: pool_info.pool_id,
-                                        subscriber: sender.clone(),
+                                        commiter: sender.clone(),
                                         total_paid_native: asset.amount,
                                         total_paid_usd: usd_value,
-                                        last_subscribed: env.block.time,
+                                        last_commited: env.block.time,
                                         last_payment_native: asset.amount,
                                         last_payment_usd: usd_value,
                                     }),
@@ -1224,26 +1221,25 @@ fn process_pre_threshold_commit(
     let usd_total = USD_RAISED.update::<_, ContractError>(deps.storage, |r| Ok(r + usd_value))?;
     COMMITSTATUS.save(deps.storage, &usd_total)?;
 
-    // Update subscription
     COMMIT_INFO.update(
         deps.storage,
         &sender,
-        |maybe_sub| -> Result<_, ContractError> {
-            match maybe_sub {
-                Some(mut sub) => {
-                    sub.total_paid_native += asset.amount;
-                    sub.total_paid_usd += usd_value;
-                    sub.last_payment_native = asset.amount;
-                    sub.last_payment_usd = usd_value;
-                    sub.last_subscribed = env.block.time;
-                    Ok(sub)
+        |maybe_commiting| -> Result<_, ContractError> {
+            match maybe_commiting {
+                Some(mut commiting) => {
+                    commiting.total_paid_native += asset.amount;
+                    commiting.total_paid_usd += usd_value;
+                    commiting.last_payment_native = asset.amount;
+                    commiting.last_payment_usd = usd_value;
+                    commiting.last_commited = env.block.time;
+                    Ok(commiting)
                 }
                 None => Ok(Commiting {
                     pool_id: pool_info.pool_id,
-                    subscriber: sender.clone(),
+                    commiter: sender.clone(),
                     total_paid_native: asset.amount,
                     total_paid_usd: usd_value,
-                    last_subscribed: env.block.time,
+                    last_commited: env.block.time,
                     last_payment_native: asset.amount,
                     last_payment_usd: usd_value,
                 }),
@@ -1328,26 +1324,25 @@ fn process_post_threshold_commit(
         );
     }
 
-    // Record/extend subscription
     COMMIT_INFO.update(
         deps.storage,
         &sender,
-        |maybe_sub| -> Result<_, ContractError> {
-            match maybe_sub {
-                Some(mut sub) => {
-                    sub.total_paid_native += asset.amount;
-                    sub.total_paid_usd += usd_value;
-                    sub.last_payment_native = asset.amount;
-                    sub.last_payment_usd = usd_value;
-                    sub.last_subscribed = env.block.time;
-                    Ok(sub)
+        |maybe_commiting| -> Result<_, ContractError> {
+            match maybe_commiting {
+                Some(mut commiting) => {
+                    commiting.total_paid_native += asset.amount;
+                    commiting.total_paid_usd += usd_value;
+                    commiting.last_payment_native = asset.amount;
+                    commiting.last_payment_usd = usd_value;
+                    commiting.last_commited = env.block.time;
+                    Ok(commiting)
                 }
                 None => Ok(Commiting {
                     pool_id: pool_info.pool_id,
-                    subscriber: sender.clone(),
+                    commiter: sender.clone(),
                     total_paid_native: asset.amount,
                     total_paid_usd: usd_value,
-                    last_subscribed: env.block.time,
+                    last_commited: env.block.time,
                     last_payment_native: asset.amount,
                     last_payment_usd: usd_value,
                 }),
@@ -2770,7 +2765,7 @@ pub fn query(deps: Deps, env: Env, msg: QueryMsg) -> StdResult<Binary> {
             after_timestamp,
             start_after,
             limit,
-        } => to_json_binary(&query_pool_subscribers(
+        } => to_json_binary(&query_pool_commiters(
             deps,
             pool_id,
             min_payment_usd,
@@ -2794,11 +2789,11 @@ pub fn query(deps: Deps, env: Env, msg: QueryMsg) -> StdResult<Binary> {
         QueryMsg::LastCommited { wallet } => {
             let addr = deps.api.addr_validate(&wallet)?;
             let response = match COMMIT_INFO.may_load(deps.storage, &addr)? {
-                Some(sub) => LastCommitedResponse {
+                Some(commiting) => LastCommitedResponse {
                     has_commited: true,
-                    last_commited: Some(sub.last_subscribed),
-                    last_payment_native: Some(sub.last_payment_native),
-                    last_payment_usd: Some(sub.last_payment_usd),
+                    last_commited: Some(commiting.last_commited),
+                    last_payment_native: Some(commiting.last_payment_native),
+                    last_payment_usd: Some(commiting.last_payment_usd),
                 },
                 None => LastCommitedResponse {
                     has_commited: false,
@@ -2815,7 +2810,7 @@ pub fn query(deps: Deps, env: Env, msg: QueryMsg) -> StdResult<Binary> {
         QueryMsg::IsFullyCommited {} => to_json_binary(&query_check_threshold_limit(deps)?),
         QueryMsg::CommitingInfo { wallet } => {
             let addr = deps.api.addr_validate(&wallet)?;
-            let info = COMMIT_INFO.may_load(deps.storage, &addr)?; // Option<Subscription>
+            let info = COMMIT_INFO.may_load(deps.storage, &addr)?;
             to_json_binary(&info)
         }
     }
@@ -3092,7 +3087,7 @@ fn query_pool_info(deps: Deps) -> StdResult<PoolInfoResponse> {
     })
 }
 
-fn query_pool_subscribers(
+fn query_pool_commiters(
     deps: Deps,
     pool_id: u64,
     min_payment_usd: Option<Uint128>,
@@ -3114,32 +3109,32 @@ fn query_pool_subscribers(
 
     
     for item in COMMIT_INFO.range(deps.storage, start, None, Order::Ascending) {
-        let (subscriber_addr, sub) = item?;
+        let (commiter_addr, commiting) = item?;
 
         // Filter by pool_id
-        if sub.pool_id != pool_id {
+        if commiting.pool_id != pool_id {
             continue;
         }
 
         // Apply optional filters
         if let Some(min_usd) = min_payment_usd {
-            if sub.last_payment_usd < min_usd {
+            if commiting.last_payment_usd < min_usd {
                 continue;
             }
         }
 
         if let Some(after_ts) = after_timestamp {
-            if sub.last_subscribed.seconds() < after_ts {
+            if commiting.last_commited.seconds() < after_ts {
                 continue;
             }
         }
 
         commiters.push(CommiterInfo {
-            wallet: subscriber_addr.to_string(),
-            last_payment_native: sub.last_payment_native,
-            last_payment_usd: sub.last_payment_usd,
-            last_commited: sub.last_subscribed,
-            total_paid_usd: sub.total_paid_usd,
+            wallet: commiter_addr.to_string(),
+            last_payment_native: commiting.last_payment_native,
+            last_payment_usd: commiting.last_payment_usd,
+            last_commited: commiting.last_commited,
+            total_paid_usd: commiting.total_paid_usd,
         });
 
         count += 1;
