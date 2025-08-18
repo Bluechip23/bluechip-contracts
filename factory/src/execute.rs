@@ -24,9 +24,9 @@ use cw721_base::Action;
 const CONTRACT_NAME: &str = "bluechip_factory";
 const CONTRACT_VERSION: &str = env!("CARGO_PKG_VERSION");
 
-const INSTANTIATE_TOKEN_REPLY_ID: u64 = 1;
-const INSTANTIATE_NFT_REPLY_ID: u64 = 3;
-const INSTANTIATE_POOL_REPLY_ID: u64 = 2;
+const SET_TOKENS: u64 = 1;
+const MINT_CREATE_POOL: u64 = 2;
+const FINALIZE_POOL: u64 = 3;
 
 #[cfg_attr(not(feature = "library"), entry_point)]
 //Pools use the factory as almost a launch pad. I guess the best way to think of it is as a literal factory. 
@@ -72,7 +72,7 @@ pub fn execute(
     msg: ExecuteMsg,
 ) -> Result<Response, ContractError> {
     match msg {
-        //edit factory parameters - only bluechip can (updates etc) - does not touch existing pools unless we do a chain wide change
+        //edit factory parameters - only bluechip can - does not touch existing pools unless we do a chain wide change
         ExecuteMsg::UpdateConfig { config } => execute_update_config(deps, info, config),
         //creates new pool
         ExecuteMsg::Create {
@@ -80,6 +80,20 @@ pub fn execute(
             token_info,
         } => execute_create(deps, env, info, create_pool_msg, token_info),
     }
+}
+
+//make sure the factory sent the message to instantiate the pool
+fn assert_is_admin(deps: Deps, info: MessageInfo) -> StdResult<bool> {
+    let config = CONFIG.load(deps.storage)?;
+
+    if info.sender != config.admin {
+        return Err(StdError::generic_err(format!(
+            "Only the admin can execute this function. Admin: {}, Sender: {}",
+            config.admin, info.sender
+        )));
+    }
+
+    Ok(true)
 }
 
 fn execute_update_config(
@@ -133,8 +147,8 @@ fn execute_create(
         admin: Some(info.sender.to_string()),
         label: token_info.name,
     };
-
-    let sub_msg = vec![SubMsg::reply_on_success(msg, INSTANTIATE_TOKEN_REPLY_ID)];
+//triggers reply function when things go well.
+    let sub_msg = vec![SubMsg::reply_on_success(msg, SET_TOKENS)];
 
     Ok(Response::new()
         .add_attribute("action", "create")
@@ -143,12 +157,14 @@ fn execute_create(
 }
 
 #[entry_point]
+//called by execute create.
 pub fn reply(deps: DepsMut, env: Env, msg: Reply) -> Result<Response, ContractError> {
+    let factory_addr = env.contract.address.clone();
     match msg.id {
-        INSTANTIATE_TOKEN_REPLY_ID => {
+        SET_TOKENS => {
             let config = CONFIG.load(deps.storage)?;
 
-            // Extract token address from reply
+            // extract token address from reply
             let token_address = match msg.result {
                 SubMsgResult::Ok(result) => {
                     let contract_addr = result
@@ -190,12 +206,13 @@ pub fn reply(deps: DepsMut, env: Env, msg: Reply) -> Result<Response, ContractEr
             let nft_msg = WasmMsg::Instantiate {
                 code_id: config.position_nft_id,
                 msg: nft_instantiate_msg,
+                //no initial NFTs since no positions have been created yet
                 funds: vec![],
-                admin: None,
+                admin: Some(factory_addr.to_string()),
                 label: format!("AMM-LP-NFT-{}", token_address),
             };
 
-            let sub_msg = SubMsg::reply_on_success(nft_msg, INSTANTIATE_NFT_REPLY_ID);
+            let sub_msg = SubMsg::reply_on_success(nft_msg, MINT_CREATE_POOL);
 
             Ok(Response::new()
                 .add_attribute("action", "instantiate_token_reply")
@@ -203,7 +220,7 @@ pub fn reply(deps: DepsMut, env: Env, msg: Reply) -> Result<Response, ContractEr
                 .add_submessage(sub_msg))
         }
 
-        INSTANTIATE_NFT_REPLY_ID => {
+        MINT_CREATE_POOL => {
             let config = CONFIG.load(deps.storage)?;
             let temp_pool_info = TEMPPOOLINFO.load(deps.storage)?;
             let temp_creator = TEMPCREATOR.load(deps.storage)?;
@@ -238,7 +255,7 @@ pub fn reply(deps: DepsMut, env: Env, msg: Reply) -> Result<Response, ContractEr
 
             // Save NFT address
             TEMPNFTADDR.save(deps.storage, &nft_address)?;
-
+            //set threshold payouts for threshold crossing
             let threshold_payout = ThresholdPayout {
                 creator_amount: Uint128::new(325_000_000_000),
                 bluechip_amount: Uint128::new(25_000_000_000),
@@ -278,11 +295,11 @@ pub fn reply(deps: DepsMut, env: Env, msg: Reply) -> Result<Response, ContractEr
                     position_nft_address: nft_address.clone(),
                 })?,
                 funds: vec![],
-                admin: None,
+                admin: Some(factory_addr.to_string()),
                 label: "Pair".to_string(),
             };
 
-            let sub_msg = SubMsg::reply_on_success(pool_msg, INSTANTIATE_POOL_REPLY_ID);
+            let sub_msg = SubMsg::reply_on_success(pool_msg, FINALIZE_POOL);
 
             Ok(Response::new()
                 .add_attribute("action", "instantiate_nft_reply")
@@ -290,13 +307,12 @@ pub fn reply(deps: DepsMut, env: Env, msg: Reply) -> Result<Response, ContractEr
                 .add_submessage(sub_msg))
         }
 
-        INSTANTIATE_POOL_REPLY_ID => {
-            // Your existing pool reply code - just add NFT minter update
+        FINALIZE_POOL => {
             let temp_creator = TEMPCREATOR.load(deps.storage)?;
             let temp_token_address = TEMPTOKENADDR.load(deps.storage)?;
             let temp_nft_address = TEMPNFTADDR.load(deps.storage)?;
             let pool_id = TEMPPOOLID.load(deps.storage)?;
-
+            //extract pool address
             let pool_address = match msg.result {
                 SubMsgResult::Ok(result) => {
                     let contract_addr = result
@@ -325,7 +341,7 @@ pub fn reply(deps: DepsMut, env: Env, msg: Reply) -> Result<Response, ContractEr
                 }
             };
 
-            // Save commit info
+            // create commit parameters
             let commit_info = CommitInfo {
                 pool_id, // Include the pool_id
                 creator: temp_creator.clone(),
@@ -333,12 +349,13 @@ pub fn reply(deps: DepsMut, env: Env, msg: Reply) -> Result<Response, ContractEr
                 pool_addr: pool_address.clone(),
             };
 
-            // Save by creator address (existing)
+            // save commit state to record future commit executions
             COMMIT.save(deps.storage, &temp_creator.to_string(), &commit_info)?;
 
             // save pool id for queries
             POOLS_BY_ID.save(deps.storage, pool_id, &commit_info)?;
-            // make pool cw20 and cw721 (nft) minter for future responsibilities after crossing
+            // make pool cw20 and cw721 (nft) minter for threshold payout - compartmentalizes pools so they can run without factory.
+            //1 factory for all pools instead of 1 factory 1 pool
             let update_token_minter = WasmMsg::Execute {
                 contract_addr: temp_token_address.to_string(),
                 msg: to_json_binary(&Cw20ExecuteMsg::UpdateMinter {
@@ -346,7 +363,7 @@ pub fn reply(deps: DepsMut, env: Env, msg: Reply) -> Result<Response, ContractEr
                 })?,
                 funds: vec![],
             };
-            let update_nft_ownership = WasmMsg::Execute {
+            let update_nft_minter = WasmMsg::Execute {
                 contract_addr: temp_nft_address.to_string(),
                 msg: to_json_binary(&cw721_base::ExecuteMsg::<Empty, Empty>::UpdateOwnership(
                     Action::TransferOwnership {
@@ -356,7 +373,6 @@ pub fn reply(deps: DepsMut, env: Env, msg: Reply) -> Result<Response, ContractEr
                 ))?,
                 funds: vec![],
             };
-            // Clean up temp storage
             TEMPPOOLID.remove(deps.storage);
             TEMPPOOLINFO.remove(deps.storage);
             TEMPCREATOR.remove(deps.storage);
@@ -365,7 +381,7 @@ pub fn reply(deps: DepsMut, env: Env, msg: Reply) -> Result<Response, ContractEr
 
             Ok(Response::new()
                 .add_message(update_token_minter)
-                .add_message(update_nft_ownership)
+                .add_message(update_nft_minter)
                 .add_attribute("action", "instantiate_pool_reply")
                 .add_attribute("pool_address", pool_address)
                 .add_attribute("pool_id", pool_id.to_string()))
@@ -375,15 +391,3 @@ pub fn reply(deps: DepsMut, env: Env, msg: Reply) -> Result<Response, ContractEr
     }
 }
 
-fn assert_is_admin(deps: Deps, info: MessageInfo) -> StdResult<bool> {
-    let config = CONFIG.load(deps.storage)?;
-
-    if info.sender != config.admin {
-        return Err(StdError::generic_err(format!(
-            "Only the admin can execute this function. Admin: {}, Sender: {}",
-            config.admin, info.sender
-        )));
-    }
-
-    Ok(true)
-}
