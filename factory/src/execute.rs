@@ -3,12 +3,12 @@ use std::env;
 use crate::asset::AssetInfo;
 use crate::error::ContractError;
 use crate::msg::{
-    CreatePoolReplyMsg, ExecuteMsg, FeeInfo, MigrateMsg, TokenInfo,
+    CreatePoolReplyMsg, ExecuteMsg, MigrateMsg, TokenInfo,
     TokenInstantiateMsg,
 };
-use crate::pair::{CreatePool, ThresholdPayout};
+use crate::pair::{CreatePool, FeeInfo, ThresholdPayout};
 use crate::state::{
-    FactoryInstantiate, SubscribeInfo, CONFIG, NEXT_POOL_ID, POOLS_BY_ID, SUBSCRIBE, TEMPCREATOR, TEMPNFTADDR,
+    FactoryInstantiate, CommitInfo, CONFIG, NEXT_POOL_ID, POOLS_BY_ID, COMMIT, TEMPCREATOR, TEMPNFTADDR,
     TEMPPOOLINFO, TEMPPOOLID, TEMPTOKENADDR,
 };
 #[cfg(not(feature = "library"))]
@@ -18,7 +18,7 @@ use cosmwasm_std::{
     StdError, StdResult, SubMsg, SubMsgResult, Uint128, WasmMsg,
 };
 use cw20::{Cw20ExecuteMsg, MinterResponse};
-use cw721_base::msg::InstantiateMsg;
+use cw721_base::msg::InstantiateMsg as NFTPositionInstantiate;
 use cw721_base::Action;
 
 const CONTRACT_NAME: &str = "bluechip_factory";
@@ -103,7 +103,7 @@ fn execute_create(
 ) -> Result<Response, ContractError> {
     assert_is_admin(deps.as_ref(), info.clone())?;
     let config = CONFIG.load(deps.storage)?;
-    let sender = info.sender;
+    let sender = &info.sender;
     let pool_id = NEXT_POOL_ID.load(deps.storage)?;
     //incriments next pool
     NEXT_POOL_ID.save(deps.storage, &(pool_id + 1))?;
@@ -114,6 +114,7 @@ fn execute_create(
     TEMPCREATOR.save(deps.storage, &sender)?;
     let msg = WasmMsg::Instantiate {
         code_id: config.token_id,
+        //creating the creator tokens - they are not minted yet. Simply created. Factory hands the minting responsibilities to pool. 
         msg: to_json_binary(&TokenInstantiateMsg {
             name: token_info.name.clone(),
             symbol: token_info.symbol.clone(),
@@ -121,12 +122,15 @@ fn execute_create(
             initial_balances: vec![],
             mint: Some(MinterResponse {
                 minter: env.contract.address.to_string(),
-                cap: None,
+                //amount minted after threshold.
+                cap: Some(Uint128::new(1_200_000u128)),
             }),
             marketing: None,
         })?,
+        //no initial balance. waits until threshold is crossed to mint creator tokens. 
         funds: vec![],
-        admin: None,
+        //the factory is the admin to the pool so it can call upgrades to the pools as the chain advances. 
+        admin: Some(info.sender.to_string()),
         label: token_info.name,
     };
 
@@ -176,8 +180,8 @@ pub fn reply(deps: DepsMut, env: Env, msg: Reply) -> Result<Response, ContractEr
             // Save token address
             TEMPTOKENADDR.save(deps.storage, &token_address)?;
 
-            // Create NFT instantiate message
-            let nft_instantiate_msg = to_json_binary(&InstantiateMsg {
+            //NFT instantiate message
+            let nft_instantiate_msg = to_json_binary(&NFTPositionInstantiate {
                 name: "AMM LP Positions".to_string(),
                 symbol: "AMM-LP".to_string(),
                 minter: env.contract.address.to_string(),
@@ -235,14 +239,13 @@ pub fn reply(deps: DepsMut, env: Env, msg: Reply) -> Result<Response, ContractEr
             // Save NFT address
             TEMPNFTADDR.save(deps.storage, &nft_address)?;
 
-            // Prepare pool instantiation (your existing code)
-            let pool_init_params = ThresholdPayout {
+            let threshold_payout = ThresholdPayout {
                 creator_amount: Uint128::new(325_000_000_000),
                 bluechip_amount: Uint128::new(25_000_000_000),
                 pool_amount: Uint128::new(350_000_000_000),
                 commit_amount: Uint128::new(500_000_000_000),
             };
-            let pool_params_json = to_json_binary(&pool_init_params)?;
+            let threshold_payout = to_json_binary(&threshold_payout)?;
 
             let mut updated_asset_infos = temp_pool_info.asset_infos;
             for asset_info in updated_asset_infos.iter_mut() {
@@ -261,7 +264,7 @@ pub fn reply(deps: DepsMut, env: Env, msg: Reply) -> Result<Response, ContractEr
                     asset_infos: updated_asset_infos,
                     factory_addr: env.contract.address,
                     token_code_id: config.token_id,
-                    init_params: Some(pool_params_json),
+                    threshold_payout: Some(threshold_payout),
                     fee_info: FeeInfo {
                         bluechip_address: config.bluechip_address.clone(),
                         creator_address: temp_creator.clone(),
@@ -322,8 +325,8 @@ pub fn reply(deps: DepsMut, env: Env, msg: Reply) -> Result<Response, ContractEr
                 }
             };
 
-            // Save subscribe info
-            let subscribe_info = SubscribeInfo {
+            // Save commit info
+            let commit_info = CommitInfo {
                 pool_id, // Include the pool_id
                 creator: temp_creator.clone(),
                 token_addr: temp_token_address.clone(),
@@ -331,10 +334,10 @@ pub fn reply(deps: DepsMut, env: Env, msg: Reply) -> Result<Response, ContractEr
             };
 
             // Save by creator address (existing)
-            SUBSCRIBE.save(deps.storage, &temp_creator.to_string(), &subscribe_info)?;
+            COMMIT.save(deps.storage, &temp_creator.to_string(), &commit_info)?;
 
             // save pool id for queries
-            POOLS_BY_ID.save(deps.storage, pool_id, &subscribe_info)?;
+            POOLS_BY_ID.save(deps.storage, pool_id, &commit_info)?;
             // make pool cw20 and cw721 (nft) minter for future responsibilities after crossing
             let update_token_minter = WasmMsg::Execute {
                 contract_addr: temp_token_address.to_string(),

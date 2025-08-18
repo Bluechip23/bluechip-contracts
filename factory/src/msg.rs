@@ -1,20 +1,13 @@
 use cosmwasm_schema::cw_serde;
-use cosmwasm_std::{Addr, Binary, Decimal, Uint128};
+use cosmwasm_std::{Addr, Binary, Uint128};
 
 use cw20::{Cw20Coin, MinterResponse};
 use cw20_base::msg::InstantiateMarketingInfo;
 
 use crate::asset::AssetInfo;
-use crate::pair::CreatePool;
+use crate::pair::{CreatePool, FeeInfo};
 use crate::state::{FactoryInstantiate};
 
-#[cw_serde]
-pub struct FeeInfo {
-    pub bluechip_address: Addr,
-    pub creator_address: Addr,
-    pub bluechip_fee: Decimal,
-    pub creator_fee: Decimal,
-}
 
 #[cw_serde]
 pub struct CreatePoolReplyMsg {
@@ -25,8 +18,8 @@ pub struct CreatePoolReplyMsg {
     pub token_code_id: u64,
     /// The factory contract address
     pub factory_addr: Addr,
-    /// Optional binary serialised parameters for custom pool types
-    pub init_params: Option<Binary>,
+    pub threshold_payout: Option<Binary>,
+    //fees to bluechip and creator
     pub fee_info: FeeInfo,
     pub commit_limit_usd: Uint128,
     pub oracle_addr: Addr,
@@ -67,7 +60,7 @@ pub struct TokenInstantiateMsg {
     pub decimals: u8,
     /// Initial token balances
     pub initial_balances: Vec<Cw20Coin>,
-    
+    //token minting information
     pub mint: Option<MinterResponse>,
 
     pub marketing: Option<InstantiateMarketingInfo>,

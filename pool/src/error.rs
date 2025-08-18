@@ -15,7 +15,7 @@ pub enum ContractError {
     #[error("Reentrancy detected")]
     ReentrancyGuard {},
 
-    #[error("You can not swap until the threshold is crossed. You must subscribe to transact with this pool")]
+    #[error("You can not swap until the threshold is crossed. You must use the commit transaction with this pool")]
     ShortOfThreshold {},
 
     #[error("You are trying to commit too frequently.")]

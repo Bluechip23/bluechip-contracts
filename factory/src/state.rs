@@ -9,9 +9,9 @@ pub const TEMPCREATOR: Item<Addr> = Item::new("temp_admin");
 pub const TEMPPOOLID: Item<u64> = Item::new("temp_pool_id");
 pub const TEMPTOKENADDR: Item<Addr> = Item::new("temp_token_addr");
 pub const TEMPNFTADDR: Item<Addr> = Item::new("temp_nft_addr");
-pub const SUBSCRIBE: Map<&str, SubscribeInfo> = Map::new("subscription_info");
+pub const COMMIT: Map<&str, CommitInfo> = Map::new("subscription_info");
 pub const NEXT_POOL_ID: Item<u64> = Item::new("next_pool_id");
-pub const POOLS_BY_ID: Map<u64, SubscribeInfo> = Map::new("pools_by_id");
+pub const POOLS_BY_ID: Map<u64, CommitInfo> = Map::new("pools_by_id");
 
 #[cw_serde]
 pub struct FactoryInstantiate {
@@ -32,7 +32,7 @@ pub struct FactoryInstantiate {
 }
 
 #[cw_serde]
-pub struct SubscribeInfo {
+pub struct CommitInfo {
     pub pool_id: u64,
     pub creator: Addr,
     pub token_addr: Addr,
