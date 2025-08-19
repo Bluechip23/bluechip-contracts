@@ -2,9 +2,7 @@
 use std::str::FromStr;
 
 use cosmwasm_std::{
-    testing::{mock_dependencies, mock_env, mock_info, MockApi, MockQuerier, MockStorage, MOCK_CONTRACT_ADDR}, 
-    to_json_binary, Addr, BankMsg, Binary, Coin, ContractResult, CosmosMsg, Decimal, OwnedDeps, SystemError, 
-    SystemResult, Timestamp, Uint128, WasmMsg, WasmQuery
+    testing::{mock_dependencies, mock_env, mock_info, MockApi, MockQuerier, MockStorage, MOCK_CONTRACT_ADDR}, to_json_binary, Addr, BankMsg, Binary, Coin, ContractResult, CosmosMsg, Decimal, Order, OwnedDeps, SystemError, SystemResult, Timestamp, Uint128, WasmMsg, WasmQuery
 };
 use cw20::Cw20ReceiveMsg;
 use cw721::OwnerOfResponse;
@@ -13,12 +11,12 @@ use crate::{asset::PairType,
     msg::{Cw20HookMsg, FeeInfo, PoolInstantiateMsg}, 
     oracle::PriceResponse, 
     state::{CommitInfo, OracleInfo, PoolFeeState, PoolInfo, PoolSpecs, PoolState, ThresholdPayout, COMMITSTATUS, 
-        COMMIT_CONFIG, FEEINFO, LIQUIDITY_POSITIONS, NATIVE_RAISED, ORACLE_INFO, POOL_INFO, POOL_SPECS, THRESHOLD_PAYOUT
+        COMMIT_CONFIG, FEEINFO, LIQUIDITY_POSITIONS, NATIVE_RAISED, ORACLE_INFO, POOL_INFO, POOL_SPECS, THRESHOLD_PAYOUT, THRESHOLD_PROCESSING
     }};
 use crate::msg::ExecuteMsg;
 use crate::state::{
-    THRESHOLD_HIT, USD_RAISED, COMMIT_LEDGER, REENTRANCY_GUARD,
-    SUB_INFO, POOL_STATE, POOL_FEE_STATE, Position, NEXT_POSITION_ID, PairInfo
+    THRESHOLD_HIT, USD_RAISED, COMMIT_LEDGER, RATE_LIMIT_GUARD,
+    COMMIT_INFO, POOL_STATE, POOL_FEE_STATE, Position, NEXT_POSITION_ID, PairInfo
 };
 use crate::error::ContractError;
 use crate::asset::{Asset, AssetInfo};
@@ -32,7 +30,7 @@ fn mock_dependencies_with_balance(balances: &[Coin]) -> OwnedDeps<MockStorage, M
 }
     
     // Removed as_ref: OwnedDeps expects owned types, not references.
-fn with_oracle_price(deps: &mut OwnedDeps<MockStorage, MockApi, MockQuerier>, price: i64, publish_time: u64, expo: i32, conf: Uint128 ) {
+fn with_oracle_price(deps: &mut OwnedDeps<MockStorage, MockApi, MockQuerier>, price: Uint128, publish_time: u64, expo: i32, conf: Uint128 ) {
     deps.querier.update_wasm(move |query| {
         match query {
             WasmQuery::Smart { contract_addr, msg } => {
@@ -68,7 +66,7 @@ fn test_commit_pre_threshold_basic() {
     let commit_amount = Uint128::new(1_000_000_000); // 1k bluechip
     
     // Mock oracle response for $1 per bluechip
-    with_oracle_price(&mut deps,  100_000_000, 10000000000000, -8, Uint128::new(100_000),);// $1 with 8 decimals
+    with_oracle_price(&mut deps,  Uint128::new(100_000_000), 10000000000000, -8, Uint128::new(100_000),);// $1 with 8 decimals
 
     
     let info = mock_info("user1", &[Coin {
@@ -83,6 +81,8 @@ fn test_commit_pre_threshold_basic() {
         },
         amount: commit_amount,
         deadline: None,
+        belief_price: None,
+        max_spread: None,
     };
     
     let res = execute(deps.as_mut(), env.clone(), info, msg).unwrap();
@@ -102,30 +102,141 @@ fn test_commit_pre_threshold_basic() {
     // Verify threshold not hit
     assert_eq!(THRESHOLD_HIT.load(&deps.storage).unwrap(), false);
     
-    // Verify subscription created
-    let sub = SUB_INFO.load(&deps.storage, &user_addr).unwrap();
-    assert_eq!(sub.total_paid_native, commit_amount);
-    assert_eq!(sub.total_paid_usd, Uint128::new(1_000_000_000));
+    let commiting = COMMIT_INFO.load(&deps.storage, &user_addr).unwrap();
+    assert_eq!(commiting.total_paid_native, commit_amount);
+    assert_eq!(commiting.total_paid_usd, Uint128::new(1_000_000_000));
     
 }
 
 #[test]
-fn test_commit_crosses_threshold() {
-      let mut deps = mock_dependencies_with_balance(&[Coin {
+fn test_race_condition_commits_crossing_threshold() {
+    let mut deps = mock_dependencies_with_balance(&[Coin {
         denom: "stake".to_string(),
-        amount: Uint128::new(10_000_000_000), // 10k tokens - enough for all transfers
+        amount: Uint128::new(20_000_000_000),
     }]);
+
     setup_pool_storage(&mut deps);
+    THRESHOLD_PROCESSING.save(&mut deps.storage, &false).unwrap();
+
+    // Just below threshold
+    USD_RAISED.save(&mut deps.storage, &Uint128::new(24_900_000_000)).unwrap();
+
+    // Mock oracle: $1 per token
+    with_oracle_price(
+        &mut deps, 
+        Uint128::new(100_000_000),  
+        10000000000000, 
+        -8, 
+        Uint128::new(100_000),
+    );
+
+    let commit_amount = Uint128::new(200_000_000); // $200 per commit
+    let env = mock_env();
+
+    // -------- First Commit --------
+    let info1 = mock_info("alice", &[Coin {
+        denom: "stake".to_string(),
+        amount: commit_amount,
+    }]);
+    let msg1 = ExecuteMsg::Commit {
+        asset: Asset {
+            info: AssetInfo::NativeToken { denom: "stake".to_string() },
+            amount: commit_amount,
+        },
+        amount: commit_amount,
+        deadline: None,
+        belief_price: None,
+        max_spread: None,
+    };
+
+    // Run first commit
+    let res1 = execute(deps.as_mut(), env.clone(), info1, msg1).unwrap();
+    println!(
+        "[Commit 1] USD_RAISED: {}, THRESHOLD_HIT: {}, THRESHOLD_PROCESSING: {}, Attributes: {:?}",
+        USD_RAISED.load(&deps.storage).unwrap(),
+        THRESHOLD_HIT.load(&deps.storage).unwrap(),
+        THRESHOLD_PROCESSING.load(&deps.storage).unwrap(),
+        res1.attributes
+    );
+
+    assert!(res1.attributes.iter().any(|a| a.value == "threshold_crossing"));
+    assert_eq!(THRESHOLD_HIT.load(&deps.storage).unwrap(), true);
+    // --- Simulate race: threshold processing still TRUE ---
+    THRESHOLD_PROCESSING.save(&mut deps.storage, &true).unwrap();
+    println!(
+        "Simulated race -> USD_RAISED: {}, THRESHOLD_HIT: {}, THRESHOLD_PROCESSING: {}",
+        USD_RAISED.load(&deps.storage).unwrap(),
+        THRESHOLD_HIT.load(&deps.storage).unwrap(),
+        THRESHOLD_PROCESSING.load(&deps.storage).unwrap()
+    );
+    // -------- Second Commit (same block) --------
+    let info2 = mock_info("bob", &[Coin {
+        denom: "stake".to_string(),
+        amount: commit_amount,
+    }]);
+let msg2 = ExecuteMsg::Commit {
+    asset: Asset {
+        info: AssetInfo::NativeToken { denom: "stake".to_string() },
+        amount: commit_amount,
+    },
+    amount: commit_amount,
+    deadline: None,
+    belief_price: None,
+    max_spread: Some(Decimal::percent(50)), // 100% tolerance
+};
+    let res2 = execute(deps.as_mut(), env.clone(), info2, msg2).unwrap();
+    println!(
+        "[Commit 2] USD_RAISED: {}, THRESHOLD_HIT: {}, THRESHOLD_PROCESSING: {}, Attributes: {:?}",
+        USD_RAISED.load(&deps.storage).unwrap(),
+        THRESHOLD_HIT.load(&deps.storage).unwrap(),
+        THRESHOLD_PROCESSING.load(&deps.storage).unwrap(),
+        res2.attributes
+    );
+
+    assert!(
+        res2.attributes.iter().all(|a| a.value != "threshold_crossing"),
+        "Second commit should not run threshold logic while THRESHOLD_PROCESSING is true"
+    );
+    // Second commit should NOT trigger threshold crossing
+    assert!(
+        res2.attributes.iter().all(|a| a.value != "threshold_crossing"),
+        "Second commit should not run threshold logic while THRESHOLD_PROCESSING is true"
+    );
+
+    // At the end, reset processing flag manually for cleanup
+    THRESHOLD_PROCESSING.save(&mut deps.storage, &false).unwrap();
+}
+
+
+#[test]
+fn test_commit_crosses_threshold() {
+    let mut deps = mock_dependencies_with_balance(&[Coin {
+        denom: "stake".to_string(),
+        amount: Uint128::new(10_000_000_000), // 10k tokens
+    }]);
+    
+    setup_pool_storage(&mut deps);
+    
+    // CRITICAL: Initialize the new threshold processing flag
+    THRESHOLD_PROCESSING.save(&mut deps.storage, &false).unwrap();
     
     // Set USD raised to just below threshold
     USD_RAISED.save(&mut deps.storage, &Uint128::new(24_900_000_000)).unwrap(); // $24.9k
     
-    let env = mock_env();
-    let commit_amount = Uint128::new(200_000_000); // 200 bluechip = $200
+    // Also need to set up COMMIT_CONFIG if not in setup_pool_storage
     
-    // Mock oracle response
-        with_oracle_price(&mut deps,  100_000_000, 10000000000000, -8, Uint128::new(100_000),);// $1 with 8 decimals
-// $1
+    
+    let env = mock_env();
+    let commit_amount = Uint128::new(200_000_000); // 200 tokens = $200
+    
+    // Mock oracle response for $1 per token
+    with_oracle_price(
+        &mut deps, 
+        Uint128::new(100_000_000),  // price
+        10000000000000, 
+        -8,           // expo
+        Uint128::new(100_000),
+    );
     
     let info = mock_info("whale", &[Coin {
         denom: "stake".to_string(),
@@ -138,7 +249,9 @@ fn test_commit_crosses_threshold() {
             amount: commit_amount,
         },
         amount: commit_amount,
-        deadline: None
+        deadline: None,
+        belief_price: None,
+        max_spread: None,
     };
     
     let res = execute(deps.as_mut(), env, info, msg).unwrap();
@@ -146,13 +259,24 @@ fn test_commit_crosses_threshold() {
     // Verify threshold was hit
     assert_eq!(THRESHOLD_HIT.load(&deps.storage).unwrap(), true);
     
-    // Verify multiple messages were sent (fees + threshold payouts)
-    // Should have: 2 fee transfers + 4 mints (creator, bluechip, pool, commit rewards)
-    assert!(res.messages.len() >= 6);
+    // Verify threshold processing flag was cleared
+    assert_eq!(THRESHOLD_PROCESSING.load(&deps.storage).unwrap(), false);
     
-    // Verify pool state was initialized with initial liquidity
+    // Check for threshold crossing attribute
+    assert!(res.attributes.iter().any(|attr| 
+        attr.key == "phase" && attr.value == "threshold_crossing"
+    ));
+    
+    // Verify multiple messages were sent
+    // Should have: 2 fee transfers + token mints + native seed transfer
+    assert!(res.messages.len() >= 6, "Expected at least 6 messages, got {}", res.messages.len());
+    
+    // Verify pool state was initialized
     let pool_state = POOL_STATE.load(&deps.storage).unwrap();
-    assert_eq!(pool_state.total_liquidity, Uint128::zero()); // Set to zero initially as per contract
+    assert_eq!(pool_state.total_liquidity, Uint128::zero()); // Unowned seed liquidity
+    
+    // Verify commit ledger was cleared
+    assert_eq!(COMMIT_LEDGER.keys(&deps.storage, None, None, Order::Ascending).count(), 0);
 }
 
 #[test]
@@ -167,11 +291,11 @@ fn test_commit_post_threshold_swap() {
     let commit_amount = Uint128::new(100_000_000); // 100 bluechip
     
     // Mock oracle response
-    with_oracle_price(&mut deps,  100_000_000, 10000000000000, -8, Uint128::new(100_000),);// $1 with 8 decimals
+    with_oracle_price(&mut deps,  Uint128::new(100_000_000), 10000000000000, -8, Uint128::new(100_000),);// $1 with 8 decimals
 // $1 with 8 decimals
  // $1
     
-    let info = mock_info("subscriber", &[Coin {
+    let info = mock_info("commiter", &[Coin {
         denom: "stake".to_string(),
         amount: commit_amount,
     }]);
@@ -183,6 +307,8 @@ fn test_commit_post_threshold_swap() {
         },
         amount: commit_amount,
         deadline: None,
+        belief_price: None,
+        max_spread: None,
     };
     
     let res = execute(deps.as_mut(), env, info, msg).unwrap();
@@ -239,7 +365,7 @@ fn test_commit_reentrancy_protection() {
     setup_pool_storage(&mut deps);
     
     // Set reentrancy guard
-    REENTRANCY_GUARD.save(&mut deps.storage, &true).unwrap();
+    RATE_LIMIT_GUARD.save(&mut deps.storage, &true).unwrap();
     
     let env = mock_env();
     let info = mock_info("user", &[Coin {
@@ -254,6 +380,8 @@ fn test_commit_reentrancy_protection() {
         },
         amount: Uint128::new(1_000_000),
         deadline: None,
+        belief_price: None,
+        max_spread: None,
     };
     
     let err = execute(deps.as_mut(), env, info, msg).unwrap_err();
@@ -280,7 +408,7 @@ fn test_commit_rate_limiting() {
         amount: Uint128::new(1_000_000),
     }]);
     
-    with_oracle_price(&mut deps,  100_000_000, 10000000000000, -8, Uint128::new(100_000),);// $1 with 8 decimals
+    with_oracle_price(&mut deps,  Uint128::new(100_000_000), 10000000000000, -8, Uint128::new(100_000),);// $1 with 8 decimals
 
 
     
@@ -291,6 +419,8 @@ fn test_commit_rate_limiting() {
         },
         amount: Uint128::new(1_000_000),
         deadline: None,
+        belief_price: None,
+        max_spread: None,
     };
     
     execute(deps.as_mut(), env.clone(), info.clone(), msg.clone()).unwrap();
@@ -330,7 +460,9 @@ fn test_commit_with_deadline() {
             amount: Uint128::new(1_000_000),
         },
         amount: Uint128::new(1_000_000),
-        deadline: Some(Timestamp::from_seconds(999_999))
+        deadline: Some(Timestamp::from_seconds(999_999)),
+        belief_price: None,
+        max_spread: None,
     };
     
     let err = execute(deps.as_mut(), env, info, msg).unwrap_err();
@@ -425,6 +557,7 @@ fn test_commit_threshold_overshoot_split() {
     }]);
     
     setup_pool_storage(&mut deps);
+    THRESHOLD_PROCESSING.save(&mut deps.storage, &false).unwrap();
     
     // Set USD raised to just below threshold
     USD_RAISED.save(&mut deps.storage, &Uint128::new(24_999_000_000)).unwrap(); // $24,999
@@ -437,7 +570,7 @@ fn test_commit_threshold_overshoot_split() {
             WasmQuery::Smart { contract_addr, msg } => {
                 if contract_addr == "oracle_contract" {
                     let response = PriceResponse {
-                       price: 100_000_000,// $1 with 8 decimals
+                       price: Uint128::new(100_000_000),// $1 with 8 decimals
                        conf: Uint128::new(100_000),      
                        expo: -8, //so we can check the right amount of decimals.
                        publish_time: 1000000000000, //this value is to small so it was failing. 
@@ -459,8 +592,7 @@ fn test_commit_threshold_overshoot_split() {
         }
     });
     
-    // Commit $5 worth (5 tokens at $1 each)
-    let commit_amount = Uint128::new(5_000_000); // 5 tokens with 6 decimals
+    let commit_amount = Uint128::new(5_000_000); 
     
     let info = mock_info("whale", &[Coin {
         denom: "stake".to_string(),
@@ -474,6 +606,8 @@ fn test_commit_threshold_overshoot_split() {
         },
         amount: commit_amount,
         deadline: None,
+        belief_price: None,
+        max_spread: None,
     };
     
     let res = execute(deps.as_mut(), env.clone(), info.clone(), msg).unwrap();
@@ -510,19 +644,15 @@ fn test_commit_threshold_overshoot_split() {
         .map(|a| &a.value)
         .unwrap_or(&binding);
     println!("Return amount from attributes: {}", return_amt_str);
-    // Verify threshold was hit
     assert_eq!(THRESHOLD_HIT.load(&deps.storage).unwrap(), true);
        let pool_state = POOL_STATE.load(&deps.storage).unwrap();
     println!("\n=== Pool State After ===");
     println!("reserve0: {}", pool_state.reserve0);
     println!("reserve1: {}", pool_state.reserve1);
-    // Verify USD raised is exactly at threshold
     assert_eq!(USD_RAISED.load(&deps.storage).unwrap(), Uint128::new(25_000_000_000));
     
-    // Verify commit ledger was cleared (trigger_threshold_payout clears it)
     assert!(COMMIT_LEDGER.load(&deps.storage, &info.sender).is_err());
     
-    // Check attributes to verify split happened
     let attrs = &res.attributes;
     assert_eq!(attrs.iter().find(|a| a.key == "phase").unwrap().value, "threshold_crossing");
     assert_eq!(attrs.iter().find(|a| a.key == "threshold_amount_usd").unwrap().value, "1000000");
@@ -533,14 +663,9 @@ fn test_commit_threshold_overshoot_split() {
     println!("\n=== Swap Details ===");
     println!("Native excess to swap: {}", native_excess);
     println!("CW20 returned: {}", return_amt);
-    // Verify CW20 tokens were sent (from the swap portion)
-    // Verify subscription recorded full amount
-    let sub = SUB_INFO.load(&deps.storage, &info.sender).unwrap();
+    let sub = COMMIT_INFO.load(&deps.storage, &info.sender).unwrap();
     assert_eq!(sub.total_paid_native, commit_amount); // Full 5 tokens
     assert_eq!(sub.total_paid_usd, Uint128::new(5_000_000)); // Full $5
-    
-    // Verify that threshold payout messages were created
-    // Should have mints for: creator, bluechip, pool, and commit rewards
   
         if has_transfer {
         println!("SUCCESS: CW20 transfer found!");
@@ -558,7 +683,7 @@ fn test_commit_exact_threshold() {
     }]);
     
     setup_pool_storage(&mut deps);
-    
+    THRESHOLD_PROCESSING.save(&mut deps.storage, &false).unwrap();
     // Set USD raised to need exactly $1 more
     USD_RAISED.save(&mut deps.storage, &Uint128::new(24_999_000_000)).unwrap();
     
@@ -574,7 +699,7 @@ fn test_commit_exact_threshold() {
             WasmQuery::Smart { contract_addr, msg } => {
                 if contract_addr == "oracle_contract" {
                     let response = PriceResponse {
-                        price: 100_000_000,
+                        price: Uint128::new(100_000_000),
                         conf: Uint128::new(100_000),      
                         expo: -8,        
                         publish_time: 1000000000000,
@@ -611,12 +736,14 @@ fn test_commit_exact_threshold() {
         },
         amount: commit_amount,
         deadline: None,
+        belief_price: None,
+        max_spread: None,
     };
     
     let res = execute(deps.as_mut(), env, info.clone(), msg).unwrap();
     
     // Should be a normal funding phase commit that triggers threshold
-    assert_eq!(res.attributes.iter().find(|a| a.key == "phase").unwrap().value, "funding");
+    assert_eq!(res.attributes.iter().find(|a| a.key == "phase").unwrap().value, "threshold_hit_exact");
     
     // Verify threshold hit
     assert_eq!(THRESHOLD_HIT.load(&deps.storage).unwrap(), true);
@@ -675,6 +802,7 @@ fn test_swap_cw20_via_hook() {
             belief_price: None,
             max_spread: Some(Decimal::percent(10)), // Allow spread
             to: None,
+            deadline: None,
         }).unwrap(),
     };
     
@@ -883,8 +1011,8 @@ fn test_add_to_existing_position() {
         deps.as_mut(),
         env,
         info,
-        user,
-        "1".to_string(), // position_id
+        "1".to_string(),
+        user, // position_id
         native_amount,
         token_amount,
         None, // min_amount0
@@ -944,8 +1072,8 @@ fn test_add_to_position_not_owner() {
         deps.as_mut(),
         env,
         info,
-        user,
         "1".to_string(),
+        user,
         Uint128::new(1_000_000),
         Uint128::new(15_000_000),
         None,
@@ -1217,6 +1345,8 @@ fn test_remove_partial_liquidity_amount() {
         position_id: "1".to_string(),
         liquidity_to_remove: Uint128::new(300_000),
         deadline: None,
+        min_amount0: None,
+        min_amount1: None,
     };
     
     let res = execute(deps.as_mut(), env, info, msg).unwrap();
@@ -1271,7 +1401,10 @@ fn test_remove_partial_liquidity_by_percent() {
     // Remove 25% of liquidity
     let msg = ExecuteMsg::RemovePartialLiquidityByPercent {
         position_id: "1".to_string(),
-        percentage: 25, // 25%
+        percentage: 25,
+        deadline: None,
+        min_amount0: None,
+        min_amount1: None, // 25%
     };
     
     let res = execute(deps.as_mut(), env, info, msg).unwrap();
@@ -1438,7 +1571,10 @@ fn test_invalid_percentage_removal() {
     // Try to remove more than 100%
     let msg = ExecuteMsg::RemovePartialLiquidityByPercent {
         position_id: "1".to_string(),
-        percentage: 0, // Invalid
+        percentage: 0,
+        deadline: None,
+        min_amount0: None,
+        min_amount1: None, // Invalid
     };
     
     let err = execute(deps.as_mut(), env, info, msg).unwrap_err();
@@ -1495,7 +1631,6 @@ pub fn setup_pool_storage(deps: &mut OwnedDeps<MockStorage, MockApi, MockQuerier
 
     // Set up PoolSpecs
     let pool_specs = PoolSpecs {
-        subscription_period: 86400, // 1 day in seconds
         lp_fee: Decimal::percent(3) / Uint128::new(10), // 0.3% fee (3/1000)
         min_commit_interval: 60, // 1 minute minimum between commits
         usd_payment_tolerance_bps: 100, // 1% tolerance
@@ -1504,18 +1639,8 @@ pub fn setup_pool_storage(deps: &mut OwnedDeps<MockStorage, MockApi, MockQuerier
 
     // Set up CommitInfo
     let commit_config = CommitInfo {
-        commit_limit: Uint128::new(100_000_000), // 100 bluechip tokens
+        commit_amount_for_threshold: Uint128::new(100_000_000), // 100 bluechip tokens
         commit_limit_usd: Uint128::new(25_000_000_000), // $25k with 6 decimals
-        available_payment: vec![
-            Uint128::new(1_000_000),   // 1 token
-            Uint128::new(5_000_000),   // 5 tokens
-            Uint128::new(10_000_000),  // 10 tokens
-        ],
-        available_payment_usd: vec![
-            Uint128::new(1_000_000_000),   // $1k
-            Uint128::new(5_000_000_000),   // $5k
-            Uint128::new(10_000_000_000),  // $10k
-        ],
     };
     COMMIT_CONFIG.save(&mut deps.storage, &commit_config).unwrap();
 
@@ -1545,6 +1670,7 @@ pub fn setup_pool_storage(deps: &mut OwnedDeps<MockStorage, MockApi, MockQuerier
     ORACLE_INFO.save(&mut deps.storage, &oracle_info).unwrap();
 
     // Initialize other state variables
+    THRESHOLD_PROCESSING.save(&mut deps.storage, &false).unwrap();
     THRESHOLD_HIT.save(&mut deps.storage, &false).unwrap();
     USD_RAISED.save(&mut deps.storage, &Uint128::zero()).unwrap();
     NATIVE_RAISED.save(&mut deps.storage, &Uint128::zero()).unwrap();
@@ -1590,22 +1716,20 @@ fn test_factory_impersonation_prevented() {
                 },
             ],
         token_code_id: 2u64,
+        threshold_payout: None,
         factory_addr: Addr::unchecked("factory_contract"),
-        init_params: None,
         fee_info: FeeInfo {
                 bluechip_address: Addr::unchecked("bluechip"),
                 creator_address: Addr::unchecked("addr0000"),
                 bluechip_fee: Decimal::from_ratio(10u128, 100u128),
                 creator_fee: Decimal::from_ratio(10u128, 100u128),
             },
-        commit_limit: Uint128::new(350_000_000_000),
+        commit_amount_for_threshold: Uint128::new(0),
         commit_limit_usd: Uint128::new(350_000_000_000),
         position_nft_address: Addr::unchecked("NFT_contract"),
         oracle_addr: Addr::unchecked("oracle_contract"),
         oracle_symbol: "BLUECHIP".to_string(),
         token_address: Addr::unchecked("token_contract"),
-        available_payment: vec![Uint128::new(1_000_000)],
-        available_payment_usd: vec![Uint128::new(1_000_000)],
     };
     let info = mock_info("fake_factory", &[]); // Wrong sender!
     let err = instantiate(deps.as_mut(), mock_env(), info, msg).unwrap_err();

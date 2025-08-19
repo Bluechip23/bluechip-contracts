@@ -21,7 +21,7 @@ pub enum ContractError {
     #[error("Reentrancy detected")]
     ReentrancyGuard {},
 
-    #[error("You can not swap until the threshold is crossed. You must subscribe to transact with this pool")]
+    #[error("You can not swap until the threshold is crossed. You must commit to transact with this pool")]
     ShortOfThreshold {},
 
     #[error("You are trying to commit too frequently.")]
@@ -40,7 +40,7 @@ pub enum ContractError {
     TransactionExpired {},
 
     #[error(
-        "Your subscription amount does not match an amount designated by the creator of the pool."
+        "Your commit amount does not match an amount designated by the creator of the pool."
     )]
     MismatchAmount {},
 
@@ -119,6 +119,9 @@ pub enum ContractError {
 
     #[error("pool can not cover reserves")]
     InsufficientReserves {},
+
+    #[error("Incorrect native denom: provided: {oracle}, required: {twap}")]
+    OraclePriceDeviation { oracle: Uint128, twap: Uint128 },
 
     #[error("Incorrect native denom: provided: {provided}, required: {required}")]
     IncorrectNativeDenom { provided: String, required: String },
