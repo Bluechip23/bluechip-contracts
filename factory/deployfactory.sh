@@ -1,4 +1,5 @@
-
+#
+#If you are simply testing factory disregard storing any contract other than factory. You can use made up numbers for token id, position_nft_id, pair id, and oracle information 
 #You will need to set cw_base.wasm, cw721_base.wasm, pool.wasm and store them on your local chain. cw20 and cw721 is very easy with downloading it from the Cosmwasm github
 #wget https://github.com/CosmWasm/cw-plus/releases/download/v1.0.1/cw20_base.wasm
 #wget https://github.com/CosmWasm/cw-plus/releases/download/v0.18.0/cw721_base.wasm
@@ -28,6 +29,8 @@ FEES="5000stake"  # can use -y as well
 #json info
 #use any wallet address created in chain creation can use alice to keep things consistent
 ADMIN_ADDRESS="" 
+#irrelevant for factory testing - sets the initial value at zero
+COMMIT_AMOUNT_FOR_THRESHOLD="0"
 COMMIT_LIMIT_USD="25000"
 #you can make this up for local testing of factory only. If testing pool functions, save and deploy mock oracle
 ORACLE_ADDR="cosmos1hrpna9v7vs3stzyd4z3xf00676kf78zpe2u5ksvljswn2vnjp3ysawcmtt" 
@@ -52,6 +55,7 @@ instantiate_contract() {
     INSTANTIATE_MSG=$(cat <<EOF
 {
     "admin": "$ADMIN_ADDRESS",
+    "commit_amount_for_threshold":"$COMMIT_AMOUNT_FOR_THRESHOLD",
     "commit_limit_usd": "$COMMIT_LIMIT_USD",
     "oracle_addr": "$ORACLE_ADDR",
     "oracle_symbol": "$ORACLE_SYMBOL",

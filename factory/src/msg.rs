@@ -8,36 +8,12 @@ use crate::asset::AssetInfo;
 use crate::pair::{CreatePool, FeeInfo};
 use crate::state::{FactoryInstantiate};
 
-
-#[cw_serde]
-pub struct CreatePoolReplyMsg {
-    pub pool_id: u64,
-    /// Information about the two assets in the pool
-    pub asset_infos: [AssetInfo; 2],
-    /// The token contract code ID used for the tokens in the pool
-    pub token_code_id: u64,
-    /// The factory contract address
-    pub factory_addr: Addr,
-    pub threshold_payout: Option<Binary>,
-    //fees to bluechip and creator
-    pub fee_info: FeeInfo,
-    pub commit_limit_usd: Uint128,
-    pub oracle_addr: Addr,
-    pub oracle_symbol: String,
-    pub token_address: Addr,
-    //address called by the pool to mint new liquidity position NFTs.
-    pub position_nft_address: Addr,
-}
-
 #[cw_serde]
 pub enum ExecuteMsg {
     UpdateConfig {
         config: FactoryInstantiate,
     },
-    Create {
-        create_pool_msg: CreatePool,
-        token_info: TokenInfo,
-    },
+
 }
 
 #[cw_serde]
