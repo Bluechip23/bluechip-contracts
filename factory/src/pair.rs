@@ -13,12 +13,13 @@ pub struct CreatePool {
     /// The factory contract address being used to create the creator pool
     pub factory_addr: Addr,
     //this will be fed into the factory's reply function. It is the threshold payout amounts.
-    pub init_params: Option<Binary>,
+    pub threshold_payout: Option<Binary>,
     //the fee amount going to the creator (5%) and bluechip (1%)
     pub fee_info: FeeInfo,
     // address for the newly created creator token. Autopopulated by the factory reply function
     pub token_address: Addr,
     //the threshold limit for the contract. Once crossed, the pool mints and distributes new creator (CW20 token) and now behaves like a normal liquidity pool
+    pub commit_amount_for_threshold: Uint128,
     pub commit_limit_usd: Uint128,
     // the contract of the oracle being used to convert prices to and from dollars
     pub oracle_addr: Addr,

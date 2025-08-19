@@ -85,7 +85,9 @@ pub struct PoolInfo {
     pub pool_id: u64,
     pub pair_info: PairInfo,
     pub factory_addr: Addr,
+    //token contract address
     pub token_address: Addr,
+    //cw721 contract address for pool
     pub position_nft_address: Addr,
 }
 
@@ -124,10 +126,8 @@ pub struct RateLimitGuardParams {
 
 #[cw_serde]
 pub struct CommitInfo {
-    pub commit_limit: Uint128,
+    pub commit_amount_for_threshold: Uint128,
     pub commit_limit_usd: Uint128,
-    pub available_payment: Vec<Uint128>,
-    pub available_payment_usd: Vec<Uint128>,
 }
 
 #[cw_serde]
@@ -144,13 +144,6 @@ pub struct Position {
 }
 
 impl PairInfo {
-    /// Returns the balance for each asset in the pool.
-    /// ## Params
-    /// * **self** is the type of the caller object
-    ///
-    /// * **querier** is an object of type [`QuerierWrapper`]
-    ///
-    /// * **contract_addr** is pair's pool address.
     pub fn query_pools(
         &self,
         querier: &QuerierWrapper,

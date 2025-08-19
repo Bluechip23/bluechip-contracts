@@ -129,7 +129,7 @@ fn execute_create(
             mint: Some(MinterResponse {
                 minter: env.contract.address.to_string(),
                 //amount minted after threshold.
-                cap: Some(Uint128::new(1_200_000u128)),
+                cap: Some(Uint128::new(1_500_000_000_000)),
             }),
         })?,
         //no initial balance. waits until threshold is crossed to mint creator tokens.
@@ -279,9 +279,10 @@ fn mint_create_pool(deps: DepsMut, env: Env, msg: Reply) -> Result<Response, Con
                     fee_info: FeeInfo {
                         bluechip_address: config.bluechip_address.clone(),
                         creator_address: temp_creator.clone(),
-                        bluechip_fee: config.bluechipe_fee,
+                        bluechip_fee: config.bluechip_fee,
                         creator_fee: config.creator_fee,
                     },
+                    commit_amount_for_threshold:config.commit_amount_for_threshold, 
                     commit_limit_usd: config.commit_limit_usd,
                     oracle_addr: config.oracle_addr.clone(),
                     oracle_symbol: config.oracle_symbol.clone(),

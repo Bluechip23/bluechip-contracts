@@ -18,6 +18,7 @@ pub const CREATION_STATES: Map<u64, CreationState> = Map::new("creation_states")
 pub struct FactoryInstantiate {
     //admin of the factory - will be bluechip or some multisig or something along those lines. person who can edit effectively
     pub admin: Addr,
+    pub commit_amount_for_threshold: Uint128,
     pub commit_limit_usd: Uint128,
     pub oracle_addr: Addr,
     pub oracle_symbol: String,
@@ -28,7 +29,7 @@ pub struct FactoryInstantiate {
     //id for the token pair that exists in the pool. Used for queries mostly.
     pub pair_id: u64,
     pub bluechip_address: Addr,
-    pub bluechipe_fee: Decimal,
+    pub bluechip_fee: Decimal,
     pub creator_fee: Decimal,
 }
 #[cw_serde]

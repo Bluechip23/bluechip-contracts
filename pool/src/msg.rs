@@ -163,16 +163,14 @@ pub struct PoolInstantiateMsg {
     /// The factory contract address
     pub factory_addr: Addr,
     /// Optional binary serialised parameters for custom pool types
-    pub init_params: Option<Binary>,
+    pub threshold_payout: Option<Binary>,
     pub fee_info: FeeInfo,
-    pub commit_limit: Uint128,
     pub commit_limit_usd: Uint128,
+    pub commit_amount_for_threshold: Uint128,
     pub position_nft_address: Addr,
     pub oracle_addr: Addr,
     pub oracle_symbol: String,
     pub token_address: Addr,
-    pub available_payment_usd: Vec<Uint128>,
-    pub available_payment: Vec<Uint128>,
 }
 
 

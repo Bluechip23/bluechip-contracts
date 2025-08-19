@@ -1,37 +1,35 @@
 use crate::state::{
-    FactoryInstantiate, CreationState, CreationStatus, CREATION_STATES, NEXT_POOL_ID, POOLS_BY_ID, COMMIT,
-    TEMPCREATOR, TEMPNFTADDR, TEMPPAIRINFO, TEMPPOOLID, TEMPTOKENADDR,
+    CreationState, CreationStatus, FactoryInstantiate, COMMIT, CREATION_STATES, NEXT_POOL_ID,
+    POOLS_BY_ID, TEMPCREATOR, TEMPNFTADDR, TEMPPAIRINFO, TEMPPOOLID, TEMPTOKENADDR,
 };
 use cosmwasm_std::{
     Addr, Binary, Decimal, Env, Event, OwnedDeps, Reply, SubMsgResponse, SubMsgResult, Uint128,
 };
 
 use crate::asset::{Asset, AssetInfo, PairInfo, PairType};
-use crate::execute::{
-    execute, instantiate, reply, MINT_CREATE_POOL, FINALIZE_POOL,
-    SET_TOKENS,
-};
+use crate::execute::{execute, instantiate, reply, FINALIZE_POOL, MINT_CREATE_POOL, SET_TOKENS};
 use crate::mock_querier::{mock_dependencies, WasmMockQuerier};
 use crate::msg::{ExecuteMsg, TokenInfo};
-use crate::pair::{FeeInfo, CreatePool};
+use crate::pair::{CreatePool, FeeInfo};
 use cosmwasm_std::testing::{mock_env, mock_info, MockApi, MockStorage};
 
 const ADMIN: &str = "admin";
 
 fn create_default_instantiate_msg() -> FactoryInstantiate {
-     FactoryInstantiate {
-            admin: Addr::unchecked(ADMIN),
-            position_nft_id: 58,
-            commit_limit_usd: Uint128::new(25_000_000_000),
-            oracle_addr: Addr::unchecked("oracle0000"),
-            oracle_symbol: "BLUECHIP".to_string(),
-            token_id: 10,
-            pair_id: 11,
-            bluechip_address: Addr::unchecked("bluechip"),
-            bluechipe_fee: Decimal::percent(1),
-            creator_fee: Decimal::percent(5),
-        }
+    FactoryInstantiate {
+        admin: Addr::unchecked(ADMIN),
+        position_nft_id: 58,
+        commit_amount_for_threshold: Uint128::zero(),
+        commit_limit_usd: Uint128::new(25_000_000_000),
+        oracle_addr: Addr::unchecked("oracle0000"),
+        oracle_symbol: "BLUECHIP".to_string(),
+        token_id: 10,
+        pair_id: 11,
+        bluechip_address: Addr::unchecked("bluechip"),
+        bluechip_fee: Decimal::percent(1),
+        creator_fee: Decimal::percent(5),
     }
+}
 
 #[test]
 fn proper_initialization() {
@@ -39,18 +37,18 @@ fn proper_initialization() {
     let mut deps = mock_dependencies(&[]);
     let _owner = "owner0000".to_string();
 
-      let msg =  FactoryInstantiate {
-            admin: Addr::unchecked(ADMIN),
-            position_nft_id: 58,
-            commit_limit_usd: Uint128::new(100),
-            oracle_addr: Addr::unchecked("oracle0000"),
-            oracle_symbol: "ORCL".to_string(),
-            token_id: 10,
-            pair_id: 11,
-            bluechip_address: Addr::unchecked("bluechip"),
-            bluechipe_fee: Decimal::percent(10),
-            creator_fee: Decimal::percent(10),
-
+    let msg = FactoryInstantiate {
+        admin: Addr::unchecked(ADMIN),
+        position_nft_id: 58,
+        commit_amount_for_threshold: Uint128::zero(),
+        commit_limit_usd: Uint128::new(100),
+        oracle_addr: Addr::unchecked("oracle0000"),
+        oracle_symbol: "ORCL".to_string(),
+        token_id: 10,
+        pair_id: 11,
+        bluechip_address: Addr::unchecked("bluechip"),
+        bluechip_fee: Decimal::percent(10),
+        creator_fee: Decimal::percent(10),
     };
 
     let env = mock_env();
@@ -78,18 +76,19 @@ fn proper_initialization() {
 fn create_pair() {
     let mut deps = mock_dependencies(&[]);
 
-   let msg = FactoryInstantiate {
-            admin: Addr::unchecked("addr0000"),
-            position_nft_id: 58,
-            commit_limit_usd: Uint128::new(25_000_000_000), // $25k with 6 decimals
-            oracle_addr: Addr::unchecked("oracle0000"),
-            oracle_symbol: "BLUECHIP".to_string(),
-            token_id: 10,
-            pair_id: 11,
-            bluechip_address: Addr::unchecked("bluechip"),
-            bluechipe_fee: Decimal::percent(1), // 1%
-            creator_fee: Decimal::percent(5),   // 5%
-        };
+    let msg = FactoryInstantiate {
+        admin: Addr::unchecked("addr0000"),
+        position_nft_id: 58,
+        commit_amount_for_threshold: Uint128::zero(),
+        commit_limit_usd: Uint128::new(25_000_000_000), // $25k with 6 decimals
+        oracle_addr: Addr::unchecked("oracle0000"),
+        oracle_symbol: "BLUECHIP".to_string(),
+        token_id: 10,
+        pair_id: 11,
+        bluechip_address: Addr::unchecked("bluechip"),
+        bluechip_fee: Decimal::percent(1), // 1%
+        creator_fee: Decimal::percent(5),  // 5%
+    };
 
     let env = mock_env();
     let addr = Addr::unchecked("addr0000");
@@ -121,13 +120,14 @@ fn create_pair() {
                 asset_infos: asset_infos.clone(),
                 token_code_id: 10,
                 factory_addr: Addr::unchecked("factory"),
-                init_params: None,
+                threshold_payout: None,
                 fee_info: FeeInfo {
                     bluechip_address: Addr::unchecked("bluechip"),
                     creator_address: Addr::unchecked("creator"),
                     bluechip_fee: Decimal::percent(1),
                     creator_fee: Decimal::percent(5),
                 },
+                commit_amount_for_threshold: Uint128::zero(),
                 commit_limit_usd: Uint128::new(25_000_000_000),
                 oracle_addr: Addr::unchecked("oracle0000"),
                 oracle_symbol: "BLUECHIP".to_string(),
@@ -157,17 +157,18 @@ fn test_create_pair_with_custom_params() {
 
     // Initialize factory first
     let msg = FactoryInstantiate {
-            admin: Addr::unchecked(ADMIN),
-            position_nft_id: 58,
-            commit_limit_usd: Uint128::new(25_000_000_000),
-            oracle_addr: Addr::unchecked("oracle0000"),
-            oracle_symbol: "BLUECHIP".to_string(),
-            token_id: 10,
-            pair_id: 11,
-            bluechip_address: Addr::unchecked("bluechip"),
-            bluechipe_fee: Decimal::percent(1),
-            creator_fee: Decimal::percent(5),
-        };
+        admin: Addr::unchecked(ADMIN),
+        position_nft_id: 58,
+        commit_amount_for_threshold: Uint128::zero(),
+        commit_limit_usd: Uint128::new(25_000_000_000),
+        oracle_addr: Addr::unchecked("oracle0000"),
+        oracle_symbol: "BLUECHIP".to_string(),
+        token_id: 10,
+        pair_id: 11,
+        bluechip_address: Addr::unchecked("bluechip"),
+        bluechip_fee: Decimal::percent(1),
+        creator_fee: Decimal::percent(5),
+    };
 
     let env = mock_env();
     let info = mock_info(ADMIN, &[]);
@@ -188,13 +189,14 @@ fn test_create_pair_with_custom_params() {
             ],
             token_code_id: 10,
             factory_addr: Addr::unchecked("factory"),
-            init_params: Some(custom_params),
+            threshold_payout: Some(custom_params),
             fee_info: FeeInfo {
                 bluechip_address: Addr::unchecked("bluechip"),
                 creator_address: Addr::unchecked(ADMIN),
                 bluechip_fee: Decimal::percent(1),
                 creator_fee: Decimal::percent(5),
             },
+            commit_amount_for_threshold: Uint128::zero(),
             commit_limit_usd: Uint128::new(25_000_000_000),
             oracle_addr: Addr::unchecked("oracle0000"),
             oracle_symbol: "BLUECHIP".to_string(),
@@ -213,7 +215,6 @@ fn test_create_pair_with_custom_params() {
 
     // Verify the creation was successful
     assert_eq!(res.messages.len(), 1);
-
 }
 fn create_pool_msg(token_name: &str) -> ExecuteMsg {
     ExecuteMsg::Create {
@@ -228,13 +229,14 @@ fn create_pool_msg(token_name: &str) -> ExecuteMsg {
             ],
             token_code_id: 10,
             factory_addr: Addr::unchecked("factory"),
-            init_params: None,
+            threshold_payout: None,
             fee_info: FeeInfo {
                 bluechip_address: Addr::unchecked("bluechip"),
                 creator_address: Addr::unchecked("creator"),
                 bluechip_fee: Decimal::percent(1),
                 creator_fee: Decimal::percent(5),
             },
+            commit_amount_for_threshold: Uint128::zero(),
             commit_limit_usd: Uint128::new(25_000_000_000),
             oracle_addr: Addr::unchecked("oracle0000"),
             oracle_symbol: "BLUECHIP".to_string(),
@@ -254,24 +256,15 @@ fn simulate_complete_reply_chain(
     pool_id: u64,
 ) {
     // Token reply
-    let token_reply = create_instantiate_reply(
-        SET_TOKENS,
-        &format!("token_address_{}", pool_id),
-    );
+    let token_reply = create_instantiate_reply(SET_TOKENS, &format!("token_address_{}", pool_id));
     reply(deps.as_mut(), env.clone(), token_reply).unwrap();
 
     // NFT reply
-    let nft_reply = create_instantiate_reply(
-        MINT_CREATE_POOL,
-        &format!("nft_address_{}", pool_id),
-    );
+    let nft_reply = create_instantiate_reply(MINT_CREATE_POOL, &format!("nft_address_{}", pool_id));
     reply(deps.as_mut(), env.clone(), nft_reply).unwrap();
 
     // Pool reply
-    let pool_reply = create_instantiate_reply(
-        FINALIZE_POOL,
-        &format!("pool_address_{}", pool_id),
-    );
+    let pool_reply = create_instantiate_reply(FINALIZE_POOL, &format!("pool_address_{}", pool_id));
     reply(deps.as_mut(), env.clone(), pool_reply).unwrap();
 }
 
@@ -367,17 +360,18 @@ fn test_complete_pool_creation_flow() {
 
     // Initialize factory
     let msg = FactoryInstantiate {
-            admin: Addr::unchecked(ADMIN),
-            position_nft_id: 58,
-            commit_limit_usd: Uint128::new(25_000_000_000), // $25k in 6 decimals
-            oracle_addr: Addr::unchecked("oracle0000"),
-            oracle_symbol: "BLUECHIP".to_string(),
-            token_id: 10,
-            pair_id: 11,
-            bluechip_address: Addr::unchecked("bluechip"),
-            bluechipe_fee: Decimal::percent(1), // 1%
-            creator_fee: Decimal::percent(5),   // 5%
-        };
+        admin: Addr::unchecked(ADMIN),
+        position_nft_id: 58,
+        commit_amount_for_threshold: Uint128::zero(),
+        commit_limit_usd: Uint128::new(25_000_000_000), // $25k in 6 decimals
+        oracle_addr: Addr::unchecked("oracle0000"),
+        oracle_symbol: "BLUECHIP".to_string(),
+        token_id: 10,
+        pair_id: 11,
+        bluechip_address: Addr::unchecked("bluechip"),
+        bluechip_fee: Decimal::percent(1), // 1%
+        creator_fee: Decimal::percent(5),  // 5%
+    };
 
     let env = mock_env();
     let info = mock_info(ADMIN, &[]);
@@ -395,13 +389,14 @@ fn test_complete_pool_creation_flow() {
             ],
             factory_addr: Addr::unchecked("factory"),
             token_code_id: 10,
-            init_params: None,
+            threshold_payout: None,
             fee_info: FeeInfo {
                 bluechip_address: Addr::unchecked("bluechip"),
                 creator_address: Addr::unchecked("addr0000"),
                 bluechip_fee: Decimal::from_ratio(10u128, 100u128),
                 creator_fee: Decimal::from_ratio(10u128, 100u128),
             },
+            commit_amount_for_threshold: Uint128::zero(),
             commit_limit_usd: Uint128::new(100),
             oracle_addr: Addr::unchecked("oracle0000"),
             oracle_symbol: "ORCL".to_string(),
@@ -491,7 +486,6 @@ fn test_complete_pool_creation_flow() {
     let pool_reply = create_instantiate_reply(FINALIZE_POOL, "pool_address");
     let res = reply(deps.as_mut(), env.clone(), pool_reply).unwrap();
 
-    // Verify subscription saved
     let creator = Addr::unchecked(ADMIN);
     let commit_info = COMMIT.load(&deps.storage, &creator.to_string()).unwrap();
     assert_eq!(commit_info.pool_id, pool_id);
@@ -573,13 +567,14 @@ fn test_config() {
     let config = FactoryInstantiate {
         admin: Addr::unchecked("admin1..."),
         position_nft_id: 58,
+        commit_amount_for_threshold: Uint128::zero(),
         commit_limit_usd: Uint128::new(100),
         oracle_addr: Addr::unchecked("oracle0000"),
         oracle_symbol: "ORCL".to_string(),
         token_id: 1,
         pair_id: 1,
         bluechip_address: Addr::unchecked("bluechip1..."),
-        bluechipe_fee: Decimal::percent(10),
+        bluechip_fee: Decimal::percent(10),
         creator_fee: Decimal::percent(10),
     };
 
@@ -588,7 +583,7 @@ fn test_config() {
     assert_eq!(config.token_id, 1);
     assert_eq!(config.pair_id, 1);
     assert_eq!(config.bluechip_address, Addr::unchecked("bluechip1..."));
-    assert_eq!(config.bluechipe_fee, Decimal::percent(10));
+    assert_eq!(config.bluechip_fee, Decimal::percent(10));
     assert_eq!(config.creator_fee, Decimal::percent(10));
 
     // Test total amounts add up
@@ -600,17 +595,18 @@ fn test_update_config() {
 
     // Initialize with first config
     let msg = FactoryInstantiate {
-            position_nft_id: 58,
-            admin: Addr::unchecked("addr0000"),
-            commit_limit_usd: Uint128::new(100),
-            oracle_addr: Addr::unchecked("oracle0000"),
-            oracle_symbol: "ORCL".to_string(),
-            token_id: 10,
-            pair_id: 11,
-            bluechip_address: Addr::unchecked("bluechip"),
-            bluechipe_fee: Decimal::from_ratio(10u128, 100u128),
-            creator_fee: Decimal::from_ratio(10u128, 100u128),
-        };
+        position_nft_id: 58,
+        admin: Addr::unchecked("addr0000"),
+        commit_amount_for_threshold: Uint128::zero(),
+        commit_limit_usd: Uint128::new(100),
+        oracle_addr: Addr::unchecked("oracle0000"),
+        oracle_symbol: "ORCL".to_string(),
+        token_id: 10,
+        pair_id: 11,
+        bluechip_address: Addr::unchecked("bluechip"),
+        bluechip_fee: Decimal::from_ratio(10u128, 100u128),
+        creator_fee: Decimal::from_ratio(10u128, 100u128),
+    };
 
     let env = mock_env();
     let addr = Addr::unchecked("addr0000");
@@ -624,13 +620,14 @@ fn test_update_config() {
         config: FactoryInstantiate {
             admin: Addr::unchecked("addr0000"),
             position_nft_id: 58,
+            commit_amount_for_threshold: Uint128::zero(),
             commit_limit_usd: Uint128::new(100),
             oracle_addr: Addr::unchecked("oracle0000"),
             oracle_symbol: "ORCL".to_string(),
             token_id: 10,
             pair_id: 11,
             bluechip_address: Addr::unchecked("bluechip"),
-            bluechipe_fee: Decimal::from_ratio(10u128, 100u128),
+            bluechip_fee: Decimal::from_ratio(10u128, 100u128),
             creator_fee: Decimal::from_ratio(10u128, 100u128),
         },
     };
@@ -658,18 +655,19 @@ fn test_reply_handling() {
     let mut deps = mock_dependencies(&[]);
 
     // Initialize contract
-   let msg = FactoryInstantiate {
-            admin: Addr::unchecked("addr0000"),
-            position_nft_id: 58,
-            commit_limit_usd: Uint128::new(100),
-            oracle_addr: Addr::unchecked("oracle0000"),
-            oracle_symbol: "ORCL".to_string(),
-            token_id: 10,
-            pair_id: 11,
-            bluechip_address: Addr::unchecked("bluechip"),
-            bluechipe_fee: Decimal::from_ratio(10u128, 100u128),
-            creator_fee: Decimal::from_ratio(10u128, 100u128),
-        };
+    let msg = FactoryInstantiate {
+        admin: Addr::unchecked("addr0000"),
+        position_nft_id: 58,
+        commit_amount_for_threshold: Uint128::zero(),
+        commit_limit_usd: Uint128::new(100),
+        oracle_addr: Addr::unchecked("oracle0000"),
+        oracle_symbol: "ORCL".to_string(),
+        token_id: 10,
+        pair_id: 11,
+        bluechip_address: Addr::unchecked("bluechip"),
+        bluechip_fee: Decimal::from_ratio(10u128, 100u128),
+        creator_fee: Decimal::from_ratio(10u128, 100u128),
+    };
 
     let env = mock_env();
     let addr = Addr::unchecked("addr0000");
@@ -708,13 +706,14 @@ fn test_reply_handling() {
         ],
         factory_addr: Addr::unchecked("factory"),
         token_code_id: 10,
-        init_params: None,
+        threshold_payout: None,
         fee_info: FeeInfo {
             bluechip_address: Addr::unchecked("bluechip"),
             creator_address: Addr::unchecked("addr0000"),
             bluechip_fee: Decimal::from_ratio(10u128, 100u128),
             creator_fee: Decimal::from_ratio(10u128, 100u128),
         },
+        commit_amount_for_threshold: Uint128::zero(),
         commit_limit_usd: Uint128::new(100),
         oracle_addr: Addr::unchecked("oracle0000"),
         oracle_symbol: "ORCL".to_string(),
@@ -728,7 +727,7 @@ fn test_reply_handling() {
     let contract_addr = "token_contract_address";
 
     let reply_msg = Reply {
-        id: SET_TOKENS, 
+        id: SET_TOKENS,
         result: SubMsgResult::Ok(SubMsgResponse {
             events: vec![
                 Event::new("instantiate").add_attribute("_contract_address", contract_addr)

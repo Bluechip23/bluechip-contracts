@@ -1639,18 +1639,8 @@ pub fn setup_pool_storage(deps: &mut OwnedDeps<MockStorage, MockApi, MockQuerier
 
     // Set up CommitInfo
     let commit_config = CommitInfo {
-        commit_limit: Uint128::new(100_000_000), // 100 bluechip tokens
+        commit_amount_for_threshold: Uint128::new(100_000_000), // 100 bluechip tokens
         commit_limit_usd: Uint128::new(25_000_000_000), // $25k with 6 decimals
-        available_payment: vec![
-            Uint128::new(1_000_000),   // 1 token
-            Uint128::new(5_000_000),   // 5 tokens
-            Uint128::new(10_000_000),  // 10 tokens
-        ],
-        available_payment_usd: vec![
-            Uint128::new(1_000_000_000),   // $1k
-            Uint128::new(5_000_000_000),   // $5k
-            Uint128::new(10_000_000_000),  // $10k
-        ],
     };
     COMMIT_CONFIG.save(&mut deps.storage, &commit_config).unwrap();
 
@@ -1726,22 +1716,20 @@ fn test_factory_impersonation_prevented() {
                 },
             ],
         token_code_id: 2u64,
+        threshold_payout: None,
         factory_addr: Addr::unchecked("factory_contract"),
-        init_params: None,
         fee_info: FeeInfo {
                 bluechip_address: Addr::unchecked("bluechip"),
                 creator_address: Addr::unchecked("addr0000"),
                 bluechip_fee: Decimal::from_ratio(10u128, 100u128),
                 creator_fee: Decimal::from_ratio(10u128, 100u128),
             },
-        commit_limit: Uint128::new(350_000_000_000),
+        commit_amount_for_threshold: Uint128::new(0),
         commit_limit_usd: Uint128::new(350_000_000_000),
         position_nft_address: Addr::unchecked("NFT_contract"),
         oracle_addr: Addr::unchecked("oracle_contract"),
         oracle_symbol: "BLUECHIP".to_string(),
         token_address: Addr::unchecked("token_contract"),
-        available_payment: vec![Uint128::new(1_000_000)],
-        available_payment_usd: vec![Uint128::new(1_000_000)],
     };
     let info = mock_info("fake_factory", &[]); // Wrong sender!
     let err = instantiate(deps.as_mut(), mock_env(), info, msg).unwrap_err();

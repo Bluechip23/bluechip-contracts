@@ -20,6 +20,7 @@ pub struct CreatePoolReplyMsg {
     //fees to bluechip and creator
     pub fee_info: FeeInfo,
     pub commit_limit_usd: Uint128,
+    pub commit_amount_for_threshold: Uint128,
     pub oracle_addr: Addr,
     pub oracle_symbol: String,
     pub token_address: Addr,
