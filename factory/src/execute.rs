@@ -11,13 +11,8 @@ use cosmwasm_std::{
     Deps, DepsMut, Env, MessageInfo,  Response,
     StdError, StdResult, 
 };
-
-
-
 const CONTRACT_NAME: &str = "bluechip_factory";
 const CONTRACT_VERSION: &str = env!("CARGO_PKG_VERSION");
-
-
 #[cfg_attr(not(feature = "library"), entry_point)]
 //Pools use the factory as almost a launch pad. I guess the best way to think of it is as a literal factory. 
 //it creates a template and holds logic for each new pool and gives the newly created pool new abilities like minting rights and other things. 

@@ -1,7 +1,7 @@
 use crate::pair::CreatePool;
 use cosmwasm_schema::cw_serde;
 use cosmwasm_std::{Addr, Decimal, Uint128};
-use cw_storage_plus::{Item, Map};
+use cw_storage_plus::{Item};
 
 pub const CONFIG: Item<FactoryInstantiate> = Item::new("config");
 pub const TEMPPOOLINFO: Item<CreatePool> = Item::new("temp_pair");
@@ -9,9 +9,7 @@ pub const TEMPCREATOR: Item<Addr> = Item::new("temp_admin");
 pub const TEMPPOOLID: Item<u64> = Item::new("temp_pool_id");
 pub const TEMPTOKENADDR: Item<Addr> = Item::new("temp_token_addr");
 pub const TEMPNFTADDR: Item<Addr> = Item::new("temp_nft_addr");
-pub const COMMIT: Map<&str, CommitInfo> = Map::new("subscription_info");
 pub const NEXT_POOL_ID: Item<u64> = Item::new("next_pool_id");
-pub const POOLS_BY_ID: Map<u64, CommitInfo> = Map::new("pools_by_id");
 
 #[cw_serde]
 pub struct FactoryInstantiate {

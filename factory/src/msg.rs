@@ -1,11 +1,8 @@
 use cosmwasm_schema::cw_serde;
-use cosmwasm_std::{Addr, Binary, Uint128};
 
 use cw20::{Cw20Coin, MinterResponse};
 use cw20_base::msg::InstantiateMarketingInfo;
 
-use crate::asset::AssetInfo;
-use crate::pair::{CreatePool, FeeInfo};
 use crate::state::{FactoryInstantiate};
 
 #[cw_serde]

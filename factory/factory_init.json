@@ -1,0 +1,13 @@
+{
+  "admin": "cosmos1akfwytawcvka89je04vv5v48xs6xn2swa8au60",
+  "commit_amount_for_threshold":"0",
+  "commit_limit_usd": "25000",
+  "oracle_addr": "cosmos1hrpna9v7vs3stzyd4z3xf00676kf78zpe2u5ksvljswn2vnjp3ysawcmtt",
+  "oracle_symbol": "stake",
+  "position_nft_id": 2,
+  "token_id": 1,
+  "pair_id": 19,
+  "bluechip_address": "cosmos1akfwytawcvka89je04vv5v48xs6xn2swa8au60",
+  "bluechip_fee": "0.01",
+  "creator_fee": "0.05"
+}
