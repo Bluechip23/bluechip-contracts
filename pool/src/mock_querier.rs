@@ -11,8 +11,8 @@ use std::collections::HashMap;
 
 use crate::msg::{FeeInfo, FeeInfoResponse, PoolResponse, QueryMsg};
 
-/// mock_dependencies is a drop-in replacement for cosmwasm_std::testing::mock_dependencies.
-/// This uses the BETFI CustomQuerier.
+// mock_dependencies is a drop-in replacement for cosmwasm_std::testing::mock_dependencies.
+// This uses the BETFI CustomQuerier.
 pub fn mock_dependencies(
     contract_balance: &[Coin],
 ) -> OwnedDeps<MockStorage, MockApi, WasmMockQuerier> {
@@ -84,12 +84,12 @@ impl WasmMockQuerier {
         }
     }
 
-    /// Seed CW20 balances for `contract_addr`
+    // Seed CW20 balances for `contract_addr`
     pub fn with_token_balances(&mut self, balances: &[(&String, &[(&String, &Uint128)])]) {
         self.token_querier = TokenQuerier::new(balances);
     }
 
-    /// Seed native bank balances
+    // Seed native bank balances
     pub fn with_balance(&mut self, balances: &[(&String, &[Coin])]) {
         for (addr, coins) in balances {
             self.base.update_balance(addr.to_string(), coins.to_vec());

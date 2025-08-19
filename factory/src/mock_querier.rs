@@ -9,8 +9,6 @@ use cosmwasm_std::{
 };
 use std::collections::HashMap;
 
-/// mock_dependencies is a drop-in replacement for cosmwasm_std::testing::mock_dependencies.
-/// This uses the betfi CustomQuerier.
 pub fn mock_dependencies(
     contract_balance: &[Coin],
 ) -> OwnedDeps<MockStorage, MockApi, WasmMockQuerier> {

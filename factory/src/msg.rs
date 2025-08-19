@@ -7,6 +7,8 @@ use crate::asset::AssetInfo;
 use crate::pair::{FeeInfo, CreatePool};
 use crate::state::{FactoryInstantiate};
 
+
+//triggers inside factory reply, used to complete the pool creation process. 
 #[cw_serde]
 pub struct CreatePoolReplyMsg {
     pub pool_id: u64,

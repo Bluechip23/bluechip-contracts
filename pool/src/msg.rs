@@ -65,7 +65,7 @@ pub enum ExecuteMsg {
 
 #[cw_serde]
 pub enum Cw20HookMsg {
-    /// Swap a given amount of asset
+    // Swap a given amount of asset
     Swap {
         belief_price: Option<Decimal>,
         max_spread: Option<Decimal>,
@@ -87,23 +87,18 @@ pub enum Cw20HookMsg {
     },
 }
 
-/// This structure describes the query messages available in the contract.
+// This structure describes the query messages available in the contract.
 #[cw_serde]
 #[derive(QueryResponses)]
 pub enum QueryMsg {
-    /// Returns information about a pair in an object of type [`super::asset::PairInfo`].
     #[returns(PairInfo)]
     Pair {},
-    /// Returns contract configuration settings in a custom [`ConfigResponse`] structure.
     #[returns(ConfigResponse)]
     Config {},
-    /// Returns information about a swap simulation in a [`SimulationResponse`] object.
     #[returns(SimulationResponse)]
     Simulation { offer_asset: Asset },
-    /// Returns information about cumulative prices in a [`CumulativePricesResponse`] object.
     #[returns(ReverseSimulationResponse)]
     ReverseSimulation { ask_asset: Asset },
-    /// Returns information about the cumulative prices in a [`CumulativePricesResponse`] object
     #[returns(CumulativePricesResponse)]
     CumulativePrices {},
 
@@ -156,13 +151,13 @@ pub enum QueryMsg {
 #[cw_serde]
 pub struct PoolInstantiateMsg {
     pub pool_id: u64,
-    /// Information about the two assets in the pool
+    // Information about the two assets in the pool
     pub asset_infos: [AssetInfo; 2],
-    /// The token contract code ID used for the tokens in the pool
+    // The token contract code ID used for the tokens in the pool
     pub token_code_id: u64,
-    /// The factory contract address
+    // The factory contract address
     pub factory_addr: Addr,
-    /// Optional binary serialised parameters for custom pool types
+    // gets set in reply function - amounts that go to each payout party
     pub threshold_payout: Option<Binary>,
     pub fee_info: FeeInfo,
     pub commit_limit_usd: Uint128,
@@ -195,25 +190,29 @@ pub struct CommiterInfo {
 }
 #[cw_serde]
 pub struct FeeInfo {
+    //BlueChip wallet
     pub bluechip_address: Addr,
+    //pool creatpr wallet
     pub creator_address: Addr,
+    //amount of commit that goes to BlueChip
     pub bluechip_fee: Decimal,
+    //amount of commit taht goes to pool creator
     pub creator_fee: Decimal,
 }
 
 
 #[cw_serde]
 pub struct PoolResponse {
-    /// The assets in the pool together with asset amounts
+    // The assets in the pool together with asset amounts
     pub assets: [Asset; 2],
 }
 
 
 #[cw_serde]
 pub struct ConfigResponse {
-    /// Last timestamp when the cumulative prices in the pool were updated
+    // Last timestamp when the cumulative prices in the pool were updated
     pub block_time_last: u64,
-    /// The pool's parameters
+    // The pool's parameters
     pub params: Option<Binary>,
 }
 
@@ -251,20 +250,20 @@ pub struct ReverseSimulationResponse {
     pub commission_amount: Uint128,
 }
 
-/// This structure is used to return a cumulative prices query response.
+// This structure is used to return a cumulative prices query response.
 #[cw_serde]
 pub struct CumulativePricesResponse {
-    /// The two assets in the pool to query
+    // The two assets in the pool to query
     pub assets: [Asset; 2],
     // The last value for the token0 cumulative price
     pub price0_cumulative_last: Uint128,
-    /// The last value for the token1 cumulative price
+    // The last value for the token1 cumulative price
     pub price1_cumulative_last: Uint128,
 }
 
 #[cw_serde]
 pub struct FeeInfoResponse {
-    /// The two assets in the pool to query
+    // The two assets in the pool to query
     pub fee_info: FeeInfo,
 }
 
@@ -275,14 +274,14 @@ pub struct MigrateMsg {}
 
 #[cw_serde]
 pub struct StablePoolParams {
-    /// The current stableswap pool amplification
+    // The current stableswap pool amplification
     pub amp: u64,
 }
 
 
 #[cw_serde]
 pub struct StablePoolConfig {
-    /// The stableswap pool amplification
+    // The stableswap pool amplification
     pub amp: Decimal,
 }
 

@@ -2,8 +2,7 @@ use cosmwasm_std::{OverflowError, StdError, Uint128};
 use thiserror::Error;
 
 pub const MINIMUM_LIQUIDITY_AMOUNT: Uint128 = Uint128::new(1_000);
-/// ## Description
-/// This enum describes pair contract errors!
+
 #[derive(Error, Debug, PartialEq)]
 pub enum ContractError {
     #[error("{0}")]

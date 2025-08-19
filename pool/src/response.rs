@@ -17,11 +17,6 @@
 #![allow(trivial_casts)]
 #![allow(unused_imports)]
 #![allow(unused_results)]
-//! Generated file from `src/response.proto`
-
-/// Generated files are compatible only with the same version
-/// of protobuf runtime.
-// const _PROTOBUF_VERSION_CHECK: () = ::protobuf::VERSION_2_25_2;
 
 #[derive(PartialEq,Clone,Default)]
 pub struct MsgInstantiateContractResponse {

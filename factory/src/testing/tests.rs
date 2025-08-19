@@ -268,10 +268,8 @@ fn simulate_complete_reply_chain(
     reply(deps.as_mut(), env.clone(), pool_reply).unwrap();
 }
 
-// Keep all your existing test functions below...
 #[test]
 fn test_asset_info() {
-    // Your existing test_asset_info implementation
     let native_info = AssetInfo::NativeToken {
         denom: "bluechip".to_string(),
     };
@@ -554,7 +552,6 @@ fn test_pair_info() {
             },
         ],
         contract_addr: Addr::unchecked("pair1..."),
-        liquidity_token: Addr::unchecked("lp1..."),
         pair_type: PairType::Xyk {},
     };
 

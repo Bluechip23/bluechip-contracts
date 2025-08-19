@@ -6,11 +6,11 @@ use cosmwasm_std::{Addr, Binary, Decimal, Uint128};
 
 #[cw_serde]
 pub struct CreatePool {
-    /// the creator token and bluechip.The creator token will be Token and bluechip will be Native
+    // the creator token and bluechip.The creator token will be Token and bluechip will be Native
     pub asset_infos: [AssetInfo; 2],
-    /// CW20 contract code ID the pools use to copy into their logic.
+    // CW20 contract code ID the pools use to copy into their logic.
     pub token_code_id: u64,
-    /// The factory contract address being used to create the creator pool
+    // The factory contract address being used to create the creator pool
     pub factory_addr: Addr,
     //this will be fed into the factory's reply function. It is the threshold payout amounts.
     pub threshold_payout: Option<Binary>,
@@ -18,8 +18,9 @@ pub struct CreatePool {
     pub fee_info: FeeInfo,
     // address for the newly created creator token. Autopopulated by the factory reply function
     pub token_address: Addr,
-    //the threshold limit for the contract. Once crossed, the pool mints and distributes new creator (CW20 token) and now behaves like a normal liquidity pool
+    //amount of bluechip that gets seeded into creator pool 
     pub commit_amount_for_threshold: Uint128,
+    //the threshold limit for the contract. Once crossed, the pool mints and distributes new creator (CW20 token) and now behaves like a normal liquidity pool
     pub commit_limit_usd: Uint128,
     // the contract of the oracle being used to convert prices to and from dollars
     pub oracle_addr: Addr,
@@ -51,7 +52,7 @@ pub struct FeeInfo {
 
 #[cw_serde]
 pub enum ExecuteMsg {
-    /// Update the pair configuration
+    // Update the pair configuration
     UpdateConfig { params: Binary },
 }
 
@@ -67,9 +68,9 @@ pub enum QueryMsg {
 
 #[cw_serde]
 pub struct ConfigResponse {
-    /// Last timestamp when the cumulative prices in the pool were updated
+    // Last timestamp when the cumulative prices in the pool were updated
     pub block_time_last: u64,
-    /// The pool's parameters
+    // The pool's parameters
     pub params: Option<Binary>,
 }
 

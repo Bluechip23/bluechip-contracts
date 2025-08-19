@@ -15,13 +15,12 @@ use cw20::{
 
 use cw_utils::must_pay;
 
-/// ## Description
-/// This enum describes a Terra asset (native or CW20).
+
 #[cw_serde]
 pub struct Asset {
-    /// Information about an asset stored in a [`AssetInfo`] struct
+    // Information about an asset stored in a [`AssetInfo`] struct
     pub info: AssetInfo,
-    /// A token amount
+    // A token amount
     pub amount: Uint128,
 }
 
@@ -32,28 +31,17 @@ impl fmt::Display for Asset {
 }
 
 impl Asset {
-    /// Returns true if the token is native. Otherwise returns false.
-    /// ## Params
-    /// * **self** is the type of the caller object.
+
     pub fn is_native_token(&self) -> bool {
         self.info.is_native_token()
     }
 
-    /// Calculates and returns a tax for a chain's native token. For other tokens it returns zero.
-    /// ## Params
-    /// * **self** is the type of the caller object.
-    ///
-    /// * **querier** is an object of type [`QuerierWrapper`]
+
     pub fn compute_tax(&self, _querier: &QuerierWrapper) -> StdResult<Uint128> {
         // tax rate in Terra is set to zero https://terrawiki.org/en/developers/tx-fees
         Ok(Uint128::zero())
     }
 
-    /// Calculates and returns a deducted tax for transferring the native token from the chain. For other tokens it returns an [`Err`].
-    /// ## Params
-    /// * **self** is the type of the caller object.
-    ///
-    /// * **querier** is an object of type [`QuerierWrapper`]
     pub fn deduct_tax(&self, _querier: &QuerierWrapper) -> StdResult<Coin> {
         let amount = self.amount;
         if let AssetInfo::NativeToken { denom } = &self.info {
@@ -66,18 +54,6 @@ impl Asset {
         }
     }
 
-    /// Returns a message of type [`CosmosMsg`].
-    ///
-    /// For native tokens of type [`AssetInfo`] uses the default method [`BankMsg::Send`] to send a token amount to a recipient.
-    /// Before the token is sent, we need to deduct a tax.
-    ///
-    /// For a token of type [`AssetInfo`] we use the default method [`Cw20ExecuteMsg::Transfer`] and so there's no need to deduct any other tax.
-    /// ## Params
-    /// * **self** is the type of the caller object.
-    ///
-    /// * **querier** is an object of type [`QuerierWrapper`]
-    ///
-    /// * **recipient** is the address where the funds will be sent.
     pub fn into_msg(self, querier: &QuerierWrapper, recipient: Addr) -> StdResult<CosmosMsg> {
         let amount = self.amount;
 
@@ -97,11 +73,6 @@ impl Asset {
         }
     }
 
-    /// Validates an amount of native tokens being sent. Returns [`Ok`] if successful, otherwise returns [`Err`].
-    /// ## Params
-    /// * **self** is the type of the caller object.
-    ///
-    /// * **message_info** is an object of type [`MessageInfo`]
     pub fn assert_sent_native_token_balance(&self, message_info: &MessageInfo) -> StdResult<()> {
         if let AssetInfo::NativeToken { denom } = &self.info {
             let amount = must_pay(message_info, denom)
@@ -181,9 +152,9 @@ impl CoinsExt for Vec<Coin> {
 
 #[cw_serde]
 pub enum AssetInfo {
-    /// Non-native Token
+    // Non-native Token
     Token { contract_addr: Addr },
-    /// Native token
+    // Native token
     NativeToken { denom: String },
 }
 
@@ -197,9 +168,7 @@ impl fmt::Display for AssetInfo {
 }
 
 impl AssetInfo {
-    /// Returns true if the caller is a native token. Otherwise returns false.
-    /// ## Params
-    /// * **self** is the caller object type
+
     pub fn is_native_token(&self) -> bool {
         match self {
             AssetInfo::NativeToken { .. } => true,
@@ -207,7 +176,7 @@ impl AssetInfo {
         }
     }
 
-    /// Checks whether the native coin is IBCed token or not.
+    // Checks whether the native coin is IBCed token or not.
     pub fn is_ibc(&self) -> bool {
         match self {
             AssetInfo::NativeToken { denom } => denom.to_lowercase().starts_with("ibc/"),
@@ -215,11 +184,6 @@ impl AssetInfo {
         }
     }
 
-    /// Returns the balance of token in a pool.
-    /// ## Params
-    /// * **self** is the type of the caller object.
-    ///
-    /// * **pool_addr** is the address of the contract whose token balance we check.
     pub fn query_pool(&self, querier: &QuerierWrapper, pool_addr: Addr) -> StdResult<Uint128> {
         match self {
             AssetInfo::Token { contract_addr, .. } => {
@@ -231,12 +195,6 @@ impl AssetInfo {
         }
     }
 
-    /// Returns True if the calling token is the same as the token specified in the input parameters.
-    /// Otherwise returns False.
-    /// ## Params
-    /// * **self** is the type of the caller object.
-    ///
-    /// * **asset** is object of type [`AssetInfo`].
     pub fn equal(&self, asset: &AssetInfo) -> bool {
         match self {
             AssetInfo::Token { contract_addr, .. } => {
@@ -256,11 +214,6 @@ impl AssetInfo {
         }
     }
 
-    /// If the caller object is a native token of type ['AssetInfo`] then his `denom` field converts to a byte string.
-    ///
-    /// If the caller object is a token of type ['AssetInfo`] then his `contract_addr` field converts to a byte string.
-    /// ## Params
-    /// * **self** is the type of the caller object.
     pub fn as_bytes(&self) -> &[u8] {
         match self {
             AssetInfo::NativeToken { denom } => denom.as_bytes(),
@@ -268,11 +221,7 @@ impl AssetInfo {
         }
     }
 
-    /// Returns [`Ok`] if the token of type [`AssetInfo`] is in lowercase and valid. Otherwise returns [`Err`].
-    /// ## Params
-    /// * **self** is the type of the caller object.
-    ///
-    /// * **api** is a object of type [`Api`]
+
     pub fn check(&self, api: &dyn Api) -> StdResult<()> {
         if let AssetInfo::Token { contract_addr } = self {
             api.addr_validate(contract_addr.as_str())?;
@@ -282,27 +231,20 @@ impl AssetInfo {
     }
 }
 
-/// This structure stores the main parameters for an BETFI pair
+// This structure stores the main parameters for an BETFI pair
 #[cw_serde]
 pub struct PairInfo {
-    /// Asset information for the two assets in the pool
+    // Asset information for the two assets in the pool
     pub asset_infos: [AssetInfo; 2],
-    /// Pair contract address
+    // Pair contract address
     pub contract_addr: Addr,
-    /// Pair LP token address
-    pub liquidity_token: Addr,
-    /// The pool type (xyk, stableswap etc) available in [`PairType`]
+    // Pair LP token address
+    // The pool type (xyk, stableswap etc) available in [`PairType`]
     pub pair_type: PairType,
 }
 
 impl PairInfo {
-    /// Returns the balance for each asset in the pool.
-    /// ## Params
-    /// * **self** is the type of the caller object
-    ///
-    /// * **querier** is an object of type [`QuerierWrapper`]
-    ///
-    /// * **contract_addr** is pair's pool address.
+
     pub fn query_pools(
         &self,
         querier: &QuerierWrapper,
@@ -321,7 +263,7 @@ impl PairInfo {
     }
 }
 
-/// Returns a lowercased, validated address upon success if present.
+// Returns a lowercased, validated address upon success if present.
 pub fn addr_opt_validate(api: &dyn Api, addr: &Option<String>) -> StdResult<Option<Addr>> {
     addr.as_ref()
         .map(|addr| api.addr_validate(addr))
@@ -330,11 +272,6 @@ pub fn addr_opt_validate(api: &dyn Api, addr: &Option<String>) -> StdResult<Opti
 
 const TOKEN_SYMBOL_MAX_LENGTH: usize = 4;
 
-/// Returns a formatted LP token name
-/// ## Params
-/// * **asset_infos** is an array with two items the type of [`AssetInfo`].
-///
-/// * **querier** is an object of type [`QuerierWrapper`].
 pub fn format_lp_token_name(
     asset_infos: [AssetInfo; 2],
     querier: &QuerierWrapper,
@@ -355,11 +292,6 @@ pub fn format_lp_token_name(
     Ok(format!("{}-{}-LP", short_symbols[0], short_symbols[1]).to_uppercase())
 }
 
-/// Returns an [`Asset`] object representing a native token and an amount of tokens.
-/// ## Params
-/// * **denom** is a [`String`] that represents the native asset denomination.
-///
-/// * **amount** is a [`Uint128`] representing an amount of native assets.
 pub fn native_asset(denom: String, amount: Uint128) -> Asset {
     Asset {
         info: AssetInfo::NativeToken { denom },
@@ -367,11 +299,6 @@ pub fn native_asset(denom: String, amount: Uint128) -> Asset {
     }
 }
 
-/// Returns an [`Asset`] object representing a non-native token and an amount of tokens.
-/// ## Params
-/// * **contract_addr** is a [`Addr`]. It is the address of the token contract.
-///
-/// * **amount** is a [`Uint128`] representing an amount of tokens.
 pub fn token_asset(contract_addr: Addr, amount: Uint128) -> Asset {
     Asset {
         info: AssetInfo::Token { contract_addr },
@@ -379,22 +306,17 @@ pub fn token_asset(contract_addr: Addr, amount: Uint128) -> Asset {
     }
 }
 
-/// Returns an [`AssetInfo`] object representing the denomination for a Terra native asset.
-/// ## Params
-/// * **denom** is a [`String`] object representing the denomination of the Terra native asset.
+
 pub fn native_asset_info(denom: String) -> AssetInfo {
     AssetInfo::NativeToken { denom }
 }
 
-/// Returns an [`AssetInfo`] object representing the address of a token contract.
-/// ## Params
-/// * **contract_addr** is a [`Addr`] object representing the address of a token contract.
 pub fn token_asset_info(contract_addr: Addr) -> AssetInfo {
     AssetInfo::Token { contract_addr }
 }
 
 
-/// Trait extension for AssetInfo to produce [`Asset`] objects from [`AssetInfo`].
+// Trait extension for AssetInfo to produce [`Asset`] objects from [`AssetInfo`].
 pub trait AssetInfoExt {
     fn with_balance(&self, balance: impl Into<Uint128>) -> Asset;
 }
@@ -513,11 +435,11 @@ mod tests {
 
 #[cw_serde]
 pub enum PairType {
-    /// XYK pair type
+    // XYK pair type
     Xyk {},
-    /// Stable pair type
+    // Stable pair type
     Stable {},
-    /// Custom pair type
+    // Custom pair type
     Custom(String),
 }
 
@@ -552,11 +474,7 @@ pub fn query_token_balance(
     Ok(res.balance)
 }
 
-/// Returns a token's symbol.
-/// ## Params
-/// * **querier** is an object of type [`QuerierWrapper`].
-///
-/// * **contract_addr** is an object of type [`Addr`] which is the token contract address.
+
 pub fn query_token_symbol(querier: &QuerierWrapper, contract_addr: Addr) -> StdResult<String> {
     let res: TokenInfoResponse = querier.query(&QueryRequest::Wasm(WasmQuery::Smart {
         contract_addr: String::from(contract_addr),
@@ -566,13 +484,6 @@ pub fn query_token_symbol(querier: &QuerierWrapper, contract_addr: Addr) -> StdR
     Ok(res.symbol)
 }
 
-/// Returns a native token's balance for a specific account.
-/// ## Params
-/// * **querier** is an object of type [`QuerierWrapper`].
-///
-/// * **account_addr** is an object of type [`Addr`].
-///
-/// * **denom** is an object of type [`String`] used to specify the denomination used to return the balance (e.g uluna).
 pub fn query_balance(
     querier: &QuerierWrapper,
     account_addr: Addr,

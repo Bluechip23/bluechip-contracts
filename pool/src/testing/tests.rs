@@ -182,7 +182,7 @@ let msg2 = ExecuteMsg::Commit {
     amount: commit_amount,
     deadline: None,
     belief_price: None,
-    max_spread: Some(Decimal::percent(50)), // 100% tolerance
+    max_spread: None, // 100% tolerance
 };
     let res2 = execute(deps.as_mut(), env.clone(), info2, msg2).unwrap();
     println!(
@@ -1584,7 +1584,7 @@ fn test_invalid_percentage_removal() {
     }
 }
 
-/// Sets up a pool in pre-threshold state with all necessary configuration
+// Sets up a pool in pre-threshold state with all necessary configuration
 pub fn setup_pool_storage(deps: &mut OwnedDeps<MockStorage, MockApi, MockQuerier>) {
     // Set up PoolInfo
     let pool_info = PoolInfo {
@@ -1599,7 +1599,6 @@ pub fn setup_pool_storage(deps: &mut OwnedDeps<MockStorage, MockApi, MockQuerier
                 },
             ],
             contract_addr: Addr::unchecked("pool_contract"),
-            liquidity_token: Addr::unchecked("lp_token"), // Not used with NFTs but kept for compatibility
             pair_type: PairType::Xyk {},
         },
         factory_addr: Addr::unchecked("factory_contract"),
@@ -1677,7 +1676,7 @@ pub fn setup_pool_storage(deps: &mut OwnedDeps<MockStorage, MockApi, MockQuerier
     NEXT_POSITION_ID.save(&mut deps.storage, &1u64).unwrap();
 }
 
-/// Sets up a pool in post-threshold state with initial liquidity
+// Sets up a pool in post-threshold state with initial liquidity
 pub fn setup_pool_post_threshold(deps: &mut OwnedDeps<MockStorage, MockApi, MockQuerier>) {
     // First set up basic pool
     setup_pool_storage(deps);
@@ -1741,7 +1740,7 @@ fn test_factory_impersonation_prevented() {
 }
 
 
-/// Creates a test liquidity position with specified parameters
+// Creates a test liquidity position with specified parameters
 pub fn create_test_position(
     deps: &mut OwnedDeps<MockStorage, MockApi, MockQuerier>,
     position_id: u64,

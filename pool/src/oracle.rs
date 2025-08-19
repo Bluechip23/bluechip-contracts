@@ -3,7 +3,6 @@ use cosmwasm_std::Uint128;
 
 #[cw_serde]
 pub enum PythQueryMsg {
-    /// e.g. price_id = "SEI_USD"
     GetPrice { price_id: String },
 }
 

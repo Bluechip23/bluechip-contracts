@@ -13,8 +13,8 @@ pub struct TokenMetadata {
     pub description: Option<String>,
 }
 
-/// ## Description
-/// Stores the config struct at the given key
+// Stores the config struct at the given key
+//
 pub const USD_RAISED: Item<Uint128> = Item::new("usd_raised");
 pub const MAX_ORACLE_AGE: u64 = 3000000;
 pub const FEEINFO: Item<FeeInfo> = Item::new("fee_info");
@@ -42,11 +42,17 @@ pub const POOL_FEE_STATE: Item<PoolFeeState> = Item::new("pool_fee_state");
 #[cw_serde]
 pub struct Commiting {
     pub pool_id: u64,
+    //commit transaction executer
     pub commiter: Addr,
+    //amount paid converted to USD
     pub total_paid_usd: Uint128,
+    //amount of bluechips used to pay for the transaction
     pub total_paid_native: Uint128,
+    //last time someone commited to pool
     pub last_commited: Timestamp,
+    //last amount of bluechips commited
     pub last_payment_native: Uint128,  
+    //last amount converted to USD
     pub last_payment_usd: Uint128, 
 }
 #[cw_serde]
@@ -54,17 +60,23 @@ pub struct PoolState {
     pub nft_ownership_accepted: bool,
     pub reserve0: Uint128, // native token
     pub reserve1: Uint128, // cw20 token
+    //how many liquidity units are deposited in the pool
     pub total_liquidity: Uint128, 
     pub block_time_last: u64,
+    //
     pub price0_cumulative_last: Uint128,
     pub price1_cumulative_last: Uint128,
 }
 
 #[cw_serde]
 pub struct PoolFeeState {
+    //the amount of fees per unit of liquidty - is used as a baseline to track fees for liquidity positions - asset 0
     pub fee_growth_global_0: Decimal,
+    //the amount of fees per unit of liquidty - is used as a baseline to track fees for liquidity positions - asset 1
     pub fee_growth_global_1: Decimal,
+    //the total amount of fees collected from pool for asset 0
     pub total_fees_collected_0: Uint128,
+    //total amount fo fees collected from pool for asset 1
     pub total_fees_collected_1: Uint128,
 }
 
@@ -93,27 +105,33 @@ pub struct PoolInfo {
 
 #[cw_serde]
 pub struct PairInfo {
-    /// Asset information for the two assets in the pool
+    // Asset information for the two assets in the pool
     pub asset_infos: [AssetInfo; 2],
-    /// Pair contract address
+    // Pair contract address
     pub contract_addr: Addr,
-    /// Pair LP token address
-    pub liquidity_token: Addr,
-    /// The pool type (xyk, stableswap etc) available in [`PairType`]
+    // The pool type (xyk, stableswap etc) available in [`PairType`]
     pub pair_type: PairType,
 }
 
 #[cw_serde]
 pub struct OracleInfo {
+    //oracle contract addresss
     pub oracle_addr: Addr,
+    //asset symbol being viewed
     pub oracle_symbol: String,
 }
 
+
 #[cw_serde]
+//amount that gets paid out in creator token when threshold is crossed
 pub struct ThresholdPayout {
+    //amount goin to creators
     pub creator_amount: Uint128,
+    //amount that goes to BlueChip
     pub bluechip_amount: Uint128,
+    //amount that goes to pool for seeding
     pub pool_amount: Uint128,
+    //amount that gets sent back to prethreshold commiters. 
     pub commit_amount: Uint128,
 }
 
@@ -132,14 +150,17 @@ pub struct CommitInfo {
 
 #[cw_serde]
 pub struct Position {
+    //amount of liqudity units in the liquidity position
     pub liquidity: Uint128,
+    //wallet address of lqiuidity owner
     pub owner: Addr,
-    // optionally: fee‐growth snapshots, etc.
+    //last time the user collected fees in terms of fee accumulation fee_growth_global_0 - fee_growth_inside_0_last = fees owed for asset 0
     pub fee_growth_inside_0_last: Decimal,
     pub fee_growth_inside_1_last: Decimal,
-    // Timestamps for better tracking
+    // when was position opened
     pub created_at: u64,
     pub last_fee_collection: u64,
+    //when positions are too small, they take a liquidity accumulation penalty. 
     pub fee_multiplier: Decimal,
 }
 

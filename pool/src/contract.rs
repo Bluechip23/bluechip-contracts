@@ -10,32 +10,11 @@ use crate::msg::{
 use crate::oracle::{OracleData, PriceResponse, PythQueryMsg};
 use crate::response::MsgInstantiateContractResponse;
 use crate::state::{
-    CommitInfo,
-    ExpectedFactory,
-    OracleInfo,
-    PairInfo,
-    PoolFeeState,
-    PoolInfo,
-    PoolSpecs,
-    ThresholdPayout,
-    COMMITSTATUS,
-    COMMIT_CONFIG,
-    COMMIT_LEDGER,
-    EXPECTED_FACTORY,
-    FEEINFO,
-    MAX_ORACLE_AGE,
-    NATIVE_RAISED,
-    ORACLE_INFO,
-    POOL_FEE_STATE,
-    POOL_INFO,
-    POOL_SPECS,
-    POOL_STATE,
-    RATE_LIMIT_GUARD,
-    THRESHOLD_HIT,
-    THRESHOLD_PAYOUT,
-    THRESHOLD_PROCESSING,
-    USD_RAISED,
-    USER_LAST_COMMIT, //ACCUMULATED_BLUECHIP_FEES, ACCUMULATED_CREATOR_FEES,
+    CommitInfo, ExpectedFactory, OracleInfo, PairInfo, PoolFeeState, PoolInfo, PoolSpecs,
+    ThresholdPayout, COMMITSTATUS, COMMIT_CONFIG, COMMIT_LEDGER, EXPECTED_FACTORY, FEEINFO,
+    MAX_ORACLE_AGE, NATIVE_RAISED, ORACLE_INFO, POOL_FEE_STATE, POOL_INFO, POOL_SPECS, POOL_STATE,
+    RATE_LIMIT_GUARD, THRESHOLD_HIT, THRESHOLD_PAYOUT, THRESHOLD_PROCESSING, USD_RAISED,
+    USER_LAST_COMMIT,
 };
 use crate::state::{
     Commiting, PoolState, Position, TokenMetadata, COMMIT_INFO, LIQUIDITY_POSITIONS,
@@ -54,17 +33,17 @@ use protobuf::Message;
 use std::convert::TryInto;
 use std::str::FromStr;
 use std::vec;
-/// The default swap slippage
+// The default swap slippage
 pub const DEFAULT_SLIPPAGE: &str = "0.005";
-/// The maximum allowed swap slippage
+// The maximum allowed swap slippage
 pub const MAX_ALLOWED_SLIPPAGE: &str = "0.5";
 
 // Decimal precision for TWAP results
 pub const TWAP_PRECISION: u8 = 6;
 
-/// Contract name that is used for migration.
+// Contract name that is used for migration.
 const CONTRACT_NAME: &str = "betfi-pair";
-/// Contract version that is used for migration.
+// Contract version that is used for migration.
 const CONTRACT_VERSION: &str = env!("CARGO_PKG_VERSION");
 
 #[cfg_attr(not(feature = "library"), entry_point)]
@@ -74,6 +53,7 @@ pub fn instantiate(
     info: MessageInfo,
     msg: PoolInstantiateMsg,
 ) -> Result<Response, ContractError> {
+    //ensure the correct factory contract address was used in creating the pool
     let cfg = ExpectedFactory {
         expected_factory_address: msg.factory_addr.clone(),
     };
@@ -81,10 +61,8 @@ pub fn instantiate(
 
     let real_factory = EXPECTED_FACTORY.load(deps.storage)?;
 
-    // Validate factory address stored matches message factory_addr (optional)
     validate_factory_address(&real_factory.expected_factory_address, &msg.factory_addr)?;
 
-    // **Here is the critical check: does the caller equal the stored factory?**
     if info.sender != real_factory.expected_factory_address {
         return Err(ContractError::Unauthorized {});
     }
@@ -100,7 +78,8 @@ pub fn instantiate(
     }
     let threshold_payouts = if let Some(params_binary) = msg.threshold_payout {
         let params: ThresholdPayout = from_json(&params_binary)?;
-        // CRITICAL: Validate the params match expected values
+        //make sure params match - no funny business with token minting.
+        //checks total value and predetermined amounts for creator, BlueChip, original subscribers (commit amount), and the pool itself
         validate_pool_threshold_payments(&params)?;
         params
     } else {
@@ -114,7 +93,6 @@ pub fn instantiate(
         pool_id: msg.pool_id,
         pair_info: PairInfo {
             contract_addr: env.contract.address.clone(),
-            liquidity_token: Addr::unchecked(""), // Set later
             asset_infos: msg.asset_infos.clone(),
             pair_type: PairType::Xyk {},
         },
@@ -148,7 +126,7 @@ pub fn instantiate(
 
     let commit_config = CommitInfo {
         commit_limit_usd: msg.commit_limit_usd,
-        commit_amount_for_threshold: msg.commit_amount_for_threshold, //variable set here
+        commit_amount_for_threshold: msg.commit_amount_for_threshold,
     };
 
     let oracle_info = OracleInfo {
@@ -163,7 +141,8 @@ pub fn instantiate(
         reserve1: Uint128::zero(),
         price0_cumulative_last: Uint128::zero(),
         price1_cumulative_last: Uint128::zero(),
-        nft_ownership_accepted: false, // Initially false, set to true after NFT ownership is verified
+        // Initially false, set to true after NFT ownership is verified
+        nft_ownership_accepted: false,
     };
 
     let pool_fee_state = PoolFeeState {
@@ -193,32 +172,32 @@ pub fn instantiate(
         .add_attribute("pool", env.contract.address.to_string()))
 }
 fn validate_pool_threshold_payments(params: &ThresholdPayout) -> Result<(), ContractError> {
-    // Define the ONLY acceptable values
+    // the ONLY acceptable values
     const EXPECTED_CREATOR: u128 = 325_000_000_000;
     const EXPECTED_BLUECHIP: u128 = 25_000_000_000;
     const EXPECTED_POOL: u128 = 350_000_000_000;
     const EXPECTED_COMMIT: u128 = 500_000_000_000;
     const EXPECTED_TOTAL: u128 = 1_200_000_000_000;
 
-    // Verify each amount exactly
+    // verify each amount specifically - creator amount
     if params.creator_amount != Uint128::new(EXPECTED_CREATOR) {
         return Err(ContractError::InvalidThresholdParams {
             msg: format!("Creator amount must be {}", EXPECTED_CREATOR),
         });
     }
-
+    //bluechip amount
     if params.bluechip_amount != Uint128::new(EXPECTED_BLUECHIP) {
         return Err(ContractError::InvalidThresholdParams {
             msg: format!("BlueChip amount must be {}", EXPECTED_BLUECHIP),
         });
     }
-
+    //pool seeding amount
     if params.pool_amount != Uint128::new(EXPECTED_POOL) {
         return Err(ContractError::InvalidThresholdParams {
             msg: format!("Pool amount must be {}", EXPECTED_POOL),
         });
     }
-
+    //amount sent back to origincal commiters
     if params.commit_amount != Uint128::new(EXPECTED_COMMIT) {
         return Err(ContractError::InvalidThresholdParams {
             msg: format!("Commit amount must be {}", EXPECTED_COMMIT),
@@ -228,7 +207,7 @@ fn validate_pool_threshold_payments(params: &ThresholdPayout) -> Result<(), Cont
     // Verify total
     let total =
         params.creator_amount + params.bluechip_amount + params.pool_amount + params.commit_amount;
-
+    //throw error if anything of them is off - there is also a max mint number to help with the exactness
     if total != Uint128::new(EXPECTED_TOTAL) {
         return Err(ContractError::InvalidThresholdParams {
             msg: format!("Total must equal {} (got {})", EXPECTED_TOTAL, total),
@@ -247,7 +226,7 @@ pub fn execute(
 ) -> Result<Response, ContractError> {
     match msg {
         ExecuteMsg::UpdateConfig { .. } => Err(ContractError::NonSupported {}),
-
+        //special swap funcntion that behaves differently before and after a threshold - contributed to commit ledger prior to crossing the threshold - acts a swap post threshold
         ExecuteMsg::Commit {
             asset,
             amount,
@@ -264,7 +243,7 @@ pub fn execute(
             belief_price,
             max_spread,
         ),
-        // ── standard swap via native coin ──────────────────
+        //a standard swap - this can only be called IF the asset is the bluechip. if not, performing a swap will require executing the CW20 contract
         ExecuteMsg::SimpleSwap {
             offer_asset,
             belief_price,
@@ -296,8 +275,7 @@ pub fn execute(
             )
         }
         ExecuteMsg::Receive(cw20_msg) => execute_swap_cw20(deps, env, info, cw20_msg),
-
-        // ── NEW: NFT-based liquidity management ──────────────────
+        //deposit liquidity into a pool - accumulates liquiidty units for fees - mints an NFT for position
         ExecuteMsg::DepositLiquidity {
             amount0,
             amount1,
@@ -305,7 +283,6 @@ pub fn execute(
             min_amount1,
             deadline,
         } => {
-            // Check threshold requirement (same as swap)
             if !query_check_commit(deps.as_ref())? {
                 return Err(ContractError::ShortOfThreshold {});
             }
@@ -322,7 +299,7 @@ pub fn execute(
                 deadline,
             )
         }
-
+        //add to a currently held position by the user
         ExecuteMsg::AddToPosition {
             position_id,
             amount0,
@@ -331,7 +308,7 @@ pub fn execute(
             min_amount1,
             deadline,
         } => {
-            // Check threshold requirement
+            // check threshold requirement
             if !query_check_commit(deps.as_ref())? {
                 return Err(ContractError::ShortOfThreshold {});
             }
@@ -349,11 +326,11 @@ pub fn execute(
                 deadline,
             )
         }
-
+        //collect all fees for a position
         ExecuteMsg::CollectFees { position_id } => {
             execute_collect_fees(deps, env, info, position_id)
         }
-
+        //removes liquidity based on a specific amount (I have 100 liquidity I want to remove 18.) - will collect fees in proportion of removal to rebalance accounting
         ExecuteMsg::RemovePartialLiquidity {
             position_id,
             liquidity_to_remove,
@@ -370,7 +347,7 @@ pub fn execute(
             min_amount0,
             min_amount1,
         ),
-
+        //removes all liquidity for a position - (i have 100 liquidity and I remove 100) - collects all fees.
         ExecuteMsg::RemoveLiquidity {
             position_id,
             deadline,
@@ -385,6 +362,7 @@ pub fn execute(
             min_amount0,
             min_amount1,
         ),
+        //removes liquidity based on a specific percent (I have 100 liquidity I want to remove 18% = remove 18.) - will collect fees in proportion of removal to rebalance accounting
         ExecuteMsg::RemovePartialLiquidityByPercent {
             position_id,
             percentage,
@@ -511,9 +489,7 @@ pub fn reply(deps: DepsMut, _env: Env, msg: Reply) -> Result<Response, ContractE
             })?;
         let lp: Addr = deps.api.addr_validate(parsed.get_contract_address())?;
 
-        // CHANGED: Update POOL_INFO instead of CONFIG
-        POOL_INFO.update(deps.storage, |mut pool_info| -> Result<_, ContractError> {
-            pool_info.pair_info.liquidity_token = lp.clone();
+        POOL_INFO.update(deps.storage, |pool_info| -> Result<_, ContractError> {
             Ok(pool_info)
         })?;
 
@@ -565,6 +541,7 @@ pub fn simple_swap(
 }
 
 #[allow(clippy::too_many_arguments)]
+//logic to carry out the simple swap transacation
 pub fn execute_simple_swap(
     deps: &mut DepsMut,
     env: Env,
@@ -817,6 +794,7 @@ pub fn execute_commit_logic(
             env.block.time.seconds(),
         )?;
     }
+    //convert amount to usd for commit storage
     let usd_value = native_to_usd(oracle_data.price, asset.amount, oracle_data.expo)?;
 
     match &asset.info {
@@ -832,27 +810,13 @@ pub fn execute_commit_logic(
                 return Err(ContractError::MismatchAmount {});
             }
 
-            // Initialize messages vector for transfers
             let mut messages: Vec<CosmosMsg> = Vec::new();
 
-            // Calculate fees
+            // fees calculated right away
             let bluechip_fee_amt =
                 amount * fee_info.bluechip_fee.numerator() / fee_info.bluechip_fee.denominator();
             let creator_fee_amt =
                 amount * fee_info.creator_fee.numerator() / fee_info.creator_fee.denominator();
-
-            // Verify contract has enough balance for fees
-            let contract_balance = deps
-                .querier
-                .query_balance(env.contract.address.clone(), denom.clone())?;
-            let total_fees = bluechip_fee_amt + creator_fee_amt;
-
-            if contract_balance.amount < total_fees {
-                return Err(ContractError::Std(StdError::generic_err(format!(
-                    "Contract has insufficient balance to pay fees. Contract has {}, needs {}",
-                    contract_balance.amount, total_fees
-                ))));
-            }
 
             // Create fee transfer messages
             let bluechip_transfer =
@@ -876,11 +840,10 @@ pub fn execute_commit_logic(
             messages.push(bluechip_transfer);
             messages.push(creator_transfer);
 
-            // Check if threshold has been hit
+            // load state of threshold of the pool
             let threshold_already_hit = THRESHOLD_HIT.load(deps.storage)?;
-
+            //pre threshold logic begins....
             if !threshold_already_hit {
-                // PRE-THRESHOLD LOGIC
                 let current_usd_raised = USD_RAISED.load(deps.storage)?;
                 let new_total = current_usd_raised + usd_value;
 
@@ -891,17 +854,14 @@ pub fn execute_commit_logic(
                         .may_load(deps.storage)?
                         .unwrap_or(false);
                     let can_process = if processing {
-                        false // Someone else is processing
+                        false // a different transaction is processing
                     } else {
                         THRESHOLD_PROCESSING.save(deps.storage, &true)?;
-                        true // We get to process
+                        true // commiters transaction get to be the threshold crosser WHICH wins them nothing.
                     };
-
+                    //logic if a different transaction indeed triggered the threhsold crossing.
                     if !can_process {
-                        // Another transaction is handling the threshold crossing
-                        // Process this as a normal pre-threshold commit
-
-                        // Double-check if threshold was hit while we were waiting
+                        //double check to handle race conditions
                         if THRESHOLD_HIT.load(deps.storage)? {
                             // Threshold was hit, process as post-threshold
                             return process_post_threshold_commit(
@@ -921,23 +881,6 @@ pub fn execute_commit_logic(
                             deps, env, sender, &asset, usd_value, messages,
                         );
                     }
-
-                    // Double-check threshold hasn't been hit (defensive programming)
-                    if THRESHOLD_HIT.load(deps.storage)? {
-                        // Someone else hit it, clear our lock and process as post-threshold
-                        THRESHOLD_PROCESSING.save(deps.storage, &false)?;
-                        return process_post_threshold_commit(
-                            deps,
-                            env,
-                            sender,
-                            asset,
-                            usd_value,
-                            messages,
-                            belief_price,
-                            max_spread,
-                        );
-                    }
-
                     // Calculate exact amounts for threshold crossing
                     let usd_to_threshold = commit_config
                         .commit_limit_usd
@@ -958,7 +901,6 @@ pub fn execute_commit_logic(
 
                         // Set USD raised to exactly the threshold
                         USD_RAISED.save(deps.storage, &commit_config.commit_limit_usd)?;
-                        COMMITSTATUS.save(deps.storage, &commit_config.commit_limit_usd)?;
 
                         //mark threshold as hit
                         THRESHOLD_HIT.save(deps.storage, &true)?;
@@ -1014,7 +956,7 @@ pub fn execute_commit_logic(
                             // Perform swap with excess amount
                             let offer_pool = pool_state.reserve0;
                             let ask_pool = pool_state.reserve1;
-
+                            //make sure both assets have been set in the pool properly
                             if !ask_pool.is_zero() && !offer_pool.is_zero() {
                                 let (ret_amt, sp_amt, comm_amt) = compute_swap(
                                     offer_pool,
@@ -1064,7 +1006,7 @@ pub fn execute_commit_logic(
                                     .into(),
                                 );
                             }
-
+                            //save the commit transaction
                             COMMIT_INFO.update(
                                 deps.storage,
                                 &sender,
@@ -1118,7 +1060,6 @@ pub fn execute_commit_logic(
                         };
 
                         USD_RAISED.save(deps.storage, &final_usd)?;
-                        COMMITSTATUS.save(deps.storage, &final_usd)?;
 
                         // Mark threshold as hit
                         THRESHOLD_HIT.save(deps.storage, &true)?;
@@ -1179,7 +1120,7 @@ pub fn execute_commit_logic(
                     );
                 }
             } else {
-                // post threshold commit swap
+                // post threshold commit swap logic using native token
                 return process_post_threshold_commit(
                     deps,
                     env,
@@ -1206,7 +1147,7 @@ fn process_pre_threshold_commit(
     messages: Vec<CosmosMsg>,
 ) -> Result<Response, ContractError> {
     let pool_info = POOL_INFO.load(deps.storage)?;
-
+    //do not calculate fees in function, they are calculated prior.
     // Update commit ledger
     COMMIT_LEDGER.update::<_, ContractError>(deps.storage, &sender, |v| {
         Ok(v.unwrap_or_default() + usd_value)
@@ -1252,7 +1193,7 @@ fn process_pre_threshold_commit(
         .add_attribute("commit_amount_usd", usd_value.to_string()))
 }
 
-//commit transaction post threshold - makes a swap with pool - still has fees taken out for creator and bluechip
+//commit transaction post threshold - makes a swap with pool - still has fees taken out for creator and bluechip done in execute_commit_logic
 fn process_post_threshold_commit(
     deps: &mut DepsMut,
     env: Env,
@@ -1265,34 +1206,28 @@ fn process_post_threshold_commit(
 ) -> Result<Response, ContractError> {
     let pool_info = POOL_INFO.load(deps.storage)?;
     let pool_specs = POOL_SPECS.load(deps.storage)?;
-    let fee_info = FEEINFO.load(deps.storage)?;
-
-    // Calculate net amount after fees
-    let bluechip_fee_amt =
-        asset.amount * fee_info.bluechip_fee.numerator() / fee_info.bluechip_fee.denominator();
-    let creator_fee_amt =
-        asset.amount * fee_info.creator_fee.numerator() / fee_info.creator_fee.denominator();
-    let net_amount = asset
-        .amount
-        .checked_sub(bluechip_fee_amt + creator_fee_amt)?;
-
-    // Load current pool state
     let mut pool_state = POOL_STATE.load(deps.storage)?;
     let mut pool_fee_state = POOL_FEE_STATE.load(deps.storage)?;
-
+    //do not calculate fees in function, they are calculated prior.
     // Load current pool balances
     let offer_pool = pool_state.reserve0;
     let ask_pool = pool_state.reserve1;
 
     // Calculate swap output
     let (return_amt, spread_amt, commission_amt) =
-        compute_swap(offer_pool, ask_pool, net_amount, pool_specs.lp_fee)?;
+        compute_swap(offer_pool, ask_pool, asset.amount, pool_specs.lp_fee)?;
 
     // Check slippage
-    assert_max_spread(belief_price, max_spread, net_amount, return_amt, spread_amt)?;
+    assert_max_spread(
+        belief_price,
+        max_spread,
+        asset.amount,
+        return_amt,
+        spread_amt,
+    )?;
 
     // Update reserves
-    pool_state.reserve0 = offer_pool.checked_add(net_amount)?;
+    pool_state.reserve0 = offer_pool.checked_add(asset.amount)?;
     pool_state.reserve1 = ask_pool.checked_sub(return_amt)?;
 
     // Update fee growth
@@ -1351,7 +1286,6 @@ fn process_post_threshold_commit(
         .add_attribute("committer", sender)
         .add_attribute("commit_amount_native", asset.amount.to_string())
         .add_attribute("commit_amount_usd", usd_value.to_string())
-        .add_attribute("net_offered", net_amount.to_string())
         .add_attribute("block_committed", env.block.time.to_string())
         .add_attribute("tokens_received", return_amt.to_string()))
 }
@@ -1369,20 +1303,13 @@ pub fn execute_add_to_position(
     deadline: Option<Timestamp>,
 ) -> Result<Response, ContractError> {
     enforce_deadline(env.block.time, deadline)?;
-    // Reentrancy protection - check and set guard
-    let reentrancy_guard = RATE_LIMIT_GUARD.may_load(deps.storage)?.unwrap_or(false);
-    if reentrancy_guard {
-        return Err(ContractError::ReentrancyGuard {});
-    }
-    RATE_LIMIT_GUARD.save(deps.storage, &true)?;
     let pool_specs: PoolSpecs = POOL_SPECS.load(deps.storage)?;
 
-    // Rate limiting check
+    // prohibit spam liquidity
     if let Err(e) = check_rate_limit(&mut deps, &env, &pool_specs, &sender) {
         RATE_LIMIT_GUARD.save(deps.storage, &false)?;
         return Err(e);
     }
-    // Your existing function logic here...
     let result = add_to_position(
         &mut deps,
         env,
@@ -1395,10 +1322,6 @@ pub fn execute_add_to_position(
         min_amount1,
         deadline,
     );
-
-    // Always clear the guard before returning (even on error)
-    RATE_LIMIT_GUARD.save(deps.storage, &false)?;
-
     result
 }
 
@@ -1412,16 +1335,9 @@ pub fn execute_remove_liquidity(
     min_amount1: Option<Uint128>,
 ) -> Result<Response, ContractError> {
     enforce_deadline(env.block.time, deadline)?;
-    // Reentrancy protection - check and set guard
-    let reentrancy_guard = RATE_LIMIT_GUARD.may_load(deps.storage)?.unwrap_or(false);
-    if reentrancy_guard {
-        return Err(ContractError::ReentrancyGuard {});
-    }
-    RATE_LIMIT_GUARD.save(deps.storage, &true)?;
     let pool_specs: PoolSpecs = POOL_SPECS.load(deps.storage)?;
     let sender = info.sender.clone();
-
-    // Rate limiting check
+    //spam protection
     if let Err(e) = check_rate_limit(&mut deps, &env, &pool_specs, &sender) {
         RATE_LIMIT_GUARD.save(deps.storage, &false)?;
         return Err(e);
@@ -1435,9 +1351,6 @@ pub fn execute_remove_liquidity(
         min_amount0,
         min_amount1,
     );
-
-    RATE_LIMIT_GUARD.save(deps.storage, &false)?;
-
     result
 }
 
@@ -1452,16 +1365,9 @@ pub fn execute_remove_partial_liquidity(
     min_amount1: Option<Uint128>,
 ) -> Result<Response, ContractError> {
     enforce_deadline(env.block.time, deadline)?;
-    // Reentrancy protection - check and set guard
-    let reentrancy_guard = RATE_LIMIT_GUARD.may_load(deps.storage)?.unwrap_or(false);
-    if reentrancy_guard {
-        return Err(ContractError::ReentrancyGuard {});
-    }
-    RATE_LIMIT_GUARD.save(deps.storage, &true)?;
     let pool_specs: PoolSpecs = POOL_SPECS.load(deps.storage)?;
     let sender = info.sender.clone();
 
-    // Rate limiting check
     if let Err(e) = check_rate_limit(&mut deps, &env, &pool_specs, &sender) {
         RATE_LIMIT_GUARD.save(deps.storage, &false)?;
         return Err(e);
@@ -1476,8 +1382,6 @@ pub fn execute_remove_partial_liquidity(
         min_amount0,
         min_amount1,
     );
-
-    RATE_LIMIT_GUARD.save(deps.storage, &false)?;
 
     result
 }
@@ -1548,7 +1452,7 @@ pub fn get_and_validate_oracle_price(
         )
         .map_err(|e| StdError::generic_err(format!("Oracle query failed: {}", e)))?;
 
-    // Staleness check - STANDARD PRACTICE
+    // Staleness check
     let zero: Uint128 = Uint128::zero();
     if resp.price <= zero {
         return Err(StdError::generic_err(
@@ -1627,7 +1531,7 @@ pub fn execute_deposit_liquidity(
     if paid_native < actual_amount0 {
         return Err(ContractError::InvalidNativeAmount {});
     }
-
+    //slippage check
     if let Some(min0) = min_amount0 {
         if actual_amount0 < min0 {
             return Err(ContractError::SlippageExceeded {
@@ -1637,7 +1541,6 @@ pub fn execute_deposit_liquidity(
             });
         }
     }
-
     if let Some(min1) = min_amount1 {
         if actual_amount1 < min1 {
             return Err(ContractError::SlippageExceeded {
@@ -1704,7 +1607,7 @@ pub fn execute_deposit_liquidity(
     };
 
     let mint_liquidity_nft = WasmMsg::Execute {
-        contract_addr: pool_info.position_nft_address.to_string(), // Use the NFT contract address!
+        contract_addr: pool_info.position_nft_address.to_string(),
         msg: to_json_binary(
             &CW721BaseExecuteMsg::<TokenMetadata, cosmwasm_std::Empty>::Mint {
                 token_id: position_id.clone(),
@@ -1816,6 +1719,7 @@ pub fn execute_collect_fees(
     Ok(response)
 }
 
+//add liquidity to an already exisitnng position
 pub fn add_to_position(
     deps: &mut DepsMut,
     env: Env,
@@ -1841,7 +1745,7 @@ pub fn add_to_position(
     let pool_fee_state = POOL_FEE_STATE.load(deps.storage)?;
     let pool_info = POOL_INFO.load(deps.storage)?;
     let mut pool_state = POOL_STATE.load(deps.storage)?;
-
+    //make sure position belongs to wallet sending new funds
     verify_position_ownership(
         deps.as_ref(),
         &pool_info.position_nft_address,
@@ -1857,7 +1761,7 @@ pub fn add_to_position(
     }
     let mut liquidity_position = LIQUIDITY_POSITIONS.load(deps.storage, &position_id)?;
     let mut messages: Vec<CosmosMsg> = vec![];
-
+    //send accumulated fees to reset accounting
     let fees_owed_0 = calculate_fees_owed(
         liquidity_position.liquidity,
         pool_fee_state.fee_growth_global_0,
@@ -1871,7 +1775,7 @@ pub fn add_to_position(
         liquidity_position.fee_growth_inside_1_last,
         liquidity_position.fee_multiplier,
     );
-
+    //check slippage
     if let Some(min0) = min_amount0 {
         if actual_amount0 < min0 {
             return Err(ContractError::SlippageExceeded {
@@ -1891,6 +1795,7 @@ pub fn add_to_position(
             });
         }
     }
+    //send the appropraite amount of both assets to the pool for the liquidity position
     if !actual_amount1.is_zero() {
         let transfer_cw20_msg = WasmMsg::Execute {
             contract_addr: pool_info.token_address.to_string(),
@@ -1944,7 +1849,7 @@ pub fn add_to_position(
         .add_attribute("refunded_amount0", refund_amount.to_string())
         .add_attribute("fees_collected_0", fees_owed_0)
         .add_attribute("fees_collected_1", fees_owed_1);
-
+    //actually send fees
     if !fees_owed_0.is_zero() {
         let native_msg = BankMsg::Send {
             to_address: user.to_string(),
@@ -2003,7 +1908,7 @@ pub fn remove_liquidity(
         (liquidity_position.liquidity * current_reserve0) / pool_state.total_liquidity;
     let user_share_1 =
         (liquidity_position.liquidity * current_reserve1) / pool_state.total_liquidity;
-
+    //protect against slippage and error out transaction
     if let Some(min0) = min_amount0 {
         if user_share_0 < min0 {
             return Err(ContractError::SlippageExceeded {
@@ -2023,7 +1928,7 @@ pub fn remove_liquidity(
             });
         }
     }
-
+    //calculate the fees owed to the position and prepare for collection
     let fees_owed_0 = calculate_fees_owed(
         liquidity_position.liquidity,
         pool_fee_state.fee_growth_global_0,
@@ -2054,6 +1959,7 @@ pub fn remove_liquidity(
         funds: vec![],
     };*/
 
+    //update pool fees, collect fees, and reserve prices
     liquidity_position.fee_growth_inside_0_last = pool_fee_state.fee_growth_global_0;
     liquidity_position.fee_growth_inside_1_last = pool_fee_state.fee_growth_global_1;
     pool_state.reserve0 = pool_state.reserve0.checked_sub(user_share_0)?;
@@ -2075,7 +1981,7 @@ pub fn remove_liquidity(
         .add_attribute("fees_1", fees_owed_1)
         .add_attribute("total_0", total_amount_0)
         .add_attribute("total_1", total_amount_1);
-
+    //redeem the tokens correlated with the users positions
     if !total_amount_0.is_zero() {
         let native_msg = BankMsg::Send {
             to_address: info.sender.to_string(),
@@ -2130,7 +2036,7 @@ pub fn remove_partial_liquidity(
     if liquidity_to_remove.is_zero() {
         return Err(ContractError::InvalidAmount {});
     }
-
+    //if users removes all their liquidity.
     if liquidity_to_remove == liquidity_position.liquidity {
         return execute_remove_liquidity(
             deps.branch(),
@@ -2142,26 +2048,30 @@ pub fn remove_partial_liquidity(
             min_amount1,
         );
     }
-
+    //cant take out what you dont have.
     if liquidity_to_remove > liquidity_position.liquidity {
         return Err(ContractError::InsufficientLiquidity {});
     }
     let current_reserve0 = pool_state.reserve0;
     let current_reserve1 = pool_state.reserve1;
     let fees_owed_0 = calculate_fees_owed(
+        //only considers the amount of liquidity being removed when collecting fees
         liquidity_to_remove,
+        //everything else remains the same
         pool_fee_state.fee_growth_global_0,
         liquidity_position.fee_growth_inside_0_last,
         liquidity_position.fee_multiplier,
     );
 
     let fees_owed_1 = calculate_fees_owed(
+        //only considers the amount of liquidity being removed when collecting fees
         liquidity_to_remove,
+        //everything else remains the same
         pool_fee_state.fee_growth_global_1,
         liquidity_position.fee_growth_inside_1_last,
         liquidity_position.fee_multiplier,
     );
-
+    //finds total amount based on the amount of liquidity the user would like to remove.
     let withdrawal_amount_0 = liquidity_to_remove
         .checked_mul(current_reserve0)?
         .checked_div(pool_state.total_liquidity)
@@ -2172,9 +2082,10 @@ pub fn remove_partial_liquidity(
         .checked_div(pool_state.total_liquidity)
         .map_err(|_| ContractError::DivideByZero)?;
 
+    //add amounts to send
     let total_amount_0 = withdrawal_amount_0 + fees_owed_0;
     let total_amount_1 = withdrawal_amount_1 + fees_owed_1;
-
+    //update state
     pool_state.reserve0 = pool_state.reserve0.checked_sub(withdrawal_amount_0)?;
     pool_state.reserve1 = pool_state.reserve1.checked_sub(withdrawal_amount_1)?;
     pool_state.total_liquidity = pool_state
@@ -2203,7 +2114,7 @@ pub fn remove_partial_liquidity(
         .add_attribute("fees_1", fees_owed_1)
         .add_attribute("total_0", total_amount_0)
         .add_attribute("total_1", total_amount_1);
-
+    //send assets back to user.
     if !total_amount_0.is_zero() {
         let native_msg = BankMsg::Send {
             to_address: info.sender.to_string(),
@@ -2239,6 +2150,7 @@ fn enforce_deadline(current: Timestamp, deadline: Option<Timestamp>) -> Result<(
     Ok(())
 }
 
+//same as remove partial liquidity but with a percent instead of a whole number
 pub fn execute_remove_partial_liquidity_by_percent(
     deps: DepsMut,
     env: Env,
@@ -2267,10 +2179,10 @@ pub fn execute_remove_partial_liquidity_by_percent(
         );
     }
 
-    // Load position to calculate absolute amount
+    // load position to calculate absolute amount
     let liquidity_position = LIQUIDITY_POSITIONS.load(deps.storage, &position_id)?;
 
-    // Calculate liquidity amount to remove (simple integer math)
+    // convert percentage to whole number to use in execute_remote_partial_liquidity
     let liquidity_to_remove = liquidity_position
         .liquidity
         .checked_mul(Uint128::from(percentage))?
@@ -2282,6 +2194,7 @@ pub fn execute_remove_partial_liquidity_by_percent(
         env,
         info,
         position_id,
+        //converted from decimal
         liquidity_to_remove,
         deadline,
         min_amount0,
@@ -2301,7 +2214,7 @@ fn calc_liquidity_for_deposit(
     let current_reserve1 = pool_state.reserve1;
 
     if current_reserve0.is_zero() || current_reserve1.is_zero() {
-        // Add specific error to know WHICH is zero
+        // Add specific error to know WHICH is the culprit of being zero
         if current_reserve0.is_zero() {
             return Err(ContractError::Std(StdError::generic_err(
                 "Reserve0 is zero",
@@ -2313,6 +2226,7 @@ fn calc_liquidity_for_deposit(
             )));
         }
     }
+    // Add specific error to know WHICH is the culprit of being zero
     if amount0.is_zero() || amount1.is_zero() {
         if amount0.is_zero() {
             return Err(ContractError::Std(StdError::generic_err("amount0 is zero")));
@@ -2326,10 +2240,10 @@ fn calc_liquidity_for_deposit(
     let optimal_amount0_for_amount1 = (amount1 * current_reserve0) / current_reserve1;
 
     let (final_amount0, final_amount1) = if optimal_amount1_for_amount0 <= amount1 {
-        // User provided enough amount1, use all of amount0
+        //not enough amount1, use all of amount0
         (amount0, optimal_amount1_for_amount0)
     } else {
-        // User didn't provide enough amount1, use all their amount1 and scale down amount0
+        // not enough amount1, use all their amount1 and scale down amount0
         (optimal_amount0_for_amount1, amount1)
     };
 
@@ -2338,6 +2252,7 @@ fn calc_liquidity_for_deposit(
     }
 
     let product = final_amount0.checked_mul(final_amount1)?;
+    //geometric mean
     let liquidity = integer_sqrt(product).max(Uint128::new(1));
 
     if liquidity.is_zero() {
@@ -2347,52 +2262,18 @@ fn calc_liquidity_for_deposit(
     Ok((liquidity, final_amount0, final_amount1))
 }
 
+//geometric mean for liquidity providing.
 fn integer_sqrt(value: Uint128) -> Uint128 {
     if value.is_zero() {
         return Uint128::zero();
     }
-
     let mut x = value;
     let mut y = (value + Uint128::one()) / Uint128::new(2);
-
     while y < x {
         x = y;
         y = (y + value / y) / Uint128::new(2);
     }
-
     x
-}
-pub fn accumulate_prices(
-    env: Env,
-    pool_state: &PoolState,
-    x: Uint128,
-    y: Uint128,
-) -> StdResult<Option<(Uint128, Uint128, u64)>> {
-    let block_time = env.block.time.seconds();
-    if block_time <= pool_state.block_time_last {
-        return Ok(None);
-    }
-
-    let time_elapsed = Uint128::from(block_time - pool_state.block_time_last);
-
-    let mut pcl0 = pool_state.price0_cumulative_last;
-    let mut pcl1 = pool_state.price1_cumulative_last;
-
-    if !x.is_zero() && !y.is_zero() {
-        let price_precision = Uint128::from(10u128.pow(TWAP_PRECISION.into()));
-        pcl0 = pool_state.price0_cumulative_last.wrapping_add(
-            time_elapsed
-                .checked_mul(price_precision)?
-                .multiply_ratio(y, x),
-        );
-        pcl1 = pool_state.price1_cumulative_last.wrapping_add(
-            time_elapsed
-                .checked_mul(price_precision)?
-                .multiply_ratio(x, y),
-        );
-    };
-
-    Ok(Some((pcl0, pcl1, block_time)))
 }
 
 pub fn compute_swap(
@@ -2437,7 +2318,7 @@ pub fn validate_factory_address(
     }
     Ok(())
 }
-
+//used in reverse query to find price for a desired amount of an unowned token in a token pair
 fn compute_offer_amount(
     offer_pool: Uint128,
     ask_pool: Uint128,
@@ -2494,29 +2375,31 @@ pub fn trigger_threshold_payout(
     if creator_ratio < Uint128::new(26) || creator_ratio > Uint128::new(28) {
         return Err(StdError::generic_err("Invalid creator ratio"));
     }
+    //mint tokens directly to the desired places
+    //to creator
     msgs.push(mint_tokens(
         &pool_info.token_address,
         &fee_info.creator_address,
         payout.creator_amount,
     )?);
-
+    //to BlueChip
     msgs.push(mint_tokens(
         &pool_info.token_address,
         &fee_info.bluechip_address,
         payout.bluechip_amount,
     )?);
-
+    //to the creator pool + the amount of bluechips used to cross the threshold
     msgs.push(mint_tokens(
         &pool_info.token_address,
         &env.contract.address,
         payout.pool_amount + commit_config.commit_amount_for_threshold,
     )?);
-
+    //calculate return to pre threshold commiters
     let held_amount = payout.commit_amount;
+    //find each payer inside the ledger
     for payer_res in COMMIT_LEDGER.keys(storage, None, None, Order::Ascending) {
-        // unwrap the StdResult<Addr> into an Addr
         let payer: Addr = payer_res?;
-
+        //how much they commited
         let usd_paid = COMMIT_LEDGER.load(storage, &payer)?;
         let reward = Uint128::try_from(
             (Uint256::from(usd_paid) * Uint256::from(held_amount))
@@ -2533,6 +2416,7 @@ pub fn trigger_threshold_payout(
         AssetInfo::NativeToken { denom, .. } => denom,
         _ => "stake", // fallback if first asset isn't native
     };
+    //mint and push amount to each pre threshold commiter based on their portion of the "native seed"
     let native_seed = Uint128::new(23_500);
     msgs.push(get_bank_transfer_to_msg(
         &env.contract.address,
@@ -2542,7 +2426,7 @@ pub fn trigger_threshold_payout(
 
     pool_state.reserve0 = native_seed; // No LP positions created yet
     pool_state.reserve1 = payout.pool_amount; // No LP positions created yet
-                                              //Initial seed liquidity is not owned by anyone and cannot be withdrawn. This is intentional to prevent pool draining attacks
+    //Initial seed liquidity is not owned by anyone and cannot be withdrawn. This is intentional to prevent pool draining attacks and unneccesary pool rewards
     pool_state.total_liquidity = Uint128::zero();
     pool_fee_state.fee_growth_global_0 = Decimal::zero();
     pool_fee_state.fee_growth_global_1 = Decimal::zero();
@@ -2633,18 +2517,16 @@ pub fn get_bank_transfer_to_msg(
             amount,
         }],
     };
-
     let transfer_bank_cosmos_msg: CosmosMsg = transfer_bank_msg.into();
     Ok(transfer_bank_cosmos_msg)
 }
+
 fn mint_tokens(token_addr: &Addr, recipient: &Addr, amount: Uint128) -> StdResult<CosmosMsg> {
-    // CW20 mint message
+    //mint the tokens and send them to the correct contract witht he correct amounts
     let mint_msg = Cw20ExecuteMsg::Mint {
         recipient: recipient.to_string(),
         amount,
     };
-
-    // wrap in a Wasm execute
     let exec = WasmMsg::Execute {
         contract_addr: token_addr.to_string(),
         msg: to_json_binary(&mint_msg)?,
@@ -2654,20 +2536,7 @@ fn mint_tokens(token_addr: &Addr, recipient: &Addr, amount: Uint128) -> StdResul
     Ok(exec.into())
 }
 
-pub fn query_check_threshold_limit(deps: Deps) -> StdResult<CommitStatus> {
-    let threshold_hit = THRESHOLD_HIT.load(deps.storage)?;
-    let commit_config = COMMIT_CONFIG.load(deps.storage)?;
-    if threshold_hit {
-        Ok(CommitStatus::FullyCommitted)
-    } else {
-        let usd_raised = USD_RAISED.load(deps.storage)?;
-        Ok(CommitStatus::InProgress {
-            raised: usd_raised,
-            target: commit_config.commit_limit_usd,
-        })
-    }
-}
-
+//find fee growth per unit of liquidity and then multiply it by the amount of liquidity units owned by the postiion.
 fn calculate_fees_owed(
     liquidity: Uint128,
     fee_growth_global: Decimal,
@@ -2683,9 +2552,9 @@ fn calculate_fees_owed(
         Uint128::zero()
     }
 }
-
+//used to protect against many small liquidity positions
 pub fn calculate_fee_multiplier(liquidity: Uint128) -> Decimal {
-    pub const OPTIMAL_LIQUIDITY: Uint128 = Uint128::new(1_000_000); // Adjust based on your token decimals
+    pub const OPTIMAL_LIQUIDITY: Uint128 = Uint128::new(1_000_000);
     pub const MIN_MULTIPLIER: &str = "0.1"; // 10% fees for tiny positions
 
     if liquidity >= OPTIMAL_LIQUIDITY {
@@ -2718,6 +2587,7 @@ pub fn get_cw20_transfer_msg(
     Ok(cw20_transfer_msg)
 }
 
+//check to make sure liquidity positions cant be tampered with by non owners
 fn verify_position_ownership(
     deps: Deps,
     nft_contract: &Addr,
@@ -2741,11 +2611,14 @@ fn verify_position_ownership(
 
 fn calculate_unclaimed_fees(
     liquidity: Uint128,
+    //the fee_growth_global number the last time the position collected fees
     fee_growth_inside_last: Decimal,
+    //fee growth of pool PER liquidty unit
     fee_growth_global: Decimal,
 ) -> Uint128 {
     if fee_growth_global > fee_growth_inside_last {
         let fee_growth_delta = fee_growth_global - fee_growth_inside_last;
+        //number of liquidity units * delta 
         liquidity * fee_growth_delta
     } else {
         Uint128::zero()
@@ -2832,6 +2705,20 @@ pub fn query_pool(deps: Deps) -> StdResult<PoolResponse> {
     Ok(resp)
 }
 
+pub fn query_check_threshold_limit(deps: Deps) -> StdResult<CommitStatus> {
+    let threshold_hit = THRESHOLD_HIT.load(deps.storage)?;
+    let commit_config = COMMIT_CONFIG.load(deps.storage)?;
+    if threshold_hit {
+        Ok(CommitStatus::FullyCommitted)
+    } else {
+        let usd_raised = USD_RAISED.load(deps.storage)?;
+        Ok(CommitStatus::InProgress {
+            raised: usd_raised,
+            target: commit_config.commit_limit_usd,
+        })
+    }
+}
+
 pub fn query_simulation(deps: Deps, offer_asset: Asset) -> StdResult<SimulationResponse> {
     let pool_info = POOL_INFO.load(deps.storage)?;
     let contract_addr = pool_info.pair_info.contract_addr.clone();
@@ -2915,18 +2802,19 @@ pub fn query_reverse_simulation(
 
 pub fn query_cumulative_prices(deps: Deps, env: Env) -> StdResult<CumulativePricesResponse> {
     let pool_info = POOL_INFO.load(deps.storage)?;
-    let pool_state = POOL_STATE.load(deps.storage)?;
+    let mut pool_state = POOL_STATE.load(deps.storage)?;
     let assets = call_pool_info(deps, pool_info.clone())?;
 
-    let mut price0_cumulative_last = pool_state.price0_cumulative_last;
-    let mut price1_cumulative_last = pool_state.price1_cumulative_last;
+    pool_state.reserve0 = assets[0].amount;
+    pool_state.reserve1 = assets[1].amount;
 
-    if let Some((price0_cumulative_new, price1_cumulative_new, _)) =
-        accumulate_prices(env, &pool_state, assets[0].amount, assets[1].amount)?
-    {
-        price0_cumulative_last = price0_cumulative_new;
-        price1_cumulative_last = price1_cumulative_new;
-    }
+    // Update the accumulator (this mutates pool_state)
+    update_price_accumulator(&mut pool_state, env.block.time.seconds())
+        .map_err(|e| StdError::generic_err(format!("Failed to update price accumulator: {}", e)))?;
+
+    // Extract the updated cumulative prices
+    let price0_cumulative_last = pool_state.price0_cumulative_last;
+    let price1_cumulative_last = pool_state.price1_cumulative_last;
 
     let resp = CumulativePricesResponse {
         assets,
