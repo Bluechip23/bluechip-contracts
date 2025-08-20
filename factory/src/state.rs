@@ -6,14 +6,22 @@ use cw_storage_plus::{Item, Map};
 
 //states used during the pool and factory creation process. 
 pub const CONFIG: Item<FactoryInstantiate> = Item::new("config");
+//transfers pool through the instantiaion process - then gets deleted when pool is finalized
 pub const TEMPPAIRINFO: Item<CreatePool> = Item::new("temp_pair");
+//transfers creator information through the instantiaion process - then gets deleted when pool is finalized
 pub const TEMPCREATOR: Item<Addr> = Item::new("temp_admin");
+//transfers pool id information through the instantiaion process - then gets deleted when pool is finalized
 pub const TEMPPOOLID: Item<u64> = Item::new("temp_pool_id");
+//transfers token addr information through the instantiaion process - then gets deleted when pool is finalized
 pub const TEMPTOKENADDR: Item<Addr> = Item::new("temp_token_addr");
+//transfers NFT Addr information through the instantiaion process - then gets deleted when pool is finalized
 pub const TEMPNFTADDR: Item<Addr> = Item::new("temp_nft_addr");
+//instantiates commit struct
 pub const COMMIT: Map<&str, CommitInfo> = Map::new("commit_info");
+// prepared factory and creates next pool id
 pub const NEXT_POOL_ID: Item<u64> = Item::new("next_pool_id");
 pub const POOLS_BY_ID: Map<u64, CommitInfo> = Map::new("pools_by_id");
+//catches any failed steps in the instantiation process and marks the creations as failed.
 pub const CREATION_STATES: Map<u64, CreationState> = Map::new("creation_states");
 
 #[cw_serde]
