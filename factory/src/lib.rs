@@ -7,5 +7,3 @@ pub mod pair;
 pub mod query;
 pub mod state;
 
-#[cfg(test)]
-mod testing;

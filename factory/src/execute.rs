@@ -460,7 +460,7 @@ fn handle_cleanup_reply(deps: DepsMut, _env: Env, msg: Reply) -> Result<Response
     }
 }
 
-//pull contract addresss - can be used for multiple types.
+//pull contract addresss 
 fn extract_contract_address(result: &SubMsgResponse) -> Result<Addr, ContractError> {
     result
         .events

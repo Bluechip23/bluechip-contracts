@@ -2,7 +2,6 @@ use cosmwasm_schema::cw_serde;
 use std::collections::{HashMap, HashSet};
 use std::fmt::{self, Display, Formatter, Result};
 
-use crate::msg::QueryMsg;
 use crate::state::PoolInfo;
 
 
@@ -12,7 +11,7 @@ use cosmwasm_std::{
 };
 
 use cw20::{
-    BalanceResponse as Cw20BalanceResponse, Cw20ExecuteMsg, Cw20QueryMsg, MinterResponse,
+    BalanceResponse as Cw20BalanceResponse, Cw20ExecuteMsg, Cw20QueryMsg, 
     TokenInfoResponse,
 };
 
@@ -295,18 +294,6 @@ pub fn token_asset_info(contract_addr: Addr) -> AssetInfo {
     AssetInfo::Token { contract_addr }
 }
 
-// Returns [`PairInfo`] by specified pool address.
-pub fn pair_info_by_pool(deps: Deps, pool: Addr) -> StdResult<PairInfo> {
-    let minter_info: MinterResponse = deps
-        .querier
-        .query_wasm_smart(pool, &Cw20QueryMsg::Minter {})?;
-
-    let pair_info: PairInfo = deps
-        .querier
-        .query_wasm_smart(minter_info.minter, &QueryMsg::Pair {})?;
-
-    Ok(pair_info)
-}
 
 
 pub trait AssetInfoExt {
