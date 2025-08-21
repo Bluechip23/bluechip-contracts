@@ -15,28 +15,46 @@ pub struct TokenMetadata {
 
 // Stores the config struct at the given key
 //
+//amount raised during the pool funding phase. tops out at commit_limit_usd
 pub const USD_RAISED: Item<Uint128> = Item::new("usd_raised");
+pub const COMMIT_INFO: Map<&Addr, Commiting> = Map::new("sub_info");
+//5 minutes, oracle will expire due to stale prices
 pub const MAX_ORACLE_AGE: u64 = 3000000;
+//fee infor for commit transactions
 pub const FEEINFO: Item<FeeInfo> = Item::new("fee_info");
+//whether or the pool has crossed the threshold or not
 pub const COMMITSTATUS: Item<Uint128> = Item::new("commit_status");
+//amount of bluechips raised for the pool
 pub const NATIVE_RAISED: Item<Uint128> = Item::new("native_raised");
+//set to prohibit spam transactions from a single wallet
 pub const RATE_LIMIT_GUARD: Item<bool> = Item::new("rate_limit_guard");
+//Has the threshold been hit for this pool
 pub const THRESHOLD_HIT: Item<bool> = Item::new("threshold_hit");
+//store all the commiters and the amount they have commited to the pool prior to the threshold being hit
 pub const COMMIT_LEDGER: cw_storage_plus::Map<&Addr, Uint128> =
     cw_storage_plus::Map::new("commit_usd");
-pub const COMMIT_INFO: Map<&Addr, Commiting> = Map::new("sub_info");
+//the contract of the factory being used for pool creation
 pub const EXPECTED_FACTORY: Item<ExpectedFactory> = Item::new("expected_factory");
 pub const USER_LAST_COMMIT: Map<&Addr, u64> = Map::new("user_last_commit");
+//information for pool including factory, pool, and token addresses
 pub const POOL_INFO: Item<PoolInfo> = Item::new("pool_info");
+//liquidity and reserve amounts for the pool
 pub const POOL_STATE: Item<PoolState> = Item::new("pool_state");
+//lp fee for liquidity pools
 pub const POOL_SPECS: Item<PoolSpecs> = Item::new("pool_specs");
+//used to handle races cases when the threshold is being crossed
 pub const THRESHOLD_PROCESSING: Item<bool> = Item::new("threshold_processing");
+//amounts that get sent to designated areas when threhsold is crossed
 pub const THRESHOLD_PAYOUT: Item<ThresholdPayout> = Item::new("threshold_payout_amounts");
+//pool identifier incriments by 1 every pool
 pub const NEXT_POSITION_ID: Item<u64> = Item::new("next_position_id");
+//information liquiidty positions in pools
 pub const LIQUIDITY_POSITIONS: Map<&str, Position> = Map::new("positions");
+//commit limit and amount of bluechips that will be stored in pool
 pub const COMMIT_CONFIG: Item<CommitInfo> = Item::new("commit_config");
+//symbol orcale is trakcing along with its price
 pub const ORACLE_INFO: Item<OracleInfo> = Item::new("oracle_info");
-pub const POOL_PARAMS: Item<PoolSpecs> = Item::new("pool_params");
+//tracking the global fee growth and total fees collected for the poolS
 pub const POOL_FEE_STATE: Item<PoolFeeState> = Item::new("pool_fee_state");
 
 #[cw_serde]
