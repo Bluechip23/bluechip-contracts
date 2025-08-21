@@ -42,7 +42,7 @@ pub const POOL_INFO: Item<PoolInfo> = Item::new("pool_info");
 pub const POOL_STATE: Item<PoolState> = Item::new("pool_state");
 //lp fee for liquidity pools
 pub const POOL_SPECS: Item<PoolSpecs> = Item::new("pool_specs");
-//used to handle races cases when the threshold is being crossed
+//used to handle races cases when the threshold is being crossed.
 pub const THRESHOLD_PROCESSING: Item<bool> = Item::new("threshold_processing");
 //amounts that get sent to designated areas when threhsold is crossed
 pub const THRESHOLD_PAYOUT: Item<ThresholdPayout> = Item::new("threshold_payout_amounts");

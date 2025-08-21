@@ -3,19 +3,11 @@ use cosmwasm_schema::{cw_serde, QueryResponses};
 use crate::asset::{Asset, AssetInfo, PairInfo};
 use crate::state::Commiting;
 use cosmwasm_std::{Addr, Binary, Decimal, Timestamp, Uint128};
-use cw20::Cw20ReceiveMsg;
 
 
 #[cw_serde]
 pub enum ExecuteMsg {
-    Receive(Cw20ReceiveMsg),
-    SimpleSwap {
-        offer_asset: Asset,
-        belief_price: Option<Decimal>,
-        max_spread: Option<Decimal>,
-        to: Option<String>,
-        deadline: Option<Timestamp>,
-    },
+
     UpdateConfig { params: Binary },
 
     Commit {
@@ -25,42 +17,7 @@ pub enum ExecuteMsg {
         belief_price: Option<Decimal>,
         max_spread: Option<Decimal>,
     },
-    DepositLiquidity {
-        amount0: Uint128,
-        amount1: Uint128,
-        min_amount0: Option<Uint128>,
-        min_amount1: Option<Uint128>,
-        deadline: Option<Timestamp>,
-    },
-    CollectFees { position_id: String },
-    AddToPosition {
-        position_id: String,
-        amount0: Uint128, // native token amount
-        amount1: Uint128,
-        min_amount0: Option<Uint128>,
-        min_amount1: Option<Uint128>,
-        deadline: Option<Timestamp>,
-    },
-    RemovePartialLiquidity {
-        position_id: String,
-        liquidity_to_remove: Uint128,
-        deadline: Option<Timestamp>, // Specific amount of liquidity to remove
-        min_amount0: Option<Uint128>,
-        min_amount1: Option<Uint128>,
-    },
-    RemovePartialLiquidityByPercent {
-        position_id: String,
-        percentage: u64,
-        deadline: Option<Timestamp>,
-        min_amount0: Option<Uint128>,
-        min_amount1: Option<Uint128>, 
-    },
-    RemoveLiquidity {
-        position_id: String,
-        deadline: Option<Timestamp>,
-        min_amount0: Option<Uint128>,
-        min_amount1: Option<Uint128>,
-    },
+
 }
 
 #[cw_serde]
@@ -95,15 +52,6 @@ pub enum QueryMsg {
     Pair {},
     #[returns(ConfigResponse)]
     Config {},
-    #[returns(SimulationResponse)]
-    Simulation { offer_asset: Asset },
-    #[returns(ReverseSimulationResponse)]
-    ReverseSimulation { ask_asset: Asset },
-    #[returns(CumulativePricesResponse)]
-    CumulativePrices {},
-
-    #[returns(FeeInfoResponse)]
-    FeeInfo {},
 
     #[returns(CommitStatus)]
     IsFullyCommited {},
@@ -123,24 +71,6 @@ pub enum QueryMsg {
     #[returns(PoolStateResponse)]
     PoolState {},
 
-    #[returns(PoolFeeStateResponse)]
-    FeeState {},
-
-    #[returns(PositionResponse)]
-    Position { position_id: String },
-
-    #[returns(PositionsResponse)]
-    Positions {
-        start_after: Option<String>,
-        limit: Option<u32>,
-    },
-
-    #[returns(PositionsResponse)]
-    PositionsByOwner {
-        owner: String,
-        start_after: Option<String>,
-        limit: Option<u32>,
-    },
     #[returns(LastCommitedResponse)]
     LastCommited { wallet: String },
 
