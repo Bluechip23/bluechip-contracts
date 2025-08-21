@@ -23,13 +23,6 @@ use cosmwasm_std::{
     Response, Uint128,
 };
 use cw2::{set_contract_version};
-// The default swap slippage
-pub const DEFAULT_SLIPPAGE: &str = "0.005";
-// The maximum allowed swap slippage
-pub const MAX_ALLOWED_SLIPPAGE: &str = "0.5";
-
-// Decimal precision for TWAP results
-pub const TWAP_PRECISION: u8 = 6;
 
 // Contract name that is used for migration.
 const CONTRACT_NAME: &str = "betfi-pair";
