@@ -1,3 +1,4 @@
+use crate::reply::reply;
 use crate::state::{
     CreationState, CreationStatus, FactoryInstantiate, COMMIT, CREATION_STATES, NEXT_POOL_ID,
     POOLS_BY_ID, TEMPCREATOR, TEMPNFTADDR, TEMPPAIRINFO, TEMPPOOLID, TEMPTOKENADDR,
@@ -6,11 +7,11 @@ use cosmwasm_std::{
     Addr, Binary, Decimal, Env, Event, OwnedDeps, Reply, SubMsgResponse, SubMsgResult, Uint128,
 };
 
-use crate::asset::{Asset, AssetInfo, PairInfo, PairType};
-use crate::execute::{execute, instantiate, reply, FINALIZE_POOL, MINT_CREATE_POOL, SET_TOKENS};
+use crate::asset::{Asset, AssetInfo, PairType};
+use crate::execute::{execute, instantiate, FINALIZE_POOL, MINT_CREATE_POOL, SET_TOKENS};
 use crate::mock_querier::{mock_dependencies, WasmMockQuerier};
 use crate::msg::{ExecuteMsg, TokenInfo};
-use crate::pair::{CreatePool, FeeInfo};
+use crate::pair::{CreatePool, FeeInfo, PairInfo};
 use cosmwasm_std::testing::{mock_env, mock_info, MockApi, MockStorage};
 
 const ADMIN: &str = "admin";

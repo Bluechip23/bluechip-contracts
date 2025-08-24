@@ -3,17 +3,21 @@ use cosmwasm_schema::cw_serde;
 use cosmwasm_std::{Addr, Decimal, Timestamp, Uint128};
 use cw_storage_plus::{Item, Map};
 
-
-//states used during the pool and factory creation process. 
+//states used during the pool and factory creation process. Eventually removed as they are just used to ensure 
+//there is TEMPdata to keep the creation process going.
 pub const CONFIG: Item<FactoryInstantiate> = Item::new("config");
 pub const TEMPPAIRINFO: Item<CreatePool> = Item::new("temp_pair");
 pub const TEMPCREATOR: Item<Addr> = Item::new("temp_admin");
 pub const TEMPPOOLID: Item<u64> = Item::new("temp_pool_id");
 pub const TEMPTOKENADDR: Item<Addr> = Item::new("temp_token_addr");
 pub const TEMPNFTADDR: Item<Addr> = Item::new("temp_nft_addr");
+//setting the commit field inside the pool
 pub const COMMIT: Map<&str, CommitInfo> = Map::new("commit_info");
+//tracking pool id for querys etc
 pub const NEXT_POOL_ID: Item<u64> = Item::new("next_pool_id");
+//used in querys to grab multiple pools
 pub const POOLS_BY_ID: Map<u64, CommitInfo> = Map::new("pools_by_id");
+//keep track of pool creation state in case any corruption or bad executes.
 pub const CREATION_STATES: Map<u64, CreationState> = Map::new("creation_states");
 
 #[cw_serde]
