@@ -1,24 +1,20 @@
 #![allow(non_snake_case)]
 use crate::error::ContractError;
 use crate::generic_helpers::{check_rate_limit, enforce_deadline};
-use crate::liquidity_helpers::{calc_liquidity_for_deposit, calculate_fee_multiplier, calculate_fees_owed, verify_position_ownership};
-use crate::state::{
-    PoolSpecs, POOL_FEE_STATE, POOL_INFO, POOL_SPECS, POOL_STATE,
-    RATE_LIMIT_GUARD, 
-
+use crate::liquidity_helpers::{
+    calc_liquidity_for_deposit, calculate_fee_multiplier, calculate_fees_owed,
+    verify_position_ownership,
 };
+use crate::state::{
+    PoolSpecs, POOL_FEE_STATE, POOL_INFO, POOL_SPECS, POOL_STATE, RATE_LIMIT_GUARD,
+};
+use crate::state::{Position, TokenMetadata, LIQUIDITY_POSITIONS, NEXT_POSITION_ID};
 use crate::swap_helper::update_price_accumulator;
-use cw721_base::ExecuteMsg as CW721BaseExecuteMsg;
-use crate::state::{
-    Position, TokenMetadata, LIQUIDITY_POSITIONS,
-    NEXT_POSITION_ID,
-};
 use cosmwasm_std::{
-    to_json_binary, Addr, BankMsg, Coin, CosmosMsg,
-  DepsMut, Empty, Env, MessageInfo,
-    Response, Timestamp, Uint128,  WasmMsg,
+    to_json_binary, Addr, BankMsg, Coin, CosmosMsg, DepsMut, Empty, Env, MessageInfo, Response,
+    Timestamp, Uint128, WasmMsg,
 };
-
+use cw721_base::ExecuteMsg as CW721BaseExecuteMsg;
 
 use std::vec;
 
@@ -43,7 +39,7 @@ pub fn execute_deposit_liquidity(
         .find(|c| c.denom == NATIVE_DENOM)
         .map(|c| c.amount)
         .unwrap_or_default();
-
+    // calculate actual amounts needed to maintain pool ratio
     let (liquidity, actual_amount0, actual_amount1) =
         calc_liquidity_for_deposit(deps.as_ref(), amount0, amount1)?;
     // Ensure the user sent enough native tokens
@@ -75,7 +71,7 @@ pub fn execute_deposit_liquidity(
     let pool_fee_state = POOL_FEE_STATE.load(deps.storage)?;
 
     let mut messages = vec![];
-
+    // accept NFT ownership if this is the first deposit
     if !pool_state.nft_ownership_accepted {
         let accept_msg = WasmMsg::Execute {
             contract_addr: pool_info.position_nft_address.to_string(),
@@ -114,7 +110,7 @@ pub fn execute_deposit_liquidity(
         };
         messages.push(CosmosMsg::Bank(refund_msg));
     }
-
+    //incriment nft id
     let mut pos_id = NEXT_POSITION_ID.load(deps.storage)?;
     pos_id += 1;
     NEXT_POSITION_ID.save(deps.storage, &pos_id)?;
@@ -124,7 +120,7 @@ pub fn execute_deposit_liquidity(
         name: Some(format!("LP Position #{}", position_id)),
         description: Some(format!("Pool Liquidity Position")),
     };
-
+    //mint nft position
     let mint_liquidity_nft = WasmMsg::Execute {
         contract_addr: pool_info.position_nft_address.to_string(),
         msg: to_json_binary(
@@ -238,14 +234,16 @@ pub fn execute_collect_fees(
     Ok(response)
 }
 
-//add liquidity to an already exisitnng position
+//add liquidity to an already exisitnng position and collects fees for accounting
 pub fn add_to_position(
     deps: &mut DepsMut,
     env: Env,
     info: MessageInfo,
     user: Addr,
     position_id: String,
+    //native token
     amount0: Uint128,
+    //creator token
     amount1: Uint128,
     min_amount0: Option<Uint128>,
     min_amount1: Option<Uint128>,
@@ -280,7 +278,7 @@ pub fn add_to_position(
     }
     let mut liquidity_position = LIQUIDITY_POSITIONS.load(deps.storage, &position_id)?;
     let mut messages: Vec<CosmosMsg> = vec![];
-    //send accumulated fees to reset accounting
+    //send accumulated fees to reset accounting - collect before adding new liquidity
     let fees_owed_0 = calculate_fees_owed(
         liquidity_position.liquidity,
         pool_fee_state.fee_growth_global_0,
@@ -339,7 +337,7 @@ pub fn add_to_position(
         };
         messages.push(CosmosMsg::Bank(refund_msg));
     }
-
+    //update position with new liquidity
     liquidity_position.liquidity += additional_liquidity;
     liquidity_position.fee_growth_inside_0_last = pool_fee_state.fee_growth_global_0;
     liquidity_position.fee_growth_inside_1_last = pool_fee_state.fee_growth_global_1;
@@ -555,7 +553,7 @@ pub fn remove_partial_liquidity(
     if liquidity_to_remove.is_zero() {
         return Err(ContractError::InvalidAmount {});
     }
-    //if users removes all their liquidity.
+    //if user removes all their liquidity.
     if liquidity_to_remove == liquidity_position.liquidity {
         return execute_remove_liquidity(
             deps.branch(),
@@ -601,7 +599,7 @@ pub fn remove_partial_liquidity(
         .checked_div(pool_state.total_liquidity)
         .map_err(|_| ContractError::DivideByZero)?;
 
-    //add amounts to send
+    //add amounts to transfer back to user
     let total_amount_0 = withdrawal_amount_0 + fees_owed_0;
     let total_amount_1 = withdrawal_amount_1 + fees_owed_1;
     //update state
@@ -659,7 +657,6 @@ pub fn remove_partial_liquidity(
 
     Ok(response)
 }
-
 
 pub fn execute_add_to_position(
     mut deps: DepsMut,
@@ -763,6 +760,7 @@ pub fn execute_remove_partial_liquidity_by_percent(
     env: Env,
     info: MessageInfo,
     position_id: String,
+    //using percentage
     percentage: u64,
     deadline: Option<Timestamp>,
     min_amount0: Option<Uint128>,
@@ -774,7 +772,7 @@ pub fn execute_remove_partial_liquidity_by_percent(
     }
 
     if percentage >= 100 {
-        // Redirect to full removal
+        // redirect to full removal
         return execute_remove_liquidity(
             deps,
             env,

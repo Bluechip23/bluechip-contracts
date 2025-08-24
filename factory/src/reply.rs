@@ -6,7 +6,7 @@ use crate::{
     pair::{FeeInfo, ThresholdPayout},
     pool_create_cleanup::{
         cleanup_temp_state, create_cleanup_messages, create_ownership_transfer_messages,
-        extract_contract_address, handle_cleanup_reply,
+        extract_contract_address,
     },
     state::{
         CommitInfo, CreationStatus, COMMIT, CONFIG, CREATION_STATES, POOLS_BY_ID, TEMPCREATOR,
@@ -14,24 +14,13 @@ use crate::{
     },
 };
 use cosmwasm_std::{
-    entry_point, to_json_binary, DepsMut, Env, Reply, Response, SubMsg, SubMsgResult, Uint128,
+    to_json_binary, DepsMut, Env, Reply, Response, SubMsg, SubMsgResult, Uint128,
     WasmMsg,
 };
 use cw721_base::msg::InstantiateMsg as Cw721InstantiateMsg;
 
-#[entry_point]
-//called by execute create.
-pub fn reply(deps: DepsMut, env: Env, msg: Reply) -> Result<Response, ContractError> {
-    match msg.id {
-        SET_TOKENS => set_tokens(deps, env, msg),
-        MINT_CREATE_POOL => mint_create_pool(deps, env, msg),
-        FINALIZE_POOL => finalize_pool(deps, env, msg),
-        CLEANUP_TOKEN_REPLY_ID => handle_cleanup_reply(deps, env, msg),
-        CLEANUP_NFT_REPLY_ID => handle_cleanup_reply(deps, env, msg),
-        _ => Err(ContractError::UnknownReplyId { id: msg.id }),
-    }
-}
-
+//extracts newly created token address, updates creation state, and initiates
+//instantiates NFT contract instantion as well
 pub fn set_tokens(deps: DepsMut, env: Env, msg: Reply) -> Result<Response, ContractError> {
     let pool_id = TEMPPOOLID.load(deps.storage)?;
     let mut creation_state = CREATION_STATES.load(deps.storage, pool_id)?;
@@ -88,7 +77,8 @@ pub fn set_tokens(deps: DepsMut, env: Env, msg: Reply) -> Result<Response, Contr
         }
     }
 }
-
+// extracts NFT address, configures threshold payouts, updates asset info with actual token address
+//initiates the final pool contract instantiation
 pub fn mint_create_pool(deps: DepsMut, env: Env, msg: Reply) -> Result<Response, ContractError> {
     let pool_id = TEMPPOOLID.load(deps.storage)?;
     let mut creation_state = CREATION_STATES.load(deps.storage, pool_id)?;
@@ -178,6 +168,7 @@ pub fn mint_create_pool(deps: DepsMut, env: Env, msg: Reply) -> Result<Response,
 }
 
 //take created pool, give it minting rights, sync to necessary contracts to mint.
+//commit tracking set up
 pub fn finalize_pool(deps: DepsMut, _env: Env, msg: Reply) -> Result<Response, ContractError> {
     let pool_id = TEMPPOOLID.load(deps.storage)?;
     let mut creation_state = CREATION_STATES.load(deps.storage, pool_id)?;

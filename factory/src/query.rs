@@ -1,10 +1,9 @@
 use cosmwasm_schema::{cw_serde, QueryResponses};
-use cosmwasm_std::{to_json_binary, Addr, BankQuery, Deps, QuerierWrapper, QueryRequest, StdResult, Uint128, WasmQuery};
-use cw20::{BalanceResponse, Cw20QueryMsg, TokenInfoResponse};
+use cosmwasm_std::{to_json_binary, Addr, BankQuery, Deps, QuerierWrapper, QueryRequest, StdResult, Uint128, WasmQuery, BalanceResponse};
+use cw20::{Cw20QueryMsg, TokenInfoResponse, BalanceResponse as Cw20BalanceResponse};
 use crate::pair::PairInfo;
 use crate::msg::ConfigResponse;
 use crate::state::CONFIG;
-
 
 #[cw_serde]
 #[derive(QueryResponses)]
@@ -15,7 +14,6 @@ pub enum QueryMsg {
     #[returns(PairInfo)]
     Pair {},
 }
-
 
 pub fn query_config(deps: Deps) -> StdResult<ConfigResponse> {
     let config = CONFIG.load(deps.storage)?;
@@ -28,20 +26,19 @@ pub fn query_token_balance(
     account_addr: Addr,
 ) -> StdResult<Uint128> {
     // load balance from the token contract
-    let res: BalanceResponse = querier
+    let res: Cw20BalanceResponse = querier
         .query(&QueryRequest::Wasm(WasmQuery::Smart {
             contract_addr: String::from(contract_addr),
             msg: to_json_binary(&Cw20QueryMsg::Balance {
                 address: String::from(account_addr),
             })?,
         }))
-        .unwrap_or_else(|_| BalanceResponse {
+        .unwrap_or_else(|_| Cw20BalanceResponse {
             balance: Uint128::zero(),
         });
 
     Ok(res.balance)
 }
-
 
 pub fn query_token_symbol(querier: &QuerierWrapper, contract_addr: Addr) -> StdResult<String> {
     let res: TokenInfoResponse = querier.query(&QueryRequest::Wasm(WasmQuery::Smart {

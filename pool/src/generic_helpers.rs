@@ -166,6 +166,7 @@ pub fn trigger_threshold_payout(
     Ok(msgs)
 }
 
+//converts decimal to decimal256 for higher precision
 pub fn decimal2decimal256(dec_value: Decimal) -> StdResult<Decimal256> {
     Decimal256::from_atomics(dec_value.atomics(), dec_value.decimal_places()).map_err(|_| {
         StdError::generic_err(format!(
@@ -175,6 +176,7 @@ pub fn decimal2decimal256(dec_value: Decimal) -> StdResult<Decimal256> {
     })
 }
 
+// creates a bank transfer message for sending native tokens
 pub fn get_bank_transfer_to_msg(
     recipient: &Addr,
     denom: &str,

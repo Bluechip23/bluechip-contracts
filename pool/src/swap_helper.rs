@@ -1,4 +1,3 @@
-
 #![allow(non_snake_case)]
 use crate::contract::{DEFAULT_SLIPPAGE, MAX_ALLOWED_SLIPPAGE};
 use crate::error::ContractError;
@@ -6,14 +5,11 @@ use crate::error::ContractError;
 use crate::generic_helpers::decimal2decimal256;
 
 use crate::oracle::{OracleData, PriceResponse, PythQueryMsg};
-use crate::state::{
-     MAX_ORACLE_AGE, POOL_STATE,
-
-};
-use crate::state::{PoolState};
+use crate::state::PoolState;
+use crate::state::{MAX_ORACLE_AGE, POOL_STATE};
 use cosmwasm_std::{
-   Addr,  Decimal, Decimal256, Deps,
-   Fraction, QuerierWrapper, StdError, StdResult, Uint128, Uint256
+    Addr, Decimal, Decimal256, Deps, Fraction, QuerierWrapper, StdError, StdResult, Uint128,
+    Uint256,
 };
 use std::str::FromStr;
 // Update price accumulator with time-weighted average
@@ -22,29 +18,30 @@ pub fn update_price_accumulator(
     current_time: u64,
 ) -> Result<(), ContractError> {
     let time_elapsed = current_time.saturating_sub(pool_state.block_time_last);
-
+    // update if time has passed and both reserves exist
     if time_elapsed > 0 && !pool_state.reserve0.is_zero() && !pool_state.reserve1.is_zero() {
-        // Calculate price * time_elapsed directly
+        // Calculate price0 * time_elapsed directly
         let price0_increment = pool_state
             .reserve1
             .checked_mul(Uint128::from(time_elapsed))
             .map_err(ContractError::from)?
             .checked_div(pool_state.reserve0)
             .map_err(|_| ContractError::DivideByZero)?;
-
+        // Calculate price1 * time_elapsed directly
         let price1_increment = pool_state
             .reserve0
             .checked_mul(Uint128::from(time_elapsed))
             .map_err(ContractError::from)?
             .checked_div(pool_state.reserve1)
             .map_err(|_| ContractError::DivideByZero)?;
-
+        //add to cumulative accumulators
         pool_state.price0_cumulative_last = pool_state
             .price0_cumulative_last
             .checked_add(price0_increment)?;
         pool_state.price1_cumulative_last = pool_state
             .price1_cumulative_last
             .checked_add(price1_increment)?;
+        //update time for next check
         pool_state.block_time_last = current_time;
     }
 
@@ -56,27 +53,32 @@ pub fn native_to_usd(
     native_amount: Uint128,
     expo: i32, // micro-native
 ) -> StdResult<Uint128> {
+    // validate expected exponent - oracle prices should have 8 decimal places
     if expo != -8 {
         return Err(StdError::generic_err(format!(
             "Unexpected price exponent: {}. Expected: -8",
             expo
         )));
     }
-    // 2. convert: (µnative × price) / 10^(8-6) = µUSD
+    // dividing by 100M adjusts for the -8 exponent (8 decimal places)
     let usd_micro_u256 = (Uint256::from(native_amount) * Uint256::from(cached_price))
-        / Uint256::from(100_000_000u128); // 10^(8-6) = 100
+        / Uint256::from(100_000_000u128);
 
     let usd_micro = Uint128::try_from(usd_micro_u256)?;
+    //returns USD amount in micro-USD (6 decimals)
     Ok(usd_micro)
 }
 
+//usd to native using cahched price and handles decimal precision
 pub fn usd_to_native(
     usd_amount: Uint128,
-    cached_price: Uint128, // micro-USD (6 decimals)
+    // micro-USD (6 decimals)
+    cached_price: Uint128,
 ) -> StdResult<Uint128> {
     if cached_price.is_zero() {
         return Err(StdError::generic_err("Invalid zero price"));
     }
+    //100 multiplier adjusts for decimal precision differences
     let native_micro_u256 =
         (Uint256::from(usd_amount) * Uint256::from(100u128)) / Uint256::from(cached_price);
     Uint128::try_from(native_micro_u256).map_err(|_| StdError::generic_err("Overflow"))
@@ -149,17 +151,21 @@ pub fn validate_oracle_price_against_twap(
 }
 
 //used in reverse query to find price for a desired amount of an unowned token in a token pair
+//compuets a required offer amount for a desired ask amount
 pub fn compute_offer_amount(
+    //current pool balance of token begin offered
     offer_pool: Uint128,
+    //curren pool balance of requested token
     ask_pool: Uint128,
     ask_amount: Uint128,
     commission_rate: Decimal,
 ) -> StdResult<(Uint128, Uint128, Uint128)> {
-    let _cp = Uint256::from(offer_pool) * Uint256::from(ask_pool);
+    //reverse commission adjustment
     let one_minus_commission = Decimal256::one() - decimal2decimal256(commission_rate)?;
     let inv_one_minus_commission = Decimal256::one() / one_minus_commission;
 
     let ask_amount_256: Uint256 = ask_amount.into();
+    // accounts for commission by adjusting the ask amount upward
     let offer_amount: Uint256 = Uint256::from(
         ask_pool.checked_sub(
             (ask_amount_256 * inv_one_minus_commission.numerator()
@@ -181,8 +187,11 @@ pub fn compute_offer_amount(
     ))
 }
 
+//use either belief price or calculated spread amount
 pub fn assert_max_spread(
+    //expeccted exchange rate
     belief_price: Option<Decimal>,
+    //max slippage the trader allows
     max_spread: Option<Decimal>,
     offer_amount: Uint128,
     return_amount: Uint128,
@@ -200,6 +209,7 @@ pub fn assert_max_spread(
     }
 
     if let Some(belief_price) = belief_price {
+        //compare against traders expected price
         let expected_return = offer_amount * belief_price.inv().unwrap().numerator()
             / belief_price.inv().unwrap().denominator();
         let spread_amount = expected_return
@@ -211,7 +221,9 @@ pub fn assert_max_spread(
         {
             return Err(ContractError::MaxSpreadAssertion {});
         }
-    } else if Decimal::from_ratio(spread_amount, return_amount + spread_amount) > max_spread {
+    } else
+    //use calculated spread amount from swap computation
+    if Decimal::from_ratio(spread_amount, return_amount + spread_amount) > max_spread {
         return Err(ContractError::MaxSpreadAssertion {});
     }
 

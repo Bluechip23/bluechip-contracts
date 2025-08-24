@@ -3,8 +3,8 @@ use cosmwasm_schema::cw_serde;
 use cosmwasm_std::{Addr, Decimal, Timestamp, Uint128};
 use cw_storage_plus::{Item, Map};
 
-//states used during the pool and factory creation process. Eventually removed as they are just used to ensure 
-//there is TEMPdata to keep the creation process going.
+//states used during the pool and factory creation process. 
+//there is TEMPdata to keep the creation process going, TEMPdata is eventually removed after sucessful pool creation
 pub const CONFIG: Item<FactoryInstantiate> = Item::new("config");
 pub const TEMPPAIRINFO: Item<CreatePool> = Item::new("temp_pair");
 pub const TEMPCREATOR: Item<Addr> = Item::new("temp_admin");
@@ -45,6 +45,7 @@ pub struct FactoryInstantiate {
     //fee distributed to creator ever transaction
     pub creator_fee: Decimal,
 }
+//info about creator and pool for commit tracking
 #[cw_serde]
 pub struct CommitInfo {
     //id of pool - will be some positive integer

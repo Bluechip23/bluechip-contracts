@@ -18,6 +18,7 @@ pub struct CreatePoolReplyMsg {
     pub token_code_id: u64,
     // The factory contract address
     pub factory_addr: Addr,
+    //gets populated inside reply
     pub threshold_payout: Option<Binary>,
     //fees to bluechip and creator
     pub fee_info: FeeInfo,

@@ -1,6 +1,8 @@
 use std::str::FromStr;
 
-use cosmwasm_std::{Addr, Decimal, Decimal256, Deps, Fraction, StdError, StdResult, Uint128, Uint256};
+use cosmwasm_std::{
+    Addr, Decimal, Decimal256, Deps, Fraction, StdError, StdResult, Uint128, Uint256,
+};
 
 use crate::{error::ContractError, generic_helpers::decimal2decimal256, state::POOL_STATE};
 
@@ -13,43 +15,51 @@ pub fn calculate_unclaimed_fees(
 ) -> Uint128 {
     if fee_growth_global > fee_growth_inside_last {
         let fee_growth_delta = fee_growth_global - fee_growth_inside_last;
-        //number of liquidity units * delta 
+        //number of liquidity units * delta
         liquidity * fee_growth_delta
     } else {
         Uint128::zero()
     }
 }
 
-
+// calculates swap amounts using constant product formula (x * y = k)
 pub fn compute_swap(
+    //pool balance of offer amount
     offer_pool: Uint128,
+    //pool balance of requested amount
     ask_pool: Uint128,
+    //amount being offered
     offer_amount: Uint128,
+    //pool fee rate
     commission_rate: Decimal,
 ) -> StdResult<(Uint128, Uint128, Uint128)> {
     let offer_pool: Uint256 = offer_pool.into();
     let ask_pool: Uint256 = ask_pool.into();
     let offer_amount: Uint256 = offer_amount.into();
     let commission_rate = decimal2decimal256(commission_rate)?;
-
+    // constant product
     let cp: Uint256 = offer_pool * ask_pool;
+
     let return_amount: Uint256 = (Decimal256::from_ratio(ask_pool, 1u8)
         - Decimal256::from_ratio(cp, offer_pool + offer_amount))
     .numerator()
         / Decimal256::one().denominator();
 
-    // Calculate spread & commission
+    // calculate spread(slippage) & commission
     let spread_amount: Uint256 = (offer_amount
         * Decimal256::from_ratio(ask_pool, offer_pool).numerator()
         / Decimal256::from_ratio(ask_pool, offer_pool).denominator())
         - return_amount;
     let commission_amount: Uint256 =
         return_amount * commission_rate.numerator() / commission_rate.denominator();
-
+    //subtract commission from return amount
     let return_amount: Uint256 = return_amount - commission_amount;
     Ok((
+        //amount trader recieves
         return_amount.try_into()?,
+        //slippage
         spread_amount.try_into()?,
+        //fee to liquidity holders
         commission_amount.try_into()?,
     ))
 }
@@ -64,7 +74,8 @@ pub fn calculate_fees_owed(
     if fee_growth_global >= fee_growth_last {
         let fee_growth_delta = fee_growth_global - fee_growth_last;
         let earned_base = liquidity * fee_growth_delta;
-        let earned_adjusted = earned_base * fee_multiplier; // Apply multiplier
+        //apply size base multipliers
+        let earned_adjusted = earned_base * fee_multiplier;
         earned_adjusted
     } else {
         Uint128::zero()
@@ -72,13 +83,16 @@ pub fn calculate_fees_owed(
 }
 //used to protect against many small liquidity positions
 pub fn calculate_fee_multiplier(liquidity: Uint128) -> Decimal {
+    //if position has optimal liquidty they will not be punished
     pub const OPTIMAL_LIQUIDITY: Uint128 = Uint128::new(1_000_000);
-    pub const MIN_MULTIPLIER: &str = "0.1"; // 10% fees for tiny positions
+    // 10% fees for tiny positions
+    pub const MIN_MULTIPLIER: &str = "0.1";
 
     if liquidity >= OPTIMAL_LIQUIDITY {
-        Decimal::one() // Full fees
+        //provide full fees for optimal size
+        Decimal::one()
     } else {
-        // Linear scaling from 10% to 100%
+        // linear scaling from 10% to 100% relative to position size
         let ratio = Decimal::from_ratio(liquidity, OPTIMAL_LIQUIDITY);
         let min_mult = Decimal::from_str(MIN_MULTIPLIER).unwrap();
         min_mult + (Decimal::one() - min_mult) * ratio
@@ -99,7 +113,7 @@ pub fn integer_sqrt(value: Uint128) -> Uint128 {
     x
 }
 
-
+//calculate optimal deposit amounts
 pub fn calc_liquidity_for_deposit(
     deps: Deps,
     amount0: Uint128,
@@ -109,8 +123,9 @@ pub fn calc_liquidity_for_deposit(
     let current_reserve0 = pool_state.reserve0;
     let current_reserve1 = pool_state.reserve1;
 
+    //ensure reserves exists
     if current_reserve0.is_zero() || current_reserve1.is_zero() {
-        // Add specific error to know WHICH is the culprit of being zero
+        // specific error to know WHICH is the culprit of being zero
         if current_reserve0.is_zero() {
             return Err(ContractError::Std(StdError::generic_err(
                 "Reserve0 is zero",

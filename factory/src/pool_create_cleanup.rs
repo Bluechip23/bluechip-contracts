@@ -6,7 +6,7 @@ use crate::error::ContractError;
 use crate::execute::{BURN_ADDRESS, CLEANUP_NFT_REPLY_ID, CLEANUP_TOKEN_REPLY_ID};
 use crate::state::{CreationState, CreationStatus, CREATION_STATES, TEMPCREATOR, TEMPNFTADDR, TEMPPAIRINFO, TEMPPOOLID, TEMPTOKENADDR};
 
-//clean and remove all temp information
+//clean and remove all temp information used during pool creation
 pub fn cleanup_temp_state(storage: &mut dyn Storage) -> Result<(), ContractError> {
     TEMPPOOLID.remove(storage);
     TEMPPAIRINFO.remove(storage);
@@ -16,12 +16,12 @@ pub fn cleanup_temp_state(storage: &mut dyn Storage) -> Result<(), ContractError
     Ok(())
 }
 
-//if partial transaction happens
+//if partial transaction happens 
 pub fn create_cleanup_messages(creation_state: &CreationState) -> Result<Vec<SubMsg>, ContractError> {
     // Changed return type to Vec<SubMsg>
     let mut messages = vec![];
 
-    // if token was created, disable it
+    // if token was created, disable it by removing minter
     if let Some(token_addr) = &creation_state.token_address {
         let disable_token_msg = WasmMsg::Execute {
             contract_addr: token_addr.to_string(),
@@ -36,7 +36,7 @@ pub fn create_cleanup_messages(creation_state: &CreationState) -> Result<Vec<Sub
         messages.push(sub_msg);
     }
 
-    // if NFT was created, disable it
+    // if NFT was created, disable it by removing minter
     if let Some(nft_addr) = &creation_state.nft_address {
         let disable_nft_msg = WasmMsg::Execute {
             contract_addr: nft_addr.to_string(),
@@ -56,6 +56,8 @@ pub fn create_cleanup_messages(creation_state: &CreationState) -> Result<Vec<Sub
 
     Ok(messages)
 }
+
+//handles replies for cleanup operations
 pub fn handle_cleanup_reply(deps: DepsMut, _env: Env, msg: Reply) -> Result<Response, ContractError> {
     // Handle cleanup completion/failure
     match msg.result {
@@ -102,7 +104,7 @@ pub fn extract_contract_address(result: &SubMsgResponse) -> Result<Addr, Contrac
         .and_then(|addr_str| Ok(Addr::unchecked(addr_str)))
 }
 
-//give pool minter responsibilities
+//give pool minter responsibilities for both creator token and liquidty NFTs
 pub fn create_ownership_transfer_messages(
     token_addr: &Addr,
     nft_addr: &Addr,

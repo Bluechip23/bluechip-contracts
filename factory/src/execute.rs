@@ -2,6 +2,8 @@ use std::env;
 use crate::error::ContractError;
 use crate::msg::{ ExecuteMsg, MigrateMsg, TokenInfo, TokenInstantiateMsg};
 use crate::pair::{CreatePool,};
+use crate::pool_create_cleanup::handle_cleanup_reply;
+use crate::reply::{finalize_pool, mint_create_pool, set_tokens};
 use crate::state::{
     CreationState, CreationStatus, FactoryInstantiate, CONFIG, CREATION_STATES,
     NEXT_POOL_ID, TEMPCREATOR, TEMPPAIRINFO, TEMPPOOLID,
@@ -9,8 +11,7 @@ use crate::state::{
 #[cfg(not(feature = "library"))]
 use cosmwasm_std::entry_point;
 use cosmwasm_std::{
-    to_json_binary, Deps, DepsMut, Env, MessageInfo,Response,
-    StdError, StdResult, SubMsg, Uint128, WasmMsg,
+    to_json_binary, Deps, DepsMut, Env, MessageInfo, Reply, Response, StdError, StdResult, SubMsg, Uint128, WasmMsg
 };
 use cw20::{MinterResponse};
 
@@ -71,7 +72,8 @@ pub fn execute(
     }
 }
 
-//make sure the factory sent the message to instantiate the pool or other execute messages.
+//make sure the correct factory sent the message to instantiate the pool or other execute messages.
+//users can ensure pools made by a certain factory are safe.
 fn assert_is_admin(deps: Deps, info: MessageInfo) -> StdResult<bool> {
     let config = CONFIG.load(deps.storage)?;
 
@@ -97,7 +99,8 @@ fn execute_update_config(
     Ok(Response::new().add_attribute("action", "update_config"))
 }
 
-//create pool
+//create pool - 3 step pool process through reply function (mostly found in reply.rs)
+//partial creations will be cleaned up found in pool_create_cleanup
 fn execute_create(
     deps: DepsMut,
     env: Env,
@@ -133,7 +136,7 @@ fn execute_create(
         admin: Some(info.sender.to_string()),
         label: token_info.name,
     };
-    //set the tracking state for pool creation
+    //set the tracking state for pool creation - all fields start as none and get populated throughout pool creation
     let creation_state = CreationState {
         pool_id,
         creator: info.sender,
@@ -145,7 +148,7 @@ fn execute_create(
         retry_count: 0,
     };
     CREATION_STATES.save(deps.storage, pool_id, &creation_state)?;
-    //triggers reply function in reply.rs when things go well.
+    //triggers reply function when things go well.
     let sub_msg = vec![SubMsg::reply_on_success(msg, SET_TOKENS)];
 
     Ok(Response::new()
@@ -153,5 +156,19 @@ fn execute_create(
         .add_attribute("creator", sender.to_string())
         .add_attribute("pool_id", pool_id.to_string())
         .add_submessages(sub_msg))
+}
+
+#[entry_point]
+//called by execute create.
+//each step can either succeed (advancing to the next step) or fail (triggering cleanup) - found on reply.rs and pool_create_cleanup respectively
+pub fn reply(deps: DepsMut, env: Env, msg: Reply) -> Result<Response, ContractError> {
+    match msg.id {
+        SET_TOKENS => set_tokens(deps, env, msg),
+        MINT_CREATE_POOL => mint_create_pool(deps, env, msg),
+        FINALIZE_POOL => finalize_pool(deps, env, msg),
+        CLEANUP_TOKEN_REPLY_ID => handle_cleanup_reply(deps, env, msg),
+        CLEANUP_NFT_REPLY_ID => handle_cleanup_reply(deps, env, msg),
+        _ => Err(ContractError::UnknownReplyId { id: msg.id }),
+    }
 }
 

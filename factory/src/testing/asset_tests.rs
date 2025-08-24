@@ -1,9 +1,10 @@
 
 #[cfg(test)]
 mod tests {
-    use super::*;
     use cosmwasm_std::testing::mock_info;
-    use cosmwasm_std::{coin, coins};
+    use cosmwasm_std::{coin, coins, Addr, StdError};
+
+    use crate::asset::{native_asset_info, token_asset_info, AssetInfoExt, CoinsExt};
 
     #[test]
     fn test_native_coins_sent() {
