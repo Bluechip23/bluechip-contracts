@@ -49,8 +49,6 @@ pub struct ConfigResponse {
     pub config: FactoryInstantiate,
 }
 
-
-
 #[cw_serde]
 pub struct TokenInstantiateMsg {
    // Token name

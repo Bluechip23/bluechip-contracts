@@ -1,8 +1,8 @@
-use cosmwasm_schema::{cw_serde, QueryResponses};
+use cosmwasm_schema::{cw_serde};
 
-use crate::asset::{AssetInfo, PairInfo};
+use crate::asset::{Asset, AssetInfo, PairType};
 
-use cosmwasm_std::{Addr, Binary, Decimal, Uint128};
+use cosmwasm_std::{Addr, Binary, Decimal, QuerierWrapper, StdResult, Uint128};
 
 #[cw_serde]
 pub struct CreatePool {
@@ -57,16 +57,6 @@ pub enum ExecuteMsg {
 }
 
 #[cw_serde]
-#[derive(QueryResponses)]
-pub enum QueryMsg {
-    // factory config
-    #[returns(ConfigResponse)]
-    Config {},
-    #[returns(PairInfo)]
-    Pair {},
-}
-
-#[cw_serde]
 pub struct ConfigResponse {
     // Last timestamp when the cumulative prices in the pool were updated
     pub block_time_last: u64,
@@ -76,3 +66,34 @@ pub struct ConfigResponse {
 
 #[cw_serde]
 pub struct MigrateMsg {}
+
+#[cw_serde]
+pub struct PairInfo {
+    // Asset information for the two assets in the pool
+    pub asset_infos: [AssetInfo; 2],
+    // Pair contract address
+    pub contract_addr: Addr,
+    // Pair LP token address
+    // The pool type (xyk, stableswap etc) available in [`PairType`]
+    pub pair_type: PairType,
+}
+
+impl PairInfo {
+
+    pub fn query_pools(
+        &self,
+        querier: &QuerierWrapper,
+        contract_addr: Addr,
+    ) -> StdResult<[Asset; 2]> {
+        Ok([
+            Asset {
+                amount: self.asset_infos[0].query_pool(querier, contract_addr.clone())?,
+                info: self.asset_infos[0].clone(),
+            },
+            Asset {
+                amount: self.asset_infos[1].query_pool(querier, contract_addr)?,
+                info: self.asset_infos[1].clone(),
+            },
+        ])
+    }
+}

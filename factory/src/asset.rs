@@ -1,20 +1,13 @@
 use cosmwasm_schema::cw_serde;
 use std::collections::{HashMap, HashSet};
 use std::fmt::{self, Display, Formatter, Result};
-
-
 use cosmwasm_std::{
-    to_json_binary, Addr, Api, BalanceResponse, BankMsg, BankQuery, Coin, CosmosMsg, MessageInfo,
-    QuerierWrapper, QueryRequest, StdError, StdResult, Uint128, WasmMsg, WasmQuery,
+    to_json_binary, Addr, Api, BankMsg, Coin, CosmosMsg, MessageInfo,
+    QuerierWrapper, StdError, StdResult, Uint128, WasmMsg,
 };
-
-use cw20::{
-    BalanceResponse as Cw20BalanceResponse, Cw20ExecuteMsg, Cw20QueryMsg,
-    TokenInfoResponse,
-};
-
+use cw20::Cw20ExecuteMsg;
 use cw_utils::must_pay;
-
+use crate::query::{query_balance, query_token_balance, query_token_symbol};
 
 #[cw_serde]
 pub struct Asset {
@@ -231,38 +224,6 @@ impl AssetInfo {
     }
 }
 
-// This structure stores the main parameters for an BETFI pair
-#[cw_serde]
-pub struct PairInfo {
-    // Asset information for the two assets in the pool
-    pub asset_infos: [AssetInfo; 2],
-    // Pair contract address
-    pub contract_addr: Addr,
-    // Pair LP token address
-    // The pool type (xyk, stableswap etc) available in [`PairType`]
-    pub pair_type: PairType,
-}
-
-impl PairInfo {
-
-    pub fn query_pools(
-        &self,
-        querier: &QuerierWrapper,
-        contract_addr: Addr,
-    ) -> StdResult<[Asset; 2]> {
-        Ok([
-            Asset {
-                amount: self.asset_infos[0].query_pool(querier, contract_addr.clone())?,
-                info: self.asset_infos[0].clone(),
-            },
-            Asset {
-                amount: self.asset_infos[1].query_pool(querier, contract_addr)?,
-                info: self.asset_infos[1].clone(),
-            },
-        ])
-    }
-}
-
 // Returns a lowercased, validated address upon success if present.
 pub fn addr_opt_validate(api: &dyn Api, addr: &Option<String>) -> StdResult<Option<Addr>> {
     addr.as_ref()
@@ -330,109 +291,6 @@ impl AssetInfoExt for AssetInfo {
     }
 }
 
-#[cfg(test)]
-mod tests {
-    use super::*;
-    use cosmwasm_std::testing::mock_info;
-    use cosmwasm_std::{coin, coins};
-
-    #[test]
-    fn test_native_coins_sent() {
-        let asset = native_asset_info("uusd".to_string()).with_balance(1000u16);
-        let addr = Addr::unchecked("addr0000");
-
-        let info = mock_info(&addr.as_str(), &coins(1000, "random"));
-        let err = asset.assert_sent_native_token_balance(&info).unwrap_err();
-        assert_eq!(err, StdError::generic_err("Must send reserve token 'uusd'"));
-
-        let info = mock_info(&addr.as_str(), &coins(100, "uusd"));
-        let err = asset.assert_sent_native_token_balance(&info).unwrap_err();
-        assert_eq!(
-            err,
-            StdError::generic_err(
-                "Native token balance mismatch between the argument and the transferred"
-            )
-        );
-
-        let info = mock_info(&addr.as_str(), &coins(1000, "uusd"));
-        asset.assert_sent_native_token_balance(&info).unwrap();
-    }
-
-    #[test]
-    fn test_proper_native_coins_sent() {
-        let pool_asset_infos = [
-            native_asset_info("uusd".to_string()),
-            native_asset_info("uluna".to_string()),
-        ];
-
-        let assets = [
-            pool_asset_infos[0].with_balance(1000u16),
-            pool_asset_infos[1].with_balance(100u16),
-        ];
-        let err = vec![coin(1000, "uusd"), coin(1000, "random")]
-            .assert_coins_properly_sent(&assets, &pool_asset_infos)
-            .unwrap_err();
-        assert_eq!(
-            err,
-            StdError::generic_err(
-                "Supplied coins contain random that is not in the input asset vector"
-            )
-        );
-
-        let assets = [
-            pool_asset_infos[0].with_balance(1000u16),
-            native_asset_info("random".to_string()).with_balance(100u16),
-        ];
-        let err = vec![coin(1000, "uusd"), coin(100, "random")]
-            .assert_coins_properly_sent(&assets, &pool_asset_infos)
-            .unwrap_err();
-        assert_eq!(
-            err,
-            StdError::generic_err("Asset random is not in the pool")
-        );
-
-        let assets = [
-            pool_asset_infos[0].with_balance(1000u16),
-            pool_asset_infos[1].with_balance(1000u16),
-        ];
-        let err = vec![coin(1000, "uusd"), coin(100, "uluna")]
-            .assert_coins_properly_sent(&assets, &pool_asset_infos)
-            .unwrap_err();
-        assert_eq!(
-            err,
-            StdError::generic_err(
-                "Native token balance mismatch between the argument and the transferred"
-            )
-        );
-
-        let assets = [
-            pool_asset_infos[0].with_balance(1000u16),
-            pool_asset_infos[1].with_balance(1000u16),
-        ];
-        vec![coin(1000, "uusd"), coin(1000, "uluna")]
-            .assert_coins_properly_sent(&assets, &pool_asset_infos)
-            .unwrap();
-
-        let pool_asset_infos = [
-            token_asset_info(Addr::unchecked("addr0000")),
-            token_asset_info(Addr::unchecked("addr0001")),
-        ];
-        let assets = [
-            pool_asset_infos[0].with_balance(1000u16),
-            pool_asset_infos[1].with_balance(1000u16),
-        ];
-        let err = vec![coin(1000, "uusd"), coin(1000, "uluna")]
-            .assert_coins_properly_sent(&assets, &pool_asset_infos)
-            .unwrap_err();
-        assert_eq!(
-            err,
-            StdError::generic_err(
-                "Supplied coins contain uusd that is not in the input asset vector"
-            )
-        );
-    }
-}
-
 #[cw_serde]
 pub enum PairType {
     // XYK pair type
@@ -454,44 +312,3 @@ impl Display for PairType {
     }
 }
 
-pub fn query_token_balance(
-    querier: &QuerierWrapper,
-    contract_addr: Addr,
-    account_addr: Addr,
-) -> StdResult<Uint128> {
-    // load balance from the token contract
-    let res: Cw20BalanceResponse = querier
-        .query(&QueryRequest::Wasm(WasmQuery::Smart {
-            contract_addr: String::from(contract_addr),
-            msg: to_json_binary(&Cw20QueryMsg::Balance {
-                address: String::from(account_addr),
-            })?,
-        }))
-        .unwrap_or_else(|_| Cw20BalanceResponse {
-            balance: Uint128::zero(),
-        });
-
-    Ok(res.balance)
-}
-
-
-pub fn query_token_symbol(querier: &QuerierWrapper, contract_addr: Addr) -> StdResult<String> {
-    let res: TokenInfoResponse = querier.query(&QueryRequest::Wasm(WasmQuery::Smart {
-        contract_addr: String::from(contract_addr),
-        msg: to_json_binary(&Cw20QueryMsg::TokenInfo {})?,
-    }))?;
-
-    Ok(res.symbol)
-}
-
-pub fn query_balance(
-    querier: &QuerierWrapper,
-    account_addr: Addr,
-    denom: String,
-) -> StdResult<Uint128> {
-    let balance: BalanceResponse = querier.query(&QueryRequest::Bank(BankQuery::Balance {
-        address: String::from(account_addr),
-        denom,
-    }))?;
-    Ok(balance.amount.amount)
-}

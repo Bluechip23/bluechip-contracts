@@ -1,13 +1,15 @@
 #![cfg(not(target_arch = "wasm32"))]
 
-use crate::asset::PairInfo;
-use crate::pair::QueryMsg;
+
 use cosmwasm_std::testing::{MockApi, MockQuerier, MockStorage, MOCK_CONTRACT_ADDR};
 use cosmwasm_std::{
     from_json, to_json_binary, Coin, Empty, OwnedDeps, Querier, QuerierResult,
     QueryRequest, SystemError, SystemResult, WasmQuery,
 };
 use std::collections::HashMap;
+
+use crate::pair::PairInfo;
+use crate::query::QueryMsg;
 
 pub fn mock_dependencies(
     contract_balance: &[Coin],

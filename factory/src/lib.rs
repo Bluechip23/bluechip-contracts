@@ -6,6 +6,8 @@ pub mod msg;
 pub mod pair;
 pub mod query;
 pub mod state;
+pub mod reply;
+pub mod pool_create_cleanup;
 
 #[cfg(test)]
 mod testing;
