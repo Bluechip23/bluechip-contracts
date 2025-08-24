@@ -48,6 +48,48 @@ pub fn update_price_accumulator(
     Ok(())
 }
 
+// calculates swap amounts using constant product formula (x * y = k)
+pub fn compute_swap(
+    //pool balance of offer amount
+    offer_pool: Uint128,
+    //pool balance of requested amount
+    ask_pool: Uint128,
+    //amount being offered
+    offer_amount: Uint128,
+    //pool fee rate
+    commission_rate: Decimal,
+) -> StdResult<(Uint128, Uint128, Uint128)> {
+    let offer_pool: Uint256 = offer_pool.into();
+    let ask_pool: Uint256 = ask_pool.into();
+    let offer_amount: Uint256 = offer_amount.into();
+    let commission_rate = decimal2decimal256(commission_rate)?;
+    // constant product
+    let cp: Uint256 = offer_pool * ask_pool;
+
+    let return_amount: Uint256 = (Decimal256::from_ratio(ask_pool, 1u8)
+        - Decimal256::from_ratio(cp, offer_pool + offer_amount))
+    .numerator()
+        / Decimal256::one().denominator();
+
+    // calculate spread(slippage) & commission
+    let spread_amount: Uint256 = (offer_amount
+        * Decimal256::from_ratio(ask_pool, offer_pool).numerator()
+        / Decimal256::from_ratio(ask_pool, offer_pool).denominator())
+        - return_amount;
+    let commission_amount: Uint256 =
+        return_amount * commission_rate.numerator() / commission_rate.denominator();
+    //subtract commission from return amount
+    let return_amount: Uint256 = return_amount - commission_amount;
+    Ok((
+        //amount trader recieves
+        return_amount.try_into()?,
+        //slippage
+        spread_amount.try_into()?,
+        //fee to liquidity holders
+        commission_amount.try_into()?,
+    ))
+}
+
 pub fn native_to_usd(
     cached_price: Uint128,
     native_amount: Uint128,

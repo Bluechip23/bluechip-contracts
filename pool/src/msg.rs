@@ -23,42 +23,6 @@ pub enum ExecuteMsg {
         belief_price: Option<Decimal>,
         max_spread: Option<Decimal>,
     },
-    DepositLiquidity {
-        amount0: Uint128,
-        amount1: Uint128,
-        min_amount0: Option<Uint128>,
-        min_amount1: Option<Uint128>,
-        deadline: Option<Timestamp>,
-    },
-    CollectFees { position_id: String },
-    AddToPosition {
-        position_id: String,
-        amount0: Uint128, // native token amount
-        amount1: Uint128,
-        min_amount0: Option<Uint128>,
-        min_amount1: Option<Uint128>,
-        deadline: Option<Timestamp>,
-    },
-    RemovePartialLiquidity {
-        position_id: String,
-        liquidity_to_remove: Uint128,
-        deadline: Option<Timestamp>, // Specific amount of liquidity to remove
-        min_amount0: Option<Uint128>,
-        min_amount1: Option<Uint128>,
-    },
-    RemovePartialLiquidityByPercent {
-        position_id: String,
-        percentage: u64,
-        deadline: Option<Timestamp>,
-        min_amount0: Option<Uint128>,
-        min_amount1: Option<Uint128>, 
-    },
-    RemoveLiquidity {
-        position_id: String,
-        deadline: Option<Timestamp>,
-        min_amount0: Option<Uint128>,
-        min_amount1: Option<Uint128>,
-    },
 }
 
 #[cw_serde]
@@ -69,19 +33,6 @@ pub enum Cw20HookMsg {
         max_spread: Option<Decimal>,
         to: Option<String>,
         deadline: Option<Timestamp>,
-    },
-    DepositLiquidity {
-        amount0: Uint128,
-        min_amount0: Option<Uint128>,
-        min_amount1: Option<Uint128>,
-        deadline: Option<Timestamp>, 
-    },
-    AddToPosition {
-        position_id: String,
-        amount0: Uint128,
-        min_amount0: Option<Uint128>,
-        min_amount1: Option<Uint128>,
-        deadline: Option<Timestamp>, 
     },
 }
 
@@ -123,22 +74,6 @@ pub enum QueryMsg {
 
     #[returns(PoolFeeStateResponse)]
     FeeState {},
-
-    #[returns(PositionResponse)]
-    Position { position_id: String },
-
-    #[returns(PositionsResponse)]
-    Positions {
-        start_after: Option<String>,
-        limit: Option<u32>,
-    },
-
-    #[returns(PositionsResponse)]
-    PositionsByOwner {
-        owner: String,
-        start_after: Option<String>,
-        limit: Option<u32>,
-    },
     #[returns(LastCommitedResponse)]
     LastCommited { wallet: String },
 

@@ -1,11 +1,10 @@
 #![allow(non_snake_case)]
 use crate::asset::{call_pool_info, Asset, };
-use crate::liquidity_helpers::{calculate_unclaimed_fees, compute_swap};
 use crate::msg::{
     CommitStatus, CommiterInfo, ConfigResponse, CumulativePricesResponse,
     FeeInfoResponse, LastCommitedResponse,  PoolCommitResponse,
     PoolFeeStateResponse, PoolInfoResponse,  PoolResponse, PoolStateResponse,
-    PositionResponse, PositionsResponse, QueryMsg, ReverseSimulationResponse, SimulationResponse,
+   QueryMsg, ReverseSimulationResponse, SimulationResponse,
 };
 
 use crate::state::{
@@ -16,10 +15,10 @@ use crate::state::{
     
 };
 use crate::state::{
-    COMMIT_INFO, LIQUIDITY_POSITIONS,
+    COMMIT_INFO,
     NEXT_POSITION_ID,
 };
-use crate::swap_helper::{compute_offer_amount, update_price_accumulator};
+use crate::swap_helper::{compute_offer_amount, compute_swap, update_price_accumulator};
 use cosmwasm_std::{
     entry_point,to_json_binary, Binary, 
     Deps, Env, Order, 
@@ -35,10 +34,6 @@ pub fn query(deps: Deps, env: Env, msg: QueryMsg) -> StdResult<Binary> {
     match msg {
         QueryMsg::PoolState {} => to_json_binary(&query_pool_state(deps)?),
         QueryMsg::FeeState {} => to_json_binary(&query_fee_state(deps)?),
-        QueryMsg::Position { position_id } => to_json_binary(&query_position(deps, position_id)?),
-        QueryMsg::Positions { start_after, limit } => {
-            to_json_binary(&query_positions(deps, start_after, limit)?)
-        }
         QueryMsg::PoolCommits {
             pool_id,
             min_payment_usd,
@@ -53,11 +48,6 @@ pub fn query(deps: Deps, env: Env, msg: QueryMsg) -> StdResult<Binary> {
             start_after,
             limit,
         )?),
-        QueryMsg::PositionsByOwner {
-            owner,
-            start_after,
-            limit,
-        } => to_json_binary(&query_positions_by_owner(deps, owner, start_after, limit)?),
         QueryMsg::PoolInfo {} => to_json_binary(&query_pool_info(deps)?),
         QueryMsg::Pair {} => to_json_binary(&query_pair_info(deps)?),
         QueryMsg::Simulation { offer_asset } => {
@@ -268,85 +258,6 @@ pub fn query_fee_state(deps: Deps) -> StdResult<PoolFeeStateResponse> {
         fee_growth_global_1: pool_fee_state.fee_growth_global_1,
         total_fees_collected_0: pool_fee_state.total_fees_collected_0,
         total_fees_collected_1: pool_fee_state.total_fees_collected_1,
-    })
-}
-
-pub fn query_position(deps: Deps, position_id: String) -> StdResult<PositionResponse> {
-    let liquidity_position = LIQUIDITY_POSITIONS.load(deps.storage, &position_id)?;
-
-    let pool_fee_state = POOL_FEE_STATE.load(deps.storage)?;
-    let unclaimed_fees_0 = calculate_unclaimed_fees(
-        liquidity_position.liquidity,
-        liquidity_position.fee_growth_inside_0_last,
-        pool_fee_state.fee_growth_global_0,
-    );
-    let unclaimed_fees_1 = calculate_unclaimed_fees(
-        liquidity_position.liquidity,
-        liquidity_position.fee_growth_inside_1_last,
-        pool_fee_state.fee_growth_global_1,
-    );
-
-    Ok(PositionResponse {
-        position_id,
-        liquidity: liquidity_position.liquidity,
-        owner: liquidity_position.owner,
-        fee_growth_inside_0_last: liquidity_position.fee_growth_inside_0_last,
-        fee_growth_inside_1_last: liquidity_position.fee_growth_inside_1_last,
-        created_at: liquidity_position.created_at,
-        last_fee_collection: liquidity_position.last_fee_collection,
-        unclaimed_fees_0,
-        unclaimed_fees_1,
-    })
-}
-
-pub fn query_positions(
-    deps: Deps,
-    start_after: Option<String>,
-    limit: Option<u32>,
-) -> StdResult<PositionsResponse> {
-    let limit = limit.unwrap_or(10).min(30) as usize;
-    let start = start_after.as_ref().map(|s| Bound::exclusive(s.as_str()));
-
-    let liquidity_positions: StdResult<Vec<_>> = LIQUIDITY_POSITIONS
-        .range(deps.storage, start, None, Order::Ascending)
-        .take(limit)
-        .map(|item| {
-            let (position_id, _position) = item?;
-            query_position(deps, position_id)
-        })
-        .collect();
-
-    Ok(PositionsResponse {
-        positions: liquidity_positions?,
-    })
-}
-
-pub fn query_positions_by_owner(
-    deps: Deps,
-    owner: String,
-    start_after: Option<String>,
-    limit: Option<u32>,
-) -> StdResult<PositionsResponse> {
-    let owner_addr = deps.api.addr_validate(&owner)?;
-    let limit = limit.unwrap_or(10).min(30) as usize;
-    let start = start_after.as_ref().map(|s| Bound::exclusive(s.as_str()));
-
-    let positions: StdResult<Vec<_>> = LIQUIDITY_POSITIONS
-        .range(deps.storage, start, None, Order::Ascending)
-        .filter(|item| {
-            item.as_ref()
-                .map(|(_, position)| position.owner == owner_addr)
-                .unwrap_or(false)
-        })
-        .take(limit)
-        .map(|item| {
-            let (position_id, _position) = item?;
-            query_position(deps, position_id)
-        })
-        .collect();
-
-    Ok(PositionsResponse {
-        positions: positions?,
     })
 }
 

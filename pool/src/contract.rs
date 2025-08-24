@@ -2,16 +2,9 @@
 use crate::asset::{Asset, AssetInfo, PairType};
 use crate::error::ContractError;
 use crate::generic_helpers::{
-   check_rate_limit, enforce_deadline,
-    get_bank_transfer_to_msg,trigger_threshold_payout, update_fee_growth,
-validate_factory_address,
+    check_rate_limit, enforce_deadline, get_bank_transfer_to_msg, trigger_threshold_payout,
+    update_fee_growth, validate_factory_address,
 };
-use crate::liquidity::{
-    execute_add_to_position, execute_collect_fees, execute_deposit_liquidity,
-    execute_remove_liquidity, execute_remove_partial_liquidity,
-    execute_remove_partial_liquidity_by_percent,
-};
-use crate::liquidity_helpers::compute_swap;
 use crate::msg::{Cw20HookMsg, ExecuteMsg, MigrateMsg, PoolInstantiateMsg};
 use crate::query::query_check_commit;
 use crate::response::MsgInstantiateContractResponse;
@@ -24,7 +17,10 @@ use crate::state::{
 use crate::state::{
     Commiting, PoolState, Position, COMMIT_INFO, LIQUIDITY_POSITIONS, NEXT_POSITION_ID,
 };
-use crate::swap_helper::{assert_max_spread, get_and_validate_oracle_price, native_to_usd, update_price_accumulator, usd_to_native, validate_oracle_price_against_twap};
+use crate::swap_helper::{
+    assert_max_spread, compute_swap, get_and_validate_oracle_price, native_to_usd,
+    update_price_accumulator, usd_to_native, validate_oracle_price_against_twap,
+};
 use cosmwasm_std::{
     entry_point, from_json, to_json_binary, Addr, Binary, CosmosMsg, Decimal, DepsMut, Env,
     Fraction, MessageInfo, Reply, Response, StdError, StdResult, SubMsgResult, Timestamp, Uint128,
@@ -270,110 +266,6 @@ pub fn execute(
             )
         }
         ExecuteMsg::Receive(cw20_msg) => execute_swap_cw20(deps, env, info, cw20_msg),
-        //deposit liquidity into a pool - accumulates liquiidty units for fees - mints an NFT for position
-        ExecuteMsg::DepositLiquidity {
-            amount0,
-            amount1,
-            min_amount0,
-            min_amount1,
-            deadline,
-        } => {
-            if !query_check_commit(deps.as_ref())? {
-                return Err(ContractError::ShortOfThreshold {});
-            }
-            let sender = info.sender.clone();
-            execute_deposit_liquidity(
-                deps,
-                env,
-                info,
-                sender,
-                amount0,
-                amount1,
-                min_amount0,
-                min_amount1,
-                deadline,
-            )
-        }
-        //add to a currently held position by the user
-        ExecuteMsg::AddToPosition {
-            position_id,
-            amount0,
-            amount1,
-            min_amount0,
-            min_amount1,
-            deadline,
-        } => {
-            // check threshold requirement
-            if !query_check_commit(deps.as_ref())? {
-                return Err(ContractError::ShortOfThreshold {});
-            }
-            let sender = info.sender.clone();
-            execute_add_to_position(
-                deps,
-                env,
-                info,
-                position_id,
-                sender,
-                amount0,
-                amount1,
-                min_amount0,
-                min_amount1,
-                deadline,
-            )
-        }
-        //collect all fees for a position
-        ExecuteMsg::CollectFees { position_id } => {
-            execute_collect_fees(deps, env, info, position_id)
-        }
-        //removes liquidity based on a specific amount (I have 100 liquidity I want to remove 18.) - will collect fees in proportion of removal to rebalance accounting
-        ExecuteMsg::RemovePartialLiquidity {
-            position_id,
-            liquidity_to_remove,
-            deadline,
-            min_amount0,
-            min_amount1,
-        } => execute_remove_partial_liquidity(
-            deps,
-            env,
-            info,
-            position_id,
-            liquidity_to_remove,
-            deadline,
-            min_amount0,
-            min_amount1,
-        ),
-        //removes all liquidity for a position - (i have 100 liquidity and I remove 100) - collects all fees.
-        ExecuteMsg::RemoveLiquidity {
-            position_id,
-            deadline,
-            min_amount1,
-            min_amount0,
-        } => execute_remove_liquidity(
-            deps,
-            env,
-            info,
-            position_id,
-            deadline,
-            min_amount0,
-            min_amount1,
-        ),
-        //removes liquidity based on a specific percent (I have 100 liquidity I want to remove 18% = remove 18.) - will collect fees in proportion of removal to rebalance accounting
-        ExecuteMsg::RemovePartialLiquidityByPercent {
-            position_id,
-            percentage,
-            deadline,
-            min_amount0,
-            min_amount1,
-        } => execute_remove_partial_liquidity_by_percent(
-            deps,
-            env,
-            info,
-            position_id,
-            percentage,
-            deadline,
-            min_amount0,
-            min_amount1,
-        ),
     }
 }
 
@@ -425,40 +317,6 @@ pub fn execute_swap_cw20(
                 deadline,
             )
         }
-        Ok(Cw20HookMsg::DepositLiquidity {
-            amount0,
-            min_amount0,
-            min_amount1,
-            deadline,
-        }) => execute_deposit_liquidity(
-            deps,
-            env,
-            info,
-            Addr::unchecked(cw20_msg.sender), //mainly focusing on this
-            amount0,
-            cw20_msg.amount,
-            min_amount0,
-            min_amount1,
-            deadline,
-        ),
-        Ok(Cw20HookMsg::AddToPosition {
-            position_id,
-            amount0,
-            min_amount0,
-            min_amount1,
-            deadline,
-        }) => execute_add_to_position(
-            deps,
-            env,
-            info,
-            position_id,
-            Addr::unchecked(cw20_msg.sender),
-            amount0,
-            cw20_msg.amount,
-            min_amount0,
-            min_amount1,
-            deadline,
-        ),
         Err(err) => Err(ContractError::Std(err)),
     }
 }
@@ -639,7 +497,6 @@ pub fn execute_simple_swap(
 }
 
 #[allow(clippy::too_many_arguments)]
-
 pub fn commit(
     mut deps: DepsMut,
     env: Env,
