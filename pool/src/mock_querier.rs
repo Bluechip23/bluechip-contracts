@@ -11,8 +11,6 @@ use std::collections::HashMap;
 
 use crate::msg::{FeeInfo, FeeInfoResponse, PoolResponse, QueryMsg};
 
-// mock_dependencies is a drop-in replacement for cosmwasm_std::testing::mock_dependencies.
-// This uses the BETFI CustomQuerier.
 pub fn mock_dependencies(
     contract_balance: &[Coin],
 ) -> OwnedDeps<MockStorage, MockApi, WasmMockQuerier> {

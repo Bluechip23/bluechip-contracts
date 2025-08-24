@@ -2,18 +2,10 @@ use cosmwasm_schema::{cw_serde, QueryResponses};
 use crate::asset::{Asset, AssetInfo, PairInfo};
 use crate::state::Commiting;
 use cosmwasm_std::{Addr, Binary, Decimal, Timestamp, Uint128};
-use cw20::Cw20ReceiveMsg;
 
 #[cw_serde]
 pub enum ExecuteMsg {
-    Receive(Cw20ReceiveMsg),
-    SimpleSwap {
-        offer_asset: Asset,
-        belief_price: Option<Decimal>,
-        max_spread: Option<Decimal>,
-        to: Option<String>,
-        deadline: Option<Timestamp>,
-    },
+  
     UpdateConfig { params: Binary },
 
     Commit {
@@ -22,66 +14,6 @@ pub enum ExecuteMsg {
         deadline: Option<Timestamp>,
         belief_price: Option<Decimal>,
         max_spread: Option<Decimal>,
-    },
-    DepositLiquidity {
-        amount0: Uint128,
-        amount1: Uint128,
-        min_amount0: Option<Uint128>,
-        min_amount1: Option<Uint128>,
-        deadline: Option<Timestamp>,
-    },
-    CollectFees { position_id: String },
-    AddToPosition {
-        position_id: String,
-        amount0: Uint128, // native token amount
-        amount1: Uint128,
-        min_amount0: Option<Uint128>,
-        min_amount1: Option<Uint128>,
-        deadline: Option<Timestamp>,
-    },
-    RemovePartialLiquidity {
-        position_id: String,
-        liquidity_to_remove: Uint128,
-        deadline: Option<Timestamp>, // Specific amount of liquidity to remove
-        min_amount0: Option<Uint128>,
-        min_amount1: Option<Uint128>,
-    },
-    RemovePartialLiquidityByPercent {
-        position_id: String,
-        percentage: u64,
-        deadline: Option<Timestamp>,
-        min_amount0: Option<Uint128>,
-        min_amount1: Option<Uint128>, 
-    },
-    RemoveLiquidity {
-        position_id: String,
-        deadline: Option<Timestamp>,
-        min_amount0: Option<Uint128>,
-        min_amount1: Option<Uint128>,
-    },
-}
-
-#[cw_serde]
-pub enum Cw20HookMsg {
-    // Swap a given amount of asset
-    Swap {
-        belief_price: Option<Decimal>,
-        max_spread: Option<Decimal>,
-        to: Option<String>,
-        deadline: Option<Timestamp>,
-    },
-    DepositLiquidity {
-        amount0: Uint128,
-        min_amount0: Option<Uint128>,
-        min_amount1: Option<Uint128>,
-        deadline: Option<Timestamp>, 
-    },
-    AddToPosition {
-        position_id: String,
-        amount0: Uint128,
-        min_amount0: Option<Uint128>,
-        min_amount1: Option<Uint128>,
-        deadline: Option<Timestamp>, 
     },
 }
 
@@ -93,10 +25,6 @@ pub enum QueryMsg {
     Pair {},
     #[returns(ConfigResponse)]
     Config {},
-    #[returns(SimulationResponse)]
-    Simulation { offer_asset: Asset },
-    #[returns(ReverseSimulationResponse)]
-    ReverseSimulation { ask_asset: Asset },
     #[returns(CumulativePricesResponse)]
     CumulativePrices {},
 
@@ -124,21 +52,6 @@ pub enum QueryMsg {
     #[returns(PoolFeeStateResponse)]
     FeeState {},
 
-    #[returns(PositionResponse)]
-    Position { position_id: String },
-
-    #[returns(PositionsResponse)]
-    Positions {
-        start_after: Option<String>,
-        limit: Option<u32>,
-    },
-
-    #[returns(PositionsResponse)]
-    PositionsByOwner {
-        owner: String,
-        start_after: Option<String>,
-        limit: Option<u32>,
-    },
     #[returns(LastCommitedResponse)]
     LastCommited { wallet: String },
 
@@ -224,28 +137,6 @@ pub struct LastCommitedResponse {
     pub last_payment_native: Option<Uint128>,
     //last payment converted to usd
     pub last_payment_usd: Option<Uint128>,
-}
-
-
-#[cw_serde]
-pub struct SimulationResponse {
-    //amount of ask assets returned by the swap
-    pub return_amount: Uint128,
-    // spread used in the swap operation
-    pub spread_amount: Uint128,
-    //amount of fees charged by the transaction
-    pub commission_amount: Uint128,
-}
-
-
-#[cw_serde]
-pub struct ReverseSimulationResponse {
-    // The amount of offer assets returned by the reverse swap
-    pub offer_amount: Uint128,
-    // The spread used in the swap operation
-    pub spread_amount: Uint128,
-    //The amount of fees charged by the transaction
-    pub commission_amount: Uint128,
 }
 
 // This structure is used to return a cumulative prices query response.

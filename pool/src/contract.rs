@@ -2,18 +2,11 @@
 use crate::asset::{Asset, AssetInfo, PairType};
 use crate::error::ContractError;
 use crate::generic_helpers::{
-   check_rate_limit, enforce_deadline,
-    get_bank_transfer_to_msg,trigger_threshold_payout, update_fee_growth,
-validate_factory_address,
+    check_rate_limit, enforce_deadline, get_bank_transfer_to_msg, trigger_threshold_payout,
+    update_fee_growth, validate_factory_address,
 };
-use crate::liquidity::{
-    execute_add_to_position, execute_collect_fees, execute_deposit_liquidity,
-    execute_remove_liquidity, execute_remove_partial_liquidity,
-    execute_remove_partial_liquidity_by_percent,
-};
-use crate::liquidity_helpers::compute_swap;
-use crate::msg::{Cw20HookMsg, ExecuteMsg, MigrateMsg, PoolInstantiateMsg};
-use crate::query::query_check_commit;
+
+use crate::msg::{ExecuteMsg, MigrateMsg, PoolInstantiateMsg};
 use crate::response::MsgInstantiateContractResponse;
 use crate::state::{
     CommitInfo, ExpectedFactory, OracleInfo, PairInfo, PoolFeeState, PoolInfo, PoolSpecs,
@@ -24,14 +17,16 @@ use crate::state::{
 use crate::state::{
     Commiting, PoolState, Position, COMMIT_INFO, LIQUIDITY_POSITIONS, NEXT_POSITION_ID,
 };
-use crate::swap_helper::{assert_max_spread, get_and_validate_oracle_price, native_to_usd, update_price_accumulator, usd_to_native, validate_oracle_price_against_twap};
+use crate::swap_helper::{
+    assert_max_spread, compute_swap, get_and_validate_oracle_price, native_to_usd,
+    update_price_accumulator, usd_to_native, validate_oracle_price_against_twap,
+};
 use cosmwasm_std::{
     entry_point, from_json, to_json_binary, Addr, Binary, CosmosMsg, Decimal, DepsMut, Env,
-    Fraction, MessageInfo, Reply, Response, StdError, StdResult, SubMsgResult, Timestamp, Uint128,
-    WasmMsg,
+    Fraction, MessageInfo, Reply, Response, StdError, SubMsgResult, Timestamp, Uint128, WasmMsg,
 };
 use cw2::{get_contract_version, set_contract_version};
-use cw20::{Cw20ExecuteMsg, Cw20ReceiveMsg};
+use cw20::Cw20ExecuteMsg;
 use protobuf::Message;
 use std::vec;
 // The default swap slippage
@@ -238,228 +233,6 @@ pub fn execute(
             belief_price,
             max_spread,
         ),
-        //a standard swap - this can only be called IF the asset is the bluechip. if not, performing a swap will require executing the CW20 contract
-        ExecuteMsg::SimpleSwap {
-            offer_asset,
-            belief_price,
-            max_spread,
-            to,
-            deadline,
-        } => {
-            // only allow swap once commit_limit_usd has been reached
-            if !query_check_commit(deps.as_ref())? {
-                return Err(ContractError::ShortOfThreshold {});
-            }
-            // ensure they sent the native coin
-            offer_asset.assert_sent_native_token_balance(&info)?;
-            let sender_addr = info.sender.clone();
-            let to_addr: Option<Addr> = to
-                .map(|to_str| deps.api.addr_validate(&to_str))
-                .transpose()?;
-            // call the shared AMM logic
-            simple_swap(
-                deps,
-                env,
-                info,
-                sender_addr,
-                offer_asset,
-                belief_price,
-                max_spread,
-                to_addr,
-                deadline,
-            )
-        }
-        ExecuteMsg::Receive(cw20_msg) => execute_swap_cw20(deps, env, info, cw20_msg),
-        //deposit liquidity into a pool - accumulates liquiidty units for fees - mints an NFT for position
-        ExecuteMsg::DepositLiquidity {
-            amount0,
-            amount1,
-            min_amount0,
-            min_amount1,
-            deadline,
-        } => {
-            if !query_check_commit(deps.as_ref())? {
-                return Err(ContractError::ShortOfThreshold {});
-            }
-            let sender = info.sender.clone();
-            execute_deposit_liquidity(
-                deps,
-                env,
-                info,
-                sender,
-                amount0,
-                amount1,
-                min_amount0,
-                min_amount1,
-                deadline,
-            )
-        }
-        //add to a currently held position by the user
-        ExecuteMsg::AddToPosition {
-            position_id,
-            amount0,
-            amount1,
-            min_amount0,
-            min_amount1,
-            deadline,
-        } => {
-            // check threshold requirement
-            if !query_check_commit(deps.as_ref())? {
-                return Err(ContractError::ShortOfThreshold {});
-            }
-            let sender = info.sender.clone();
-            execute_add_to_position(
-                deps,
-                env,
-                info,
-                position_id,
-                sender,
-                amount0,
-                amount1,
-                min_amount0,
-                min_amount1,
-                deadline,
-            )
-        }
-        //collect all fees for a position
-        ExecuteMsg::CollectFees { position_id } => {
-            execute_collect_fees(deps, env, info, position_id)
-        }
-        //removes liquidity based on a specific amount (I have 100 liquidity I want to remove 18.) - will collect fees in proportion of removal to rebalance accounting
-        ExecuteMsg::RemovePartialLiquidity {
-            position_id,
-            liquidity_to_remove,
-            deadline,
-            min_amount0,
-            min_amount1,
-        } => execute_remove_partial_liquidity(
-            deps,
-            env,
-            info,
-            position_id,
-            liquidity_to_remove,
-            deadline,
-            min_amount0,
-            min_amount1,
-        ),
-        //removes all liquidity for a position - (i have 100 liquidity and I remove 100) - collects all fees.
-        ExecuteMsg::RemoveLiquidity {
-            position_id,
-            deadline,
-            min_amount1,
-            min_amount0,
-        } => execute_remove_liquidity(
-            deps,
-            env,
-            info,
-            position_id,
-            deadline,
-            min_amount0,
-            min_amount1,
-        ),
-        //removes liquidity based on a specific percent (I have 100 liquidity I want to remove 18% = remove 18.) - will collect fees in proportion of removal to rebalance accounting
-        ExecuteMsg::RemovePartialLiquidityByPercent {
-            position_id,
-            percentage,
-            deadline,
-            min_amount0,
-            min_amount1,
-        } => execute_remove_partial_liquidity_by_percent(
-            deps,
-            env,
-            info,
-            position_id,
-            percentage,
-            deadline,
-            min_amount0,
-            min_amount1,
-        ),
-    }
-}
-
-pub fn execute_swap_cw20(
-    deps: DepsMut,
-    env: Env,
-    info: MessageInfo,
-    cw20_msg: Cw20ReceiveMsg,
-) -> Result<Response, ContractError> {
-    let contract_addr = info.sender.clone();
-    match from_json(&cw20_msg.msg) {
-        Ok(Cw20HookMsg::Swap {
-            belief_price,
-            max_spread,
-            to,
-            deadline,
-        }) => {
-            // Only asset contract can execute this message
-            let mut authorized: bool = false;
-            let pool_info: PoolInfo = POOL_INFO.load(deps.storage)?;
-
-            for pool in pool_info.pair_info.asset_infos {
-                if let AssetInfo::Token { contract_addr, .. } = &pool {
-                    if contract_addr == &info.sender {
-                        authorized = true;
-                    }
-                }
-            }
-            if !authorized {
-                return Err(ContractError::Unauthorized {});
-            }
-            let to_addr = if let Some(to_addr) = to {
-                Some(deps.api.addr_validate(to_addr.as_str())?)
-            } else {
-                None
-            };
-            simple_swap(
-                deps,
-                env,
-                info,
-                Addr::unchecked(cw20_msg.sender),
-                Asset {
-                    info: AssetInfo::Token { contract_addr },
-                    amount: cw20_msg.amount,
-                },
-                belief_price,
-                max_spread,
-                to_addr,
-                deadline,
-            )
-        }
-        Ok(Cw20HookMsg::DepositLiquidity {
-            amount0,
-            min_amount0,
-            min_amount1,
-            deadline,
-        }) => execute_deposit_liquidity(
-            deps,
-            env,
-            info,
-            Addr::unchecked(cw20_msg.sender), //mainly focusing on this
-            amount0,
-            cw20_msg.amount,
-            min_amount0,
-            min_amount1,
-            deadline,
-        ),
-        Ok(Cw20HookMsg::AddToPosition {
-            position_id,
-            amount0,
-            min_amount0,
-            min_amount1,
-            deadline,
-        }) => execute_add_to_position(
-            deps,
-            env,
-            info,
-            position_id,
-            Addr::unchecked(cw20_msg.sender),
-            amount0,
-            cw20_msg.amount,
-            min_amount0,
-            min_amount1,
-            deadline,
-        ),
-        Err(err) => Err(ContractError::Std(err)),
     }
 }
 
@@ -492,150 +265,6 @@ pub fn reply(deps: DepsMut, _env: Env, msg: Reply) -> Result<Response, ContractE
     }
 
     Err(StdError::generic_err("unknown reply id").into())
-}
-
-pub fn simple_swap(
-    mut deps: DepsMut,
-    env: Env,
-    _info: MessageInfo,
-    sender: Addr,
-    offer_asset: Asset,
-    belief_price: Option<Decimal>,
-    max_spread: Option<Decimal>,
-    to: Option<Addr>,
-    deadline: Option<Timestamp>,
-) -> Result<Response, ContractError> {
-    enforce_deadline(env.block.time, deadline)?;
-    // Reentrancy protection - check and set guard
-    let reentrancy_guard = RATE_LIMIT_GUARD.may_load(deps.storage)?.unwrap_or(false);
-    if reentrancy_guard {
-        return Err(ContractError::ReentrancyGuard {});
-    }
-    RATE_LIMIT_GUARD.save(deps.storage, &true)?;
-    let pool_specs: PoolSpecs = POOL_SPECS.load(deps.storage)?;
-    let sender = sender.clone();
-
-    // Rate limiting check
-    if let Err(e) = check_rate_limit(&mut deps, &env, &pool_specs, &sender) {
-        RATE_LIMIT_GUARD.save(deps.storage, &false)?;
-        return Err(e);
-    }
-    let result = execute_simple_swap(
-        &mut deps,
-        env,
-        _info,
-        sender,
-        offer_asset,
-        belief_price,
-        max_spread,
-        to,
-    );
-    RATE_LIMIT_GUARD.save(deps.storage, &false)?;
-
-    result
-}
-
-#[allow(clippy::too_many_arguments)]
-//logic to carry out the simple swap transacation
-pub fn execute_simple_swap(
-    deps: &mut DepsMut,
-    env: Env,
-    _info: MessageInfo,
-    sender: Addr,
-    offer_asset: Asset,
-    belief_price: Option<Decimal>,
-    max_spread: Option<Decimal>,
-    to: Option<Addr>,
-) -> Result<Response, ContractError> {
-    let pool_info = POOL_INFO.load(deps.storage)?;
-    let mut pool_state = POOL_STATE.load(deps.storage)?;
-    let mut pool_fee_state = POOL_FEE_STATE.load(deps.storage)?;
-    let pool_specs = POOL_SPECS.load(deps.storage)?;
-
-    let (offer_pool_idx, offer_pool, ask_pool) =
-        if offer_asset.info.equal(&pool_info.pair_info.asset_infos[0]) {
-            (0, pool_state.reserve0, pool_state.reserve1)
-        } else if offer_asset.info.equal(&pool_info.pair_info.asset_infos[1]) {
-            (1, pool_state.reserve1, pool_state.reserve0)
-        } else {
-            return Err(ContractError::AssetMismatch {});
-        };
-
-    let (return_amt, spread_amt, commission_amt) =
-        compute_swap(offer_pool, ask_pool, offer_asset.amount, pool_specs.lp_fee)?;
-
-    assert_max_spread(
-        belief_price,
-        max_spread,
-        offer_asset.amount,
-        return_amt + commission_amt,
-        spread_amt,
-    )?;
-
-    let offer_pool_post = offer_pool.checked_add(offer_asset.amount)?;
-    let ask_pool_post = ask_pool.checked_sub(return_amt)?;
-
-    if offer_pool_idx == 0 {
-        pool_state.reserve0 = offer_pool_post;
-        pool_state.reserve1 = ask_pool_post;
-    } else {
-        pool_state.reserve0 = ask_pool_post;
-        pool_state.reserve1 = offer_pool_post;
-    }
-
-    // Update fee growth
-    update_fee_growth(
-        &mut pool_fee_state,
-        &pool_state,
-        offer_pool_idx,
-        commission_amt,
-    )?;
-    POOL_FEE_STATE.save(deps.storage, &pool_fee_state)?;
-
-    // Update pool prices
-    update_price_accumulator(&mut pool_state, env.block.time.seconds())?;
-
-    // Save updated state
-    POOL_STATE.save(deps.storage, &pool_state)?;
-
-    let ask_asset_info = if offer_pool_idx == 0 {
-        pool_info.pair_info.asset_infos[1].clone()
-    } else {
-        pool_info.pair_info.asset_infos[0].clone()
-    };
-
-    let msgs = if !return_amt.is_zero() {
-        vec![Asset {
-            info: ask_asset_info.clone(),
-            amount: return_amt,
-        }
-        .into_msg(&deps.querier, to.unwrap_or(sender.clone()))?]
-    } else {
-        vec![]
-    };
-
-    Ok(Response::new()
-        .add_messages(msgs)
-        .add_attribute("action", "swap")
-        .add_attribute("sender", sender)
-        .add_attribute("offer_asset", offer_asset.info.to_string())
-        .add_attribute("ask_asset", ask_asset_info.to_string())
-        .add_attribute("offer_amount", offer_asset.amount.to_string())
-        .add_attribute("return_amount", return_amt.to_string())
-        .add_attribute("spread_amount", spread_amt.to_string())
-        .add_attribute("commission_amount", commission_amt.to_string())
-        .add_attribute(
-            "belief_price",
-            belief_price
-                .map(|p| p.to_string())
-                .unwrap_or("none".to_string()),
-        )
-        .add_attribute(
-            "max_spread",
-            max_spread
-                .map(|s| s.to_string())
-                .unwrap_or("none".to_string()),
-        ))
 }
 
 #[allow(clippy::too_many_arguments)]
@@ -1242,24 +871,4 @@ pub fn migrate(deps: DepsMut, _env: Env, _msg: MigrateMsg) -> Result<Response, C
         .add_attribute("previous_contract_version", &version.version)
         .add_attribute("new_contract_name", CONTRACT_NAME)
         .add_attribute("new_contract_version", CONTRACT_VERSION))
-}
-
-pub fn get_cw20_transfer_msg(
-    token_addr: &Addr,
-    recipient: &Addr,
-    amount: Uint128,
-) -> StdResult<CosmosMsg> {
-    let transfer_cw20_msg = Cw20ExecuteMsg::Transfer {
-        recipient: recipient.into(),
-        amount,
-    };
-
-    let exec_cw20_transfer_msg = WasmMsg::Execute {
-        contract_addr: token_addr.into(),
-        msg: to_json_binary(&transfer_cw20_msg)?,
-        funds: vec![],
-    };
-
-    let cw20_transfer_msg: CosmosMsg = exec_cw20_transfer_msg.into();
-    Ok(cw20_transfer_msg)
 }
