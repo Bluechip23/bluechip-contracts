@@ -1,18 +1,18 @@
-use crate::pair::CreatePool;
+use crate::pool::CreatePool;
 use cosmwasm_schema::cw_serde;
 use cosmwasm_std::{Addr, Decimal, Timestamp, Uint128};
 use cw_storage_plus::{Item, Map};
 
 //states used during the pool and factory creation process. 
 //there is TEMPdata to keep the creation process going, TEMPdata is eventually removed after sucessful pool creation
-pub const CONFIG: Item<FactoryInstantiate> = Item::new("config");
-pub const TEMPPAIRINFO: Item<CreatePool> = Item::new("temp_pair");
-pub const TEMPCREATOR: Item<Addr> = Item::new("temp_admin");
+pub const FACTORYINSTANTIATEINFO: Item<FactoryInstantiate> = Item::new("config");
+pub const TEMPPOOLINFO: Item<CreatePool> = Item::new("temp_pool_info");
+pub const TEMPCREATORWALLETADDR: Item<Addr> = Item::new("temp_admin");
 pub const TEMPPOOLID: Item<u64> = Item::new("temp_pool_id");
-pub const TEMPTOKENADDR: Item<Addr> = Item::new("temp_token_addr");
+pub const TEMPCREATORTOKENADDR: Item<Addr> = Item::new("temp_token_addr");
 pub const TEMPNFTADDR: Item<Addr> = Item::new("temp_nft_addr");
 //setting the commit field inside the pool
-pub const COMMIT: Map<&str, CommitInfo> = Map::new("commit_info");
+pub const SETCOMMIT: Map<&str, CommitInfo> = Map::new("commit_info");
 //tracking pool id for querys etc
 pub const NEXT_POOL_ID: Item<u64> = Item::new("next_pool_id");
 //used in querys to grab multiple pools
@@ -23,39 +23,36 @@ pub const CREATION_STATES: Map<u64, CreationState> = Map::new("creation_states")
 #[cw_serde]
 pub struct FactoryInstantiate {
     //admin of the factory - will be bluechip or some multisig or something along those lines. person who can edit effectively
-    pub admin: Addr,
-    //amount of bluechip used to seed the creator pool when threshold is crossed
-    pub commit_amount_for_threshold: Uint128,
-    //threshold limit priced in USD 
-    pub commit_limit_usd: Uint128,
+    pub factory_admin_address: Addr,
+    //amount of bluechip spent to cross the commit threshold
+    pub commit_amount_for_threshold_bluechip: Uint128,
+    //threshold needed to be crossed for pool to become fully active - priced in USD 
+    pub commit_threshold_limit_usd: Uint128,
     //oracle contract address to track usd price
-    pub oracle_addr: Addr,
-    //symbol used to track pricing
-    pub oracle_symbol: String,
+    pub oracle_contract_addr: Addr,
+    //ticker the oracle is tracking for pricing
+    pub oracle_ticker: String,
     //CW20 contract id that is store on the chain for the pool to use when minting new NFTs
-    pub token_id: u64,
+    pub cw20_token_contract_id: u64,
     //nft contract id that is store on the chain for the pool to use when minting new NFTs
-    pub position_nft_id: u64,
-    //id for the token pair that exists in the pool. Used for queries mostly.
-    pub pair_id: u64,
-    //bluechip wallet address
-    pub bluechip_address: Addr,
-    //fee distributed to bluechip every commit
-    pub bluechip_fee: Decimal,
-    //fee distributed to creator ever transaction
-    pub creator_fee: Decimal,
+    pub cw721_nft_contract_id: u64,
+    //the pool contract id used by the factory to replicate pools when the pool create function is called.
+    pub create_pool_wasm_contract_id: u64,
+    //bluechip wallet address whwere bluechip fees accumulate from commits
+    pub bluechip_wallet_address: Addr,
+    //fee distributed to bluechip every commit  - 1%
+    pub commit_fee_bluechip: Decimal,
+    //fee distributed to creator ever commit - 5%
+    pub commit_fee_creator: Decimal,
 }
 //info about creator and pool for commit tracking
 #[cw_serde]
 pub struct CommitInfo {
     //id of pool - will be some positive integer
     pub pool_id: u64,
-    //
     pub creator: Addr,
-    //address of the creator token itself
-    pub token_addr: Addr,
-    //creator pool address
-    pub pool_addr: Addr,
+    pub creator_token_addr: Addr,
+    pub creator_pool_addr: Addr,
 }
 
 //used to track the state of the pool throughout creation. Will trigger different events upon partial or complete creation
@@ -66,9 +63,9 @@ pub struct CreationState {
     //creator of the pool
     pub creator: Addr,
     //token address of the pool
-    pub token_address: Option<Addr>,
-    pub nft_address: Option<Addr>,
-    //pool address
+    pub creator_token_address: Option<Addr>,
+    //nft address used to mint new liquidity position nfts
+    pub mint_new_position_nft_address: Option<Addr>,
     pub pool_address: Option<Addr>,
     pub creation_time: Timestamp,
     //creation status triggers different outcomes based on completion of different status updates

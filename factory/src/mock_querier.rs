@@ -8,7 +8,7 @@ use cosmwasm_std::{
 };
 use std::collections::HashMap;
 
-use crate::pair::PairInfo;
+use crate::pool::PoolDetails;
 use crate::query::QueryMsg;
 
 pub fn mock_dependencies(
@@ -32,19 +32,19 @@ pub struct WasmMockQuerier {
 
 #[derive(Clone, Default)]
 pub struct BetfiPairQuerier {
-    pairs: HashMap<String, PairInfo>,
+    pairs: HashMap<String, PoolDetails>,
 }
 
 impl BetfiPairQuerier {
-    pub fn new(pairs: &[(&String, &PairInfo)]) -> Self {
+    pub fn new(pairs: &[(&String, &PoolDetails)]) -> Self {
         BetfiPairQuerier {
             pairs: pairs_to_map(pairs),
         }
     }
 }
 
-pub(crate) fn pairs_to_map(pairs: &[(&String, &PairInfo)]) -> HashMap<String, PairInfo> {
-    let mut pairs_map: HashMap<String, PairInfo> = HashMap::new();
+pub(crate) fn pairs_to_map(pairs: &[(&String, &PoolDetails)]) -> HashMap<String, PoolDetails> {
+    let mut pairs_map: HashMap<String, PoolDetails> = HashMap::new();
     for (key, pair) in pairs.iter() {
         pairs_map.insert(key.to_string(), (*pair).clone());
     }
@@ -73,7 +73,7 @@ impl WasmMockQuerier {
             QueryRequest::Wasm(WasmQuery::Smart {contract_addr, msg})// => {
                 => match from_json(&msg).unwrap() {
                     QueryMsg::Pair {} => {
-                       let pair_info: PairInfo =
+                       let pair_info: PoolDetails =
                         match self.betfi_pair_querier.pairs.get(contract_addr) {
                             Some(v) => v.clone(),
                             None => {
@@ -101,7 +101,7 @@ impl WasmMockQuerier {
     }
 
     // Configure the betfi pair
-    pub fn with_betfi_pairs(&mut self, pairs: &[(&String, &PairInfo)]) {
+    pub fn with_betfi_pairs(&mut self, pairs: &[(&String, &PoolDetails)]) {
         self.betfi_pair_querier = BetfiPairQuerier::new(pairs);
     }
 }

@@ -1,5 +1,5 @@
 use cosmwasm_schema::{cw_serde, QueryResponses};
-use crate::asset::{Asset, AssetInfo, PairInfo};
+use crate::asset::{TokenInfo, TokenType, PoolDetails};
 use crate::state::Commiting;
 use cosmwasm_std::{Addr, Binary, Decimal, Timestamp, Uint128};
 use cw20::Cw20ReceiveMsg;
@@ -8,18 +8,18 @@ use cw20::Cw20ReceiveMsg;
 pub enum ExecuteMsg {
     Receive(Cw20ReceiveMsg),
     SimpleSwap {
-        offer_asset: Asset,
+        offer_asset: TokenInfo,
         belief_price: Option<Decimal>,
         max_spread: Option<Decimal>,
         to: Option<String>,
-        deadline: Option<Timestamp>,
+        transaction_deadline: Option<Timestamp>,
     },
     UpdateConfig { params: Binary },
 
     Commit {
-        asset: Asset,
+        asset: TokenInfo,
         amount: Uint128,
-        deadline: Option<Timestamp>,
+        transaction_deadline: Option<Timestamp>,
         belief_price: Option<Decimal>,
         max_spread: Option<Decimal>,
     },
@@ -28,34 +28,34 @@ pub enum ExecuteMsg {
         amount1: Uint128,
         min_amount0: Option<Uint128>,
         min_amount1: Option<Uint128>,
-        deadline: Option<Timestamp>,
+        transaction_deadline: Option<Timestamp>,
     },
     CollectFees { position_id: String },
     AddToPosition {
         position_id: String,
-        amount0: Uint128, // native token amount
+        amount0: Uint128, // bluechip token amount
         amount1: Uint128,
         min_amount0: Option<Uint128>,
         min_amount1: Option<Uint128>,
-        deadline: Option<Timestamp>,
+        transaction_deadline: Option<Timestamp>,
     },
     RemovePartialLiquidity {
         position_id: String,
         liquidity_to_remove: Uint128,
-        deadline: Option<Timestamp>, // Specific amount of liquidity to remove
+        transaction_deadline: Option<Timestamp>, // Specific amount of liquidity to remove
         min_amount0: Option<Uint128>,
         min_amount1: Option<Uint128>,
     },
     RemovePartialLiquidityByPercent {
         position_id: String,
         percentage: u64,
-        deadline: Option<Timestamp>,
+        transaction_deadline: Option<Timestamp>,
         min_amount0: Option<Uint128>,
         min_amount1: Option<Uint128>, 
     },
-    RemoveLiquidity {
+    RemoveAllLiquidity {
         position_id: String,
-        deadline: Option<Timestamp>,
+        transaction_deadline: Option<Timestamp>,
         min_amount0: Option<Uint128>,
         min_amount1: Option<Uint128>,
     },
@@ -68,20 +68,20 @@ pub enum Cw20HookMsg {
         belief_price: Option<Decimal>,
         max_spread: Option<Decimal>,
         to: Option<String>,
-        deadline: Option<Timestamp>,
+        transaction_deadline: Option<Timestamp>,
     },
     DepositLiquidity {
         amount0: Uint128,
         min_amount0: Option<Uint128>,
         min_amount1: Option<Uint128>,
-        deadline: Option<Timestamp>, 
+        transaction_deadline: Option<Timestamp>, 
     },
     AddToPosition {
         position_id: String,
         amount0: Uint128,
         min_amount0: Option<Uint128>,
         min_amount1: Option<Uint128>,
-        deadline: Option<Timestamp>, 
+        transaction_deadline: Option<Timestamp>, 
     },
 }
 
@@ -89,14 +89,14 @@ pub enum Cw20HookMsg {
 #[cw_serde]
 #[derive(QueryResponses)]
 pub enum QueryMsg {
-    #[returns(PairInfo)]
+    #[returns(PoolDetails)]
     Pair {},
     #[returns(ConfigResponse)]
     Config {},
     #[returns(SimulationResponse)]
-    Simulation { offer_asset: Asset },
+    Simulation { offer_asset: TokenInfo },
     #[returns(ReverseSimulationResponse)]
-    ReverseSimulation { ask_asset: Asset },
+    ReverseSimulation { ask_asset: TokenInfo },
     #[returns(CumulativePricesResponse)]
     CumulativePrices {},
 
@@ -150,15 +150,15 @@ pub enum QueryMsg {
 pub struct PoolInstantiateMsg {
     pub pool_id: u64,
     // Information about the two assets in the pool
-    pub asset_infos: [AssetInfo; 2],
+    pub asset_infos: [TokenType; 2],
     // The token contract code ID used for the tokens in the pool
     pub token_code_id: u64,
     // The factory contract address
     pub factory_addr: Addr,
     // gets set in reply function - amounts that go to each payout party
     pub threshold_payout: Option<Binary>,
-    pub fee_info: FeeInfo,
-    pub commit_limit_usd: Uint128,
+    pub commit_fee_info: CommitFeeInfo,
+    pub commit_amount_for_threshold_usd: Uint128,
     pub commit_amount_for_threshold: Uint128,
     pub position_nft_address: Addr,
     pub oracle_addr: Addr,
@@ -180,29 +180,29 @@ pub struct PoolCommitResponse {
 pub struct CommiterInfo {
     pub wallet: String,
     //last payment in bluechip amount
-    pub last_payment_native: Uint128,
+    pub last_payment_bluechip: Uint128,
     //last payment converted to USD
     pub last_payment_usd: Uint128,
     pub last_commited: Timestamp,
     pub total_paid_usd: Uint128,
 }
 #[cw_serde]
-pub struct FeeInfo {
+pub struct CommitFeeInfo {
     //BlueChip wallet
     pub bluechip_address: Addr,
     //pool creatpr wallet
     pub creator_address: Addr,
     //amount of commit that goes to BlueChip
-    pub bluechip_fee: Decimal,
+    pub commit_fee_bluechip: Decimal,
     //amount of commit taht goes to pool creator
-    pub creator_fee: Decimal,
+    pub commit_fee_creator: Decimal,
 }
 
 
 #[cw_serde]
 pub struct PoolResponse {
     // The assets in the pool together with asset amounts
-    pub assets: [Asset; 2],
+    pub assets: [TokenInfo; 2],
 }
 
 
@@ -220,8 +220,8 @@ pub struct LastCommitedResponse {
     pub has_commited: bool,
     //last time commiting
     pub last_commited: Option<Timestamp>,
-    //last payment in native
-    pub last_payment_native: Option<Uint128>,
+    //last payment in bluechip
+    pub last_payment_bluechip: Option<Uint128>,
     //last payment converted to usd
     pub last_payment_usd: Option<Uint128>,
 }
@@ -252,7 +252,7 @@ pub struct ReverseSimulationResponse {
 #[cw_serde]
 pub struct CumulativePricesResponse {
     // The two assets in the pool to query
-    pub assets: [Asset; 2],
+    pub assets: [TokenInfo; 2],
     // The last value for the token0 cumulative price
     pub price0_cumulative_last: Uint128,
     // The last value for the token1 cumulative price
@@ -262,12 +262,8 @@ pub struct CumulativePricesResponse {
 #[cw_serde]
 pub struct FeeInfoResponse {
     // The two assets in the pool to query
-    pub fee_info: FeeInfo,
+    pub fee_info: CommitFeeInfo,
 }
-
-
-#[cw_serde]
-pub struct MigrateMsg {}
 
 
 #[cw_serde]

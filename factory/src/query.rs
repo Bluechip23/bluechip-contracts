@@ -1,23 +1,22 @@
 use cosmwasm_schema::{cw_serde, QueryResponses};
 use cosmwasm_std::{to_json_binary, Addr, BankQuery, Deps, QuerierWrapper, QueryRequest, StdResult, Uint128, WasmQuery, BalanceResponse};
 use cw20::{Cw20QueryMsg, TokenInfoResponse, BalanceResponse as Cw20BalanceResponse};
-use crate::pair::PairInfo;
-use crate::msg::ConfigResponse;
-use crate::state::CONFIG;
+use crate::pool::PoolDetails;
+use crate::msg::FactoryInstantiateResponse;
+use crate::state::FACTORYINSTANTIATEINFO;
 
 #[cw_serde]
 #[derive(QueryResponses)]
 pub enum QueryMsg {
-    // factory config
-    #[returns(ConfigResponse)]
-    Config {},
-    #[returns(PairInfo)]
-    Pair {},
+    #[returns(FactoryInstantiateResponse)]
+    Factory {},
+    #[returns(PoolDetails)]
+    Pool {},
 }
 
-pub fn query_config(deps: Deps) -> StdResult<ConfigResponse> {
-    let config = CONFIG.load(deps.storage)?;
-    Ok(ConfigResponse { config })
+pub fn query_active_factory(deps: Deps) -> StdResult<FactoryInstantiateResponse> {
+    let factory = FACTORYINSTANTIATEINFO.load(deps.storage)?;
+    Ok(FactoryInstantiateResponse { factory })
 }
 
 pub fn query_token_balance(
@@ -40,7 +39,7 @@ pub fn query_token_balance(
     Ok(res.balance)
 }
 
-pub fn query_token_symbol(querier: &QuerierWrapper, contract_addr: Addr) -> StdResult<String> {
+pub fn query_token_ticker(querier: &QuerierWrapper, contract_addr: Addr) -> StdResult<String> {
     let res: TokenInfoResponse = querier.query(&QueryRequest::Wasm(WasmQuery::Smart {
         contract_addr: String::from(contract_addr),
         msg: to_json_binary(&Cw20QueryMsg::TokenInfo {})?,

@@ -59,8 +59,8 @@ instantiate_contract() {
     "position_nft_id": $POSITION_NFT_ID,
     "pair_id": $PAIR_ID,
     "bluechip_address": "$BLUECHIP_ADDRESS",
-    "bluechip_fee": "$BLUECHIP_FEE",
-    "creator_fee": "$CREATOR_FEE"
+    "commit_fee_bluechip": "$BLUECHIP_FEE",
+    "commit_fee_creator": "$CREATOR_FEE"
 }
 EOF
 )

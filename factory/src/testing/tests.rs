@@ -1,33 +1,33 @@
 use crate::state::{
-    CreationState, CreationStatus, FactoryInstantiate, COMMIT, CREATION_STATES, NEXT_POOL_ID,
-    POOLS_BY_ID, TEMPCREATOR, TEMPNFTADDR, TEMPPAIRINFO, TEMPPOOLID, TEMPTOKENADDR,
+    CreationState, CreationStatus, FactoryInstantiate, SETCOMMIT, CREATION_STATES, NEXT_POOL_ID,
+    POOLS_BY_ID, TEMPCREATORWALLETADDR, TEMPNFTADDR, TEMPPOOLINFO, TEMPPOOLID, TEMPCREATORTOKENADDR,
 };
 use cosmwasm_std::{
     Addr, Binary, Decimal, Env, Event, OwnedDeps, Reply, SubMsgResponse, SubMsgResult, Uint128,
 };
 
-use crate::asset::{Asset, AssetInfo, PairType};
+use crate::asset::{TokenInfo, TokenType,};
 use crate::execute::{execute, instantiate, reply, FINALIZE_POOL, MINT_CREATE_POOL, SET_TOKENS};
 use crate::mock_querier::{mock_dependencies, WasmMockQuerier};
-use crate::msg::{ExecuteMsg, TokenInfo};
-use crate::pair::{CreatePool, FeeInfo, PairInfo};
+use crate::msg::{ExecuteMsg, CreatorTokenInfo};
+use crate::pool::{CreatePool, CommitFeeInfo, PoolDetails};
 use cosmwasm_std::testing::{mock_env, mock_info, MockApi, MockStorage};
 
 const ADMIN: &str = "admin";
 
 fn create_default_instantiate_msg() -> FactoryInstantiate {
     FactoryInstantiate {
-        admin: Addr::unchecked(ADMIN),
-        position_nft_id: 58,
-        commit_amount_for_threshold: Uint128::zero(),
-        commit_limit_usd: Uint128::new(25_000_000_000),
-        oracle_addr: Addr::unchecked("oracle0000"),
-        oracle_symbol: "BLUECHIP".to_string(),
-        token_id: 10,
-        pair_id: 11,
-        bluechip_address: Addr::unchecked("bluechip"),
-        bluechip_fee: Decimal::percent(1),
-        creator_fee: Decimal::percent(5),
+        factory_admin_address: Addr::unchecked(ADMIN),
+        cw721_nft_contract_id: 58,
+        commit_amount_for_threshold_bluechip: Uint128::zero(),
+        commit_threshold_limit_usd: Uint128::new(25_000_000_000),
+        oracle_contract_addr: Addr::unchecked("oracle0000"),
+        oracle_ticker: "BLUECHIP".to_string(),
+        cw20_token_contract_id: 10,
+        create_pool_wasm_contract_id: 11,
+        bluechip_wallet_address: Addr::unchecked("bluechip"),
+        commit_fee_bluechip: Decimal::percent(1),
+        commit_fee_creator: Decimal::percent(5),
     }
 }
 
@@ -38,17 +38,17 @@ fn proper_initialization() {
     let _owner = "owner0000".to_string();
 
     let msg = FactoryInstantiate {
-        admin: Addr::unchecked(ADMIN),
-        position_nft_id: 58,
-        commit_amount_for_threshold: Uint128::zero(),
-        commit_limit_usd: Uint128::new(100),
-        oracle_addr: Addr::unchecked("oracle0000"),
-        oracle_symbol: "ORCL".to_string(),
-        token_id: 10,
-        pair_id: 11,
-        bluechip_address: Addr::unchecked("bluechip"),
-        bluechip_fee: Decimal::percent(10),
-        creator_fee: Decimal::percent(10),
+        factory_admin_address: Addr::unchecked(ADMIN),
+        cw721_nft_contract_id: 58,
+        commit_amount_for_threshold_bluechip: Uint128::zero(),
+        commit_threshold_limit_usd: Uint128::new(100),
+        oracle_contract_addr: Addr::unchecked("oracle0000"),
+        oracle_ticker: "ORCL".to_string(),
+        cw20_token_contract_id: 10,
+        create_pool_wasm_contract_id: 11,
+        bluechip_wallet_address: Addr::unchecked("bluechip"),
+        commit_fee_bluechip: Decimal::percent(10),
+        commit_fee_creator: Decimal::percent(10),
     };
 
     let env = mock_env();
@@ -77,17 +77,17 @@ fn create_pair() {
     let mut deps = mock_dependencies(&[]);
 
     let msg = FactoryInstantiate {
-        admin: Addr::unchecked("addr0000"),
-        position_nft_id: 58,
-        commit_amount_for_threshold: Uint128::zero(),
-        commit_limit_usd: Uint128::new(25_000_000_000), // $25k with 6 decimals
-        oracle_addr: Addr::unchecked("oracle0000"),
-        oracle_symbol: "BLUECHIP".to_string(),
-        token_id: 10,
-        pair_id: 11,
-        bluechip_address: Addr::unchecked("bluechip"),
-        bluechip_fee: Decimal::percent(1), // 1%
-        creator_fee: Decimal::percent(5),  // 5%
+        factory_admin_address: Addr::unchecked("addr0000"),
+        cw721_nft_contract_id: 58,
+        commit_amount_for_threshold_bluechip: Uint128::zero(),
+        commit_threshold_limit_usd: Uint128::new(25_000_000_000), // $25k with 6 decimals
+        oracle_contract_addr: Addr::unchecked("oracle0000"),
+        oracle_ticker: "BLUECHIP".to_string(),
+        cw20_token_contract_id: 10,
+        create_pool_wasm_contract_id: 11,
+        bluechip_wallet_address: Addr::unchecked("bluechip"),
+        commit_fee_bluechip: Decimal::percent(1), // 1%
+        commit_fee_creator: Decimal::percent(5),  // 5%
     };
 
     let env = mock_env();
@@ -96,11 +96,11 @@ fn create_pair() {
 
     let _res = instantiate(deps.as_mut(), env, info, msg.clone()).unwrap();
 
-    let asset_infos = [
-        AssetInfo::NativeToken {
+    let pool_token_info = [
+        TokenType::Bluechip {
             denom: "bluechip".to_string(),
         },
-        AssetInfo::Token {
+        TokenType::CreatorToken{
             contract_addr: Addr::unchecked("WILL_BE_CREATED_BY_FACTORY"),
         },
     ];
@@ -117,25 +117,25 @@ fn create_pair() {
         info,
         ExecuteMsg::Create {
             pool_msg: CreatePool {
-                asset_infos: asset_infos.clone(),
-                token_code_id: 10,
-                factory_addr: Addr::unchecked("factory"),
+                pool_token_info: pool_token_info.clone(),
+                cw20_token_contract_id: 10,
+                factory_to_create_pool_addr: Addr::unchecked("factory"),
                 threshold_payout: None,
-                fee_info: FeeInfo {
-                    bluechip_address: Addr::unchecked("bluechip"),
-                    creator_address: Addr::unchecked("creator"),
-                    bluechip_fee: Decimal::percent(1),
-                    creator_fee: Decimal::percent(5),
+                commit_fee_info: CommitFeeInfo {
+                    bluechip_wallet_address: Addr::unchecked("bluechip"),
+                    creator_wallet_address: Addr::unchecked("creator"),
+                    commit_fee_bluechip: Decimal::percent(1),
+                    commit_fee_creator: Decimal::percent(5),
                 },
                 commit_amount_for_threshold: Uint128::zero(),
                 commit_limit_usd: Uint128::new(25_000_000_000),
-                oracle_addr: Addr::unchecked("oracle0000"),
-                oracle_symbol: "BLUECHIP".to_string(),
-                token_address: Addr::unchecked("WILL_BE_CREATED_BY_FACTORY"),
+                oracle_contract_addr: Addr::unchecked("oracle0000"),
+                oracle_ticker: "BLUECHIP".to_string(),
+                creator_token_address: Addr::unchecked("WILL_BE_CREATED_BY_FACTORY"),
             },
-            token_info: TokenInfo {
-                name: "Test Token".to_string(),
-                symbol: "TEST".to_string(),
+            token_info: CreatorTokenInfo {
+                token_name: "Test Token".to_string(),
+                ticker: "TEST".to_string(),
                 decimal: 6,
             },
         },
@@ -157,17 +157,17 @@ fn test_create_pair_with_custom_params() {
 
     // Initialize factory first
     let msg = FactoryInstantiate {
-        admin: Addr::unchecked(ADMIN),
-        position_nft_id: 58,
-        commit_amount_for_threshold: Uint128::zero(),
-        commit_limit_usd: Uint128::new(25_000_000_000),
-        oracle_addr: Addr::unchecked("oracle0000"),
-        oracle_symbol: "BLUECHIP".to_string(),
-        token_id: 10,
-        pair_id: 11,
-        bluechip_address: Addr::unchecked("bluechip"),
-        bluechip_fee: Decimal::percent(1),
-        creator_fee: Decimal::percent(5),
+        factory_admin_address: Addr::unchecked(ADMIN),
+        cw721_nft_contract_id: 58,
+        commit_amount_for_threshold_bluechip: Uint128::zero(),
+        commit_threshold_limit_usd: Uint128::new(25_000_000_000),
+        oracle_contract_addr: Addr::unchecked("oracle0000"),
+        oracle_ticker: "BLUECHIP".to_string(),
+        cw20_token_contract_id: 10,
+        create_pool_wasm_contract_id: 11,
+        bluechip_wallet_address: Addr::unchecked("bluechip"),
+        commit_fee_bluechip: Decimal::percent(1),
+        commit_fee_creator: Decimal::percent(5),
     };
 
     let env = mock_env();
@@ -179,32 +179,32 @@ fn test_create_pair_with_custom_params() {
 
     let create_msg = ExecuteMsg::Create {
         pool_msg: CreatePool {
-            asset_infos: [
-                AssetInfo::NativeToken {
+            pool_token_info: [
+                TokenType::Bluechip {
                     denom: "bluechip".to_string(),
                 },
-                AssetInfo::Token {
+                TokenType::CreatorToken{
                     contract_addr: Addr::unchecked("WILL_BE_CREATED_BY_FACTORY"),
                 },
             ],
-            token_code_id: 10,
-            factory_addr: Addr::unchecked("factory"),
+            cw20_token_contract_id: 10,
+            factory_to_create_pool_addr: Addr::unchecked("factory"),
             threshold_payout: Some(custom_params),
-            fee_info: FeeInfo {
-                bluechip_address: Addr::unchecked("bluechip"),
-                creator_address: Addr::unchecked(ADMIN),
-                bluechip_fee: Decimal::percent(1),
-                creator_fee: Decimal::percent(5),
+            commit_fee_info: CommitFeeInfo {
+                bluechip_wallet_address: Addr::unchecked("bluechip"),
+                creator_wallet_address: Addr::unchecked(ADMIN),
+                commit_fee_bluechip: Decimal::percent(1),
+                commit_fee_creator: Decimal::percent(5),
             },
             commit_amount_for_threshold: Uint128::zero(),
             commit_limit_usd: Uint128::new(25_000_000_000),
-            oracle_addr: Addr::unchecked("oracle0000"),
-            oracle_symbol: "BLUECHIP".to_string(),
-            token_address: Addr::unchecked("WILL_BE_CREATED_BY_FACTORY"),
+            oracle_contract_addr: Addr::unchecked("oracle0000"),
+            oracle_ticker: "BLUECHIP".to_string(),
+            creator_token_address: Addr::unchecked("WILL_BE_CREATED_BY_FACTORY"),
         },
-        token_info: TokenInfo {
-            name: "Custom Token".to_string(),
-            symbol: "CUSTOM".to_string(),
+        token_info: CreatorTokenInfo {
+            token_name: "Custom Token".to_string(),
+            ticker: "CUSTOM".to_string(),
             decimal: 6,
         },
     };
@@ -219,32 +219,32 @@ fn test_create_pair_with_custom_params() {
 fn create_pool_msg(token_name: &str) -> ExecuteMsg {
     ExecuteMsg::Create {
         pool_msg: CreatePool {
-            asset_infos: [
-                AssetInfo::NativeToken {
+            pool_token_info: [
+                TokenType::Bluechip {
                     denom: "bluechip".to_string(),
                 },
-                AssetInfo::Token {
+                TokenType::CreatorToken{
                     contract_addr: Addr::unchecked("WILL_BE_CREATED_BY_FACTORY"),
                 },
             ],
-            token_code_id: 10,
-            factory_addr: Addr::unchecked("factory"),
+            cw20_token_contract_id: 10,
+            factory_to_create_pool_addr: Addr::unchecked("factory"),
             threshold_payout: None,
-            fee_info: FeeInfo {
-                bluechip_address: Addr::unchecked("bluechip"),
-                creator_address: Addr::unchecked("creator"),
-                bluechip_fee: Decimal::percent(1),
-                creator_fee: Decimal::percent(5),
+            commit_fee_info: CommitFeeInfo {
+                bluechip_wallet_address: Addr::unchecked("bluechip"),
+                creator_wallet_address: Addr::unchecked("creator"),
+                commit_fee_bluechip: Decimal::percent(1),
+                commit_fee_creator: Decimal::percent(5),
             },
             commit_amount_for_threshold: Uint128::zero(),
             commit_limit_usd: Uint128::new(25_000_000_000),
-            oracle_addr: Addr::unchecked("oracle0000"),
-            oracle_symbol: "BLUECHIP".to_string(),
-            token_address: Addr::unchecked("WILL_BE_CREATED_BY_FACTORY"),
+            oracle_contract_addr: Addr::unchecked("oracle0000"),
+            oracle_ticker: "BLUECHIP".to_string(),
+            creator_token_address: Addr::unchecked("WILL_BE_CREATED_BY_FACTORY"),
         },
-        token_info: TokenInfo {
-            name: token_name.to_string(),
-            symbol: token_name.to_string(),
+        token_info: CreatorTokenInfo {
+            token_name: token_name.to_string(),
+            ticker: token_name.to_string(),
             decimal: 6,
         },
     }
@@ -270,20 +270,20 @@ fn simulate_complete_reply_chain(
 
 #[test]
 fn test_asset_info() {
-    let native_info = AssetInfo::NativeToken {
+    let bluechip_info = TokenType::Bluechip {
         denom: "bluechip".to_string(),
     };
-    assert!(native_info.is_native_token());
+    assert!(bluechip_info.is_bluechip_token());
 
-    let token_info = AssetInfo::Token {
+    let token_info = TokenType::CreatorToken{
         contract_addr: Addr::unchecked("bluechip..."),
     };
-    assert!(!token_info.is_native_token());
+    assert!(!token_info.is_bluechip_token());
 
-    assert!(native_info.equal(&AssetInfo::NativeToken {
+    assert!(bluechip_info.equal(&TokenType::Bluechip {
         denom: "bluechip".to_string(),
     }));
-    assert!(!native_info.equal(&token_info));
+    assert!(!bluechip_info.equal(&token_info));
 }
 fn create_instantiate_reply(id: u64, contract_addr: &str) -> Reply {
     Reply {
@@ -325,12 +325,12 @@ fn test_multiple_pool_creation() {
         assert_eq!(pool_id, expected_id);
 
         // SET UP CREATION STATE - This is what's missing!
-        let creator = TEMPCREATOR.load(&deps.storage).unwrap();
+        let creator = TEMPCREATORWALLETADDR.load(&deps.storage).unwrap();
         let creation_state = CreationState {
             pool_id,
             creator: creator.clone(),
-            token_address: None,
-            nft_address: None,
+            creator_token_address: None,
+            mint_new_position_nft_address: None,
             pool_address: None,
             creation_time: env.block.time,
             status: CreationStatus::Started,
@@ -358,17 +358,17 @@ fn test_complete_pool_creation_flow() {
 
     // Initialize factory
     let msg = FactoryInstantiate {
-        admin: Addr::unchecked(ADMIN),
-        position_nft_id: 58,
-        commit_amount_for_threshold: Uint128::zero(),
-        commit_limit_usd: Uint128::new(25_000_000_000), // $25k in 6 decimals
-        oracle_addr: Addr::unchecked("oracle0000"),
-        oracle_symbol: "BLUECHIP".to_string(),
-        token_id: 10,
-        pair_id: 11,
-        bluechip_address: Addr::unchecked("bluechip"),
-        bluechip_fee: Decimal::percent(1), // 1%
-        creator_fee: Decimal::percent(5),  // 5%
+        factory_admin_address: Addr::unchecked(ADMIN),
+        cw721_nft_contract_id: 58,
+        commit_amount_for_threshold_bluechip: Uint128::zero(),
+        commit_threshold_limit_usd: Uint128::new(25_000_000_000), // $25k in 6 decimals
+        oracle_contract_addr: Addr::unchecked("oracle0000"),
+        oracle_ticker: "BLUECHIP".to_string(),
+        cw20_token_contract_id: 10,
+        create_pool_wasm_contract_id: 11,
+        bluechip_wallet_address: Addr::unchecked("bluechip"),
+        commit_fee_bluechip: Decimal::percent(1), // 1%
+        commit_fee_creator: Decimal::percent(5),  // 5%
     };
 
     let env = mock_env();
@@ -377,32 +377,32 @@ fn test_complete_pool_creation_flow() {
 
     let create_msg = ExecuteMsg::Create {
         pool_msg: CreatePool {
-            asset_infos: [
-                AssetInfo::NativeToken {
+            pool_token_info: [
+                TokenType::Bluechip {
                     denom: "bluechip".to_string(),
                 },
-                AssetInfo::Token {
+                TokenType::CreatorToken{
                     contract_addr: Addr::unchecked("token0000"),
                 },
             ],
-            factory_addr: Addr::unchecked("factory"),
-            token_code_id: 10,
+            factory_to_create_pool_addr: Addr::unchecked("factory"),
+            cw20_token_contract_id: 10,
             threshold_payout: None,
-            fee_info: FeeInfo {
-                bluechip_address: Addr::unchecked("bluechip"),
-                creator_address: Addr::unchecked("addr0000"),
-                bluechip_fee: Decimal::from_ratio(10u128, 100u128),
-                creator_fee: Decimal::from_ratio(10u128, 100u128),
+            commit_fee_info: CommitFeeInfo {
+                bluechip_wallet_address: Addr::unchecked("bluechip"),
+                creator_wallet_address: Addr::unchecked("addr0000"),
+                commit_fee_bluechip: Decimal::from_ratio(10u128, 100u128),
+                commit_fee_creator: Decimal::from_ratio(10u128, 100u128),
             },
             commit_amount_for_threshold: Uint128::zero(),
             commit_limit_usd: Uint128::new(100),
-            oracle_addr: Addr::unchecked("oracle0000"),
-            oracle_symbol: "ORCL".to_string(),
-            token_address: Addr::unchecked("token0000"),
+            oracle_contract_addr: Addr::unchecked("oracle0000"),
+            oracle_ticker: "ORCL".to_string(),
+            creator_token_address: Addr::unchecked("token0000"),
         },
-        token_info: TokenInfo {
-            name: "Test Token".to_string(),
-            symbol: "TEST".to_string(),
+        token_info: CreatorTokenInfo {
+            token_name: "Test Token".to_string(),
+            ticker: "TEST".to_string(),
             decimal: 6,
         },
     };
@@ -420,19 +420,19 @@ fn test_complete_pool_creation_flow() {
     );
     // Verify TEMP states are set
     assert!(TEMPPOOLID.load(&deps.storage).is_ok());
-    assert!(TEMPPAIRINFO.load(&deps.storage).is_ok());
-    assert!(TEMPCREATOR.load(&deps.storage).is_ok());
+    assert!(TEMPPOOLINFO.load(&deps.storage).is_ok());
+    assert!(TEMPCREATORWALLETADDR.load(&deps.storage).is_ok());
 
     // GET THE POOL ID AND SET UP CREATION STATE
     let pool_id = TEMPPOOLID.load(&deps.storage).unwrap();
-    let creator = TEMPCREATOR.load(&deps.storage).unwrap();
+    let creator = TEMPCREATORWALLETADDR.load(&deps.storage).unwrap();
 
     // Create the CreationState that your new code expects
     let creation_state = CreationState {
         pool_id,
         creator: creator.clone(),
-        token_address: None,
-        nft_address: None,
+        creator_token_address: None,
+        mint_new_position_nft_address: None,
         pool_address: None,
         creation_time: env.block.time,
         status: CreationStatus::Started,
@@ -448,7 +448,7 @@ fn test_complete_pool_creation_flow() {
 
     // Verify token address saved and NFT instantiation triggered
     assert_eq!(
-        TEMPTOKENADDR.load(&deps.storage).unwrap(),
+        TEMPCREATORTOKENADDR.load(&deps.storage).unwrap(),
         Addr::unchecked("token_address")
     );
     assert_eq!(res.messages.len(), 1); // NFT instantiate message
@@ -457,7 +457,7 @@ fn test_complete_pool_creation_flow() {
     let updated_state = CREATION_STATES.load(&deps.storage, pool_id).unwrap();
     assert_eq!(updated_state.status, CreationStatus::TokenCreated);
     assert_eq!(
-        updated_state.token_address,
+        updated_state.creator_token_address,
         Some(Addr::unchecked("token_address"))
     );
 
@@ -476,7 +476,7 @@ fn test_complete_pool_creation_flow() {
     let updated_state = CREATION_STATES.load(&deps.storage, pool_id).unwrap();
     assert_eq!(updated_state.status, CreationStatus::NftCreated);
     assert_eq!(
-        updated_state.nft_address,
+        updated_state.mint_new_position_nft_address,
         Some(Addr::unchecked("nft_address"))
     );
 
@@ -485,19 +485,19 @@ fn test_complete_pool_creation_flow() {
     let res = reply(deps.as_mut(), env.clone(), pool_reply).unwrap();
 
     let creator = Addr::unchecked(ADMIN);
-    let commit_info = COMMIT.load(&deps.storage, &creator.to_string()).unwrap();
+    let commit_info = SETCOMMIT.load(&deps.storage, &creator.to_string()).unwrap();
     assert_eq!(commit_info.pool_id, pool_id);
-    assert_eq!(commit_info.pool_addr, Addr::unchecked("pool_address"));
+    assert_eq!(commit_info.creator_pool_addr, Addr::unchecked("pool_address"));
 
     // Verify pool saved by ID
     let pool_by_id = POOLS_BY_ID.load(&deps.storage, pool_id).unwrap();
-    assert_eq!(pool_by_id.pool_addr, Addr::unchecked("pool_address"));
+    assert_eq!(pool_by_id.creator_pool_addr, Addr::unchecked("pool_address"));
 
     // Verify TEMP states cleared
     assert!(TEMPPOOLID.load(&deps.storage).is_err());
-    assert!(TEMPPAIRINFO.load(&deps.storage).is_err());
-    assert!(TEMPCREATOR.load(&deps.storage).is_err());
-    assert!(TEMPTOKENADDR.load(&deps.storage).is_err());
+    assert!(TEMPPOOLINFO.load(&deps.storage).is_err());
+    assert!(TEMPCREATORWALLETADDR.load(&deps.storage).is_err());
+    assert!(TEMPCREATORTOKENADDR.load(&deps.storage).is_err());
     assert!(TEMPNFTADDR.load(&deps.storage).is_err());
 
     // Verify creation state shows completed
@@ -514,74 +514,50 @@ fn test_complete_pool_creation_flow() {
 
 #[test]
 fn test_asset() {
-    let native_asset = Asset {
-        info: AssetInfo::NativeToken {
+    let bluechip_asset = TokenInfo {
+        info: TokenType::Bluechip {
             denom: "bluechip".to_string(),
         },
         amount: Uint128::new(100),
     };
 
-    let token_asset = Asset {
-        info: AssetInfo::Token {
+    let token_asset = TokenInfo {
+        info: TokenType::CreatorToken{
             contract_addr: Addr::unchecked("bluechip..."),
         },
         amount: Uint128::new(100),
     };
 
-    // Test native token methods
-    assert!(native_asset.is_native_token());
-    assert!(!token_asset.is_native_token());
+    // Test bluechip token methods
+    assert!(bluechip_asset.is_bluechip_token());
+    assert!(!token_asset.is_bluechip_token());
 
     // Test tax computation (should be zero as per implementation)
-    let deps = mock_dependencies(&[]);
-    assert_eq!(
-        native_asset.compute_tax(&deps.as_ref().querier).unwrap(),
-        Uint128::zero()
-    );
-}
-
-#[test]
-fn test_pair_info() {
-    let pair_info = PairInfo {
-        asset_infos: [
-            AssetInfo::NativeToken {
-                denom: "bluechip".to_string(),
-            },
-            AssetInfo::Token {
-                contract_addr: Addr::unchecked("bluechip..."),
-            },
-        ],
-        contract_addr: Addr::unchecked("pair1..."),
-        pair_type: PairType::Xyk {},
-    };
-
-    // Test pair type display
-    assert_eq!(pair_info.pair_type.to_string(), "xyk");
 }
 
 #[test]
 fn test_config() {
     let config = FactoryInstantiate {
-        admin: Addr::unchecked("admin1..."),
-        position_nft_id: 58,
-        commit_amount_for_threshold: Uint128::zero(),
-        commit_limit_usd: Uint128::new(100),
-        oracle_addr: Addr::unchecked("oracle0000"),
-        oracle_symbol: "ORCL".to_string(),
-        token_id: 1,
-        pair_id: 1,
-        bluechip_address: Addr::unchecked("bluechip1..."),
-        bluechip_fee: Decimal::percent(10),
-        creator_fee: Decimal::percent(10),
+        factory_admin_address: Addr::unchecked("admin1..."),
+        cw721_nft_contract_id: 58,
+        commit_amount_for_threshold_bluechip: Uint128::zero(),
+        commit_threshold_limit_usd: Uint128::new(25_000_000_000),
+        oracle_contract_addr: Addr::unchecked("oracle0000"),
+        oracle_ticker: "ORCL".to_string(),
+        cw20_token_contract_id: 1,
+        create_pool_wasm_contract_id: 1,
+        bluechip_wallet_address: Addr::unchecked("bluechip1..."),
+        commit_fee_bluechip: Decimal::percent(10),
+        commit_fee_creator: Decimal::percent(10),
     };
 
     // Test config values
-    assert_eq!(config.admin, Addr::unchecked("admin1..."));
-    assert_eq!(config.token_id, 1);
-    assert_eq!(config.pair_id, 1);
-    assert_eq!(config.bluechip_address, Addr::unchecked("bluechip1..."));
-    assert_eq!(config.bluechip_fee, Decimal::percent(10));
-    assert_eq!(config.creator_fee, Decimal::percent(10));
+    assert_eq!(config.factory_admin_address, Addr::unchecked("admin1..."));
+    assert_eq!(config.cw20_token_contract_id, 1);
+    assert_eq!(config.create_pool_wasm_contract_id, 1);
+    assert_eq!(config.bluechip_wallet_address, Addr::unchecked("bluechip1..."));
+    assert_eq!(config.commit_fee_bluechip, Decimal::percent(10));
+    assert_eq!(config.commit_fee_creator, Decimal::percent(10));
 
     // Test total amounts add up
 }
@@ -592,17 +568,17 @@ fn test_update_config() {
 
     // Initialize with first config
     let msg = FactoryInstantiate {
-        position_nft_id: 58,
-        admin: Addr::unchecked("addr0000"),
-        commit_amount_for_threshold: Uint128::zero(),
-        commit_limit_usd: Uint128::new(100),
-        oracle_addr: Addr::unchecked("oracle0000"),
-        oracle_symbol: "ORCL".to_string(),
-        token_id: 10,
-        pair_id: 11,
-        bluechip_address: Addr::unchecked("bluechip"),
-        bluechip_fee: Decimal::from_ratio(10u128, 100u128),
-        creator_fee: Decimal::from_ratio(10u128, 100u128),
+        cw721_nft_contract_id: 58,
+        factory_admin_address: Addr::unchecked("addr0000"),
+        commit_amount_for_threshold_bluechip: Uint128::zero(),
+        commit_threshold_limit_usd: Uint128::new(100),
+        oracle_contract_addr: Addr::unchecked("oracle0000"),
+        oracle_ticker: "ORCL".to_string(),
+        cw20_token_contract_id: 10,
+        create_pool_wasm_contract_id: 11,
+        bluechip_wallet_address: Addr::unchecked("bluechip"),
+        commit_fee_bluechip: Decimal::from_ratio(10u128, 100u128),
+        commit_fee_creator: Decimal::from_ratio(10u128, 100u128),
     };
 
     let env = mock_env();
@@ -615,17 +591,17 @@ fn test_update_config() {
     let unauthorized_info = mock_info("unauthorized", &[]);
     let update_msg = ExecuteMsg::UpdateConfig {
         config: FactoryInstantiate {
-            admin: Addr::unchecked("addr0000"),
-            position_nft_id: 58,
-            commit_amount_for_threshold: Uint128::zero(),
-            commit_limit_usd: Uint128::new(100),
-            oracle_addr: Addr::unchecked("oracle0000"),
-            oracle_symbol: "ORCL".to_string(),
-            token_id: 10,
-            pair_id: 11,
-            bluechip_address: Addr::unchecked("bluechip"),
-            bluechip_fee: Decimal::from_ratio(10u128, 100u128),
-            creator_fee: Decimal::from_ratio(10u128, 100u128),
+            factory_admin_address: Addr::unchecked("addr0000"),
+            cw721_nft_contract_id: 58,
+            commit_amount_for_threshold_bluechip: Uint128::zero(),
+            commit_threshold_limit_usd: Uint128::new(100),
+            oracle_contract_addr: Addr::unchecked("oracle0000"),
+            oracle_ticker: "ORCL".to_string(),
+            cw20_token_contract_id: 10,
+            create_pool_wasm_contract_id: 11,
+            bluechip_wallet_address: Addr::unchecked("bluechip"),
+            commit_fee_bluechip: Decimal::from_ratio(10u128, 100u128),
+            commit_fee_creator: Decimal::from_ratio(10u128, 100u128),
         },
     };
 
@@ -653,17 +629,17 @@ fn test_reply_handling() {
 
     // Initialize contract
     let msg = FactoryInstantiate {
-        admin: Addr::unchecked("addr0000"),
-        position_nft_id: 58,
-        commit_amount_for_threshold: Uint128::zero(),
-        commit_limit_usd: Uint128::new(100),
-        oracle_addr: Addr::unchecked("oracle0000"),
-        oracle_symbol: "ORCL".to_string(),
-        token_id: 10,
-        pair_id: 11,
-        bluechip_address: Addr::unchecked("bluechip"),
-        bluechip_fee: Decimal::from_ratio(10u128, 100u128),
-        creator_fee: Decimal::from_ratio(10u128, 100u128),
+        factory_admin_address: Addr::unchecked("addr0000"),
+        cw721_nft_contract_id: 58,
+        commit_amount_for_threshold_bluechip: Uint128::zero(),
+        commit_threshold_limit_usd: Uint128::new(100),
+        oracle_contract_addr: Addr::unchecked("oracle0000"),
+        oracle_ticker: "ORCL".to_string(),
+        cw20_token_contract_id: 10,
+        create_pool_wasm_contract_id: 11,
+        bluechip_wallet_address: Addr::unchecked("bluechip"),
+        commit_fee_bluechip: Decimal::from_ratio(10u128, 100u128),
+        commit_fee_creator: Decimal::from_ratio(10u128, 100u128),
     };
 
     let env = mock_env();
@@ -680,8 +656,8 @@ fn test_reply_handling() {
     let creation_state = CreationState {
         pool_id,
         creator: addr.clone(),
-        token_address: None, // Will be set during token reply
-        nft_address: None,
+        creator_token_address: None, // Will be set during token reply
+        mint_new_position_nft_address: None,
         pool_address: None,
         creation_time: env.block.time,
         status: CreationStatus::Started,
@@ -693,32 +669,32 @@ fn test_reply_handling() {
 
     // Set up other temporary storage
     let pool_msg = CreatePool {
-        asset_infos: [
-            AssetInfo::NativeToken {
+        pool_token_info: [
+            TokenType::Bluechip {
                 denom: "bluechip".to_string(),
             },
-            AssetInfo::Token {
+            TokenType::CreatorToken{
                 contract_addr: Addr::unchecked("token0000"),
             },
         ],
-        factory_addr: Addr::unchecked("factory"),
-        token_code_id: 10,
+        factory_to_create_pool_addr: Addr::unchecked("factory"),
+        cw20_token_contract_id: 10,
         threshold_payout: None,
-        fee_info: FeeInfo {
-            bluechip_address: Addr::unchecked("bluechip"),
-            creator_address: Addr::unchecked("addr0000"),
-            bluechip_fee: Decimal::from_ratio(10u128, 100u128),
-            creator_fee: Decimal::from_ratio(10u128, 100u128),
+        commit_fee_info: CommitFeeInfo {
+            bluechip_wallet_address: Addr::unchecked("bluechip"),
+            creator_wallet_address: Addr::unchecked("addr0000"),
+            commit_fee_bluechip: Decimal::from_ratio(10u128, 100u128),
+            commit_fee_creator: Decimal::from_ratio(10u128, 100u128),
         },
         commit_amount_for_threshold: Uint128::zero(),
         commit_limit_usd: Uint128::new(100),
-        oracle_addr: Addr::unchecked("oracle0000"),
-        oracle_symbol: "ORCL".to_string(),
-        token_address: Addr::unchecked("token0000"),
+        oracle_contract_addr: Addr::unchecked("oracle0000"),
+        oracle_ticker: "ORCL".to_string(),
+        creator_token_address: Addr::unchecked("token0000"),
     };
 
-    TEMPPAIRINFO.save(deps.as_mut().storage, &pool_msg).unwrap();
-    TEMPCREATOR.save(deps.as_mut().storage, &addr).unwrap();
+    TEMPPOOLINFO.save(deps.as_mut().storage, &pool_msg).unwrap();
+    TEMPCREATORWALLETADDR.save(deps.as_mut().storage, &addr).unwrap();
 
     // Create token instantiation reply with events
     let contract_addr = "token_contract_address";
@@ -746,11 +722,11 @@ fn test_reply_handling() {
         .unwrap();
     assert_eq!(updated_state.status, CreationStatus::TokenCreated);
     assert_eq!(
-        updated_state.token_address,
+        updated_state.creator_token_address,
         Some(Addr::unchecked(contract_addr))
     );
 
     // Verify temp storage was updated
-    let temp_token = TEMPTOKENADDR.load(deps.as_ref().storage).unwrap();
+    let temp_token = TEMPCREATORTOKENADDR.load(deps.as_ref().storage).unwrap();
     assert_eq!(temp_token, Addr::unchecked(contract_addr));
 }

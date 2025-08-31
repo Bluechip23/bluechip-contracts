@@ -9,7 +9,7 @@ use cosmwasm_std::{
 use cw20::{BalanceResponse, Cw20QueryMsg, TokenInfoResponse};
 use std::collections::HashMap;
 
-use crate::msg::{FeeInfo, FeeInfoResponse, PoolResponse, QueryMsg};
+use crate::msg::{CommitFeeInfo, FeeInfoResponse, PoolResponse, QueryMsg};
 
 // mock_dependencies is a drop-in replacement for cosmwasm_std::testing::mock_dependencies.
 // This uses the BETFI CustomQuerier.
@@ -89,7 +89,7 @@ impl WasmMockQuerier {
         self.token_querier = TokenQuerier::new(balances);
     }
 
-    // Seed native bank balances
+    // Seed bluechip bank balances
     pub fn with_balance(&mut self, balances: &[(&String, &[Coin])]) {
         for (addr, coins) in balances {
             self.base.update_balance(addr.to_string(), coins.to_vec());
@@ -102,11 +102,11 @@ impl WasmMockQuerier {
                 // 1) factory fee-info
                 if contract_addr == "factory" {
                     if let Ok(QueryMsg::FeeInfo {}) = from_json(&msg) {
-                        let fee_info = FeeInfo {
+                        let fee_info = CommitFeeInfo {
                             bluechip_address: Addr::unchecked("bluechip"),
                             creator_address: Addr::unchecked("creator"),
-                            bluechip_fee: Decimal::percent(10),
-                            creator_fee: Decimal::percent(10),
+                            commit_fee_bluechip: Decimal::percent(10),
+                            commit_fee_creator: Decimal::percent(10),
                         };
                         let resp = FeeInfoResponse { fee_info };
                         let bin = to_json_binary(&resp).unwrap();
@@ -120,8 +120,8 @@ impl WasmMockQuerier {
 
                 // 2) pool reserves
                 if let Ok(QueryMsg::PoolInfo {}) = from_json(&msg) {
-                    // native balance from bank
-                    let native = QuerierWrapper::<Empty>::new(&self.base)
+                    // bluechip balance from bank
+                    let bluechip = QuerierWrapper::<Empty>::new(&self.base)
                         .query_balance(contract_addr.clone(), "ubluechip".to_string())
                         .unwrap();
                     // cw20 balance via smart query
@@ -137,7 +137,7 @@ impl WasmMockQuerier {
                     let cw20_amount = raw.balance;
                     let resp = PoolResponse {
                         assets: [
-                            crate::asset::native_asset("ubluechip".to_string(), native.amount),
+                            crate::asset::bluechip_asset("ubluechip".to_string(), bluechip.amount),
                             crate::asset::token_asset(
                                 Addr::unchecked(contract_addr.clone()),
                                 cw20_amount,
@@ -172,9 +172,9 @@ impl WasmMockQuerier {
                             .unwrap_or_default();
                         let info = TokenInfoResponse {
                             name: "TOKEN".to_string(),
-                            symbol: "TKN".to_string(),
                             decimals: 6,
                             total_supply: supply,
+                            ticker: "TKN".to_string(),
                         };
                         let bin = to_json_binary(&info).unwrap();
                         SystemResult::Ok(cosmwasm_std::ContractResult::Ok(bin))

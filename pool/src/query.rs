@@ -1,5 +1,5 @@
 #![allow(non_snake_case)]
-use crate::asset::{call_pool_info, Asset, };
+use crate::asset::{call_pool_info, TokenInfo, };
 use crate::liquidity_helpers::{calculate_unclaimed_fees, compute_swap};
 use crate::msg::{
     CommitStatus, CommiterInfo, ConfigResponse, CumulativePricesResponse,
@@ -9,10 +9,10 @@ use crate::msg::{
 };
 
 use crate::state::{
-     PairInfo,
-   COMMITSTATUS, COMMIT_CONFIG,  FEEINFO,
+     PoolDetails,
+   COMMITSTATUS, COMMIT_LIMIT_INFO,  COMMITFEEINFO,
     POOL_FEE_STATE, POOL_INFO, POOL_STATE,
-     THRESHOLD_HIT, USD_RAISED,
+     IS_THRESHOLD_HIT, USD_RAISED_FROM_COMMIT,
     
 };
 use crate::state::{
@@ -72,13 +72,13 @@ pub fn query(deps: Deps, env: Env, msg: QueryMsg) -> StdResult<Binary> {
                 Some(commiting) => LastCommitedResponse {
                     has_commited: true,
                     last_commited: Some(commiting.last_commited),
-                    last_payment_native: Some(commiting.last_payment_native),
+                    last_payment_bluechip: Some(commiting.last_payment_bluechip),
                     last_payment_usd: Some(commiting.last_payment_usd),
                 },
                 None => LastCommitedResponse {
                     has_commited: false,
                     last_commited: None,
-                    last_payment_native: None,
+                    last_payment_bluechip: None,
                     last_payment_usd: None,
                 },
             };
@@ -96,9 +96,9 @@ pub fn query(deps: Deps, env: Env, msg: QueryMsg) -> StdResult<Binary> {
     }
 }
 
-pub fn query_pair_info(deps: Deps) -> StdResult<PairInfo> {
+pub fn query_pair_info(deps: Deps) -> StdResult<PoolDetails> {
     let pool_info = POOL_INFO.load(deps.storage)?;
-    Ok(pool_info.pair_info)
+    Ok(pool_info.pool_info)
 }
 
 pub fn query_pool(deps: Deps) -> StdResult<PoolResponse> {
@@ -111,29 +111,29 @@ pub fn query_pool(deps: Deps) -> StdResult<PoolResponse> {
 }
 
 pub fn query_check_threshold_limit(deps: Deps) -> StdResult<CommitStatus> {
-    let threshold_hit = THRESHOLD_HIT.load(deps.storage)?;
-    let commit_config = COMMIT_CONFIG.load(deps.storage)?;
+    let threshold_hit = IS_THRESHOLD_HIT.load(deps.storage)?;
+    let commit_config = COMMIT_LIMIT_INFO.load(deps.storage)?;
     if threshold_hit {
         Ok(CommitStatus::FullyCommitted)
     } else {
-        let usd_raised = USD_RAISED.load(deps.storage)?;
+        let usd_raised = USD_RAISED_FROM_COMMIT.load(deps.storage)?;
         Ok(CommitStatus::InProgress {
             raised: usd_raised,
-            target: commit_config.commit_limit_usd,
+            target: commit_config.commit_amount_for_threshold_usd,
         })
     }
 }
 
-pub fn query_simulation(deps: Deps, offer_asset: Asset) -> StdResult<SimulationResponse> {
+pub fn query_simulation(deps: Deps, offer_asset: TokenInfo) -> StdResult<SimulationResponse> {
     let pool_info = POOL_INFO.load(deps.storage)?;
-    let contract_addr = pool_info.pair_info.contract_addr.clone();
+    let contract_addr = pool_info.pool_info.contract_addr.clone();
 
-    let pools: [Asset; 2] = pool_info
-        .pair_info
+    let pools: [TokenInfo; 2] = pool_info
+        .pool_info
         .query_pools(&deps.querier, contract_addr)?;
 
-    let offer_pool: Asset;
-    let ask_pool: Asset;
+    let offer_pool: TokenInfo;
+    let ask_pool: TokenInfo;
     if offer_asset.info.equal(&pools[0].info) {
         offer_pool = pools[0].clone();
         ask_pool = pools[1].clone();
@@ -146,8 +146,8 @@ pub fn query_simulation(deps: Deps, offer_asset: Asset) -> StdResult<SimulationR
         ));
     }
 
-    let fee_info = FEEINFO.load(deps.storage)?;
-    let commission_rate = fee_info.bluechip_fee + fee_info.creator_fee;
+    let fee_info = COMMITFEEINFO.load(deps.storage)?;
+    let commission_rate = fee_info.commit_fee_bluechip + fee_info.commit_fee_creator;
 
     let (return_amount, spread_amount, commission_amount) = compute_swap(
         offer_pool.amount,
@@ -165,17 +165,17 @@ pub fn query_simulation(deps: Deps, offer_asset: Asset) -> StdResult<SimulationR
 
 pub fn query_reverse_simulation(
     deps: Deps,
-    ask_asset: Asset,
+    ask_asset: TokenInfo,
 ) -> StdResult<ReverseSimulationResponse> {
     let pool_info = POOL_INFO.load(deps.storage)?;
-    let contract_addr = pool_info.pair_info.contract_addr.clone();
+    let contract_addr = pool_info.pool_info.contract_addr.clone();
 
-    let pools: [Asset; 2] = pool_info
-        .pair_info
+    let pools: [TokenInfo; 2] = pool_info
+        .pool_info
         .query_pools(&deps.querier, contract_addr)?;
 
-    let offer_pool: Asset;
-    let ask_pool: Asset;
+    let offer_pool: TokenInfo;
+    let ask_pool: TokenInfo;
     if ask_asset.info.equal(&pools[0].info) {
         ask_pool = pools[0].clone();
         offer_pool = pools[1].clone();
@@ -188,8 +188,8 @@ pub fn query_reverse_simulation(
         ));
     }
 
-    let fee_info = FEEINFO.load(deps.storage)?;
-    let commission_rate = fee_info.bluechip_fee + fee_info.creator_fee;
+    let fee_info = COMMITFEEINFO.load(deps.storage)?;
+    let commission_rate = fee_info.commit_fee_bluechip + fee_info.commit_fee_creator;
 
     let (offer_amount, spread_amount, commission_amount) = compute_offer_amount(
         offer_pool.amount,
@@ -239,15 +239,15 @@ pub fn query_config(deps: Deps) -> StdResult<ConfigResponse> {
 }
 
 pub fn query_fee_info(deps: Deps) -> StdResult<FeeInfoResponse> {
-    let fee_info = FEEINFO.load(deps.storage)?;
+    let fee_info = COMMITFEEINFO.load(deps.storage)?;
     Ok(FeeInfoResponse { fee_info })
 }
 
 pub fn query_check_commit(deps: Deps) -> StdResult<bool> {
-    let commit_info = COMMIT_CONFIG.load(deps.storage)?;
+    let commit_info = COMMIT_LIMIT_INFO.load(deps.storage)?;
     let usd_raised = COMMITSTATUS.load(deps.storage)?;
     // true once we've raised at least the USD threshold
-    Ok(usd_raised >= commit_info.commit_limit_usd)
+    Ok(usd_raised >= commit_info.commit_amount_for_threshold_usd)
 }
 
 pub fn query_pool_state(deps: Deps) -> StdResult<PoolStateResponse> {
@@ -416,7 +416,7 @@ pub fn query_pool_commiters(
 
         commiters.push(CommiterInfo {
             wallet: commiter_addr.to_string(),
-            last_payment_native: commiting.last_payment_native,
+            last_payment_bluechip: commiting.last_payment_bluechip,
             last_payment_usd: commiting.last_payment_usd,
             last_commited: commiting.last_commited,
             total_paid_usd: commiting.total_paid_usd,

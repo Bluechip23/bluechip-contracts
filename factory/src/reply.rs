@@ -1,16 +1,16 @@
 use crate::{
-    asset::AssetInfo,
+    asset::TokenType,
     error::ContractError,
     execute::{FINALIZE_POOL, MINT_CREATE_POOL},
     msg::CreatePoolReplyMsg,
-    pair::{FeeInfo, ThresholdPayout},
+    pool::{CommitFeeInfo, ThresholdPayoutAmounts},
     pool_create_cleanup::{
-        cleanup_temp_state, create_cleanup_messages, create_ownership_transfer_messages,
+        cleanup_temp_state, create_cleanup_messages, give_pool_ownership_cw20_and_nft,
         extract_contract_address,
     },
     state::{
-        CommitInfo, CreationStatus, COMMIT, CONFIG, CREATION_STATES, POOLS_BY_ID, TEMPCREATOR,
-        TEMPNFTADDR, TEMPPAIRINFO, TEMPPOOLID, TEMPTOKENADDR,
+        CommitInfo, CreationStatus, SETCOMMIT, FACTORYINSTANTIATEINFO, CREATION_STATES, POOLS_BY_ID, TEMPCREATORWALLETADDR,
+        TEMPNFTADDR, TEMPPOOLINFO, TEMPPOOLID, TEMPCREATORTOKENADDR,
     },
 };
 use cosmwasm_std::{
@@ -24,22 +24,22 @@ use cw721_base::msg::InstantiateMsg as Cw721InstantiateMsg;
 pub fn set_tokens(deps: DepsMut, env: Env, msg: Reply) -> Result<Response, ContractError> {
     let pool_id = TEMPPOOLID.load(deps.storage)?;
     let mut creation_state = CREATION_STATES.load(deps.storage, pool_id)?;
-    let factory_addr = env.contract.address.clone();
+    let used_factory_addr = env.contract.address.clone();
     match msg.result {
         SubMsgResult::Ok(result) => {
             // extract token address from reply - helper below.
             let token_address = extract_contract_address(&result)?;
 
             //update creation state to catch transaction failures.
-            creation_state.token_address = Some(token_address.clone());
+            creation_state.creator_token_address = Some(token_address.clone());
             creation_state.status = CreationStatus::TokenCreated;
             CREATION_STATES.save(deps.storage, pool_id, &creation_state)?;
 
             // Save to temp storage for next step
-            TEMPTOKENADDR.save(deps.storage, &token_address)?;
+            TEMPCREATORTOKENADDR.save(deps.storage, &token_address)?;
 
             // Create NFT instantiate message
-            let config = CONFIG.load(deps.storage)?;
+            let config = FACTORYINSTANTIATEINFO.load(deps.storage)?;
             let nft_instantiate_msg = to_json_binary(&Cw721InstantiateMsg {
                 name: "AMM LP Positions".to_string(),
                 symbol: "AMM-LP".to_string(),
@@ -47,12 +47,12 @@ pub fn set_tokens(deps: DepsMut, env: Env, msg: Reply) -> Result<Response, Contr
             })?;
 
             let nft_msg = WasmMsg::Instantiate {
-                code_id: config.position_nft_id,
+                code_id: config.cw721_nft_contract_id,
                 msg: nft_instantiate_msg,
                 //no initial NFTs since no positions have been created yet
                 funds: vec![],
                 //set factory as admin
-                admin: Some(factory_addr.to_string()),
+                admin: Some(used_factory_addr.to_string()),
                 label: format!("AMM-LP-NFT-{}", token_address),
             };
             //everything successful, move on to next step in creation
@@ -82,34 +82,34 @@ pub fn set_tokens(deps: DepsMut, env: Env, msg: Reply) -> Result<Response, Contr
 pub fn mint_create_pool(deps: DepsMut, env: Env, msg: Reply) -> Result<Response, ContractError> {
     let pool_id = TEMPPOOLID.load(deps.storage)?;
     let mut creation_state = CREATION_STATES.load(deps.storage, pool_id)?;
-    let factory_addr = env.contract.address.clone();
+    let used_factory_addr = env.contract.address.clone();
     match msg.result {
         SubMsgResult::Ok(result) => {
             let nft_address = extract_contract_address(&result)?;
             //set creation state for tracking and potential errors
-            creation_state.nft_address = Some(nft_address.clone());
+            creation_state.mint_new_position_nft_address = Some(nft_address.clone());
             creation_state.status = CreationStatus::NftCreated;
             CREATION_STATES.save(deps.storage, pool_id, &creation_state)?;
 
             TEMPNFTADDR.save(deps.storage, &nft_address)?;
 
-            let config = CONFIG.load(deps.storage)?;
-            let temp_pool_info = TEMPPAIRINFO.load(deps.storage)?;
-            let temp_creator = TEMPCREATOR.load(deps.storage)?;
-            let token_address = TEMPTOKENADDR.load(deps.storage)?;
+            let config = FACTORYINSTANTIATEINFO.load(deps.storage)?;
+            let temp_pool_info = TEMPPOOLINFO.load(deps.storage)?;
+            let temp_creator = TEMPCREATORWALLETADDR.load(deps.storage)?;
+            let token_address = TEMPCREATORTOKENADDR.load(deps.storage)?;
 
             //set threshold payouts for threshold crossing
-            let threshold_payout = ThresholdPayout {
-                creator_amount: Uint128::new(325_000_000_000),
-                bluechip_amount: Uint128::new(25_000_000_000),
-                pool_amount: Uint128::new(350_000_000_000),
-                commit_amount: Uint128::new(500_000_000_000),
+            let threshold_payout = ThresholdPayoutAmounts {
+                creator_reward_amount: Uint128::new(325_000_000_000),
+                bluechip_reward_amount: Uint128::new(25_000_000_000),
+                pool_seed_amount: Uint128::new(350_000_000_000),
+                commit_return_amount: Uint128::new(500_000_000_000),
             };
             let threshold_binary = to_json_binary(&threshold_payout)?;
 
-            let mut updated_asset_infos = temp_pool_info.asset_infos;
+            let mut updated_asset_infos = temp_pool_info.pool_token_info;
             for asset_info in updated_asset_infos.iter_mut() {
-                if let AssetInfo::Token { contract_addr } = asset_info {
+                if let TokenType::CreatorToken{ contract_addr } = asset_info {
                     if contract_addr.as_str() == "WILL_BE_CREATED_BY_FACTORY" {
                         *contract_addr = token_address.clone();
                     }
@@ -118,28 +118,28 @@ pub fn mint_create_pool(deps: DepsMut, env: Env, msg: Reply) -> Result<Response,
 
             // Instantiate the pool with final values
             let pool_msg = WasmMsg::Instantiate {
-                code_id: config.pair_id,
+                code_id: config.create_pool_wasm_contract_id,
                 msg: to_json_binary(&CreatePoolReplyMsg {
                     pool_id,
-                    asset_infos: updated_asset_infos,
-                    factory_addr: env.contract.address,
-                    token_code_id: config.token_id,
+                    pool_token_info: updated_asset_infos,
+                    used_factory_addr: env.contract.address,
+                    cw20_token_contract_id: config.cw20_token_contract_id,
                     threshold_payout: Some(threshold_binary),
-                    fee_info: FeeInfo {
-                        bluechip_address: config.bluechip_address.clone(),
-                        creator_address: temp_creator.clone(),
-                        bluechip_fee: config.bluechip_fee,
-                        creator_fee: config.creator_fee,
+                    commit_fee_info: CommitFeeInfo {
+                        bluechip_wallet_address: config.bluechip_wallet_address.clone(),
+                        creator_wallet_address: temp_creator.clone(),
+                        commit_fee_bluechip: config.commit_fee_bluechip,
+                        commit_fee_creator: config.commit_fee_creator,
                     },
-                    commit_amount_for_threshold: config.commit_amount_for_threshold,
-                    commit_limit_usd: config.commit_limit_usd,
-                    oracle_addr: config.oracle_addr.clone(),
-                    oracle_symbol: config.oracle_symbol.clone(),
+                    commit_amount_for_threshold: config.commit_amount_for_threshold_bluechip,
+                    commit_threshold_limit_usd: config.commit_threshold_limit_usd,
+                    oracle_contract_addr: config.oracle_contract_addr.clone(),
+                    oracle_ticker: config.oracle_ticker.clone(),
                     token_address: token_address,
                     position_nft_address: nft_address.clone(),
                 })?,
                 funds: vec![],
-                admin: Some(factory_addr.to_string()),
+                admin: Some(used_factory_addr.to_string()),
                 label: "Pair".to_string(),
             };
             //goes well, move on to next step
@@ -180,23 +180,23 @@ pub fn finalize_pool(deps: DepsMut, _env: Env, msg: Reply) -> Result<Response, C
             creation_state.status = CreationStatus::PoolCreated;
             CREATION_STATES.save(deps.storage, pool_id, &creation_state)?;
 
-            let temp_creator = TEMPCREATOR.load(deps.storage)?;
-            let temp_token_address = TEMPTOKENADDR.load(deps.storage)?;
+            let temp_creator = TEMPCREATORWALLETADDR.load(deps.storage)?;
+            let temp_token_address = TEMPCREATORTOKENADDR.load(deps.storage)?;
             let temp_nft_address = TEMPNFTADDR.load(deps.storage)?;
             // create commit parameters for commit transactions
             let commit_info = CommitInfo {
                 pool_id,
                 creator: temp_creator.clone(),
-                token_addr: temp_token_address.clone(),
-                pool_addr: pool_address.clone(),
+                creator_token_addr: temp_token_address.clone(),
+                creator_pool_addr: pool_address.clone(),
             };
             // save commit state to record future commit executions
-            COMMIT.save(deps.storage, &temp_creator.to_string(), &commit_info)?;
+            SETCOMMIT.save(deps.storage, &temp_creator.to_string(), &commit_info)?;
             POOLS_BY_ID.save(deps.storage, pool_id, &commit_info)?;
 
             // make pool cw20 and cw721 (nft) minter for threshold payout - compartmentalizes pools so they can run without factory.
             //1 factory for all pools instead of 1 factory 1 pool
-            let ownership_msgs = create_ownership_transfer_messages(
+            let ownership_msgs = give_pool_ownership_cw20_and_nft(
                 &temp_token_address,
                 &temp_nft_address,
                 &pool_address,

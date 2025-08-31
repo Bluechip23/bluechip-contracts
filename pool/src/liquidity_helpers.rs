@@ -82,7 +82,7 @@ pub fn calculate_fees_owed(
     }
 }
 //used to protect against many small liquidity positions
-pub fn calculate_fee_multiplier(liquidity: Uint128) -> Decimal {
+pub fn calculate_fee_size_multiplier(liquidity: Uint128) -> Decimal {
     //if position has optimal liquidty they will not be punished
     pub const OPTIMAL_LIQUIDITY: Uint128 = Uint128::new(1_000_000);
     // 10% fees for tiny positions

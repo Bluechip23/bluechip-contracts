@@ -48,10 +48,10 @@ pub fn update_price_accumulator(
     Ok(())
 }
 
-pub fn native_to_usd(
+pub fn bluechip_to_usd(
     cached_price: Uint128,
-    native_amount: Uint128,
-    expo: i32, // micro-native
+    bluechip_amount: Uint128,
+    expo: i32, // micro-bluechip
 ) -> StdResult<Uint128> {
     // validate expected exponent - oracle prices should have 8 decimal places
     if expo != -8 {
@@ -61,7 +61,7 @@ pub fn native_to_usd(
         )));
     }
     // dividing by 100M adjusts for the -8 exponent (8 decimal places)
-    let usd_micro_u256 = (Uint256::from(native_amount) * Uint256::from(cached_price))
+    let usd_micro_u256 = (Uint256::from(bluechip_amount) * Uint256::from(cached_price))
         / Uint256::from(100_000_000u128);
 
     let usd_micro = Uint128::try_from(usd_micro_u256)?;
@@ -69,8 +69,8 @@ pub fn native_to_usd(
     Ok(usd_micro)
 }
 
-//usd to native using cahched price and handles decimal precision
-pub fn usd_to_native(
+//usd to bluechip using cahched price and handles decimal precision
+pub fn usd_to_bluechip(
     usd_amount: Uint128,
     // micro-USD (6 decimals)
     cached_price: Uint128,
@@ -79,9 +79,9 @@ pub fn usd_to_native(
         return Err(StdError::generic_err("Invalid zero price"));
     }
     //100 multiplier adjusts for decimal precision differences
-    let native_micro_u256 =
+    let bluechip_micro_u256 =
         (Uint256::from(usd_amount) * Uint256::from(100u128)) / Uint256::from(cached_price);
-    Uint128::try_from(native_micro_u256).map_err(|_| StdError::generic_err("Overflow"))
+    Uint128::try_from(bluechip_micro_u256).map_err(|_| StdError::generic_err("Overflow"))
 }
 
 pub fn get_and_validate_oracle_price(

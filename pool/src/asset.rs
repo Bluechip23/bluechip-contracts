@@ -5,10 +5,9 @@ use std::fmt::{self, Display, Formatter, Result};
 use crate::msg::QueryMsg;
 use crate::state::PoolInfo;
 
-
 use cosmwasm_std::{
-    to_json_binary, Addr, Api, BalanceResponse, BankMsg, BankQuery, Coin, CosmosMsg, Deps, MessageInfo,
-    QuerierWrapper, QueryRequest, StdError, StdResult, Uint128, WasmMsg, WasmQuery,
+    to_json_binary, Addr, Api, BalanceResponse, BankMsg, BankQuery, Coin, CosmosMsg, Deps,
+    MessageInfo, QuerierWrapper, QueryRequest, StdError, StdResult, Uint128, WasmMsg, WasmQuery,
 };
 
 use cw20::{
@@ -20,25 +19,23 @@ use cw_utils::must_pay;
 
 pub const UBLUECHIP_DENOM: &str = "stake";
 
-
 #[cw_serde]
-pub struct Asset {
-    // Information about an asset stored in a [`AssetInfo`] struct
-    pub info: AssetInfo,
-    // A token amount
+pub struct TokenInfo {
+    // which token is being used (bluechip or creator token)
+    pub info: TokenType,
     pub amount: Uint128,
 }
 
-impl fmt::Display for Asset {
+impl fmt::Display for TokenInfo {
     fn fmt(&self, f: &mut fmt::Formatter) -> fmt::Result {
         write!(f, "{}{}", self.amount, self.info)
     }
 }
 
-impl Asset {
+impl TokenInfo {
     pub fn deduct_tax(&self, _querier: &QuerierWrapper) -> StdResult<Coin> {
         let amount = self.amount;
-        if let AssetInfo::NativeToken { denom } = &self.info {
+        if let TokenType::Bluechip { denom } = &self.info {
             Ok(Coin {
                 denom: denom.to_string(),
                 amount,
@@ -48,12 +45,11 @@ impl Asset {
         }
     }
 
-
     pub fn into_msg(self, querier: &QuerierWrapper, recipient: Addr) -> StdResult<CosmosMsg> {
         let amount = self.amount;
 
         match &self.info {
-            AssetInfo::Token { contract_addr } => Ok(CosmosMsg::Wasm(WasmMsg::Execute {
+            TokenType::CreatorToken { contract_addr } => Ok(CosmosMsg::Wasm(WasmMsg::Execute {
                 contract_addr: contract_addr.to_string(),
                 msg: to_json_binary(&Cw20ExecuteMsg::Transfer {
                     recipient: recipient.to_string(),
@@ -61,50 +57,51 @@ impl Asset {
                 })?,
                 funds: vec![],
             })),
-            AssetInfo::NativeToken { .. } => Ok(CosmosMsg::Bank(BankMsg::Send {
+            TokenType::Bluechip { .. } => Ok(CosmosMsg::Bank(BankMsg::Send {
                 to_address: recipient.to_string(),
                 amount: vec![self.deduct_tax(querier)?],
             })),
         }
     }
 
-    pub fn assert_sent_native_token_balance(&self, message_info: &MessageInfo) -> StdResult<()> {
-        if let AssetInfo::NativeToken { denom } = &self.info {
+    pub fn confirm_sent_bluechip_token_balance(&self, message_info: &MessageInfo) -> StdResult<()> {
+        if let TokenType::Bluechip { denom } = &self.info {
             let amount = must_pay(message_info, denom)
                 .map_err(|err| StdError::generic_err(err.to_string()))?;
             if self.amount == amount {
                 Ok(())
             } else {
-                Err(StdError::generic_err(
-                    "Native token balance mismatch between the argument and the transferred",
-                ))
+                Err(StdError::generic_err(format!(
+                    "amount mismatch for denom '{}': expected {}, but received {}",
+                    denom, self.amount, amount
+                )))
             }
         } else {
-             Err(StdError::generic_err(
-            "SimpleSwap can only be used with native tokens. Use CW20 Send for token swaps.",
-        ))
+            Err(StdError::generic_err(
+                "SimpleSwap can only be used with bluechip tokens. Use CW20 Send for token swaps.",
+            ))
         }
     }
 }
 
-pub trait CoinsExt {
+pub trait TokenSending {
     fn assert_coins_properly_sent(
         &self,
-        assets: &[Asset],
-        pool_asset_infos: &[AssetInfo],
+        assets: &[TokenInfo],
+        pool_asset_infos: &[TokenType],
     ) -> StdResult<()>;
 }
 
-impl CoinsExt for Vec<Coin> {
+impl TokenSending for Vec<Coin> {
     fn assert_coins_properly_sent(
         &self,
-        input_assets: &[Asset],
-        pool_asset_infos: &[AssetInfo],
+        input_assets: &[TokenInfo],
+        pool_asset_infos: &[TokenType],
     ) -> StdResult<()> {
         let pool_coins = pool_asset_infos
             .iter()
             .filter_map(|asset_info| match asset_info {
-                AssetInfo::NativeToken { denom } => Some(denom.to_string()),
+                TokenType::Bluechip { denom } => Some(denom.to_string()),
                 _ => None,
             })
             .collect::<HashSet<_>>();
@@ -112,7 +109,7 @@ impl CoinsExt for Vec<Coin> {
         let input_coins = input_assets
             .iter()
             .filter_map(|asset| match &asset.info {
-                AssetInfo::NativeToken { denom } => Some((denom.to_string(), asset.amount)),
+                TokenType::Bluechip { denom } => Some((denom.to_string(), asset.amount)),
                 _ => None,
             })
             .map(|pair| {
@@ -132,9 +129,10 @@ impl CoinsExt for Vec<Coin> {
                 if input_coins[&coin.denom] == coin.amount {
                     Ok(())
                 } else {
-                    Err(StdError::generic_err(
-                        "Native token balance mismatch between the argument and the transferred",
-                    ))
+                    Err(StdError::generic_err(format!(
+                        "amount mismatch for denom '{}': expected {}, but received {}",
+                        coin.denom, input_coins[&coin.denom], coin.amount
+                    )))
                 }
             } else {
                 Err(StdError::generic_err(format!(
@@ -147,63 +145,63 @@ impl CoinsExt for Vec<Coin> {
 }
 
 #[cw_serde]
-pub enum AssetInfo {
-    // Non-native Token
-    Token { contract_addr: Addr },
+pub enum TokenType {
+    // Non-bluechip Token
+    CreatorToken { contract_addr: Addr },
     // Native token
-    NativeToken { denom: String },
+    Bluechip { denom: String },
 }
 
-impl fmt::Display for AssetInfo {
+impl fmt::Display for TokenType {
     fn fmt(&self, f: &mut fmt::Formatter) -> fmt::Result {
         match self {
-            AssetInfo::NativeToken { denom } => write!(f, "{}", denom),
-            AssetInfo::Token { contract_addr } => write!(f, "{}", contract_addr),
+            TokenType::Bluechip { denom } => write!(f, "{}", denom),
+            TokenType::CreatorToken { contract_addr } => write!(f, "{}", contract_addr),
         }
     }
 }
 
-impl AssetInfo {
-    // Checks whether the native coin is IBCed token or not.
-    pub fn is_ibc(&self) -> bool {
+impl TokenType {
+    pub fn is_token_an_ibc_token(&self) -> bool {
         match self {
-            AssetInfo::NativeToken { denom } => denom.to_lowercase().starts_with("ibc/"),
-            AssetInfo::Token { .. } => false,
+            TokenType::Bluechip { denom } => denom.to_lowercase().starts_with("ibc/"),
+            TokenType::CreatorToken { .. } => false,
         }
     }
 
     pub fn query_pool(&self, querier: &QuerierWrapper, pool_addr: Addr) -> StdResult<Uint128> {
         match self {
-            AssetInfo::Token { contract_addr, .. } => {
+            TokenType::CreatorToken { contract_addr, .. } => {
                 query_token_balance(querier, contract_addr.clone(), pool_addr)
             }
-            AssetInfo::NativeToken { denom, .. } => {
+            TokenType::Bluechip { denom, .. } => {
                 query_balance(querier, pool_addr, denom.to_string())
             }
         }
     }
 
-
-    pub fn equal(&self, asset: &AssetInfo) -> bool {
+    pub fn equal(&self, asset: &TokenType) -> bool {
         match self {
-            AssetInfo::Token { contract_addr, .. } => {
+            TokenType::CreatorToken { contract_addr, .. } => {
                 let self_contract_addr = contract_addr;
                 match asset {
-                    AssetInfo::Token { contract_addr, .. } => self_contract_addr == contract_addr,
-                    AssetInfo::NativeToken { .. } => false,
+                    TokenType::CreatorToken { contract_addr, .. } => {
+                        self_contract_addr == contract_addr
+                    }
+                    TokenType::Bluechip { .. } => false,
                 }
             }
-            AssetInfo::NativeToken { denom, .. } => {
+            TokenType::Bluechip { denom, .. } => {
                 let self_denom = denom;
                 match asset {
-                    AssetInfo::Token { .. } => false,
-                    AssetInfo::NativeToken { denom, .. } => self_denom == denom,
+                    TokenType::CreatorToken { .. } => false,
+                    TokenType::Bluechip { denom, .. } => self_denom == denom,
                 }
             }
         }
     }
     pub fn check(&self, api: &dyn Api) -> StdResult<()> {
-        if let AssetInfo::Token { contract_addr } = self {
+        if let TokenType::CreatorToken { contract_addr } = self {
             api.addr_validate(contract_addr.as_str())?;
         }
 
@@ -212,30 +210,28 @@ impl AssetInfo {
 }
 
 #[cw_serde]
-pub struct PairInfo {
-    // Asset information for the two assets in the pool
-    pub asset_infos: [AssetInfo; 2],
+pub struct PoolDetails {
+    // information for the two token in the pool
+    pub asset_infos: [TokenType; 2],
     // Pair contract address
     pub contract_addr: Addr,
     // The pool type (xyk, stableswap etc) available in [`PairType`]
-    pub pair_type: PairType,
-    pub assets: [Asset; 2],
+    pub pair_type: PoolPairType,
+    pub assets: [TokenInfo; 2],
 }
 
-
-impl PairInfo {
- 
+impl PoolDetails {
     pub fn query_pools(
         &self,
         querier: &QuerierWrapper,
         contract_addr: Addr,
-    ) -> StdResult<[Asset; 2]> {
+    ) -> StdResult<[TokenInfo; 2]> {
         Ok([
-            Asset {
+            TokenInfo {
                 amount: self.asset_infos[0].query_pool(querier, contract_addr.clone())?,
                 info: self.asset_infos[0].clone(),
             },
-            Asset {
+            TokenInfo {
                 amount: self.asset_infos[1].query_pool(querier, contract_addr)?,
                 info: self.asset_infos[1].clone(),
             },
@@ -250,199 +246,67 @@ pub fn addr_opt_validate(api: &dyn Api, addr: &Option<String>) -> StdResult<Opti
         .transpose()
 }
 
-const TOKEN_SYMBOL_MAX_LENGTH: usize = 4;
-
-pub fn format_lp_token_name(
-    asset_infos: [AssetInfo; 2],
-    querier: &QuerierWrapper,
-) -> StdResult<String> {
-    let mut short_symbols: Vec<String> = vec![];
-    for asset_info in asset_infos {
-        let short_symbol = match asset_info {
-            AssetInfo::NativeToken { denom } => {
-                denom.chars().take(TOKEN_SYMBOL_MAX_LENGTH).collect()
-            }
-            AssetInfo::Token { contract_addr } => {
-                let token_symbol = query_token_symbol(querier, contract_addr)?;
-                token_symbol.chars().take(TOKEN_SYMBOL_MAX_LENGTH).collect()
-            }
-        };
-        short_symbols.push(short_symbol);
-    }
-    Ok(format!("{}-{}-LP", short_symbols[0], short_symbols[1]).to_uppercase())
-}
-
-pub fn native_asset(denom: String, amount: Uint128) -> Asset {
-    Asset {
-        info: AssetInfo::NativeToken { denom },
+pub fn bluechip_asset(denom: String, amount: Uint128) -> TokenInfo {
+    TokenInfo {
+        info: TokenType::Bluechip { denom },
         amount,
     }
 }
 
-pub fn token_asset(contract_addr: Addr, amount: Uint128) -> Asset {
-    Asset {
-        info: AssetInfo::Token { contract_addr },
+pub fn token_asset(contract_addr: Addr, amount: Uint128) -> TokenInfo {
+    TokenInfo {
+        info: TokenType::CreatorToken { contract_addr },
         amount,
     }
 }
 
-pub fn native_asset_info(denom: String) -> AssetInfo {
-    AssetInfo::NativeToken { denom }
+pub fn bluechip_asset_info(denom: String) -> TokenType {
+    TokenType::Bluechip { denom }
 }
 
-
-pub fn token_asset_info(contract_addr: Addr) -> AssetInfo {
-    AssetInfo::Token { contract_addr }
+pub fn token_asset_info(contract_addr: Addr) -> TokenType {
+    TokenType::CreatorToken { contract_addr }
 }
 
-// Returns [`PairInfo`] by specified pool address.
-pub fn pair_info_by_pool(deps: Deps, pool: Addr) -> StdResult<PairInfo> {
+pub fn pair_info_by_pool(deps: Deps, pool: Addr) -> StdResult<PoolDetails> {
     let minter_info: MinterResponse = deps
         .querier
         .query_wasm_smart(pool, &Cw20QueryMsg::Minter {})?;
 
-    let pair_info: PairInfo = deps
+    let pair_info: PoolDetails = deps
         .querier
         .query_wasm_smart(minter_info.minter, &QueryMsg::Pair {})?;
 
     Ok(pair_info)
 }
 
-
-pub trait AssetInfoExt {
-    fn with_balance(&self, balance: impl Into<Uint128>) -> Asset;
+pub trait TokenTypeExt {
+    fn with_balance(&self, balance: impl Into<Uint128>) -> TokenInfo;
 }
 
-impl AssetInfoExt for AssetInfo {
-    fn with_balance(&self, balance: impl Into<Uint128>) -> Asset {
-        Asset {
+impl TokenTypeExt for TokenType {
+    fn with_balance(&self, balance: impl Into<Uint128>) -> TokenInfo {
+        TokenInfo {
             info: self.clone(),
             amount: balance.into(),
         }
     }
 }
 
-/*#[cfg(test)]
-mod tests {
-    use super::*;
-    use cosmwasm_std::testing::message_info;
-    use cosmwasm_std::{coin, coins};
-
-    #[test]
-    fn test_native_coins_sent() {
-        let asset = native_asset_info("ubluechip".to_string()).with_balance(1000u16);
-        let addr = Addr::unchecked("addr0000");
-
-        let info = message_info(&addr, &coins(1000, "random"));
-        let err = asset.assert_sent_native_token_balance(&info).unwrap_err();
-        assert_eq!(err, StdError::generic_err("Must send reserve token 'ubluechip'"));
-
-        let info = message_info(&addr, &coins(100, "ubluechip"));
-        let err = asset.assert_sent_native_token_balance(&info).unwrap_err();
-        assert_eq!(
-            err,
-            StdError::generic_err(
-                "Native token balance mismatch between the argument and the transferred"
-            )
-        );
-
-        let info = message_info(&addr, &coins(1000, "ubluechip"));
-        asset.assert_sent_native_token_balance(&info).unwrap();
-    }
-
-    #[test]
-    fn test_proper_native_coins_sent() {
-        let pool_asset_infos = [
-            native_asset_info("ubluechip".to_string()),
-            native_asset_info("uluna".to_string()),
-        ];
-
-        let assets = [
-            pool_asset_infos[0].with_balance(1000u16),
-            pool_asset_infos[1].with_balance(100u16),
-        ];
-        let err = vec![coin(1000, "ubluechip"), coin(1000, "random")]
-            .assert_coins_properly_sent(&assets, &pool_asset_infos)
-            .unwrap_err();
-        assert_eq!(
-            err,
-            StdError::generic_err(
-                "Supplied coins contain random that is not in the input asset vector"
-            )
-        );
-
-        let assets = [
-            pool_asset_infos[0].with_balance(1000u16),
-            native_asset_info("random".to_string()).with_balance(100u16),
-        ];
-        let err = vec![coin(1000, "ubluechip"), coin(100, "random")]
-            .assert_coins_properly_sent(&assets, &pool_asset_infos)
-            .unwrap_err();
-        assert_eq!(
-            err,
-            StdError::generic_err("Asset random is not in the pool")
-        );
-
-        let assets = [
-            pool_asset_infos[0].with_balance(1000u16),
-            pool_asset_infos[1].with_balance(1000u16),
-        ];
-        let err = vec![coin(1000, "ubluechip"), coin(100, "uluna")]
-            .assert_coins_properly_sent(&assets, &pool_asset_infos)
-            .unwrap_err();
-        assert_eq!(
-            err,
-            StdError::generic_err(
-                "Native token balance mismatch between the argument and the transferred"
-            )
-        );
-
-        let assets = [
-            pool_asset_infos[0].with_balance(1000u16),
-            pool_asset_infos[1].with_balance(1000u16),
-        ];
-        vec![coin(1000, "ubluechip"), coin(1000, "uluna")]
-            .assert_coins_properly_sent(&assets, &pool_asset_infos)
-            .unwrap();
-
-        let pool_asset_infos = [
-            token_asset_info(Addr::unchecked("addr0000")),
-            token_asset_info(Addr::unchecked("addr0001")),
-        ];
-        let assets = [
-            pool_asset_infos[0].with_balance(1000u16),
-            pool_asset_infos[1].with_balance(1000u16),
-        ];
-        let err = vec![coin(1000, "ubluechip"), coin(1000, "uluna")]
-            .assert_coins_properly_sent(&assets, &pool_asset_infos)
-            .unwrap_err();
-        assert_eq!(
-            err,
-            StdError::generic_err(
-                "Supplied coins contain ubluechip that is not in the input asset vector"
-            )
-        );
-    }
-}
-    */
-
 #[cw_serde]
-pub enum PairType {
+pub enum PoolPairType {
     // XYK pair type
     Xyk {},
     // Stable pair type
     Stable {},
-    // Custom pair type
-    Custom(String),
 }
 
 // Return a raw encoded string representing the name of each pool type
-impl Display for PairType {
+impl Display for PoolPairType {
     fn fmt(&self, fmt: &mut Formatter) -> Result {
         match self {
-            PairType::Xyk {} => fmt.write_str("xyk"),
-            PairType::Stable {} => fmt.write_str("stable"),
-            PairType::Custom(pair_type) => fmt.write_str(format!("custom-{}", pair_type).as_str()),
+            PoolPairType::Xyk {} => fmt.write_str("xyk"),
+            PoolPairType::Stable {} => fmt.write_str("stable"),
         }
     }
 }
@@ -488,9 +352,11 @@ pub fn query_balance(
     Ok(balance.amount.amount)
 }
 
-pub fn call_pool_info(deps: Deps, pool_info: PoolInfo) -> StdResult<[Asset; 2]> {
-    let contract_addr = pool_info.pair_info.contract_addr.clone();
-    let pools: [Asset; 2] = pool_info.pair_info.query_pools(&deps.querier, contract_addr)?;
+pub fn call_pool_info(deps: Deps, pool_info: PoolInfo) -> StdResult<[TokenInfo; 2]> {
+    let contract_addr = pool_info.pool_info.contract_addr.clone();
+    let pools: [TokenInfo; 2] = pool_info
+        .pool_info
+        .query_pools(&deps.querier, contract_addr)?;
 
     Ok(pools)
 }

@@ -1,9 +1,9 @@
 #![allow(non_snake_case)]
-use crate::asset::{AssetInfo,};
+use crate::asset::{TokenType,};
 use crate::error::ContractError;
-use crate::msg::FeeInfo;
+use crate::msg::CommitFeeInfo;
 use crate::state::{
-    CommitInfo, PoolFeeState, PoolInfo, PoolSpecs, ThresholdPayout,  COMMIT_LEDGER, POOL_FEE_STATE, POOL_STATE, USER_LAST_COMMIT
+    CommitLimitInfo, PoolFeeState, PoolInfo, PoolSpecs, ThresholdPayoutAmounts,  COMMIT_LEDGER, POOL_FEE_STATE, POOL_STATE, USER_LAST_COMMIT
 };
 use crate::state::{PoolState};
 use cosmwasm_std::{
@@ -13,7 +13,7 @@ use cw20::{Cw20ExecuteMsg, };
 use std::vec;
 
 // Update fee growth based on which token was offered
-pub fn update_fee_growth(
+pub fn update_pool_fee_growth(
     pool_fee_state: &mut PoolFeeState,
     pool_state: &PoolState,
     offer_pool_idx: usize,
@@ -58,8 +58,8 @@ pub fn check_rate_limit(
     Ok(())
 }
 
-pub fn enforce_deadline(current: Timestamp, deadline: Option<Timestamp>) -> Result<(), ContractError> {
-    if let Some(dl) = deadline {
+pub fn enforce_transaction_deadline(current: Timestamp, transaction_deadline: Option<Timestamp>) -> Result<(), ContractError> {
+    if let Some(dl) = transaction_deadline {
         if current > dl {
             return Err(ContractError::TransactionExpired {});
         }
@@ -83,14 +83,14 @@ pub fn trigger_threshold_payout(
     pool_info: &PoolInfo,
     pool_state: &mut PoolState,
     pool_fee_state: &mut PoolFeeState,
-    commit_config: &CommitInfo,
-    payout: &ThresholdPayout,
-    fee_info: &FeeInfo,
+    commit_config: &CommitLimitInfo,
+    payout: &ThresholdPayoutAmounts,
+    fee_info: &CommitFeeInfo,
     env: &Env,
 ) -> StdResult<Vec<CosmosMsg>> {
     let mut msgs = Vec::<CosmosMsg>::new();
     let total =
-        payout.creator_amount + payout.bluechip_amount + payout.pool_amount + payout.commit_amount;
+        payout.creator_reward_amount + payout.bluechip_reward_amount + payout.pool_seed_amount + payout.commit_return_amount;
 
     if total != Uint128::new(1_200_000_000_000) {
         return Err(StdError::generic_err(
@@ -98,7 +98,7 @@ pub fn trigger_threshold_payout(
         ));
     }
 
-    let creator_ratio = payout.creator_amount.multiply_ratio(100u128, total);
+    let creator_ratio = payout.creator_reward_amount.multiply_ratio(100u128, total);
     if creator_ratio < Uint128::new(26) || creator_ratio > Uint128::new(28) {
         return Err(StdError::generic_err("Invalid creator ratio"));
     }
@@ -107,22 +107,22 @@ pub fn trigger_threshold_payout(
     msgs.push(mint_tokens(
         &pool_info.token_address,
         &fee_info.creator_address,
-        payout.creator_amount,
+        payout.creator_reward_amount,
     )?);
     //to BlueChip
     msgs.push(mint_tokens(
         &pool_info.token_address,
         &fee_info.bluechip_address,
-        payout.bluechip_amount,
+        payout.bluechip_reward_amount,
     )?);
     //to the creator pool + the amount of bluechips used to cross the threshold
     msgs.push(mint_tokens(
         &pool_info.token_address,
         &env.contract.address,
-        payout.pool_amount + commit_config.commit_amount_for_threshold,
+        payout.pool_seed_amount + commit_config.commit_amount_for_threshold,
     )?);
     //calculate return to pre threshold commiters
-    let held_amount = payout.commit_amount;
+    let held_amount = payout.commit_return_amount;
     //find each payer inside the ledger
     for payer_res in COMMIT_LEDGER.keys(storage, None, None, Order::Ascending) {
         let payer: Addr = payer_res?;
@@ -130,7 +130,7 @@ pub fn trigger_threshold_payout(
         let usd_paid = COMMIT_LEDGER.load(storage, &payer)?;
         let reward = Uint128::try_from(
             (Uint256::from(usd_paid) * Uint256::from(held_amount))
-                / Uint256::from(commit_config.commit_limit_usd),
+                / Uint256::from(commit_config.commit_amount_for_threshold_usd),
         )?;
 
         if !reward.is_zero() {
@@ -139,20 +139,20 @@ pub fn trigger_threshold_payout(
     }
     COMMIT_LEDGER.clear(storage);
 
-    let denom = match &pool_info.pair_info.asset_infos[0] {
-        AssetInfo::NativeToken { denom, .. } => denom,
-        _ => "stake", // fallback if first asset isn't native
+    let denom = match &pool_info.pool_info.asset_infos[0] {
+        TokenType::Bluechip { denom, .. } => denom,
+        _ => "stake", // fallback if first asset isn't bluechip
     };
-    //mint and push amount to each pre threshold commiter based on their portion of the "native seed"
-    let native_seed = Uint128::new(23_500);
+    //mint and push amount to each pre threshold commiter based on their portion of the "bluechip seed"
+    let bluechip_seed = Uint128::new(23_500);
     msgs.push(get_bank_transfer_to_msg(
         &env.contract.address,
         denom,
-        native_seed,
+        bluechip_seed,
     )?);
 
-    pool_state.reserve0 = native_seed; // No LP positions created yet
-    pool_state.reserve1 = payout.pool_amount; // No LP positions created yet
+    pool_state.reserve0 = bluechip_seed; // No LP positions created yet
+    pool_state.reserve1 = payout.pool_seed_amount; // No LP positions created yet
     //Initial seed liquidity is not owned by anyone and cannot be withdrawn. This is intentional to prevent pool draining attacks and unneccesary pool rewards
     pool_state.total_liquidity = Uint128::zero();
     pool_fee_state.fee_growth_global_0 = Decimal::zero();
@@ -176,7 +176,7 @@ pub fn decimal2decimal256(dec_value: Decimal) -> StdResult<Decimal256> {
     })
 }
 
-// creates a bank transfer message for sending native tokens
+// creates a bank transfer message for sending bluechip tokens
 pub fn get_bank_transfer_to_msg(
     recipient: &Addr,
     denom: &str,

@@ -4,14 +4,14 @@ use cw721_base::Action;
 
 use crate::error::ContractError;
 use crate::execute::{BURN_ADDRESS, CLEANUP_NFT_REPLY_ID, CLEANUP_TOKEN_REPLY_ID};
-use crate::state::{CreationState, CreationStatus, CREATION_STATES, TEMPCREATOR, TEMPNFTADDR, TEMPPAIRINFO, TEMPPOOLID, TEMPTOKENADDR};
+use crate::state::{CreationState, CreationStatus, CREATION_STATES, TEMPCREATORWALLETADDR, TEMPNFTADDR, TEMPPOOLINFO, TEMPPOOLID, TEMPCREATORTOKENADDR};
 
 //clean and remove all temp information used during pool creation
 pub fn cleanup_temp_state(storage: &mut dyn Storage) -> Result<(), ContractError> {
     TEMPPOOLID.remove(storage);
-    TEMPPAIRINFO.remove(storage);
-    TEMPCREATOR.remove(storage);
-    TEMPTOKENADDR.remove(storage);
+    TEMPPOOLINFO.remove(storage);
+    TEMPCREATORWALLETADDR.remove(storage);
+    TEMPCREATORTOKENADDR.remove(storage);
     TEMPNFTADDR.remove(storage);
     Ok(())
 }
@@ -22,7 +22,7 @@ pub fn create_cleanup_messages(creation_state: &CreationState) -> Result<Vec<Sub
     let mut messages = vec![];
 
     // if token was created, disable it by removing minter
-    if let Some(token_addr) = &creation_state.token_address {
+    if let Some(token_addr) = &creation_state.creator_token_address {
         let disable_token_msg = WasmMsg::Execute {
             contract_addr: token_addr.to_string(),
             msg: to_json_binary(&Cw20ExecuteMsg::UpdateMinter {
@@ -37,7 +37,7 @@ pub fn create_cleanup_messages(creation_state: &CreationState) -> Result<Vec<Sub
     }
 
     // if NFT was created, disable it by removing minter
-    if let Some(nft_addr) = &creation_state.nft_address {
+    if let Some(nft_addr) = &creation_state.mint_new_position_nft_address {
         let disable_nft_msg = WasmMsg::Execute {
             contract_addr: nft_addr.to_string(),
             msg: to_json_binary(&cw721_base::ExecuteMsg::<Empty, Empty>::UpdateOwnership(
@@ -105,7 +105,7 @@ pub fn extract_contract_address(result: &SubMsgResponse) -> Result<Addr, Contrac
 }
 
 //give pool minter responsibilities for both creator token and liquidty NFTs
-pub fn create_ownership_transfer_messages(
+pub fn give_pool_ownership_cw20_and_nft(
     token_addr: &Addr,
     nft_addr: &Addr,
     pool_addr: &Addr,

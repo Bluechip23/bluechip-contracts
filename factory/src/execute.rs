@@ -1,12 +1,12 @@
 use std::env;
 use crate::error::ContractError;
-use crate::msg::{ ExecuteMsg, MigrateMsg, TokenInfo, TokenInstantiateMsg};
-use crate::pair::{CreatePool,};
+use crate::msg::{ ExecuteMsg, CreatorTokenInfo, TokenInstantiateMsg};
+use crate::pool::{CreatePool,};
 use crate::pool_create_cleanup::handle_cleanup_reply;
 use crate::reply::{finalize_pool, mint_create_pool, set_tokens};
 use crate::state::{
-    CreationState, CreationStatus, FactoryInstantiate, CONFIG, CREATION_STATES,
-    NEXT_POOL_ID, TEMPCREATOR, TEMPPAIRINFO, TEMPPOOLID,
+    CreationState, CreationStatus, FactoryInstantiate, FACTORYINSTANTIATEINFO, CREATION_STATES,
+    NEXT_POOL_ID, TEMPCREATORWALLETADDR, TEMPPOOLINFO, TEMPPOOLID,
 };
 #[cfg(not(feature = "library"))]
 use cosmwasm_std::entry_point;
@@ -34,24 +34,11 @@ pub fn instantiate(
 ) -> Result<Response, ContractError> {
     cw2::set_contract_version(deps.storage, CONTRACT_NAME, CONTRACT_VERSION)?;
     //saves the factory parameters set in the json file
-    CONFIG.save(deps.storage, &msg)?;
+    FACTORYINSTANTIATEINFO.save(deps.storage, &msg)?;
     //sets the first pool created by this factory to 1
     NEXT_POOL_ID.save(deps.storage, &1u64)?;
     //viola
     Ok(Response::new().add_attribute("action", "init_contract"))
-}
-
-#[cfg_attr(not(feature = "library"), entry_point)]
-pub fn migrate(deps: DepsMut, _env: Env, _msg: MigrateMsg) -> StdResult<Response> {
-    let version = cw2::get_contract_version(deps.storage)?;
-    if version.contract != CONTRACT_NAME {
-        return Err(StdError::generic_err("Can only upgrade from same type"));
-    }
-    if version.version != CONTRACT_VERSION {
-        return Err(StdError::generic_err("Can only upgrade from same type"));
-    }
-
-    Ok(Response::default().add_attribute("action", "migrate_contract"))
 }
 
 #[cfg_attr(not(feature = "library"), entry_point)]
@@ -74,13 +61,13 @@ pub fn execute(
 
 //make sure the correct factory sent the message to instantiate the pool or other execute messages.
 //users can ensure pools made by a certain factory are safe.
-fn assert_is_admin(deps: Deps, info: MessageInfo) -> StdResult<bool> {
-    let config = CONFIG.load(deps.storage)?;
+fn assert_correct_factory_address(deps: Deps, info: MessageInfo) -> StdResult<bool> {
+    let config = FACTORYINSTANTIATEINFO.load(deps.storage)?;
 
-    if info.sender != config.admin {
+    if info.sender != config.factory_admin_address {
         return Err(StdError::generic_err(format!(
             "Only the admin can execute this function. Admin: {}, Sender: {}",
-            config.admin, info.sender
+            config.factory_admin_address, info.sender
         )));
     }
 
@@ -92,9 +79,9 @@ fn execute_update_config(
     info: MessageInfo,
     config: FactoryInstantiate,
 ) -> Result<Response, ContractError> {
-    assert_is_admin(deps.as_ref(), info)?;
+    assert_correct_factory_address(deps.as_ref(), info)?;
 
-    CONFIG.save(deps.storage, &config)?;
+    FACTORYINSTANTIATEINFO.save(deps.storage, &config)?;
 
     Ok(Response::new().add_attribute("action", "update_config"))
 }
@@ -106,22 +93,22 @@ fn execute_create(
     env: Env,
     info: MessageInfo,
     pair_msg: CreatePool,
-    token_info: TokenInfo,
+    token_info: CreatorTokenInfo,
 ) -> Result<Response, ContractError> {
-    assert_is_admin(deps.as_ref(), info.clone())?;
-    let config = CONFIG.load(deps.storage)?;
+    assert_correct_factory_address(deps.as_ref(), info.clone())?;
+    let config = FACTORYINSTANTIATEINFO.load(deps.storage)?;
     let sender = info.sender.clone();
     let pool_id = NEXT_POOL_ID.load(deps.storage)?;
     NEXT_POOL_ID.save(deps.storage, &(pool_id + 1))?;
     TEMPPOOLID.save(deps.storage, &pool_id)?;
-    TEMPPAIRINFO.save(deps.storage, &pair_msg)?;
-    TEMPCREATOR.save(deps.storage, &sender)?;
+    TEMPPOOLINFO.save(deps.storage, &pair_msg)?;
+    TEMPCREATORWALLETADDR.save(deps.storage, &sender)?;
     let msg = WasmMsg::Instantiate {
-        code_id: config.token_id,
+        code_id: config.cw20_token_contract_id,
         //creating the creator tokens - they are not minted yet. Simply created. Factory hands the minting responsibilities to pool.
         msg: to_json_binary(&TokenInstantiateMsg {
-            name: token_info.name.clone(),
-            symbol: token_info.symbol.clone(),
+            token_name: token_info.token_name.clone(),
+            ticker: token_info.ticker.clone(),
             decimals: 6,
             initial_balances: vec![],
             mint: Some(MinterResponse {
@@ -134,14 +121,14 @@ fn execute_create(
         funds: vec![],
         //the factory is the admin to the pool so it can call upgrades to the pools as the chain advances.
         admin: Some(info.sender.to_string()),
-        label: token_info.name,
+        label: token_info.token_name,
     };
     //set the tracking state for pool creation - all fields start as none and get populated throughout pool creation
     let creation_state = CreationState {
         pool_id,
         creator: info.sender,
-        token_address: None,
-        nft_address: None,
+        creator_token_address: None,
+        mint_new_position_nft_address: None,
         pool_address: None,
         creation_time: env.block.time,
         status: CreationStatus::Started,

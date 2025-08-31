@@ -1,8 +1,8 @@
 #![allow(non_snake_case)]
 use crate::error::ContractError;
-use crate::generic_helpers::{check_rate_limit, enforce_deadline};
+use crate::generic_helpers::{check_rate_limit, enforce_transaction_deadline};
 use crate::liquidity_helpers::{
-    calc_liquidity_for_deposit, calculate_fee_multiplier, calculate_fees_owed,
+    calc_liquidity_for_deposit, calculate_fee_size_multiplier, calculate_fees_owed,
     verify_position_ownership,
 };
 use crate::state::{
@@ -24,16 +24,16 @@ pub fn execute_deposit_liquidity(
     env: Env,
     info: MessageInfo,
     user: Addr,
-    amount0: Uint128, // native amount
+    amount0: Uint128, // bluechip amount
     amount1: Uint128, // CW20 amount
     min_amount0: Option<Uint128>,
     min_amount1: Option<Uint128>,
-    deadline: Option<Timestamp>,
+    transaction_deadline: Option<Timestamp>,
 ) -> Result<Response, ContractError> {
-    enforce_deadline(env.block.time, deadline)?;
+    enforce_transaction_deadline(env.block.time, transaction_deadline)?;
 
     const NATIVE_DENOM: &str = "stake";
-    let paid_native = info
+    let paid_bluechip = info
         .funds
         .iter()
         .find(|c| c.denom == NATIVE_DENOM)
@@ -42,8 +42,8 @@ pub fn execute_deposit_liquidity(
     // calculate actual amounts needed to maintain pool ratio
     let (liquidity, actual_amount0, actual_amount1) =
         calc_liquidity_for_deposit(deps.as_ref(), amount0, amount1)?;
-    // Ensure the user sent enough native tokens
-    if paid_native < actual_amount0 {
+    // Ensure the user sent enough bluechip tokens
+    if paid_bluechip < actual_amount0 {
         return Err(ContractError::InvalidNativeAmount {});
     }
     //slippage check
@@ -52,7 +52,7 @@ pub fn execute_deposit_liquidity(
             return Err(ContractError::SlippageExceeded {
                 expected: min0,
                 actual: actual_amount0,
-                token: "native".to_string(),
+                token: "bluechip".to_string(),
             });
         }
     }
@@ -98,8 +98,8 @@ pub fn execute_deposit_liquidity(
         messages.push(CosmosMsg::Wasm(transfer_cw20_msg));
     }
 
-    // Refund excess native tokens
-    let refund_amount = paid_native.checked_sub(actual_amount0)?;
+    // Refund excess bluechip tokens
+    let refund_amount = paid_bluechip.checked_sub(actual_amount0)?;
     if !refund_amount.is_zero() {
         let refund_msg = BankMsg::Send {
             to_address: info.sender.to_string(),
@@ -134,7 +134,7 @@ pub fn execute_deposit_liquidity(
         funds: vec![],
     };
     messages.push(CosmosMsg::Wasm(mint_liquidity_nft));
-    let fee_multiplier = calculate_fee_multiplier(liquidity);
+    let fee_size_multiplier = calculate_fee_size_multiplier(liquidity);
     let position = Position {
         liquidity,
         owner: user.clone(),
@@ -142,7 +142,7 @@ pub fn execute_deposit_liquidity(
         fee_growth_inside_1_last: pool_fee_state.fee_growth_global_1,
         created_at: env.block.time.seconds(),
         last_fee_collection: env.block.time.seconds(),
-        fee_multiplier,
+        fee_size_multiplier,
     };
 
     LIQUIDITY_POSITIONS.save(deps.storage, &position_id, &position)?;
@@ -186,14 +186,14 @@ pub fn execute_collect_fees(
         liquidity_position.liquidity,
         pool_fee_state.fee_growth_global_0,
         liquidity_position.fee_growth_inside_0_last,
-        liquidity_position.fee_multiplier,
+        liquidity_position.fee_size_multiplier,
     );
 
     let fees_owed_1 = calculate_fees_owed(
         liquidity_position.liquidity,
         pool_fee_state.fee_growth_global_1,
         liquidity_position.fee_growth_inside_1_last,
-        liquidity_position.fee_multiplier,
+        liquidity_position.fee_size_multiplier,
     );
 
     liquidity_position.fee_growth_inside_0_last = pool_fee_state.fee_growth_global_0;
@@ -209,14 +209,14 @@ pub fn execute_collect_fees(
         .add_attribute("fees_1", fees_owed_1);
 
     if !fees_owed_0.is_zero() {
-        let native_msg = BankMsg::Send {
+        let bluechip_msg = BankMsg::Send {
             to_address: info.sender.to_string(),
             amount: vec![Coin {
                 denom: "stake".to_string(),
                 amount: fees_owed_0,
             }],
         };
-        response = response.add_message(native_msg);
+        response = response.add_message(bluechip_msg);
     }
 
     if !fees_owed_1.is_zero() {
@@ -241,18 +241,18 @@ pub fn add_to_position(
     info: MessageInfo,
     user: Addr,
     position_id: String,
-    //native token
+    //bluechip token
     amount0: Uint128,
     //creator token
     amount1: Uint128,
     min_amount0: Option<Uint128>,
     min_amount1: Option<Uint128>,
-    deadline: Option<Timestamp>,
+    transaction_deadline: Option<Timestamp>,
 ) -> Result<Response, ContractError> {
-    enforce_deadline(env.block.time, deadline)?;
+    enforce_transaction_deadline(env.block.time, transaction_deadline)?;
 
     const NATIVE_DENOM: &str = "stake";
-    let paid_native = info
+    let paid_bluechip = info
         .funds
         .iter()
         .find(|c| c.denom == NATIVE_DENOM)
@@ -273,7 +273,7 @@ pub fn add_to_position(
     let (additional_liquidity, actual_amount0, actual_amount1) =
         calc_liquidity_for_deposit(deps.as_ref(), amount0, amount1)?;
 
-    if paid_native < actual_amount0 {
+    if paid_bluechip < actual_amount0 {
         return Err(ContractError::InvalidNativeAmount {});
     }
     let mut liquidity_position = LIQUIDITY_POSITIONS.load(deps.storage, &position_id)?;
@@ -283,14 +283,14 @@ pub fn add_to_position(
         liquidity_position.liquidity,
         pool_fee_state.fee_growth_global_0,
         liquidity_position.fee_growth_inside_0_last,
-        liquidity_position.fee_multiplier,
+        liquidity_position.fee_size_multiplier,
     );
 
     let fees_owed_1 = calculate_fees_owed(
         liquidity_position.liquidity,
         pool_fee_state.fee_growth_global_1,
         liquidity_position.fee_growth_inside_1_last,
-        liquidity_position.fee_multiplier,
+        liquidity_position.fee_size_multiplier,
     );
     //check slippage
     if let Some(min0) = min_amount0 {
@@ -298,7 +298,7 @@ pub fn add_to_position(
             return Err(ContractError::SlippageExceeded {
                 expected: min0,
                 actual: actual_amount0,
-                token: "native".to_string(),
+                token: "bluechip".to_string(),
             });
         }
     }
@@ -326,7 +326,7 @@ pub fn add_to_position(
         messages.push(CosmosMsg::Wasm(transfer_cw20_msg));
     }
 
-    let refund_amount = paid_native.checked_sub(actual_amount0)?;
+    let refund_amount = paid_bluechip.checked_sub(actual_amount0)?;
     if !refund_amount.is_zero() {
         let refund_msg = BankMsg::Send {
             to_address: info.sender.to_string(),
@@ -342,7 +342,7 @@ pub fn add_to_position(
     liquidity_position.fee_growth_inside_0_last = pool_fee_state.fee_growth_global_0;
     liquidity_position.fee_growth_inside_1_last = pool_fee_state.fee_growth_global_1;
     liquidity_position.last_fee_collection = env.block.time.seconds();
-    liquidity_position.fee_multiplier = calculate_fee_multiplier(liquidity_position.liquidity);
+    liquidity_position.fee_size_multiplier = calculate_fee_size_multiplier(liquidity_position.liquidity);
 
     pool_state.total_liquidity += additional_liquidity;
 
@@ -368,14 +368,14 @@ pub fn add_to_position(
         .add_attribute("fees_collected_1", fees_owed_1);
     //actually send fees
     if !fees_owed_0.is_zero() {
-        let native_msg = BankMsg::Send {
+        let bluechip_msg = BankMsg::Send {
             to_address: user.to_string(),
             amount: vec![Coin {
                 denom: NATIVE_DENOM.to_string(),
                 amount: fees_owed_0,
             }],
         };
-        response = response.add_message(native_msg);
+        response = response.add_message(bluechip_msg);
     }
 
     if !fees_owed_1.is_zero() {
@@ -393,17 +393,15 @@ pub fn add_to_position(
     Ok(response)
 }
 
-// User Remove liquidity
-pub fn remove_liquidity(
+// Functionality for user to remove all their liquidity - collect all fees associated with position and deactivate the position
+pub fn remove_all_liquidity(
     deps: &mut DepsMut,
     env: Env,
     info: MessageInfo,
     position_id: String,
-    deadline: Option<Timestamp>,
     min_amount0: Option<Uint128>,
     min_amount1: Option<Uint128>,
 ) -> Result<Response, ContractError> {
-    enforce_deadline(env.block.time, deadline)?;
 
     let pool_fee_state = POOL_FEE_STATE.load(deps.storage)?;
     let pool_info = POOL_INFO.load(deps.storage)?;
@@ -431,7 +429,7 @@ pub fn remove_liquidity(
             return Err(ContractError::SlippageExceeded {
                 expected: min0,
                 actual: user_share_0,
-                token: "native".to_string(),
+                token: "bluechip".to_string(),
             });
         }
     }
@@ -450,14 +448,14 @@ pub fn remove_liquidity(
         liquidity_position.liquidity,
         pool_fee_state.fee_growth_global_0,
         liquidity_position.fee_growth_inside_0_last,
-        liquidity_position.fee_multiplier,
+        liquidity_position.fee_size_multiplier,
     );
 
     let fees_owed_1 = calculate_fees_owed(
         liquidity_position.liquidity,
         pool_fee_state.fee_growth_global_1,
         liquidity_position.fee_growth_inside_1_last,
-        liquidity_position.fee_multiplier,
+        liquidity_position.fee_size_multiplier,
     );
 
     let total_amount_0 = user_share_0 + fees_owed_0;
@@ -500,14 +498,14 @@ pub fn remove_liquidity(
         .add_attribute("total_1", total_amount_1);
     //redeem the tokens correlated with the users positions
     if !total_amount_0.is_zero() {
-        let native_msg = BankMsg::Send {
+        let bluechip_msg = BankMsg::Send {
             to_address: info.sender.to_string(),
             amount: vec![Coin {
                 denom: "stake".to_string(),
                 amount: total_amount_0,
             }],
         };
-        response = response.add_message(native_msg);
+        response = response.add_message(bluechip_msg);
     }
 
     if !total_amount_1.is_zero() {
@@ -531,12 +529,12 @@ pub fn remove_partial_liquidity(
     info: MessageInfo,
     position_id: String,
     liquidity_to_remove: Uint128,
-    deadline: Option<Timestamp>,
+    transaction_deadline: Option<Timestamp>,
     min_amount0: Option<Uint128>,
     min_amount1: Option<Uint128>,
     // Specific amount of liquidity to remove
 ) -> Result<Response, ContractError> {
-    enforce_deadline(env.block.time, deadline)?;
+    enforce_transaction_deadline(env.block.time, transaction_deadline)?;
 
     let mut liquidity_position = LIQUIDITY_POSITIONS.load(deps.storage, &position_id)?;
     let pool_info = POOL_INFO.load(deps.storage)?;
@@ -555,12 +553,12 @@ pub fn remove_partial_liquidity(
     }
     //if user removes all their liquidity.
     if liquidity_to_remove == liquidity_position.liquidity {
-        return execute_remove_liquidity(
+        return execute_remove_all_liquidity(
             deps.branch(),
             env,
             info,
             position_id,
-            deadline,
+            transaction_deadline,
             min_amount0,
             min_amount1,
         );
@@ -577,7 +575,7 @@ pub fn remove_partial_liquidity(
         //everything else remains the same
         pool_fee_state.fee_growth_global_0,
         liquidity_position.fee_growth_inside_0_last,
-        liquidity_position.fee_multiplier,
+        liquidity_position.fee_size_multiplier,
     );
 
     let fees_owed_1 = calculate_fees_owed(
@@ -586,7 +584,7 @@ pub fn remove_partial_liquidity(
         //everything else remains the same
         pool_fee_state.fee_growth_global_1,
         liquidity_position.fee_growth_inside_1_last,
-        liquidity_position.fee_multiplier,
+        liquidity_position.fee_size_multiplier,
     );
     //finds total amount based on the amount of liquidity the user would like to remove.
     let withdrawal_amount_0 = liquidity_to_remove
@@ -633,14 +631,14 @@ pub fn remove_partial_liquidity(
         .add_attribute("total_1", total_amount_1);
     //send assets back to user.
     if !total_amount_0.is_zero() {
-        let native_msg = BankMsg::Send {
+        let bluechip_msg = BankMsg::Send {
             to_address: info.sender.to_string(),
             amount: vec![Coin {
                 denom: "stake".to_string(),
                 amount: total_amount_0,
             }],
         };
-        response = response.add_message(native_msg);
+        response = response.add_message(bluechip_msg);
     }
 
     if !total_amount_1.is_zero() {
@@ -664,13 +662,13 @@ pub fn execute_add_to_position(
     info: MessageInfo,
     position_id: String,
     sender: Addr,
-    amount0: Uint128, // native token
+    amount0: Uint128, // bluechip token
     amount1: Uint128, // cw20 token
     min_amount0: Option<Uint128>,
     min_amount1: Option<Uint128>,
-    deadline: Option<Timestamp>,
+    transaction_deadline: Option<Timestamp>,
 ) -> Result<Response, ContractError> {
-    enforce_deadline(env.block.time, deadline)?;
+    enforce_transaction_deadline(env.block.time, transaction_deadline)?;
     let pool_specs: PoolSpecs = POOL_SPECS.load(deps.storage)?;
 
     // prohibit spam liquidity
@@ -688,21 +686,21 @@ pub fn execute_add_to_position(
         amount1,
         min_amount0,
         min_amount1,
-        deadline,
+        transaction_deadline,
     );
     result
 }
 
-pub fn execute_remove_liquidity(
+pub fn execute_remove_all_liquidity(
     mut deps: DepsMut,
     env: Env,
     info: MessageInfo,
     position_id: String,
-    deadline: Option<Timestamp>,
+    transaction_deadline: Option<Timestamp>,
     min_amount0: Option<Uint128>,
     min_amount1: Option<Uint128>,
 ) -> Result<Response, ContractError> {
-    enforce_deadline(env.block.time, deadline)?;
+    enforce_transaction_deadline(env.block.time, transaction_deadline)?;
     let pool_specs: PoolSpecs = POOL_SPECS.load(deps.storage)?;
     let sender = info.sender.clone();
     //spam protection
@@ -710,12 +708,11 @@ pub fn execute_remove_liquidity(
         RATE_LIMIT_GUARD.save(deps.storage, &false)?;
         return Err(e);
     }
-    let result = remove_liquidity(
+    let result = remove_all_liquidity(
         &mut deps,
         env,
         info.clone(),
         position_id,
-        deadline,
         min_amount0,
         min_amount1,
     );
@@ -728,11 +725,11 @@ pub fn execute_remove_partial_liquidity(
     info: MessageInfo,
     position_id: String,
     liquidity_to_remove: Uint128,
-    deadline: Option<Timestamp>,
+    transaction_deadline: Option<Timestamp>,
     min_amount0: Option<Uint128>,
     min_amount1: Option<Uint128>,
 ) -> Result<Response, ContractError> {
-    enforce_deadline(env.block.time, deadline)?;
+    enforce_transaction_deadline(env.block.time, transaction_deadline)?;
     let pool_specs: PoolSpecs = POOL_SPECS.load(deps.storage)?;
     let sender = info.sender.clone();
 
@@ -746,7 +743,7 @@ pub fn execute_remove_partial_liquidity(
         info.clone(),
         position_id,
         liquidity_to_remove,
-        deadline,
+        transaction_deadline,
         min_amount0,
         min_amount1,
     );
@@ -762,23 +759,23 @@ pub fn execute_remove_partial_liquidity_by_percent(
     position_id: String,
     //using percentage
     percentage: u64,
-    deadline: Option<Timestamp>,
+    transaction_deadline: Option<Timestamp>,
     min_amount0: Option<Uint128>,
     min_amount1: Option<Uint128>,
 ) -> Result<Response, ContractError> {
-    // Validate percentage
+    // cant remove zero 
     if percentage == 0 {
         return Err(ContractError::InvalidPercent {});
     }
 
     if percentage >= 100 {
         // redirect to full removal
-        return execute_remove_liquidity(
+        return execute_remove_all_liquidity(
             deps,
             env,
             info,
             position_id,
-            deadline,
+            transaction_deadline,
             min_amount0,
             min_amount1,
         );
@@ -801,7 +798,7 @@ pub fn execute_remove_partial_liquidity_by_percent(
         position_id,
         //converted from decimal
         liquidity_to_remove,
-        deadline,
+        transaction_deadline,
         min_amount0,
         min_amount1,
     )

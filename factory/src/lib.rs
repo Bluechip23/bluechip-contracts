@@ -3,7 +3,7 @@ pub mod error;
 pub mod execute;
 pub mod mock_querier;
 pub mod msg;
-pub mod pair;
+pub mod pool;
 pub mod query;
 pub mod state;
 pub mod reply;

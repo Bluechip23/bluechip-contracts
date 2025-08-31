@@ -1,8 +1,6 @@
 use cosmwasm_std::{OverflowError, StdError, Uint128};
 use thiserror::Error;
 
-pub const MINIMUM_LIQUIDITY_AMOUNT: Uint128 = Uint128::new(1_000);
-
 #[derive(Error, Debug, PartialEq)]
 pub enum ContractError {
     #[error("{0}")]
@@ -38,9 +36,7 @@ pub enum ContractError {
     #[error("Transaction deadline has passed")]
     TransactionExpired {},
 
-    #[error(
-        "Your commit amount does not match an amount designated by the creator of the pool."
-    )]
+    #[error("Your commit amount does not match an amount designated by the creator of the pool.")]
     MismatchAmount {},
 
     #[error("Fee is to great or to small for this transaction")]
@@ -104,9 +100,6 @@ pub enum ContractError {
     #[error("Generator address is not set in factory. Cannot auto-stake")]
     AutoStakeError {},
 
-    #[error("Initial liquidity must be more than {}", MINIMUM_LIQUIDITY_AMOUNT)]
-    MinimumLiquidityAmountError {},
-
     #[error("Failed to migrate the contract")]
     MigrationError {},
 
@@ -119,24 +112,16 @@ pub enum ContractError {
     #[error("pool can not cover reserves")]
     InsufficientReserves {},
 
-    #[error("Incorrect native denom: provided: {oracle}, required: {twap}")]
+    #[error("Incorrect bluechip denom: provided: {oracle}, required: {twap}")]
     OraclePriceDeviation { oracle: Uint128, twap: Uint128 },
 
-    #[error("Incorrect native denom: provided: {provided}, required: {required}")]
+    #[error("Incorrect bluechip denom: provided: {provided}, required: {required}")]
     IncorrectNativeDenom { provided: String, required: String },
 
     #[error("Invalid payment amount: ${usd_amount} USD. Available tiers: {available:?}")]
     InvalidUSDPaymentTier {
         usd_amount: String,
         available: Vec<String>,
-    },
-
-    #[error("Invalid payment amount. Sent: {sent_native} (${sent_usd}). Available native tiers: {available_native:?}. Available USD tiers: {available_usd:?}")]
-    InvalidPaymentAmount {
-        sent_native: String,
-        sent_usd: String,
-        available_native: Vec<String>,
-        available_usd: Vec<String>,
     },
 }
 
