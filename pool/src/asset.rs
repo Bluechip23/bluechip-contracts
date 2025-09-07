@@ -337,7 +337,7 @@ pub fn query_token_symbol(querier: &QuerierWrapper, contract_addr: Addr) -> StdR
         msg: to_json_binary(&Cw20QueryMsg::TokenInfo {})?,
     }))?;
 
-    Ok(res.symbol)
+    Ok(res.ticker)
 }
 
 pub fn query_balance(

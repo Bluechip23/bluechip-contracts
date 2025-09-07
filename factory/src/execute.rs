@@ -1,19 +1,21 @@
-use std::env;
 use crate::error::ContractError;
-use crate::msg::{ ExecuteMsg, CreatorTokenInfo, TokenInstantiateMsg};
-use crate::pool::{CreatePool,};
+use crate::msg::{CreatorTokenInfo, ExecuteMsg, TokenInstantiateMsg};
+use crate::pool_struct::CreatePool;
 use crate::pool_create_cleanup::handle_cleanup_reply;
 use crate::reply::{finalize_pool, mint_create_pool, set_tokens};
 use crate::state::{
-    CreationState, CreationStatus, FactoryInstantiate, FACTORYINSTANTIATEINFO, CREATION_STATES,
-    NEXT_POOL_ID, TEMPCREATORWALLETADDR, TEMPPOOLINFO, TEMPPOOLID,
+    CreationState, CreationStatus, FactoryInstantiate,
+    CREATION_STATES, FACTORYINSTANTIATEINFO, NEXT_POOL_ID, TEMPCREATORWALLETADDR, TEMPPOOLID,
+    TEMPPOOLINFO,
 };
 #[cfg(not(feature = "library"))]
 use cosmwasm_std::entry_point;
 use cosmwasm_std::{
-    to_json_binary, Deps, DepsMut, Env, MessageInfo, Reply, Response, StdError, StdResult, SubMsg, Uint128, WasmMsg
+    to_json_binary, Deps, DepsMut, Env, MessageInfo, Reply, Response, StdError, StdResult, SubMsg,
+    Uint128, WasmMsg,
 };
-use cw20::{MinterResponse};
+use cw20::MinterResponse;
+use std::env;
 
 const CONTRACT_NAME: &str = "bluechip_factory";
 const CONTRACT_VERSION: &str = env!("CARGO_PKG_VERSION");
@@ -36,7 +38,6 @@ pub fn instantiate(
     //saves the factory parameters set in the json file
     FACTORYINSTANTIATEINFO.save(deps.storage, &msg)?;
     //sets the first pool created by this factory to 1
-    NEXT_POOL_ID.save(deps.storage, &1u64)?;
     //viola
     Ok(Response::new().add_attribute("action", "init_contract"))
 }
@@ -49,13 +50,23 @@ pub fn execute(
     msg: ExecuteMsg,
 ) -> Result<Response, ContractError> {
     match msg {
-        //edit factory parameters - only bluechip can - does not touch existing pools unless we do a chain wide change
         ExecuteMsg::UpdateConfig { config } => execute_update_config(deps, info, config),
-        //creates new pool
         ExecuteMsg::Create {
             pool_msg,
             token_info,
-        } => execute_create(deps, env, info, pool_msg, token_info),
+        } => {
+        let token_a = pool_msg.pool_token_info[0].to_string();
+        let token_b = pool_msg.pool_token_info[1].to_string();
+        execute_create(
+            deps,
+            env,
+            info,
+            pool_msg,
+            token_info,
+            token_a,
+            token_b,
+        )
+    }
     }
 }
 
@@ -92,16 +103,17 @@ fn execute_create(
     deps: DepsMut,
     env: Env,
     info: MessageInfo,
-    pair_msg: CreatePool,
+    pool_msg: CreatePool,
     token_info: CreatorTokenInfo,
+    token_a: String,
+    token_b: String,
 ) -> Result<Response, ContractError> {
     assert_correct_factory_address(deps.as_ref(), info.clone())?;
     let config = FACTORYINSTANTIATEINFO.load(deps.storage)?;
     let sender = info.sender.clone();
     let pool_id = NEXT_POOL_ID.load(deps.storage)?;
-    NEXT_POOL_ID.save(deps.storage, &(pool_id + 1))?;
     TEMPPOOLID.save(deps.storage, &pool_id)?;
-    TEMPPOOLINFO.save(deps.storage, &pair_msg)?;
+    TEMPPOOLINFO.save(deps.storage, &pool_msg)?;
     TEMPCREATORWALLETADDR.save(deps.storage, &sender)?;
     let msg = WasmMsg::Instantiate {
         code_id: config.cw20_token_contract_id,
@@ -158,4 +170,3 @@ pub fn reply(deps: DepsMut, env: Env, msg: Reply) -> Result<Response, ContractEr
         _ => Err(ContractError::UnknownReplyId { id: msg.id }),
     }
 }
-

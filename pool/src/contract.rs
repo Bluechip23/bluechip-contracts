@@ -130,6 +130,7 @@ pub fn instantiate(
     };
 
     let pool_state = PoolState {
+        pool_contract_address: env.contract.address.clone(),
         total_liquidity: Uint128::zero(),
         block_time_last: env.block.time.seconds(),
         reserve0: Uint128::zero(), // bluechip token
@@ -551,7 +552,7 @@ pub fn execute_simple_swap(
     let mut pool_fee_state = POOL_FEE_STATE.load(deps.storage)?;
     let pool_specs = POOL_SPECS.load(deps.storage)?;
 
-    let (offer_pool_idx, offer_pool, ask_pool) =
+    let (offer_pool_contract_addressx, offer_pool, ask_pool) =
         if offer_asset.info.equal(&pool_info.pool_info.asset_infos[0]) {
             (0, pool_state.reserve0, pool_state.reserve1)
         } else if offer_asset.info.equal(&pool_info.pool_info.asset_infos[1]) {
@@ -574,7 +575,7 @@ pub fn execute_simple_swap(
     let offer_pool_post = offer_pool.checked_add(offer_asset.amount)?;
     let ask_pool_post = ask_pool.checked_sub(return_amt)?;
 
-    if offer_pool_idx == 0 {
+    if offer_pool_contract_addressx == 0 {
         pool_state.reserve0 = offer_pool_post;
         pool_state.reserve1 = ask_pool_post;
     } else {
@@ -586,7 +587,7 @@ pub fn execute_simple_swap(
     update_pool_fee_growth(
         &mut pool_fee_state,
         &pool_state,
-        offer_pool_idx,
+        offer_pool_contract_addressx,
         commission_amt,
     )?;
     POOL_FEE_STATE.save(deps.storage, &pool_fee_state)?;
@@ -597,7 +598,7 @@ pub fn execute_simple_swap(
     // Save updated state
     POOL_STATE.save(deps.storage, &pool_state)?;
 
-    let ask_asset_info = if offer_pool_idx == 0 {
+    let ask_asset_info = if offer_pool_contract_addressx == 0 {
         pool_info.pool_info.asset_infos[1].clone()
     } else {
         pool_info.pool_info.asset_infos[0].clone()
@@ -864,7 +865,7 @@ pub fn execute_commit_logic(
                                         Ok(commit)
                                     }
                                     None => Ok(Commiting {
-                                        pool_id: pool_info.pool_id,
+                                        pool_contract_address: pool_state.pool_contract_address,
                                         commiter: sender.clone(),
                                         total_paid_bluechip: bluechip_to_threshold,
                                         total_paid_usd: usd_to_threshold,
@@ -1023,7 +1024,7 @@ pub fn execute_commit_logic(
                                         Ok(commiting)
                                     }
                                     None => Ok(Commiting {
-                                        pool_id: pool_info.pool_id,
+                                        pool_contract_address: pool_state.pool_contract_address,
                                         commiter: sender.clone(),
                                         total_paid_bluechip: asset.amount,
                                         total_paid_usd: usd_value,
@@ -1079,7 +1080,7 @@ fn process_pre_threshold_commit(
     usd_value: Uint128,
     messages: Vec<CosmosMsg>,
 ) -> Result<Response, ContractError> {
-    let pool_info = POOL_INFO.load(deps.storage)?;
+    let pool_state = POOL_STATE.load(deps.storage)?;
     //do not calculate fees in function, they are calculated prior.
     // Update commit ledger
     COMMIT_LEDGER.update::<_, ContractError>(deps.storage, &sender, |v| {
@@ -1104,7 +1105,7 @@ fn process_pre_threshold_commit(
                     Ok(commiting)
                 }
                 None => Ok(Commiting {
-                    pool_id: pool_info.pool_id,
+                    pool_contract_address: pool_state.pool_contract_address,
                     commiter: sender.clone(),
                     total_paid_bluechip: asset.amount,
                     total_paid_usd: usd_value,
@@ -1200,7 +1201,7 @@ fn process_post_threshold_commit(
                     Ok(commiting)
                 }
                 None => Ok(Commiting {
-                    pool_id: pool_info.pool_id,
+                    pool_contract_address: pool_state.pool_contract_address,
                     commiter: sender.clone(),
                     total_paid_bluechip: asset.amount,
                     total_paid_usd: usd_value,

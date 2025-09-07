@@ -1,0 +1,12 @@
+[package]
+name = "pool-factory-interfaces"
+version.workspace = true
+edition = "2021"
+
+[lib]
+crate-type = ["cdylib", "rlib"]
+
+[dependencies]
+cosmwasm-schema = { workspace = true }
+cosmwasm-std = { workspace = true }
+serde = { version = "1.0", features = ["derive"] }

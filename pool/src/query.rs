@@ -1,34 +1,24 @@
 #![allow(non_snake_case)]
-use crate::asset::{call_pool_info, TokenInfo, };
+use crate::asset::{call_pool_info, TokenInfo};
 use crate::liquidity_helpers::{calculate_unclaimed_fees, compute_swap};
 use crate::msg::{
-    CommitStatus, CommiterInfo, ConfigResponse, CumulativePricesResponse,
-    FeeInfoResponse, LastCommitedResponse,  PoolCommitResponse,
-    PoolFeeStateResponse, PoolInfoResponse,  PoolResponse, PoolStateResponse,
-    PositionResponse, PositionsResponse, QueryMsg, ReverseSimulationResponse, SimulationResponse,
-};
-
-use crate::state::{
-     PoolDetails,
-   COMMITSTATUS, COMMIT_LIMIT_INFO,  COMMITFEEINFO,
-    POOL_FEE_STATE, POOL_INFO, POOL_STATE,
-     IS_THRESHOLD_HIT, USD_RAISED_FROM_COMMIT,
-    
+    CommitStatus, CommiterInfo, ConfigResponse, CumulativePricesResponse, FeeInfoResponse,
+    LastCommitedResponse, PoolCommitResponse, PoolFeeStateResponse, PoolInfoResponse, PoolResponse,
+    PoolStateResponse, PositionResponse, PositionsResponse, QueryMsg, ReverseSimulationResponse,
+    SimulationResponse,
 };
 use crate::state::{
-    COMMIT_INFO, LIQUIDITY_POSITIONS,
-    NEXT_POSITION_ID,
+    PoolDetails, COMMITFEEINFO, COMMITSTATUS, COMMIT_LIMIT_INFO, IS_THRESHOLD_HIT, POOLS, POOL_FEE_STATE, POOL_INFO, POOL_STATE, USD_RAISED_FROM_COMMIT
 };
+use crate::state::{COMMIT_INFO, LIQUIDITY_POSITIONS, NEXT_POSITION_ID};
 use crate::swap_helper::{compute_offer_amount, update_price_accumulator};
 use cosmwasm_std::{
-    entry_point,to_json_binary, Binary, 
-    Deps, Env, Order, 
-   StdError, StdResult, Uint128, 
+    entry_point, to_json_binary, Addr, Binary, Deps, Env, Order, StdError, StdResult, Uint128
 };
+use pool_factory_interfaces::{AllPoolsResponse, PoolQueryMsg, PoolStateResponseForFactory};
 
 use cw_storage_plus::Bound;
 use std::vec;
-
 
 #[cfg_attr(not(feature = "library"), entry_point)]
 pub fn query(deps: Deps, env: Env, msg: QueryMsg) -> StdResult<Binary> {
@@ -40,14 +30,14 @@ pub fn query(deps: Deps, env: Env, msg: QueryMsg) -> StdResult<Binary> {
             to_json_binary(&query_positions(deps, start_after, limit)?)
         }
         QueryMsg::PoolCommits {
-            pool_id,
+            pool_contract_address,
             min_payment_usd,
             after_timestamp,
             start_after,
             limit,
         } => to_json_binary(&query_pool_commiters(
             deps,
-            pool_id,
+            pool_contract_address,
             min_payment_usd,
             after_timestamp,
             start_after,
@@ -375,7 +365,7 @@ pub fn query_pool_info(deps: Deps) -> StdResult<PoolInfoResponse> {
 
 pub fn query_pool_commiters(
     deps: Deps,
-    pool_id: u64,
+    pool_contract_address: Addr,
     min_payment_usd: Option<Uint128>,
     after_timestamp: Option<u64>,
     start_after: Option<String>,
@@ -396,8 +386,8 @@ pub fn query_pool_commiters(
     for item in COMMIT_INFO.range(deps.storage, start, None, Order::Ascending) {
         let (commiter_addr, commiting) = item?;
 
-        // Filter by pool_id
-        if commiting.pool_id != pool_id {
+        // Filter by pool_contract_address
+        if commiting.pool_contract_address != pool_contract_address {
             continue;
         }
 
@@ -434,4 +424,51 @@ pub fn query_pool_commiters(
         total_count: count,
         commiters,
     })
+}
+
+pub fn query_for_factory(deps: Deps, _env: Env, msg: PoolQueryMsg) -> StdResult<Binary> {
+    match msg {
+        PoolQueryMsg::GetPoolState { pool_contract_address } => {
+            // Query specific pool from the Map
+            let pool_state = POOLS.load(deps.storage, &pool_contract_address)?;
+
+            // Convert to response
+            let response = PoolStateResponseForFactory {
+                pool_contract_address: pool_state.pool_contract_address,
+                nft_ownership_accepted: pool_state.nft_ownership_accepted,
+                reserve0: pool_state.reserve0,
+                reserve1: pool_state.reserve1,
+                total_liquidity: pool_state.total_liquidity,
+                block_time_last: pool_state.block_time_last,
+                price0_cumulative_last: pool_state.price0_cumulative_last,
+                price1_cumulative_last: pool_state.price1_cumulative_last,
+            };
+
+            to_json_binary(&response)
+        }
+        PoolQueryMsg::GetAllPools {} => {
+            // Optional: Query all pools
+            let pools: StdResult<Vec<_>> = POOLS
+                .range(deps.storage, None, None, Order::Ascending)
+                .map(|item| {
+                    let (key, pool) = item?;
+                    Ok((
+                        key,
+                        PoolStateResponseForFactory {
+                            pool_contract_address: pool.pool_contract_address,
+                            nft_ownership_accepted: pool.nft_ownership_accepted,
+                            reserve0: pool.reserve0,
+                            reserve1: pool.reserve1,
+                            total_liquidity: pool.total_liquidity,
+                            block_time_last: pool.block_time_last,
+                            price0_cumulative_last: pool.price0_cumulative_last,
+                            price1_cumulative_last: pool.price1_cumulative_last,
+                        },
+                    ))
+                })
+                .collect();
+
+            to_json_binary(&AllPoolsResponse { pools: pools? })
+        }
+    }
 }

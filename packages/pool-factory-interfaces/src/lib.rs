@@ -1,0 +1,29 @@
+use cosmwasm_schema::cw_serde;
+use cosmwasm_std::{Addr, Uint128};
+
+#[cw_serde]
+pub enum PoolQueryMsg {
+    // Query a specific pool by ID
+    GetPoolState { pool_contract_address: String },
+    GetAllPools {},
+}
+
+// Response structure matching your PoolState
+#[cw_serde]
+pub struct PoolStateResponseForFactory {
+    pub pool_contract_address: Addr,
+    pub nft_ownership_accepted: bool,
+    pub reserve0: Uint128, 
+    pub reserve1: Uint128,
+    pub total_liquidity: Uint128,
+    pub block_time_last: u64,
+    pub price0_cumulative_last: Uint128,
+    pub price1_cumulative_last: Uint128,
+}
+
+
+// Optional: For querying all pools
+#[cw_serde]
+pub struct AllPoolsResponse {
+    pub pools: Vec<(String, PoolStateResponseForFactory)>,
+}

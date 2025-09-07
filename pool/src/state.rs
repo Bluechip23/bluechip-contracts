@@ -36,7 +36,7 @@ pub const EXPECTED_FACTORY: Item<ExpectedFactory> = Item::new("expected_factory"
 pub const USER_LAST_COMMIT: Map<&Addr, u64> = Map::new("user_last_commit");
 //information for pool including factory, pool, and token addresses
 pub const POOL_INFO: Item<PoolInfo> = Item::new("pool_info");
-//liquidity and reserve amounts for the pool
+//liquidity, reserve, and prices
 pub const POOL_STATE: Item<PoolState> = Item::new("pool_state");
 //lp fee for liquidity pools
 pub const POOL_SPECS: Item<PoolSpecs> = Item::new("pool_specs");
@@ -54,10 +54,11 @@ pub const COMMIT_LIMIT_INFO: Item<CommitLimitInfo> = Item::new("commit_config");
 pub const ORACLE_INFO: Item<OracleInfo> = Item::new("oracle_info");
 //tracking the global fee growth and total fees collected for the poolS
 pub const POOL_FEE_STATE: Item<PoolFeeState> = Item::new("pool_fee_state");
+pub const POOLS: Map<&str, PoolState> = Map::new("pools");
 
 #[cw_serde]
 pub struct Commiting {
-    pub pool_id: u64,
+    pub pool_contract_address: Addr,
     //commit transaction executer
     pub commiter: Addr,
     //amount paid converted to USD
@@ -73,6 +74,7 @@ pub struct Commiting {
 }
 #[cw_serde]
 pub struct PoolState {
+    pub pool_contract_address: Addr,
     pub nft_ownership_accepted: bool,
     pub reserve0: Uint128, // bluechip token
     pub reserve1: Uint128, // cw20 token

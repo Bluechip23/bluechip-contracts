@@ -16,7 +16,7 @@ use std::vec;
 pub fn update_pool_fee_growth(
     pool_fee_state: &mut PoolFeeState,
     pool_state: &PoolState,
-    offer_pool_idx: usize,
+    offer_contract_addressx: usize,
     commission_amt: Uint128,
 ) -> Result<(), ContractError> {
     if pool_state.total_liquidity.is_zero() || commission_amt.is_zero() {
@@ -25,7 +25,7 @@ pub fn update_pool_fee_growth(
 
     let fee_growth = Decimal::from_ratio(commission_amt, pool_state.total_liquidity);
 
-    if offer_pool_idx == 0 {
+    if offer_contract_addressx == 0 {
         // Token0 offered, fees collected in token0
         pool_fee_state.fee_growth_global_0 += fee_growth;
         pool_fee_state.total_fees_collected_0 += commission_amt;

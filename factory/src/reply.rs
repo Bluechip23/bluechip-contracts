@@ -3,14 +3,12 @@ use crate::{
     error::ContractError,
     execute::{FINALIZE_POOL, MINT_CREATE_POOL},
     msg::CreatePoolReplyMsg,
-    pool::{CommitFeeInfo, ThresholdPayoutAmounts},
+    pool_struct::{CommitFeeInfo, PoolDetails, ThresholdPayoutAmounts},
     pool_create_cleanup::{
-        cleanup_temp_state, create_cleanup_messages, give_pool_ownership_cw20_and_nft,
-        extract_contract_address,
+        cleanup_temp_state, create_cleanup_messages, extract_contract_address, give_pool_ownership_cw20_and_nft
     },
     state::{
-        CommitInfo, CreationStatus, SETCOMMIT, FACTORYINSTANTIATEINFO, CREATION_STATES, POOLS_BY_ID, TEMPCREATORWALLETADDR,
-        TEMPNFTADDR, TEMPPOOLINFO, TEMPPOOLID, TEMPCREATORTOKENADDR,
+        CommitInfo, CreationStatus, CREATION_STATES, FACTORYINSTANTIATEINFO, POOLS_BY_ID, SETCOMMIT, TEMPCREATORTOKENADDR, TEMPCREATORWALLETADDR, TEMPNFTADDR, TEMPPOOLID, TEMPPOOLINFO
     },
 };
 use cosmwasm_std::{
@@ -133,8 +131,8 @@ pub fn mint_create_pool(deps: DepsMut, env: Env, msg: Reply) -> Result<Response,
                     },
                     commit_amount_for_threshold: config.commit_amount_for_threshold_bluechip,
                     commit_threshold_limit_usd: config.commit_threshold_limit_usd,
-                    oracle_contract_addr: config.oracle_contract_addr.clone(),
-                    oracle_ticker: config.oracle_ticker.clone(),
+                    pyth_contract_addr_for_conversions: config.pyth_contract_addr_for_conversions.clone(),
+                    pyth_atom_usd_price_feed_id: config.pyth_atom_usd_price_feed_id.clone(),
                     token_address: token_address,
                     position_nft_address: nft_address.clone(),
                 })?,
@@ -190,9 +188,14 @@ pub fn finalize_pool(deps: DepsMut, _env: Env, msg: Reply) -> Result<Response, C
                 creator_token_addr: temp_token_address.clone(),
                 creator_pool_addr: pool_address.clone(),
             };
+            let pool_details = PoolDetails {
+                pool_id,
+                pool_token_info: TEMPPOOLINFO.load(deps.storage)?.pool_token_info,
+                creator_pool_addr: pool_address.clone(),
+            };
             // save commit state to record future commit executions
             SETCOMMIT.save(deps.storage, &temp_creator.to_string(), &commit_info)?;
-            POOLS_BY_ID.save(deps.storage, pool_id, &commit_info)?;
+            POOLS_BY_ID.save(deps.storage, pool_id, &pool_details)?;
 
             // make pool cw20 and cw721 (nft) minter for threshold payout - compartmentalizes pools so they can run without factory.
             //1 factory for all pools instead of 1 factory 1 pool

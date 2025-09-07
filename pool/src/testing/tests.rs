@@ -1609,6 +1609,7 @@ pub fn setup_pool_storage(deps: &mut OwnedDeps<MockStorage, MockApi, MockQuerier
 
     // Set up PoolState - Pre-threshold (no liquidity yet)
     let pool_state = PoolState {
+        pool_contract_address: Addr::unchecked("pool_contract"),
         nft_ownership_accepted: true,
         reserve0: Uint128::zero(), // No reserves pre-threshold
         reserve1: Uint128::zero(),
@@ -1688,6 +1689,7 @@ pub fn setup_pool_post_threshold(deps: &mut OwnedDeps<MockStorage, MockApi, Mock
     // Update pool state with initial liquidity
     // Initial liquidity: 23.5k bluechip (25k - fees) and 350k creator tokens
     let pool_state = PoolState {
+        pool_contract_address: Addr::unchecked("pool_contract"),
         nft_ownership_accepted: true,
         reserve0: Uint128::new(23_500_000_000), // 23.5k bluechip (25k - 6% fees)
         reserve1: Uint128::new(350_000_000_000), // 350k creator tokens

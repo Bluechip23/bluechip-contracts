@@ -8,7 +8,7 @@ use cosmwasm_std::{
 };
 use std::collections::HashMap;
 
-use crate::pool::PoolDetails;
+use crate::pool_struct::PoolDetails;
 use crate::query::QueryMsg;
 
 pub fn mock_dependencies(
@@ -72,7 +72,7 @@ impl WasmMockQuerier {
         match &request {
             QueryRequest::Wasm(WasmQuery::Smart {contract_addr, msg})// => {
                 => match from_json(&msg).unwrap() {
-                    QueryMsg::Pair {} => {
+                    QueryMsg::Pool {} => {
                        let pair_info: PoolDetails =
                         match self.betfi_pair_querier.pairs.get(contract_addr) {
                             Some(v) => v.clone(),

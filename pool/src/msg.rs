@@ -111,7 +111,7 @@ pub enum QueryMsg {
 
     #[returns(PoolCommitResponse)]
     PoolCommits {
-        pool_id: u64,
+        pool_contract_address: Addr,
         min_payment_usd: Option<Uint128>,
         after_timestamp: Option<u64>, // Unix timestamp
         start_after: Option<String>,  // For pagination
@@ -148,6 +148,7 @@ pub enum QueryMsg {
 
 #[cw_serde]
 pub struct PoolInstantiateMsg {
+    
     pub pool_id: u64,
     // Information about the two assets in the pool
     pub asset_infos: [TokenType; 2],

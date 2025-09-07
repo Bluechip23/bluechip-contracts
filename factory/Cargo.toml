@@ -29,7 +29,8 @@ library = []
 optimize = { workspace = true }
 
 [dependencies]
-
+sha2 = {workspace = true}
+pool-factory-interfaces = { path = "../packages/pool-factory-interfaces" }
 cosmwasm-schema = { workspace = true }
 integer-sqrt = { workspace = true }
 cw2 = { workspace = true }
