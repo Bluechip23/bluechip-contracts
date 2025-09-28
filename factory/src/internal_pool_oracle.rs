@@ -5,7 +5,7 @@ use crate::{
 };
 use cosmwasm_schema::cw_serde;
 use cosmwasm_std::{
-    Addr, Decimal, Deps, DepsMut, Env, Order, Response, StdError, StdResult, Uint128, Uint256,
+    Addr, Deps, DepsMut, Env, Order, Response, StdError, StdResult, Uint128, Uint256,
 };
 use cw_storage_plus::Item;
 use pool_factory_interfaces::{ConversionResponse, PoolQueryMsg, PoolStateResponseForFactory};
@@ -148,11 +148,14 @@ pub fn update_internal_oracle_price(deps: DepsMut, env: Env) -> Result<Response,
         calculate_weighted_price_with_atom(deps.as_ref(), &pools_to_use)?;
 
     // Add new observation
-    oracle.bluechip_price_cache.twap_observations.push(PriceObservation {
-        timestamp: current_time,
-        price: weighted_price,
-        atom_pool_price: atom_price,
-    });
+    oracle
+        .bluechip_price_cache
+        .twap_observations
+        .push(PriceObservation {
+            timestamp: current_time,
+            price: weighted_price,
+            atom_pool_price: atom_price,
+        });
 
     // Keep only observations within TWAP window
     let cutoff_time = current_time.saturating_sub(TWAP_WINDOW);
@@ -313,10 +316,7 @@ pub fn bluechip_to_usd(
     if cached_price.is_zero() {
         return Err(StdError::generic_err("Invalid zero price"));
     }
-
-    // Your original logic
     let usd_amount = (bluechip_amount * Uint128::from(1_000_000u128)) / cached_price;
-
     Ok(ConversionResponse {
         amount: usd_amount,
         rate_used: cached_price,
@@ -331,8 +331,6 @@ pub fn usd_to_bluechip(deps: Deps, usd_amount: Uint128, env: Env) -> StdResult<C
     if cached_price.is_zero() {
         return Err(StdError::generic_err("Invalid zero price"));
     }
-
-    // Your original logic
     let bluechip_amount = (usd_amount * Uint128::from(100u128)) / cached_price;
     Ok(ConversionResponse {
         amount: bluechip_amount,

@@ -1,15 +1,17 @@
 #![allow(non_snake_case)]
-use crate::asset::{TokenType,};
+use crate::asset::TokenType;
 use crate::error::ContractError;
 use crate::msg::CommitFeeInfo;
+use crate::state::PoolState;
 use crate::state::{
-    CommitLimitInfo, PoolFeeState, PoolInfo, PoolSpecs, ThresholdPayoutAmounts,  COMMIT_LEDGER, POOL_FEE_STATE, POOL_STATE, USER_LAST_COMMIT
+    CommitLimitInfo, PoolFeeState, PoolInfo, PoolSpecs, ThresholdPayoutAmounts, COMMIT_LEDGER,
+    POOL_FEE_STATE, POOL_STATE, USER_LAST_COMMIT,
 };
-use crate::state::{PoolState};
 use cosmwasm_std::{
-   to_json_binary, Addr, Coin, CosmosMsg, Decimal, Decimal256,  DepsMut, Env, Order, StdError, StdResult, Storage, Timestamp, Uint128, Uint256, WasmMsg
+    to_json_binary, Addr, Coin, CosmosMsg, Decimal, Decimal256, DepsMut, Env, Order, StdError,
+    StdResult, Storage, Timestamp, Uint128, Uint256, WasmMsg,
 };
-use cw20::{Cw20ExecuteMsg, };
+use cw20::Cw20ExecuteMsg;
 use std::vec;
 
 // Update fee growth based on which token was offered
@@ -58,7 +60,10 @@ pub fn check_rate_limit(
     Ok(())
 }
 
-pub fn enforce_transaction_deadline(current: Timestamp, transaction_deadline: Option<Timestamp>) -> Result<(), ContractError> {
+pub fn enforce_transaction_deadline(
+    current: Timestamp,
+    transaction_deadline: Option<Timestamp>,
+) -> Result<(), ContractError> {
     if let Some(dl) = transaction_deadline {
         if current > dl {
             return Err(ContractError::TransactionExpired {});
@@ -78,6 +83,56 @@ pub fn validate_factory_address(
     Ok(())
 }
 
+pub fn validate_pool_threshold_payments(
+    params: &ThresholdPayoutAmounts,
+) -> Result<(), ContractError> {
+    // the ONLY acceptable values
+    const EXPECTED_CREATOR: u128 = 325_000_000_000;
+    const EXPECTED_BLUECHIP: u128 = 25_000_000_000;
+    const EXPECTED_POOL: u128 = 350_000_000_000;
+    const EXPECTED_COMMIT: u128 = 500_000_000_000;
+    const EXPECTED_TOTAL: u128 = 1_200_000_000_000;
+
+    // verify each amount specifically - creator amount
+    if params.creator_reward_amount != Uint128::new(EXPECTED_CREATOR) {
+        return Err(ContractError::InvalidThresholdParams {
+            msg: format!("Creator amount must be {}", EXPECTED_CREATOR),
+        });
+    }
+    //bluechip amount
+    if params.bluechip_reward_amount != Uint128::new(EXPECTED_BLUECHIP) {
+        return Err(ContractError::InvalidThresholdParams {
+            msg: format!("BlueChip amount must be {}", EXPECTED_BLUECHIP),
+        });
+    }
+    //pool seeding amount
+    if params.pool_seed_amount != Uint128::new(EXPECTED_POOL) {
+        return Err(ContractError::InvalidThresholdParams {
+            msg: format!("Pool amount must be {}", EXPECTED_POOL),
+        });
+    }
+    //amount sent back to origincal commiters
+    if params.commit_return_amount != Uint128::new(EXPECTED_COMMIT) {
+        return Err(ContractError::InvalidThresholdParams {
+            msg: format!("Commit amount must be {}", EXPECTED_COMMIT),
+        });
+    }
+
+    // Verify total
+    let total = params.creator_reward_amount
+        + params.bluechip_reward_amount
+        + params.pool_seed_amount
+        + params.commit_return_amount;
+    //throw error if anything of them is off - there is also a max mint number to help with the exactness
+    if total != Uint128::new(EXPECTED_TOTAL) {
+        return Err(ContractError::InvalidThresholdParams {
+            msg: format!("Total must equal {} (got {})", EXPECTED_TOTAL, total),
+        });
+    }
+
+    Ok(())
+}
+
 pub fn trigger_threshold_payout(
     storage: &mut dyn Storage,
     pool_info: &PoolInfo,
@@ -89,8 +144,10 @@ pub fn trigger_threshold_payout(
     env: &Env,
 ) -> StdResult<Vec<CosmosMsg>> {
     let mut msgs = Vec::<CosmosMsg>::new();
-    let total =
-        payout.creator_reward_amount + payout.bluechip_reward_amount + payout.pool_seed_amount + payout.commit_return_amount;
+    let total = payout.creator_reward_amount
+        + payout.bluechip_reward_amount
+        + payout.pool_seed_amount
+        + payout.commit_return_amount;
 
     if total != Uint128::new(1_200_000_000_000) {
         return Err(StdError::generic_err(
@@ -153,7 +210,7 @@ pub fn trigger_threshold_payout(
 
     pool_state.reserve0 = bluechip_seed; // No LP positions created yet
     pool_state.reserve1 = payout.pool_seed_amount; // No LP positions created yet
-    //Initial seed liquidity is not owned by anyone and cannot be withdrawn. This is intentional to prevent pool draining attacks and unneccesary pool rewards
+                                                   //Initial seed liquidity is not owned by anyone and cannot be withdrawn. This is intentional to prevent pool draining attacks and unneccesary pool rewards
     pool_state.total_liquidity = Uint128::zero();
     pool_fee_state.fee_growth_global_0 = Decimal::zero();
     pool_fee_state.fee_growth_global_1 = Decimal::zero();

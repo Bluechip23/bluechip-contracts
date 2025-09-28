@@ -342,7 +342,8 @@ pub fn add_to_position(
     liquidity_position.fee_growth_inside_0_last = pool_fee_state.fee_growth_global_0;
     liquidity_position.fee_growth_inside_1_last = pool_fee_state.fee_growth_global_1;
     liquidity_position.last_fee_collection = env.block.time.seconds();
-    liquidity_position.fee_size_multiplier = calculate_fee_size_multiplier(liquidity_position.liquidity);
+    liquidity_position.fee_size_multiplier =
+        calculate_fee_size_multiplier(liquidity_position.liquidity);
 
     pool_state.total_liquidity += additional_liquidity;
 
@@ -402,7 +403,6 @@ pub fn remove_all_liquidity(
     min_amount0: Option<Uint128>,
     min_amount1: Option<Uint128>,
 ) -> Result<Response, ContractError> {
-
     let pool_fee_state = POOL_FEE_STATE.load(deps.storage)?;
     let pool_info = POOL_INFO.load(deps.storage)?;
     let mut pool_state = POOL_STATE.load(deps.storage)?;
@@ -763,7 +763,7 @@ pub fn execute_remove_partial_liquidity_by_percent(
     min_amount0: Option<Uint128>,
     min_amount1: Option<Uint128>,
 ) -> Result<Response, ContractError> {
-    // cant remove zero 
+    // cant remove zero
     if percentage == 0 {
         return Err(ContractError::InvalidPercent {});
     }

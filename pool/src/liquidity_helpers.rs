@@ -1,10 +1,8 @@
 use std::str::FromStr;
 
-use cosmwasm_std::{
-    Addr, Decimal, Decimal256, Deps, Fraction, StdError, StdResult, Uint128, Uint256,
-};
-
-use crate::{error::ContractError, generic_helpers::decimal2decimal256, state::POOL_STATE};
+use crate::error::ContractError;
+use crate::state::POOL_STATE;
+use cosmwasm_std::{Addr, Decimal, Deps, StdError, Uint128};
 
 pub fn calculate_unclaimed_fees(
     liquidity: Uint128,
@@ -20,48 +18,6 @@ pub fn calculate_unclaimed_fees(
     } else {
         Uint128::zero()
     }
-}
-
-// calculates swap amounts using constant product formula (x * y = k)
-pub fn compute_swap(
-    //pool balance of offer amount
-    offer_pool: Uint128,
-    //pool balance of requested amount
-    ask_pool: Uint128,
-    //amount being offered
-    offer_amount: Uint128,
-    //pool fee rate
-    commission_rate: Decimal,
-) -> StdResult<(Uint128, Uint128, Uint128)> {
-    let offer_pool: Uint256 = offer_pool.into();
-    let ask_pool: Uint256 = ask_pool.into();
-    let offer_amount: Uint256 = offer_amount.into();
-    let commission_rate = decimal2decimal256(commission_rate)?;
-    // constant product
-    let cp: Uint256 = offer_pool * ask_pool;
-
-    let return_amount: Uint256 = (Decimal256::from_ratio(ask_pool, 1u8)
-        - Decimal256::from_ratio(cp, offer_pool + offer_amount))
-    .numerator()
-        / Decimal256::one().denominator();
-
-    // calculate spread(slippage) & commission
-    let spread_amount: Uint256 = (offer_amount
-        * Decimal256::from_ratio(ask_pool, offer_pool).numerator()
-        / Decimal256::from_ratio(ask_pool, offer_pool).denominator())
-        - return_amount;
-    let commission_amount: Uint256 =
-        return_amount * commission_rate.numerator() / commission_rate.denominator();
-    //subtract commission from return amount
-    let return_amount: Uint256 = return_amount - commission_amount;
-    Ok((
-        //amount trader recieves
-        return_amount.try_into()?,
-        //slippage
-        spread_amount.try_into()?,
-        //fee to liquidity holders
-        commission_amount.try_into()?,
-    ))
 }
 
 //find fee growth per unit of liquidity and then multiply it by the amount of liquidity units owned by the postiion.

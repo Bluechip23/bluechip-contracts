@@ -3,7 +3,6 @@ use cosmwasm_std::{Addr, Uint128};
 
 #[cw_serde]
 pub enum PoolQueryMsg {
-    // Query a specific pool by ID
     GetPoolState { pool_contract_address: String },
     GetAllPools {},
 }
@@ -33,7 +32,7 @@ pub struct ConversionResponse {
     pub rate_used: Uint128,
     pub timestamp: u64,
 }
-// Response structure matching your PoolState
+
 #[cw_serde]
 pub struct PoolStateResponseForFactory {
     pub pool_contract_address: Addr,
@@ -46,7 +45,6 @@ pub struct PoolStateResponseForFactory {
     pub price1_cumulative_last: Uint128,
 }
 
-// Optional: For querying all pools
 #[cw_serde]
 pub struct AllPoolsResponse {
     pub pools: Vec<(String, PoolStateResponseForFactory)>,

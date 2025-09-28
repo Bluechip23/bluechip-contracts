@@ -1,6 +1,6 @@
 #![allow(non_snake_case)]
 use crate::asset::{call_pool_info, TokenInfo};
-use crate::liquidity_helpers::{calculate_unclaimed_fees, compute_swap};
+use crate::liquidity_helpers::calculate_unclaimed_fees;
 use crate::msg::{
     CommitStatus, CommiterInfo, ConfigResponse, CumulativePricesResponse, FeeInfoResponse,
     LastCommitedResponse, PoolCommitResponse, PoolFeeStateResponse, PoolInfoResponse, PoolResponse,
@@ -8,12 +8,13 @@ use crate::msg::{
     SimulationResponse,
 };
 use crate::state::{
-    PoolDetails, COMMITFEEINFO, COMMITSTATUS, COMMIT_LIMIT_INFO, IS_THRESHOLD_HIT, POOLS, POOL_FEE_STATE, POOL_INFO, POOL_STATE, USD_RAISED_FROM_COMMIT
+    PoolDetails, COMMITFEEINFO, COMMITSTATUS, COMMIT_LIMIT_INFO, IS_THRESHOLD_HIT, POOLS,
+    POOL_FEE_STATE, POOL_INFO, POOL_STATE, USD_RAISED_FROM_COMMIT,
 };
 use crate::state::{COMMIT_INFO, LIQUIDITY_POSITIONS, NEXT_POSITION_ID};
-use crate::swap_helper::{compute_offer_amount, update_price_accumulator};
+use crate::swap_helper::{compute_offer_amount, compute_swap, update_price_accumulator};
 use cosmwasm_std::{
-    entry_point, to_json_binary, Addr, Binary, Deps, Env, Order, StdError, StdResult, Uint128
+    entry_point, to_json_binary, Addr, Binary, Deps, Env, Order, StdError, StdResult, Uint128,
 };
 use pool_factory_interfaces::{AllPoolsResponse, PoolQueryMsg, PoolStateResponseForFactory};
 
@@ -428,7 +429,9 @@ pub fn query_pool_commiters(
 
 pub fn query_for_factory(deps: Deps, _env: Env, msg: PoolQueryMsg) -> StdResult<Binary> {
     match msg {
-        PoolQueryMsg::GetPoolState { pool_contract_address } => {
+        PoolQueryMsg::GetPoolState {
+            pool_contract_address,
+        } => {
             // Query specific pool from the Map
             let pool_state = POOLS.load(deps.storage, &pool_contract_address)?;
 

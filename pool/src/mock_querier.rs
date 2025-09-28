@@ -151,8 +151,8 @@ impl WasmMockQuerier {
                         PythQueryMsg::GetPrice { price_id: _ } => {
                             let resp = PriceResponse {
                                 price: Uint128::new(100_000_000),
-                                conf: Uint128::new(100_000),      
-                                expo: -8,        
+                                conf: Uint128::new(100_000),
+                                expo: -8,
                                 publish_time: 1234567890,
                             };
                             return SystemResult::Ok(cosmwasm_std::ContractResult::Ok(

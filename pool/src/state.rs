@@ -1,6 +1,6 @@
 use crate::{
-    asset::{TokenInfo, TokenType, PoolPairType},
-    msg::{CommitFeeInfo,},
+    asset::{PoolPairType, TokenInfo, TokenType},
+    msg::CommitFeeInfo,
 };
 use cosmwasm_schema::cw_serde;
 use cosmwasm_std::{Addr, Decimal, QuerierWrapper, StdResult, Timestamp, Uint128};
@@ -43,7 +43,8 @@ pub const POOL_SPECS: Item<PoolSpecs> = Item::new("pool_specs");
 //used to handle races cases when the threshold is being crossed
 pub const THRESHOLD_PROCESSING: Item<bool> = Item::new("threshold_processing");
 //amounts that get sent to designated areas when threhsold is crossed
-pub const THRESHOLD_PAYOUT_AMOUNTS: Item<ThresholdPayoutAmounts> = Item::new("threshold_payout_amounts");
+pub const THRESHOLD_PAYOUT_AMOUNTS: Item<ThresholdPayoutAmounts> =
+    Item::new("threshold_payout_amounts");
 //pool identifier incriments by 1 every pool
 pub const NEXT_POSITION_ID: Item<u64> = Item::new("next_position_id");
 //information liquiidty positions in pools
@@ -68,9 +69,9 @@ pub struct Commiting {
     //last time someone commited to pool
     pub last_commited: Timestamp,
     //last amount of bluechips commited
-    pub last_payment_bluechip: Uint128,  
+    pub last_payment_bluechip: Uint128,
     //last amount converted to USD
-    pub last_payment_usd: Uint128, 
+    pub last_payment_usd: Uint128,
 }
 #[cw_serde]
 pub struct PoolState {
@@ -79,7 +80,7 @@ pub struct PoolState {
     pub reserve0: Uint128, // bluechip token
     pub reserve1: Uint128, // cw20 token
     //how many liquidity units are deposited in the pool
-    pub total_liquidity: Uint128, 
+    pub total_liquidity: Uint128,
     pub block_time_last: u64,
     //
     pub price0_cumulative_last: Uint128,
@@ -136,7 +137,6 @@ pub struct OracleInfo {
     pub oracle_addr: Addr,
 }
 
-
 #[cw_serde]
 pub struct ThresholdPayoutAmounts {
     // once the threshold is crossed, the amount distributed directly to the creator
@@ -167,7 +167,7 @@ pub struct Position {
     // when was position opened
     pub created_at: u64,
     pub last_fee_collection: u64,
-    //when positions are too small, they take a liquidity accumulation penalty. 
+    //when positions are too small, they take a liquidity accumulation penalty.
     pub fee_size_multiplier: Decimal,
 }
 
