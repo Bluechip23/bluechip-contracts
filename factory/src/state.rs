@@ -21,7 +21,7 @@ pub const POOLS_BY_ID: Map<u64, PoolDetails> = Map::new("pools_by_id");
 pub const POOLS_BY_CONTRACT_ADDRESS: Map<Addr, PoolStateResponseForFactory> = Map::new("pools_by_contract_address");
 //keep track of pool creation state in case any corruption or bad executes.
 pub const POOL_CONTRACT_ADDRESS: Item<Addr> = Item::new("pool_contract_addr");
-pub const CREATION_STATES: Map<u64, CreationState> = Map::new("creation_states");
+pub const POOL_CREATION_STATES: Map<u64, PoolCreationState> = Map::new("creation_states");
 //pyth info for conversions
 pub const PYTH_CONTRACT_ADDR: &str = "neutron1m2emc93m9gpwgsrsf2vylv9xvgqh654630v7dfrhrkmr5slly53spg85wv";
 //direct feed used from pyth contract that exposes ATOM/USD price
@@ -68,7 +68,7 @@ pub struct CommitInfo {
 
 //used to track the state of the pool throughout creation. Will trigger different events upon partial or complete creation
 #[cw_serde]
-pub struct CreationState {
+pub struct PoolCreationState {
     //tracking pool by id
     pub pool_id: u64,
     //creator of the pool

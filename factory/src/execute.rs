@@ -1,18 +1,18 @@
 use crate::error::ContractError;
+use crate::internal_pool_oracle::{BlueChipPriceInternalOracle, PriceCache, ATOM_BLUECHIP_POOL_CONTRACT_ADDRESS, INTERNAL_ORACLE, ROTATION_INTERVAL, UPDATE_INTERVAL};
 use crate::msg::{CreatorTokenInfo, ExecuteMsg, TokenInstantiateMsg};
 use crate::pool_struct::CreatePool;
 use crate::pool_create_cleanup::handle_cleanup_reply;
-use crate::reply::{finalize_pool, mint_create_pool, set_tokens};
+use crate::pool_creation_reply::{finalize_pool, mint_create_pool, set_tokens};
 use crate::state::{
-    CreationState, CreationStatus, FactoryInstantiate,
-    CREATION_STATES, FACTORYINSTANTIATEINFO, NEXT_POOL_ID, TEMPCREATORWALLETADDR, TEMPPOOLID,
+    PoolCreationState, CreationStatus, FactoryInstantiate,
+    POOL_CREATION_STATES, FACTORYINSTANTIATEINFO, NEXT_POOL_ID, TEMPCREATORWALLETADDR, TEMPPOOLID,
     TEMPPOOLINFO,
 };
 #[cfg(not(feature = "library"))]
 use cosmwasm_std::entry_point;
 use cosmwasm_std::{
-    to_json_binary, Deps, DepsMut, Env, MessageInfo, Reply, Response, StdError, StdResult, SubMsg,
-    Uint128, WasmMsg,
+    to_json_binary, Addr, Deps, DepsMut, Env, MessageInfo, Reply, Response, StdError, StdResult, SubMsg, Uint128, WasmMsg
 };
 use cw20::MinterResponse;
 use std::env;
@@ -30,13 +30,27 @@ pub const CLEANUP_NFT_REPLY_ID: u64 = 101;
 //instantiates the factory for pools to use.
 pub fn instantiate(
     deps: DepsMut,
-    _env: Env,
+    env: Env,
     _info: MessageInfo,
     msg: FactoryInstantiate,
 ) -> Result<Response, ContractError> {
     cw2::set_contract_version(deps.storage, CONTRACT_NAME, CONTRACT_VERSION)?;
     //saves the factory parameters set in the json file
     FACTORYINSTANTIATEINFO.save(deps.storage, &msg)?;
+
+     let internal_bluechip_price_oracle = BlueChipPriceInternalOracle {
+        selected_pools: vec![ATOM_BLUECHIP_POOL_CONTRACT_ADDRESS.to_string()],
+        atom_pool_contract_address: Addr::unchecked(ATOM_BLUECHIP_POOL_CONTRACT_ADDRESS),
+        last_rotation: env.block.time.seconds(),
+        rotation_interval: ROTATION_INTERVAL,
+        bluechip_price_cache: PriceCache {
+            last_price: Uint128::zero(),
+            last_update: 0,
+            twap_observations: vec![],
+        },
+        update_interval: UPDATE_INTERVAL,
+    };
+    INTERNAL_ORACLE.save(deps.storage, &internal_bluechip_price_oracle)?;
     //sets the first pool created by this factory to 1
     //viola
     Ok(Response::new().add_attribute("action", "init_contract"))
@@ -136,7 +150,7 @@ fn execute_create(
         label: token_info.token_name,
     };
     //set the tracking state for pool creation - all fields start as none and get populated throughout pool creation
-    let creation_state = CreationState {
+    let creation_state = PoolCreationState {
         pool_id,
         creator: info.sender,
         creator_token_address: None,
@@ -146,7 +160,7 @@ fn execute_create(
         status: CreationStatus::Started,
         retry_count: 0,
     };
-    CREATION_STATES.save(deps.storage, pool_id, &creation_state)?;
+    POOL_CREATION_STATES.save(deps.storage, pool_id, &creation_state)?;
     //triggers reply function when things go well.
     let sub_msg = vec![SubMsg::reply_on_success(msg, SET_TOKENS)];
 
@@ -160,7 +174,7 @@ fn execute_create(
 #[entry_point]
 //called by execute create.
 //each step can either succeed (advancing to the next step) or fail (triggering cleanup) - found on reply.rs and pool_create_cleanup respectively
-pub fn reply(deps: DepsMut, env: Env, msg: Reply) -> Result<Response, ContractError> {
+pub fn pool_creation_reply(deps: DepsMut, env: Env, msg: Reply) -> Result<Response, ContractError> {
     match msg.id {
         SET_TOKENS => set_tokens(deps, env, msg),
         MINT_CREATE_POOL => mint_create_pool(deps, env, msg),

@@ -76,11 +76,11 @@ impl PoolDetails {
     ) -> StdResult<[TokenInfo; 2]> {
         Ok([
             TokenInfo {
-                amount: self.pool_token_info[0].query_pool(querier, contract_addr.clone())?,
+                amount: self.pool_token_info[0].query_pool_token_info(querier, contract_addr.clone())?,
                 info: self.pool_token_info[0].clone(),
             },
             TokenInfo {
-                amount: self.pool_token_info[1].query_pool(querier, contract_addr)?,
+                amount: self.pool_token_info[1].query_pool_token_info(querier, contract_addr)?,
                 info: self.pool_token_info[1].clone(),
             },
         ])

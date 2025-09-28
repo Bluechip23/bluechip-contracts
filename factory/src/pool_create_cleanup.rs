@@ -4,7 +4,7 @@ use cw721_base::Action;
 
 use crate::error::ContractError;
 use crate::execute::{BURN_ADDRESS, CLEANUP_NFT_REPLY_ID, CLEANUP_TOKEN_REPLY_ID};
-use crate::state::{CreationState, CreationStatus, CREATION_STATES, TEMPCREATORWALLETADDR, TEMPNFTADDR, TEMPPOOLINFO, TEMPPOOLID, TEMPCREATORTOKENADDR};
+use crate::state::{PoolCreationState, CreationStatus, POOL_CREATION_STATES, TEMPCREATORWALLETADDR, TEMPNFTADDR, TEMPPOOLINFO, TEMPPOOLID, TEMPCREATORTOKENADDR};
 
 //clean and remove all temp information used during pool creation
 pub fn cleanup_temp_state(storage: &mut dyn Storage) -> Result<(), ContractError> {
@@ -17,7 +17,7 @@ pub fn cleanup_temp_state(storage: &mut dyn Storage) -> Result<(), ContractError
 }
 
 //if partial transaction happens 
-pub fn create_cleanup_messages(creation_state: &CreationState) -> Result<Vec<SubMsg>, ContractError> {
+pub fn create_cleanup_messages(creation_state: &PoolCreationState) -> Result<Vec<SubMsg>, ContractError> {
     // Changed return type to Vec<SubMsg>
     let mut messages = vec![];
 
@@ -64,7 +64,7 @@ pub fn handle_cleanup_reply(deps: DepsMut, _env: Env, msg: Reply) -> Result<Resp
         SubMsgResult::Ok(_) => {
             // Cleanup succeeded - remove creation state
             if let Ok(pool_id) = TEMPPOOLID.load(deps.storage) {
-                CREATION_STATES.remove(deps.storage, pool_id);
+                POOL_CREATION_STATES.remove(deps.storage, pool_id);
                 cleanup_temp_state(deps.storage)?;
             }
 
@@ -73,10 +73,10 @@ pub fn handle_cleanup_reply(deps: DepsMut, _env: Env, msg: Reply) -> Result<Resp
         SubMsgResult::Err(err) => {
             
             if let Ok(pool_id) = TEMPPOOLID.load(deps.storage) {
-                if let Ok(mut state) = CREATION_STATES.load(deps.storage, pool_id) {
+                if let Ok(mut state) = POOL_CREATION_STATES.load(deps.storage, pool_id) {
                     state.status = CreationStatus::Failed;
                     state.retry_count += 1;
-                    CREATION_STATES.save(deps.storage, pool_id, &state)?;
+                    POOL_CREATION_STATES.save(deps.storage, pool_id, &state)?;
                 }
             }
 

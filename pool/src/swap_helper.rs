@@ -4,13 +4,11 @@ use crate::error::ContractError;
 
 use crate::generic_helpers::decimal2decimal256;
 
-use crate::oracle::{OracleData, PriceResponse, PythQueryMsg};
-use crate::state::PoolState;
-use crate::state::{MAX_ORACLE_AGE, POOL_STATE};
+use crate::state::{PoolState, POOL_INFO};
 use cosmwasm_std::{
-    Addr, Decimal, Decimal256, Deps, Fraction, QuerierWrapper, StdError, StdResult, Uint128,
-    Uint256,
+    Decimal, Decimal256, Deps, Fraction, StdResult, Uint128, Uint256
 };
+use pool_factory_interfaces::{ConversionResponse, FactoryQueryMsg};
 use std::str::FromStr;
 // Update price accumulator with time-weighted average
 pub fn update_price_accumulator(
@@ -48,108 +46,27 @@ pub fn update_price_accumulator(
     Ok(())
 }
 
-pub fn bluechip_to_usd(
-    cached_price: Uint128,
-    bluechip_amount: Uint128,
-    expo: i32, // micro-bluechip
-) -> StdResult<Uint128> {
-    // validate expected exponent - oracle prices should have 8 decimal places
-    if expo != -8 {
-        return Err(StdError::generic_err(format!(
-            "Unexpected price exponent: {}. Expected: -8",
-            expo
-        )));
-    }
-    // dividing by 100M adjusts for the -8 exponent (8 decimal places)
-    let usd_micro_u256 = (Uint256::from(bluechip_amount) * Uint256::from(cached_price))
-        / Uint256::from(100_000_000u128);
-
-    let usd_micro = Uint128::try_from(usd_micro_u256)?;
-    //returns USD amount in micro-USD (6 decimals)
-    Ok(usd_micro)
+pub fn get_usd_value(deps: Deps, bluechip_amount: Uint128) -> StdResult<Uint128> {
+    let factory_address = POOL_INFO.load(deps.storage)?;
+    
+    let response: ConversionResponse = deps.querier.query_wasm_smart(
+        factory_address.factory_addr,
+        &FactoryQueryMsg::ConvertBluechipToUsd { amount: bluechip_amount },
+    )?;
+    
+    Ok(response.amount)
 }
 
-//usd to bluechip using cahched price and handles decimal precision
-pub fn usd_to_bluechip(
-    usd_amount: Uint128,
-    // micro-USD (6 decimals)
-    cached_price: Uint128,
-) -> StdResult<Uint128> {
-    if cached_price.is_zero() {
-        return Err(StdError::generic_err("Invalid zero price"));
-    }
-    //100 multiplier adjusts for decimal precision differences
-    let bluechip_micro_u256 =
-        (Uint256::from(usd_amount) * Uint256::from(100u128)) / Uint256::from(cached_price);
-    Uint128::try_from(bluechip_micro_u256).map_err(|_| StdError::generic_err("Overflow"))
+pub fn get_bluechip_amount(deps: Deps, usd_amount: Uint128) -> StdResult<Uint128> {
+    let factory_address = POOL_INFO.load(deps.storage)?;
+    
+    let response: ConversionResponse = deps.querier.query_wasm_smart(
+        factory_address.factory_addr,
+        &FactoryQueryMsg::ConvertUsdToBluechip { amount: usd_amount },
+    )?;
+    
+    Ok(response.amount)
 }
-
-pub fn get_and_validate_oracle_price(
-    querier: &QuerierWrapper,
-    oracle_addr: &Addr,
-    symbol: &str,
-    current_time: u64,
-) -> StdResult<OracleData> {
-    let resp: PriceResponse = querier
-        .query_wasm_smart(
-            oracle_addr.clone(),
-            &PythQueryMsg::GetPrice {
-                price_id: symbol.into(),
-            },
-        )
-        .map_err(|e| StdError::generic_err(format!("Oracle query failed: {}", e)))?;
-
-    // Staleness check
-    let zero: Uint128 = Uint128::zero();
-    if resp.price <= zero {
-        return Err(StdError::generic_err(
-            "Invalid zero or negative price from oracle",
-        ));
-    }
-
-    if current_time.saturating_sub(resp.publish_time) > MAX_ORACLE_AGE {
-        return Err(StdError::generic_err("Oracle price too stale"));
-    }
-    Ok(OracleData {
-        price: resp.price,
-        expo: resp.expo,
-    })
-}
-
-pub fn validate_oracle_price_against_twap(
-    deps: &Deps,
-    oracle_price: Uint128,
-    current_time: u64,
-) -> Result<(), ContractError> {
-    let pool_state = POOL_STATE.load(deps.storage)?;
-
-    // Calculate TWAP over last hour (or since last update)
-    let time_elapsed = current_time.saturating_sub(pool_state.block_time_last);
-
-    if time_elapsed > 3600 && !pool_state.reserve0.is_zero() {
-        // Calculate average price from accumulator
-        let twap_price = pool_state
-            .price0_cumulative_last
-            .checked_div(Uint128::from(time_elapsed))
-            .map_err(|_| ContractError::DivideByZero {})?;
-
-        // Check deviation (allow 20% max)
-        let deviation = if oracle_price > twap_price {
-            Decimal::from_ratio(oracle_price - twap_price, twap_price)
-        } else {
-            Decimal::from_ratio(twap_price - oracle_price, twap_price)
-        };
-
-        if deviation > Decimal::percent(20) {
-            return Err(ContractError::OraclePriceDeviation {
-                oracle: oracle_price,
-                twap: twap_price,
-            });
-        }
-    }
-    Ok(())
-}
-
 //used in reverse query to find price for a desired amount of an unowned token in a token pair
 //compuets a required offer amount for a desired ask amount
 pub fn compute_offer_amount(

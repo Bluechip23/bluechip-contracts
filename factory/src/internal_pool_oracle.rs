@@ -8,7 +8,7 @@ use cosmwasm_std::{
     Addr, Decimal, Deps, DepsMut, Env, Order, Response, StdError, StdResult, Uint128, Uint256,
 };
 use cw_storage_plus::Item;
-use pool_factory_interfaces::{PoolQueryMsg, PoolStateResponseForFactory};
+use pool_factory_interfaces::{ConversionResponse, PoolQueryMsg, PoolStateResponseForFactory};
 use sha2::{Digest, Sha256};
 
 // ============ CONSTANTS ============
@@ -20,15 +20,15 @@ pub const MIN_POOL_LIQUIDITY: Uint128 = Uint128::new(10_000_000_000); // Min liq
 pub const TWAP_WINDOW: u64 = 3600; // 1 hour TWAP window
 pub const UPDATE_INTERVAL: u64 = 300; // 5 minutes between updates
 pub const ROTATION_INTERVAL: u64 = 3600; // Rotate random pools every hour
-pub const INTERNAL_ORACLE: Item<InternalOracle> = Item::new("internal_oracle");
+pub const INTERNAL_ORACLE: Item<BlueChipPriceInternalOracle> = Item::new("internal_oracle");
 
 #[cw_serde]
-pub struct InternalOracle {
+pub struct BlueChipPriceInternalOracle {
     pub selected_pools: Vec<String>, // Currently selected pools (always includes ATOM)
     pub atom_pool_contract_address: Addr, // Permanent ATOM/BLUECHIP pool ID
     pub last_rotation: u64,          // When pools were last rotated
     pub rotation_interval: u64,      // How often to rotate pools
-    pub price_cache: PriceCache,
+    pub bluechip_price_cache: PriceCache,
     pub update_interval: u64, // 5 minutes
 }
 #[cw_serde]
@@ -128,9 +128,9 @@ pub fn update_internal_oracle_price(deps: DepsMut, env: Env) -> Result<Response,
     let current_time = env.block.time.seconds();
 
     // Check 5-minute interval
-    if current_time < oracle.price_cache.last_update + oracle.update_interval {
+    if current_time < oracle.bluechip_price_cache.last_update + oracle.update_interval {
         return Err(ContractError::UpdateTooSoon {
-            next_update: oracle.price_cache.last_update + oracle.update_interval,
+            next_update: oracle.bluechip_price_cache.last_update + oracle.update_interval,
         });
     }
 
@@ -147,13 +147,8 @@ pub fn update_internal_oracle_price(deps: DepsMut, env: Env) -> Result<Response,
     let (weighted_price, atom_price) =
         calculate_weighted_price_with_atom(deps.as_ref(), &pools_to_use)?;
 
-    // Validate against TWAP if we have history
-    if !oracle.price_cache.twap_observations.is_empty() {
-        validate_price_against_twap(&oracle.price_cache, weighted_price, current_time)?;
-    }
-
     // Add new observation
-    oracle.price_cache.twap_observations.push(PriceObservation {
+    oracle.bluechip_price_cache.twap_observations.push(PriceObservation {
         timestamp: current_time,
         price: weighted_price,
         atom_pool_price: atom_price,
@@ -162,16 +157,16 @@ pub fn update_internal_oracle_price(deps: DepsMut, env: Env) -> Result<Response,
     // Keep only observations within TWAP window
     let cutoff_time = current_time.saturating_sub(TWAP_WINDOW);
     oracle
-        .price_cache
+        .bluechip_price_cache
         .twap_observations
         .retain(|obs| obs.timestamp > cutoff_time);
 
     // Calculate TWAP
-    let twap_price = calculate_twap(&oracle.price_cache.twap_observations)?;
+    let twap_price = calculate_twap(&oracle.bluechip_price_cache.twap_observations)?;
 
     // Update cache
-    oracle.price_cache.last_price = twap_price;
-    oracle.price_cache.last_update = current_time;
+    oracle.bluechip_price_cache.last_price = twap_price;
+    oracle.bluechip_price_cache.last_update = current_time;
 
     INTERNAL_ORACLE.save(deps.storage, &oracle)?;
 
@@ -264,35 +259,6 @@ fn calculate_twap(observations: &[PriceObservation]) -> Result<Uint128, Contract
 
     Ok(weighted_average)
 }
-
-pub fn validate_price_against_twap(
-    cache: &PriceCache,
-    new_price: Uint128,
-    current_time: u64,
-) -> Result<(), ContractError> {
-    if cache.twap_observations.len() < 3 {
-        return Ok(()); // Not enough history yet
-    }
-
-    // Calculate recent TWAP
-    let recent_twap = calculate_twap(&cache.twap_observations)?;
-
-    // Check deviation (20% max as in your original code)
-    let deviation = if new_price > recent_twap {
-        Decimal::from_ratio(new_price - recent_twap, recent_twap)
-    } else {
-        Decimal::from_ratio(recent_twap - new_price, recent_twap)
-    };
-
-    if deviation > Decimal::percent(20) {
-        return Err(ContractError::OraclePriceDeviation {
-            oracle: new_price,
-            twap: recent_twap,
-        });
-    }
-
-    Ok(())
-}
 pub fn query_pyth_atom_usd_price(deps: Deps, env: Env) -> StdResult<Uint128> {
     let factory = FACTORYINSTANTIATEINFO.load(deps.storage)?;
 
@@ -337,17 +303,29 @@ pub fn get_bluechip_usd_price(deps: Deps, env: Env) -> StdResult<Uint128> {
     Ok(bluechip_usd_price)
 }
 
-pub fn bluechip_to_usd(deps: Deps, bluechip_amount: Uint128, env: Env) -> StdResult<Uint128> {
+pub fn bluechip_to_usd(
+    deps: Deps,
+    bluechip_amount: Uint128,
+    env: Env,
+) -> StdResult<ConversionResponse> {
+    let oracle = INTERNAL_ORACLE.load(deps.storage)?;
     let cached_price = get_bluechip_usd_price(deps, env)?;
+    if cached_price.is_zero() {
+        return Err(StdError::generic_err("Invalid zero price"));
+    }
 
     // Your original logic
-    let usd_micro_u256 = (Uint256::from(bluechip_amount) * Uint256::from(cached_price))
-        / Uint256::from(100_000_000u128);
+    let usd_amount = (bluechip_amount * Uint128::from(1_000_000u128)) / cached_price;
 
-    Ok(Uint128::try_from(usd_micro_u256)?)
+    Ok(ConversionResponse {
+        amount: usd_amount,
+        rate_used: cached_price,
+        timestamp: oracle.bluechip_price_cache.last_update,
+    })
 }
 
-pub fn usd_to_bluechip(deps: Deps, usd_amount: Uint128, env: Env) -> StdResult<Uint128> {
+pub fn usd_to_bluechip(deps: Deps, usd_amount: Uint128, env: Env) -> StdResult<ConversionResponse> {
+    let oracle = INTERNAL_ORACLE.load(deps.storage)?;
     let cached_price = get_bluechip_usd_price(deps, env)?;
 
     if cached_price.is_zero() {
@@ -355,10 +333,12 @@ pub fn usd_to_bluechip(deps: Deps, usd_amount: Uint128, env: Env) -> StdResult<U
     }
 
     // Your original logic
-    let bluechip_micro_u256 =
-        (Uint256::from(usd_amount) * Uint256::from(100u128)) / Uint256::from(cached_price);
-
-    Uint128::try_from(bluechip_micro_u256).map_err(|_| StdError::generic_err("Overflow"))
+    let bluechip_amount = (usd_amount * Uint128::from(100u128)) / cached_price;
+    Ok(ConversionResponse {
+        amount: bluechip_amount,
+        rate_used: cached_price,
+        timestamp: oracle.bluechip_price_cache.last_update,
+    })
 }
 
 fn calculate_price_from_reserves(

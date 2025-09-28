@@ -72,7 +72,7 @@ impl WasmMockQuerier {
         match &request {
             QueryRequest::Wasm(WasmQuery::Smart {contract_addr, msg})// => {
                 => match from_json(&msg).unwrap() {
-                    QueryMsg::Pool {} => {
+                    QueryMsg::Pool {pool_address} => {
                        let pair_info: PoolDetails =
                         match self.betfi_pair_querier.pairs.get(contract_addr) {
                             Some(v) => v.clone(),

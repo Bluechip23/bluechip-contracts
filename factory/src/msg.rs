@@ -22,8 +22,6 @@ pub struct CreatePoolReplyMsg {
     pub commit_fee_info: CommitFeeInfo,
     pub commit_threshold_limit_usd: Uint128,
     pub commit_amount_for_threshold: Uint128,
-    pub pyth_atom_usd_price_feed_id: String,
-    pub pyth_contract_addr_for_conversions: String,
     pub token_address: Addr,
     //address called by the pool to mint new liquidity position NFTs.
     pub position_nft_address: Addr,

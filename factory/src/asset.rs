@@ -44,7 +44,7 @@ impl TokenType {
         }
     }
 
-    pub fn query_pool(&self, querier: &QuerierWrapper, pool_addr: Addr) -> StdResult<Uint128> {
+    pub fn query_pool_token_info(&self, querier: &QuerierWrapper, pool_addr: Addr) -> StdResult<Uint128> {
         match self {
             TokenType::CreatorToken { contract_addr, .. } => {
                 query_token_balance(querier, contract_addr.clone(), pool_addr)

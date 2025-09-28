@@ -134,8 +134,6 @@ pub struct PoolDetails {
 pub struct OracleInfo {
     //oracle contract addresss
     pub oracle_addr: Addr,
-    //asset symbol being viewed
-    pub oracle_symbol: String,
 }
 
 

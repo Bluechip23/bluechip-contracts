@@ -162,8 +162,6 @@ pub struct PoolInstantiateMsg {
     pub commit_amount_for_threshold_usd: Uint128,
     pub commit_amount_for_threshold: Uint128,
     pub position_nft_address: Addr,
-    pub oracle_addr: Addr,
-    pub oracle_symbol: String,
     pub token_address: Addr,
 }
 

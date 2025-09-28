@@ -1,10 +1,12 @@
 use cosmwasm_schema::{cw_serde, QueryResponses};
-use cosmwasm_std::{to_json_binary, Addr, BalanceResponse, BankQuery, Deps, Env, QuerierWrapper, QueryRequest, StdError, StdResult, Uint128, WasmQuery};
+use cosmwasm_std::{to_json_binary, Addr, BalanceResponse, BankQuery, Binary, Deps, Env, QuerierWrapper, QueryRequest, StdError, StdResult, Uint128, WasmQuery};
 use cw20::{Cw20QueryMsg, TokenInfoResponse, BalanceResponse as Cw20BalanceResponse};
+use pool_factory_interfaces::{FactoryQueryMsg, PoolStateResponseForFactory};
+use crate::internal_pool_oracle::{bluechip_to_usd, get_bluechip_usd_price, usd_to_bluechip};
 use crate::pool_struct::PoolDetails;
 use crate::msg::FactoryInstantiateResponse;
 use crate::pyth_types::{PythQueryMsg, PythPriceFeedResponse};
-use crate::state::{FACTORYINSTANTIATEINFO, MAX_PRICE_AGE_SECONDS_BEFORE_STALE};
+use crate::state::{FACTORYINSTANTIATEINFO, MAX_PRICE_AGE_SECONDS_BEFORE_STALE, POOLS_BY_CONTRACT_ADDRESS};
 
 #[cw_serde]
 #[derive(QueryResponses)]
@@ -12,7 +14,42 @@ pub enum QueryMsg {
     #[returns(FactoryInstantiateResponse)]
     Factory {},
     #[returns(PoolDetails)]
-    Pool {},
+    Pool { pool_address: String },
+    #[returns(cosmwasm_std::Binary)]
+    InternalBlueChipOracleQuery (FactoryQueryMsg),
+}
+
+pub fn query(deps: Deps, env: Env, msg: QueryMsg) -> StdResult<Binary> {
+    match msg {
+        QueryMsg::Factory {} => to_json_binary(&query_active_factory(deps)?),
+        QueryMsg::Pool { pool_address } => to_json_binary(&query_pool(deps, pool_address)?),
+        QueryMsg::InternalBlueChipOracleQuery(oracle_msg) => handle_internal_bluechip_oracle_query(deps, env, oracle_msg),
+    }
+}
+
+pub fn query_pool(deps: Deps, pool_address: String) -> StdResult<PoolStateResponseForFactory> {
+    // Validate the address
+    let pool_addr = deps.api.addr_validate(&pool_address)?;
+    
+    // Load from storage - you'll need a map by address
+    let pool_details = POOLS_BY_CONTRACT_ADDRESS.load(deps.storage, pool_addr)?;
+    Ok(pool_details)
+}
+
+// Add oracle query handler
+pub fn handle_internal_bluechip_oracle_query(deps: Deps, env: Env, msg: FactoryQueryMsg) -> StdResult<Binary> {
+    match msg {
+        FactoryQueryMsg::GetBluechipUsdPrice {} => {
+            to_json_binary(&get_bluechip_usd_price(deps, env)?)
+        },
+        FactoryQueryMsg::ConvertBluechipToUsd { amount } => {
+            to_json_binary(&bluechip_to_usd(deps, amount, env)?)
+        },
+        FactoryQueryMsg::ConvertUsdToBluechip { amount } => {
+            to_json_binary(&usd_to_bluechip(deps, amount, env)?)
+        },
+    }
+    
 }
 
 pub fn query_active_factory(deps: Deps) -> StdResult<FactoryInstantiateResponse> {
