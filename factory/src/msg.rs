@@ -36,6 +36,8 @@ pub enum ExecuteMsg {
         pool_msg: CreatePool,
         token_info: CreatorTokenInfo,
     },
+    UpdateOraclePrice {},
+    ForceRotateOraclePools {},
 }
 
 #[cw_serde]

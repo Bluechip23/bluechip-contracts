@@ -1,5 +1,5 @@
 use crate::state::{
-    CreationState, CreationStatus, FactoryInstantiate, SETCOMMIT, CREATION_STATES, NEXT_POOL_ID,
+    PoolCreationState, CreationStatus, FactoryInstantiate, SETCOMMIT, POOL_CREATION_STATES, NEXT_POOL_ID,
     POOLS_BY_ID, TEMPCREATORWALLETADDR, TEMPNFTADDR, TEMPPOOLINFO, TEMPPOOLID, TEMPCREATORTOKENADDR,
 };
 use cosmwasm_std::{

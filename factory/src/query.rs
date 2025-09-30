@@ -2,7 +2,7 @@ use cosmwasm_schema::{cw_serde, QueryResponses};
 use cosmwasm_std::{to_json_binary, Addr, BalanceResponse, BankQuery, Binary, Deps, Env, QuerierWrapper, QueryRequest, StdError, StdResult, Uint128, WasmQuery};
 use cw20::{Cw20QueryMsg, TokenInfoResponse, BalanceResponse as Cw20BalanceResponse};
 use pool_factory_interfaces::{FactoryQueryMsg, PoolStateResponseForFactory};
-use crate::internal_pool_oracle::{bluechip_to_usd, get_bluechip_usd_price, usd_to_bluechip};
+use crate::internal_bluechip_price_oracle::{bluechip_to_usd, get_bluechip_usd_price, usd_to_bluechip};
 use crate::pool_struct::PoolDetails;
 use crate::msg::FactoryInstantiateResponse;
 use crate::pyth_types::{PythQueryMsg, PythPriceFeedResponse};

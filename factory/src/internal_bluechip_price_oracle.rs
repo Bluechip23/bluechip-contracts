@@ -5,22 +5,21 @@ use crate::{
 };
 use cosmwasm_schema::cw_serde;
 use cosmwasm_std::{
-    Addr, Deps, DepsMut, Env, Order, Response, StdError, StdResult, Uint128, Uint256,
+    Addr, Deps, DepsMut, Env, MessageInfo, Order, Response, StdError, StdResult, Uint128, Uint256
 };
 use cw_storage_plus::Item;
 use pool_factory_interfaces::{ConversionResponse, PoolQueryMsg, PoolStateResponseForFactory};
 use sha2::{Digest, Sha256};
 
-// ============ CONSTANTS ============
-pub const ATOM_BLUECHIP_POOL_ID: u64 = 112; // Your ATOM/BLUECHIP pool
 pub const ATOM_BLUECHIP_POOL_CONTRACT_ADDRESS: &str =
     "cosmos1atom_bluechip_pool_test_addr_000000000000";
-pub const ORACLE_POOL_COUNT: usize = 7; // Total pools to sample (including ATOM)
+pub const ORACLE_POOL_COUNT: usize = 4; // Total pools to sample (including ATOM)
 pub const MIN_POOL_LIQUIDITY: Uint128 = Uint128::new(10_000_000_000); // Min liquidity for eligibility
 pub const TWAP_WINDOW: u64 = 3600; // 1 hour TWAP window
 pub const UPDATE_INTERVAL: u64 = 300; // 5 minutes between updates
 pub const ROTATION_INTERVAL: u64 = 3600; // Rotate random pools every hour
 pub const INTERNAL_ORACLE: Item<BlueChipPriceInternalOracle> = Item::new("internal_oracle");
+const PRICE_PRECISION: u128 = 1_000_000;
 
 #[cw_serde]
 pub struct BlueChipPriceInternalOracle {
@@ -103,7 +102,31 @@ pub fn select_random_pools_with_atom(
     Ok(selected)
 }
 
-fn get_eligible_creator_pools(
+pub fn initialize_internal_bluechip_oracle(
+    deps: DepsMut,
+    env: Env,
+) -> Result<Response, ContractError> {
+    // Initialize with ATOM pool and random selection
+    let selected_pools = select_random_pools_with_atom(deps.as_ref(), env.clone(), ORACLE_POOL_COUNT)?;
+    
+    let oracle = BlueChipPriceInternalOracle {
+        selected_pools,
+        atom_pool_contract_address: Addr::unchecked(ATOM_BLUECHIP_POOL_CONTRACT_ADDRESS),
+        last_rotation: env.block.time.seconds(),
+        rotation_interval: ROTATION_INTERVAL,
+        bluechip_price_cache: PriceCache {
+            last_price: Uint128::zero(),
+            last_update: 0,
+            twap_observations: vec![],
+        },
+        update_interval: UPDATE_INTERVAL,
+    };
+    
+    INTERNAL_ORACLE.save(deps.storage, &oracle)?;
+    Ok(Response::new())
+}
+
+pub fn get_eligible_creator_pools(
     deps: Deps,
     atom_pool_contract_address: &str,
 ) -> StdResult<Vec<String>> {
@@ -113,8 +136,12 @@ fn get_eligible_creator_pools(
 
     let mut eligible = Vec::new();
 
-    for (pool_address, _pool_data) in all_pools {
+    for (pool_address, pool_data) in all_pools {
         if pool_address.as_str() == atom_pool_contract_address {
+            continue;
+        }
+        let total_liquidity = pool_data.reserve0 + pool_data.reserve1;
+        if total_liquidity < MIN_POOL_LIQUIDITY {
             continue;
         }
         eligible.push(pool_address.to_string());
@@ -181,56 +208,118 @@ pub fn update_internal_oracle_price(deps: DepsMut, env: Env) -> Result<Response,
 
 fn calculate_weighted_price_with_atom(
     deps: Deps,
-    pool_ids: &[String],
+    pool_addresses: &[String],
 ) -> Result<(Uint128, Uint128), ContractError> {
-    let atom_pool_contract_address = ATOM_BLUECHIP_POOL_CONTRACT_ADDRESS.to_string();
-    let mut atom_pool_price = Uint128::zero();
-    let mut has_atom_pool = false;
+    let atom_pool_address = ATOM_BLUECHIP_POOL_CONTRACT_ADDRESS.to_string();
 
-    let mut weighted_sum = Uint256::zero();
-    let mut total_weight = Uint256::zero();
-
-    // Get the pool contract address (assuming all pools are in the same contract)
-
-    for pool_contract_address in pool_ids {
-        // QUERY the pool contract for this pool's state
-        let pool_state: PoolStateResponseForFactory = deps.querier.query_wasm_smart(
-            pool_contract_address.to_string(),
-            &PoolQueryMsg::GetPoolState {
-                pool_contract_address: pool_contract_address.clone(),
-            },
-        )?;
-
-        // Calculate price (bluechip per other token)
-        let price = calculate_price_from_reserves(
-            pool_state.reserve0, // bluechip
-            pool_state.reserve1, // creator token or ATOM
-        )?;
-
-        if pool_contract_address == &atom_pool_contract_address {
-            has_atom_pool = true;
-            atom_pool_price = price;
-
-            // Give ATOM pool 2x weight for stability
-            let liquidity_weight = pool_state.reserve0.checked_mul(Uint128::from(2u128))?;
-            weighted_sum += Uint256::from(price) * Uint256::from(liquidity_weight);
-            total_weight += Uint256::from(liquidity_weight);
-        } else {
-            // Normal weight for creator pools
-            let liquidity_weight = pool_state.reserve0;
-            weighted_sum += Uint256::from(price) * Uint256::from(liquidity_weight);
-            total_weight += Uint256::from(liquidity_weight);
-        }
-    }
-
-    if !has_atom_pool {
+    // Check ATOM pool is included
+    if !pool_addresses.contains(&atom_pool_address) {
         return Err(ContractError::MissingAtomPool {});
     }
 
-    let weighted_average = Uint128::try_from(weighted_sum / total_weight)
-        .map_err(|_| ContractError::Std(StdError::generic_err("conversion overflow")))?;
+    let mut weighted_sum = Uint256::zero();
+    let mut total_weight = Uint256::zero();
+    let mut atom_pool_price = Uint128::zero();
+    let mut has_atom_pool = false;
+    let mut successful_pools = 0;
 
-    Ok((weighted_average, atom_pool_price))
+    for pool_address in pool_addresses {
+        // Query pool state with error handling
+        match query_pool_safe(deps, pool_address) {
+            Ok(pool_state) => {
+                // Skip pools with insufficient liquidity
+                let total_liquidity = pool_state
+                    .reserve0
+                    .checked_add(pool_state.reserve1)
+                    .map_err(|_| ContractError::Std(StdError::generic_err("Liquidity overflow")))?;
+
+                if total_liquidity < MIN_POOL_LIQUIDITY {
+                    continue; // Skip this pool silently
+                }
+
+                // Calculate price
+                match calculate_price_from_reserves(pool_state.reserve0, pool_state.reserve1) {
+                    Ok(price) => {
+                        let liquidity_weight = if pool_address == &atom_pool_address {
+                            has_atom_pool = true;
+                            atom_pool_price = price;
+
+                            // ATOM pool gets 2x weight for stability
+                            pool_state
+                                .reserve0
+                                .checked_mul(Uint128::from(2u128))
+                                .map_err(|_| {
+                                    ContractError::Std(StdError::generic_err("Weight overflow"))
+                                })?
+                        } else {
+                            // Normal weight for other pools
+                            pool_state.reserve0
+                        };
+
+                        // Add to weighted sum
+                        weighted_sum = weighted_sum
+                            .checked_add(
+                                Uint256::from(price)
+                                    .checked_mul(Uint256::from(liquidity_weight))
+                                    .map_err(|_| {
+                                        ContractError::Std(StdError::generic_err(
+                                            "Weighted sum overflow",
+                                        ))
+                                    })?,
+                            )
+                            .map_err(|_| {
+                                ContractError::Std(StdError::generic_err("Sum overflow"))
+                            })?;
+
+                        total_weight = total_weight
+                            .checked_add(Uint256::from(liquidity_weight))
+                            .map_err(|_| {
+                                ContractError::Std(StdError::generic_err("Weight sum overflow"))
+                            })?;
+
+                        successful_pools += 1;
+                    }
+                    Err(_) => {
+                        // Skip pools where price calculation fails
+                        continue;
+                    }
+                }
+            }
+            Err(_) => {
+                // Skip pools that fail to query
+                continue;
+            }
+        }
+    }
+
+    // Check if ATOM pool was successfully processed
+    if !has_atom_pool {
+        return Err(ContractError::Std(StdError::generic_err(
+            "ATOM pool price could not be calculated",
+        )));
+    }
+
+    // Ensure we have at least one successful pool
+    if successful_pools == 0 {
+        return Err(ContractError::InsufficientData {});
+    }
+
+    // Ensure we have non-zero weight
+    if total_weight.is_zero() {
+        return Err(ContractError::Std(StdError::generic_err(
+            "Total weight is zero",
+        )));
+    }
+
+    // Calculate final weighted average
+    let weighted_average = weighted_sum
+        .checked_div(total_weight)
+        .map_err(|_| ContractError::Std(StdError::generic_err("Division by zero")))?;
+
+    let final_price = Uint128::try_from(weighted_average)
+        .map_err(|_| ContractError::Std(StdError::generic_err("Price conversion overflow")))?;
+
+    Ok((final_price, atom_pool_price))
 }
 
 fn calculate_twap(observations: &[PriceObservation]) -> Result<Uint128, ContractError> {
@@ -339,15 +428,76 @@ pub fn usd_to_bluechip(deps: Deps, usd_amount: Uint128, env: Env) -> StdResult<C
     })
 }
 
+pub fn get_price_with_staleness_check(
+    deps: Deps,
+    env: Env,
+    max_staleness: u64,
+) -> StdResult<Uint128> {
+    let oracle = INTERNAL_ORACLE.load(deps.storage)?;
+    let current_time = env.block.time.seconds();
+
+    if current_time > oracle.bluechip_price_cache.last_update + max_staleness {
+        return Err(StdError::generic_err("Price is stale"));
+    }
+
+    Ok(oracle.bluechip_price_cache.last_price)
+}
+
 fn calculate_price_from_reserves(
     reserve0: Uint128, // bluechip
     reserve1: Uint128, // other token
-) -> StdResult<Uint128> {
+) -> Result<Uint128, ContractError> {
+    // Check for zero reserves
     if reserve1.is_zero() {
-        return Err(StdError::generic_err("Zero reserves"));
+        return Err(ContractError::Std(StdError::generic_err("Zero reserves")));
     }
 
-    // Price of reserve0 in terms of reserve1
-    // Adjust decimals as needed for your system
-    Ok((reserve0 * Uint128::from(1_000_000u128)) / reserve1)
+    // price = (reserve0 * PRECISION) / reserve1
+    let price = reserve0
+        .checked_mul(Uint128::from(PRICE_PRECISION))
+        .map_err(|_| ContractError::Std(StdError::generic_err("Price calculation overflow")))?
+        .checked_div(reserve1)
+        .map_err(|_| ContractError::Std(StdError::generic_err("Price division error")))?;
+
+    Ok(price)
+}
+
+fn query_pool_safe(
+    deps: Deps,
+    pool_address: &str,
+) -> Result<PoolStateResponseForFactory, ContractError> {
+    deps.querier
+        .query_wasm_smart(
+            pool_address.to_string(),
+            &PoolQueryMsg::GetPoolState {
+                pool_contract_address: pool_address.to_string(),
+            },
+        )
+        .map_err(|e| ContractError::QueryError {
+            msg: format!("Failed to query pool {}: {}", pool_address, e),
+        })
+}
+
+pub fn execute_force_rotate_pools(
+    deps: DepsMut,
+    env: Env,
+    info: MessageInfo,
+) -> Result<Response, ContractError> {
+    // Check admin permission
+     let config = FACTORYINSTANTIATEINFO.load(deps.storage)?;
+    if info.sender != config.factory_admin_address {
+        return Err(ContractError::Unauthorized {});
+    }
+    
+    let mut oracle = INTERNAL_ORACLE.load(deps.storage)?;
+    // Force rotation regardless of time
+    let new_pools = select_random_pools_with_atom(deps.as_ref(), env.clone(), ORACLE_POOL_COUNT)?;
+    oracle.selected_pools = new_pools.clone();
+    oracle.last_rotation = env.block.time.seconds();
+    
+    INTERNAL_ORACLE.save(deps.storage, &oracle)?;
+    
+    Ok(Response::new()
+        .add_attribute("action", "force_rotate_pools")
+        .add_attribute("pools_count", new_pools.len().to_string()))
 }

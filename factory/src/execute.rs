@@ -1,18 +1,20 @@
 use crate::error::ContractError;
-use crate::internal_pool_oracle::{BlueChipPriceInternalOracle, PriceCache, ATOM_BLUECHIP_POOL_CONTRACT_ADDRESS, INTERNAL_ORACLE, ROTATION_INTERVAL, UPDATE_INTERVAL};
+use crate::internal_bluechip_price_oracle::{
+    execute_force_rotate_pools, initialize_internal_bluechip_oracle, update_internal_oracle_price,
+};
 use crate::msg::{CreatorTokenInfo, ExecuteMsg, TokenInstantiateMsg};
-use crate::pool_struct::CreatePool;
 use crate::pool_create_cleanup::handle_cleanup_reply;
 use crate::pool_creation_reply::{finalize_pool, mint_create_pool, set_tokens};
+use crate::pool_struct::CreatePool;
 use crate::state::{
-    PoolCreationState, CreationStatus, FactoryInstantiate,
-    POOL_CREATION_STATES, FACTORYINSTANTIATEINFO, NEXT_POOL_ID, TEMPCREATORWALLETADDR, TEMPPOOLID,
-    TEMPPOOLINFO,
+    CreationStatus, FactoryInstantiate, PoolCreationState, FACTORYINSTANTIATEINFO, NEXT_POOL_ID,
+    POOL_CREATION_STATES, TEMPCREATORWALLETADDR, TEMPPOOLID, TEMPPOOLINFO,
 };
 #[cfg(not(feature = "library"))]
 use cosmwasm_std::entry_point;
 use cosmwasm_std::{
-    to_json_binary, Addr, Deps, DepsMut, Env, MessageInfo, Reply, Response, StdError, StdResult, SubMsg, Uint128, WasmMsg
+    to_json_binary, Deps, DepsMut, Env, MessageInfo, Reply, Response, StdError, StdResult,
+    SubMsg, Uint128, WasmMsg,
 };
 use cw20::MinterResponse;
 use std::env;
@@ -35,24 +37,10 @@ pub fn instantiate(
     msg: FactoryInstantiate,
 ) -> Result<Response, ContractError> {
     cw2::set_contract_version(deps.storage, CONTRACT_NAME, CONTRACT_VERSION)?;
-    //saves the factory parameters set in the json file
+    // Save the factory parameters
     FACTORYINSTANTIATEINFO.save(deps.storage, &msg)?;
-
-     let internal_bluechip_price_oracle = BlueChipPriceInternalOracle {
-        selected_pools: vec![ATOM_BLUECHIP_POOL_CONTRACT_ADDRESS.to_string()],
-        atom_pool_contract_address: Addr::unchecked(ATOM_BLUECHIP_POOL_CONTRACT_ADDRESS),
-        last_rotation: env.block.time.seconds(),
-        rotation_interval: ROTATION_INTERVAL,
-        bluechip_price_cache: PriceCache {
-            last_price: Uint128::zero(),
-            last_update: 0,
-            twap_observations: vec![],
-        },
-        update_interval: UPDATE_INTERVAL,
-    };
-    INTERNAL_ORACLE.save(deps.storage, &internal_bluechip_price_oracle)?;
-    //sets the first pool created by this factory to 1
-    //viola
+    // Initialize the oracle properly using your dedicated function
+    initialize_internal_bluechip_oracle(deps, env)?;
     Ok(Response::new().add_attribute("action", "init_contract"))
 }
 
@@ -69,18 +57,12 @@ pub fn execute(
             pool_msg,
             token_info,
         } => {
-        let token_a = pool_msg.pool_token_info[0].to_string();
-        let token_b = pool_msg.pool_token_info[1].to_string();
-        execute_create(
-            deps,
-            env,
-            info,
-            pool_msg,
-            token_info,
-            token_a,
-            token_b,
-        )
-    }
+            let token_a = pool_msg.pool_token_info[0].to_string();
+            let token_b = pool_msg.pool_token_info[1].to_string();
+            execute_create_creator_pool(deps, env, info, pool_msg, token_info, token_a, token_b)
+        }
+        ExecuteMsg::UpdateOraclePrice {} => update_internal_oracle_price(deps, env),
+        ExecuteMsg::ForceRotateOraclePools {} => execute_force_rotate_pools(deps, env, info),
     }
 }
 
@@ -113,7 +95,7 @@ fn execute_update_config(
 
 //create pool - 3 step pool process through reply function (mostly found in reply.rs)
 //partial creations will be cleaned up found in pool_create_cleanup
-fn execute_create(
+fn execute_create_creator_pool(
     deps: DepsMut,
     env: Env,
     info: MessageInfo,
