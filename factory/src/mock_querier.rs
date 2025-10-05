@@ -3,9 +3,9 @@
 
 use cosmwasm_std::testing::{MockApi, MockQuerier, MockStorage, MOCK_CONTRACT_ADDR};
 use cosmwasm_std::{
-    from_json, to_json_binary, Coin, Empty, OwnedDeps, Querier, QuerierResult,
-    QueryRequest, SystemError, SystemResult, WasmQuery,
+    from_json, to_json_binary, Addr, Coin, Empty, OwnedDeps, Querier, QuerierResult, QueryRequest, SystemError, SystemResult, WasmQuery
 };
+use pool_factory_interfaces::{PoolQueryMsg, PoolStateResponseForFactory};
 use std::collections::HashMap;
 
 use crate::pool_struct::PoolDetails;
@@ -70,22 +70,56 @@ impl Querier for WasmMockQuerier {
 impl WasmMockQuerier {
     pub fn handle_query(&self, request: &QueryRequest<Empty>) -> QuerierResult {
         match &request {
-            QueryRequest::Wasm(WasmQuery::Smart {contract_addr, msg})// => {
-                => match from_json(&msg).unwrap() {
-                    QueryMsg::Pool {pool_address} => {
-                       let pair_info: PoolDetails =
-                        match self.betfi_pair_querier.pairs.get(contract_addr) {
-                            Some(v) => v.clone(),
-                            None => {
-                                return SystemResult::Err(SystemError::NoSuchContract {
-                                    addr: contract_addr.clone(),
-                                })
-                            }
-                        };
-
-                    SystemResult::Ok(to_json_binary(&pair_info).into())
+            QueryRequest::Wasm(WasmQuery::Smart { contract_addr, msg }) => {
+                // Try parsing as PoolQueryMsg first (for pool contract queries)
+                if let Ok(pool_msg) = from_json::<PoolQueryMsg>(&msg) {
+                    match pool_msg {
+                        PoolQueryMsg::GetPoolState { pool_contract_address } => {
+                            let pool_state = PoolStateResponseForFactory {
+                                pool_contract_address: Addr::unchecked(&pool_contract_address),
+                                nft_ownership_accepted: true,
+                                reserve0: cosmwasm_std::Uint128::new(50_000_000_000),
+                                reserve1: cosmwasm_std::Uint128::new(10_000_000_000),
+                                total_liquidity: cosmwasm_std::Uint128::new(10_000_000),
+                                block_time_last: 0,
+                                price0_cumulative_last: cosmwasm_std::Uint128::zero(),
+                                price1_cumulative_last: cosmwasm_std::Uint128::zero(),
+                            };
+                            return SystemResult::Ok(to_json_binary(&pool_state).into());
+                        }
+                        _ => {
+                            return SystemResult::Err(SystemError::InvalidRequest {
+                                error: "Unsupported pool query".to_string(),
+                                request: msg.clone().into(),
+                            })
+                        }
                     }
-                    _ => panic!("DO NOT ENTER HERE")
+                }
+                
+                // Try parsing as factory QueryMsg (for factory queries)
+                if let Ok(factory_msg) = from_json::<QueryMsg>(&msg) {
+                    match factory_msg {
+                        QueryMsg::Pool { pool_address } => {
+                            let pair_info: PoolDetails =
+                                match self.betfi_pair_querier.pairs.get(contract_addr) {
+                                    Some(v) => v.clone(),
+                                    None => {
+                                        return SystemResult::Err(SystemError::NoSuchContract {
+                                            addr: contract_addr.clone(),
+                                        })
+                                    }
+                                };
+                            return SystemResult::Ok(to_json_binary(&pair_info).into());
+                        }
+                        _ => panic!("Unsupported factory query"),
+                    }
+                }
+                
+                // If neither parse succeeded
+                SystemResult::Err(SystemError::InvalidRequest {
+                    error: "Could not parse query message".to_string(),
+                    request: msg.clone().into(),
+                })
             }
             _ => self.base.handle_query(request),
         }

@@ -5,7 +5,7 @@ use crate::{
 };
 use cosmwasm_schema::cw_serde;
 use cosmwasm_std::{
-    Addr, Deps, DepsMut, Env, MessageInfo, Order, Response, StdError, StdResult, Uint128, Uint256
+    Addr, Deps, DepsMut, Env, MessageInfo, Order, Response, StdError, StdResult, Uint128, Uint256,
 };
 use cw_storage_plus::Item;
 use pool_factory_interfaces::{ConversionResponse, PoolQueryMsg, PoolStateResponseForFactory};
@@ -13,7 +13,7 @@ use sha2::{Digest, Sha256};
 
 pub const ATOM_BLUECHIP_POOL_CONTRACT_ADDRESS: &str =
     "cosmos1atom_bluechip_pool_test_addr_000000000000";
-pub const ORACLE_POOL_COUNT: usize = 4; // Total pools to sample (including ATOM)
+pub const ORACLE_POOL_COUNT: usize = 5; // Total pools to sample (including ATOM)
 pub const MIN_POOL_LIQUIDITY: Uint128 = Uint128::new(10_000_000_000); // Min liquidity for eligibility
 pub const TWAP_WINDOW: u64 = 3600; // 1 hour TWAP window
 pub const UPDATE_INTERVAL: u64 = 300; // 5 minutes between updates
@@ -107,8 +107,16 @@ pub fn initialize_internal_bluechip_oracle(
     env: Env,
 ) -> Result<Response, ContractError> {
     // Initialize with ATOM pool and random selection
-    let selected_pools = select_random_pools_with_atom(deps.as_ref(), env.clone(), ORACLE_POOL_COUNT)?;
-    
+    let selected_pools =
+        select_random_pools_with_atom(deps.as_ref(), env.clone(), ORACLE_POOL_COUNT)?;
+
+    // Validate we have at least the ATOM pool
+    if selected_pools.is_empty() {
+        return Err(ContractError::Std(StdError::generic_err(
+            "Cannot initialize oracle: ATOM pool must exist",
+        )));
+    }
+
     let oracle = BlueChipPriceInternalOracle {
         selected_pools,
         atom_pool_contract_address: Addr::unchecked(ATOM_BLUECHIP_POOL_CONTRACT_ADDRESS),
@@ -121,10 +129,11 @@ pub fn initialize_internal_bluechip_oracle(
         },
         update_interval: UPDATE_INTERVAL,
     };
-    
+
     INTERNAL_ORACLE.save(deps.storage, &oracle)?;
     Ok(Response::new())
 }
+
 
 pub fn get_eligible_creator_pools(
     deps: Deps,
@@ -136,19 +145,28 @@ pub fn get_eligible_creator_pools(
 
     let mut eligible = Vec::new();
 
-    for (pool_address, pool_data) in all_pools {
+    for (pool_address, _pool_data) in all_pools {
         if pool_address.as_str() == atom_pool_contract_address {
             continue;
         }
-        let total_liquidity = pool_data.reserve0 + pool_data.reserve1;
-        if total_liquidity < MIN_POOL_LIQUIDITY {
-            continue;
+        
+        // Query the actual pool contract for live reserve data
+        let pool_state: PoolStateResponseForFactory = deps.querier.query_wasm_smart(
+            pool_address.to_string(),
+            &PoolQueryMsg::GetPoolState {
+                pool_contract_address: pool_address.to_string(),
+            }
+        )?;
+        
+        let total_liquidity = pool_state.reserve0 + pool_state.reserve1;
+        if total_liquidity >= MIN_POOL_LIQUIDITY {
+            eligible.push(pool_address.to_string());
         }
-        eligible.push(pool_address.to_string());
     }
 
     Ok(eligible)
 }
+
 
 pub fn update_internal_oracle_price(deps: DepsMut, env: Env) -> Result<Response, ContractError> {
     let mut oracle = INTERNAL_ORACLE.load(deps.storage)?;
@@ -484,19 +502,19 @@ pub fn execute_force_rotate_pools(
     info: MessageInfo,
 ) -> Result<Response, ContractError> {
     // Check admin permission
-     let config = FACTORYINSTANTIATEINFO.load(deps.storage)?;
+    let config = FACTORYINSTANTIATEINFO.load(deps.storage)?;
     if info.sender != config.factory_admin_address {
         return Err(ContractError::Unauthorized {});
     }
-    
+
     let mut oracle = INTERNAL_ORACLE.load(deps.storage)?;
     // Force rotation regardless of time
     let new_pools = select_random_pools_with_atom(deps.as_ref(), env.clone(), ORACLE_POOL_COUNT)?;
     oracle.selected_pools = new_pools.clone();
     oracle.last_rotation = env.block.time.seconds();
-    
+
     INTERNAL_ORACLE.save(deps.storage, &oracle)?;
-    
+
     Ok(Response::new()
         .add_attribute("action", "force_rotate_pools")
         .add_attribute("pools_count", new_pools.len().to_string()))

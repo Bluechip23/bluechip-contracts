@@ -1,5 +1,5 @@
 #![allow(non_snake_case)]
-use crate::contract::{DEFAULT_SLIPPAGE, MAX_ALLOWED_SLIPPAGE};
+use crate::contract::{DEFAULT_SLIPPAGE};
 use crate::error::ContractError;
 
 use crate::generic_helpers::decimal2decimal256;
@@ -99,7 +99,7 @@ pub fn get_usd_value(deps: Deps, bluechip_amount: Uint128) -> StdResult<Uint128>
     Ok(response.amount)
 }
 
-pub fn get_bluechip_amount(deps: Deps, usd_amount: Uint128) -> StdResult<Uint128> {
+pub fn get_bluechip_value(deps: Deps, usd_amount: Uint128) -> StdResult<Uint128> {
     let factory_address = POOL_INFO.load(deps.storage)?;
 
     let response: ConversionResponse = deps.querier.query_wasm_smart(
@@ -157,14 +157,10 @@ pub fn assert_max_spread(
     spread_amount: Uint128,
 ) -> Result<(), ContractError> {
     let default_spread = Decimal::from_str(DEFAULT_SLIPPAGE)?;
-    let max_allowed_spread = Decimal::from_str(MAX_ALLOWED_SLIPPAGE)?;
 
     let max_spread = max_spread.unwrap_or(default_spread);
     if belief_price == Some(Decimal::zero()) {
         return Err(ContractError::InvalidBeliefPrice {});
-    }
-    if max_spread.gt(&max_allowed_spread) {
-        return Err(ContractError::AllowedSpreadAssertion {});
     }
 
     if let Some(belief_price) = belief_price {

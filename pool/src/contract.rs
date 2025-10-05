@@ -25,7 +25,7 @@ use crate::state::{
     Commiting, PoolState, Position, COMMIT_INFO, LIQUIDITY_POSITIONS, NEXT_POSITION_ID,
 };
 use crate::swap_helper::{
-    assert_max_spread, compute_swap, get_bluechip_amount, get_usd_value, update_price_accumulator,
+    assert_max_spread, compute_swap, get_bluechip_value, get_usd_value, update_price_accumulator,
 };
 use cosmwasm_std::{
     entry_point, from_json, to_json_binary, Addr, Binary, CosmosMsg, Decimal, DepsMut, Env,
@@ -747,7 +747,7 @@ pub fn execute_commit_logic(
                     if usd_value > usd_to_threshold && usd_to_threshold > Uint128::zero() {
                         // Calculate the bluechip amount that corresponds to reaching exactly $25k
                         let bluechip_to_threshold =
-                            get_bluechip_amount(deps.as_ref(), usd_to_threshold)?;
+                            get_bluechip_value(deps.as_ref(), usd_to_threshold)?;
                         let bluechip_excess = asset.amount.checked_sub(bluechip_to_threshold)?;
                         let usd_excess = usd_value.checked_sub(usd_to_threshold)?;
                         // Update commit ledger with only the threshold portion

@@ -1,5 +1,4 @@
 #![allow(non_snake_case)]
-use crate::asset::TokenType;
 use crate::error::ContractError;
 use crate::msg::CommitFeeInfo;
 use crate::state::PoolState;
@@ -196,19 +195,11 @@ pub fn trigger_threshold_payout(
     }
     COMMIT_LEDGER.clear(storage);
 
-    let denom = match &pool_info.pool_info.asset_infos[0] {
-        TokenType::Bluechip { denom, .. } => denom,
-        _ => "stake", // fallback if first asset isn't bluechip
-    };
-    //mint and push amount to each pre threshold commiter based on their portion of the "bluechip seed"
-    let bluechip_seed = Uint128::new(23_500);
-    msgs.push(get_bank_transfer_to_msg(
-        &env.contract.address,
-        denom,
-        bluechip_seed,
-    )?);
+    let total_fee_rate = fee_info.commit_fee_bluechip + fee_info.commit_fee_creator;
+    let pools_bluechip_seed =
+        commit_config.commit_amount_for_threshold * (Decimal::one() - total_fee_rate);
 
-    pool_state.reserve0 = bluechip_seed; // No LP positions created yet
+    pool_state.reserve0 = pools_bluechip_seed; // No LP positions created yet
     pool_state.reserve1 = payout.pool_seed_amount; // No LP positions created yet
                                                    //Initial seed liquidity is not owned by anyone and cannot be withdrawn. This is intentional to prevent pool draining attacks and unneccesary pool rewards
     pool_state.total_liquidity = Uint128::zero();

@@ -10,7 +10,7 @@ pub mod pool_creation_reply;
 pub mod pool_create_cleanup;
 pub mod pyth_types;
 pub mod internal_bluechip_price_oracle;
-pub mod internal_oracle_query;
+pub mod internal_bluechip_price_oracle_query;
 
 #[cfg(test)]
 mod testing;

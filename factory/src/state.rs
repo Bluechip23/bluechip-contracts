@@ -15,7 +15,6 @@ pub const TEMPNFTADDR: Item<Addr> = Item::new("temp_nft_addr");
 //setting the commit field inside the pool
 pub const SETCOMMIT: Map<&str, CommitInfo> = Map::new("commit_info");
 //tracking pool id for querys etc
-pub const NEXT_POOL_ID: Item<u64> = Item::new("next_pool_id");
 //used in querys to grab multiple pools
 pub const POOLS_BY_ID: Map<u64, PoolDetails> = Map::new("pools_by_id");
 pub const POOLS_BY_CONTRACT_ADDRESS: Map<Addr, PoolStateResponseForFactory> = Map::new("pools_by_contract_address");
@@ -28,7 +27,7 @@ pub const PYTH_CONTRACT_ADDR: &str = "neutron1m2emc93m9gpwgsrsf2vylv9xvgqh654630
 pub const ATOM_USD_PRICE_FEED_ID: &str = "0xb00b60f88b03a6a625a8d1c048c3f66653edf217439983d037e7222c4e612819";
 pub const MAX_PRICE_AGE_SECONDS_BEFORE_STALE: u64 = 3000;
 pub const ATOM_BLUECHIP_ANCHOR_POOL_ADDRESS: Item<Addr> = Item::new("atom_pool_address");
-
+pub const USED_POOL_IDS: Map<u64, bool> = Map::new("used_pool_ids");
 
 
 #[cw_serde]

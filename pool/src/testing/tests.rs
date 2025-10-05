@@ -2,15 +2,14 @@
 use std::str::FromStr;
 
 use cosmwasm_std::{
-    testing::{mock_dependencies, mock_env, mock_info, MockApi, MockQuerier, MockStorage, MOCK_CONTRACT_ADDR}, 
-    to_json_binary, Addr, BankMsg, Binary, Coin, ContractResult, CosmosMsg, Decimal, Order, OwnedDeps, SystemError, 
-    SystemResult, Timestamp, Uint128, WasmMsg, WasmQuery
+    from_json, testing::{mock_dependencies, mock_env, mock_info, MockApi, MockQuerier, MockStorage, MOCK_CONTRACT_ADDR}, to_json_binary, Addr, BankMsg, Binary, Coin, ContractResult, CosmosMsg, Decimal, Order, OwnedDeps, SystemError, SystemResult, Timestamp, Uint128, WasmMsg, WasmQuery
 };
 use cw20::Cw20ReceiveMsg;
 use cw721::OwnerOfResponse;
+use pool_factory_interfaces::{ConversionResponse, FactoryQueryMsg};
 use crate::{asset::PoolPairType, contract::{execute, execute_swap_cw20, instantiate}, generic_helpers::trigger_threshold_payout, 
 
-liquidity::{execute_add_to_position, execute_collect_fees, execute_deposit_liquidity, execute_remove_all_liquidity}, liquidity_helpers::calculate_fee_size_multiplier, msg::{Cw20HookMsg, CommitFeeInfo, PoolInstantiateMsg}, oracle::PriceResponse, state::{CommitLimitInfo, OracleInfo, PoolFeeState, PoolInfo, PoolSpecs, PoolState, ThresholdPayoutAmounts, COMMITSTATUS, 
+liquidity::{execute_add_to_position, execute_collect_fees, execute_deposit_liquidity, execute_remove_all_liquidity}, liquidity_helpers::calculate_fee_size_multiplier, msg::{Cw20HookMsg, CommitFeeInfo, PoolInstantiateMsg}, state::{CommitLimitInfo, OracleInfo, PoolFeeState, PoolInfo, PoolSpecs, PoolState, ThresholdPayoutAmounts, COMMITSTATUS, 
         COMMIT_LIMIT_INFO, COMMITFEEINFO, LIQUIDITY_POSITIONS, NATIVE_RAISED_FROM_COMMIT, ORACLE_INFO, POOL_INFO, POOL_SPECS, THRESHOLD_PAYOUT_AMOUNTS, THRESHOLD_PROCESSING
     }};
 use crate::msg::ExecuteMsg;
@@ -28,24 +27,54 @@ fn mock_dependencies_with_balance(balances: &[Coin]) -> OwnedDeps<MockStorage, M
     deps.querier.update_balance(MOCK_CONTRACT_ADDR, balances.to_vec());
     deps
 }
-    
-    // Removed as_ref: OwnedDeps expects owned types, not references.
-fn with_oracle_price(deps: &mut OwnedDeps<MockStorage, MockApi, MockQuerier>, price: Uint128, publish_time: u64, expo: i32, conf: Uint128 ) {
+fn with_factory_oracle(
+    deps: &mut OwnedDeps<MockStorage, MockApi, MockQuerier>,
+    bluechip_to_usd_rate: Uint128, // e.g., Uint128::new(1_000_000) for $1 per bluechip
+) {
     deps.querier.update_wasm(move |query| {
         match query {
             WasmQuery::Smart { contract_addr, msg } => {
-                if contract_addr == "oracle_contract" {
-                    // Return the hardcoded price
-                    let response = PriceResponse { price, publish_time, expo, conf };
-                    SystemResult::Ok(ContractResult::Ok(
-                        to_json_binary(&response).unwrap()
-                    ))
-                } else {
-                    SystemResult::Err(SystemError::InvalidRequest {
-                        error: "Unknown contract".to_string(),
-                        request: msg.clone(),
-                    })
+                // Check if it's a factory query
+                if contract_addr == "factory_contract" {
+                    // Try to parse as FactoryQueryMsg
+                    if let Ok(factory_query) = from_json::<FactoryQueryMsg>(msg) {
+                        match factory_query {
+                            FactoryQueryMsg::ConvertBluechipToUsd { amount } => {
+                                let usd_amount = amount * bluechip_to_usd_rate / Uint128::new(1_000_000);
+                                let response = ConversionResponse {
+                                    amount: usd_amount,
+                                    rate_used: bluechip_to_usd_rate,
+                                    timestamp: 1_600_000_000,
+                                };
+                                return SystemResult::Ok(ContractResult::Ok(
+                                    to_json_binary(&response).unwrap()
+                                ));
+                            }
+                            FactoryQueryMsg::ConvertUsdToBluechip { amount } => {
+                                let bluechip_amount = amount * Uint128::new(1_000_000) / bluechip_to_usd_rate;
+                                let response = ConversionResponse {
+                                    amount: bluechip_amount,
+                                    rate_used: bluechip_to_usd_rate,
+                                    timestamp: 1_600_000_000,
+                                };
+                                return SystemResult::Ok(ContractResult::Ok(
+                                    to_json_binary(&response).unwrap()
+                                ));
+                            }
+                            _ => {}
+                        }
+                    }
                 }
+                
+                // Handle NFT ownership queries
+                if contract_addr == "nft_contract" {
+                    // Your existing NFT mock logic
+                }
+                
+                SystemResult::Err(SystemError::InvalidRequest {
+                    error: "Unknown contract or query".to_string(),
+                    request: msg.clone(),
+                })
             }
             _ => SystemResult::Err(SystemError::InvalidRequest {
                 error: "Unknown query type".to_string(),
@@ -64,10 +93,7 @@ fn test_commit_pre_threshold_basic() {
     
     let env = mock_env();
     let commit_amount = Uint128::new(1_000_000_000); // 1k bluechip
-    
-    // Mock oracle response for $1 per bluechip
-    with_oracle_price(&mut deps,  Uint128::new(100_000_000), 10000000000000, -8, Uint128::new(100_000),);// $1 with 8 decimals
-
+with_factory_oracle(&mut deps, Uint128::new(1_000_000)); // $1 per bluechip with 6 decimals
     
     let info = mock_info("user1", &[Coin {
         denom: "stake".to_string(),
@@ -122,13 +148,7 @@ fn test_race_condition_commits_crossing_threshold() {
     USD_RAISED_FROM_COMMIT.save(&mut deps.storage, &Uint128::new(24_900_000_000)).unwrap();
 
     // Mock oracle: $1 per token
-    with_oracle_price(
-        &mut deps, 
-        Uint128::new(100_000_000),  
-        10000000000000, 
-        -8, 
-        Uint128::new(100_000),
-    );
+   with_factory_oracle(&mut deps, Uint128::new(1_000_000)); // $1 per bluechip with 6 decimals
 
     let commit_amount = Uint128::new(200_000_000); // $200 per commit
     let env = mock_env();
@@ -182,7 +202,7 @@ let msg2 = ExecuteMsg::Commit {
     amount: commit_amount,
     transaction_deadline: None,
     belief_price: None,
-    max_spread: None, // 100% tolerance
+    max_spread: Some(Decimal::percent(99)),
 };
     let res2 = execute(deps.as_mut(), env.clone(), info2, msg2).unwrap();
     println!(
@@ -230,14 +250,7 @@ fn test_commit_crosses_threshold() {
     let commit_amount = Uint128::new(200_000_000); // 200 tokens = $200
     
     // Mock oracle response for $1 per token
-    with_oracle_price(
-        &mut deps, 
-        Uint128::new(100_000_000),  // price
-        10000000000000, 
-        -8,           // expo
-        Uint128::new(100_000),
-    );
-    
+    with_factory_oracle(&mut deps, Uint128::new(1_000_000)); // $1 per bluechip with 6 decimals
     let info = mock_info("whale", &[Coin {
         denom: "stake".to_string(),
         amount: commit_amount,
@@ -291,9 +304,7 @@ fn test_commit_post_threshold_swap() {
     let commit_amount = Uint128::new(100_000_000); // 100 bluechip
     
     // Mock oracle response
-    with_oracle_price(&mut deps,  Uint128::new(100_000_000), 10000000000000, -8, Uint128::new(100_000),);// $1 with 8 decimals
-// $1 with 8 decimals
- // $1
+   with_factory_oracle(&mut deps, Uint128::new(1_000_000)); // $1 per bluechip with 6 decimals
     
     let info = mock_info("commiter", &[Coin {
         denom: "stake".to_string(),
@@ -408,8 +419,7 @@ fn test_commit_rate_limiting() {
         amount: Uint128::new(1_000_000),
     }]);
     
-    with_oracle_price(&mut deps,  Uint128::new(100_000_000), 10000000000000, -8, Uint128::new(100_000),);// $1 with 8 decimals
-
+with_factory_oracle(&mut deps, Uint128::new(1_000_000)); // $1 per bluechip with 6 decimals
 
     
     let msg = ExecuteMsg::Commit {
@@ -563,36 +573,11 @@ fn test_commit_threshold_overshoot_split() {
     USD_RAISED_FROM_COMMIT.save(&mut deps.storage, &Uint128::new(24_999_000_000)).unwrap(); // $24,999
     
     let env = mock_env();
-    
-    // Mock oracle at $1 per token
-    deps.querier.update_wasm(|query| {
-        match query {
-            WasmQuery::Smart { contract_addr, msg } => {
-                if contract_addr == "oracle_contract" {
-                    let response = PriceResponse {
-                       price: Uint128::new(100_000_000),// $1 with 8 decimals
-                       conf: Uint128::new(100_000),      
-                       expo: -8, //so we can check the right amount of decimals.
-                       publish_time: 1000000000000, //this value is to small so it was failing. 
-                    };
-                    SystemResult::Ok(ContractResult::Ok(
-                        to_json_binary(&response).unwrap()
-                    ))
-                } else {
-                    SystemResult::Err(SystemError::InvalidRequest {
-                        error: "Unknown contract".to_string(),
-                        request: msg.clone(),
-                    })
-                }
-            }
-            _ => SystemResult::Err(SystemError::InvalidRequest {
-                error: "Unknown query type".to_string(),
-                request: Binary::default(),
-            }),
-        }
-    });
-    
-    let commit_amount = Uint128::new(5_000_000); 
+
+// Mock factory oracle at $1 per bluechip
+with_factory_oracle(&mut deps, Uint128::new(1_000_000));
+
+let commit_amount = Uint128::new(5_000_000);
     
     let info = mock_info("whale", &[Coin {
         denom: "stake".to_string(),
@@ -691,38 +676,13 @@ fn test_commit_exact_threshold() {
     let previous_user = Addr::unchecked("previous_user");
     COMMIT_LEDGER.save(&mut deps.storage, &previous_user, &Uint128::new(24_999_000_000)).unwrap();
     
-    let env = mock_env();
-    
-    // Mock oracle
-    deps.querier.update_wasm(|query| {
-        match query {
-            WasmQuery::Smart { contract_addr, msg } => {
-                if contract_addr == "oracle_contract" {
-                    let response = PriceResponse {
-                        price: Uint128::new(100_000_000),
-                        conf: Uint128::new(100_000),      
-                        expo: -8,        
-                        publish_time: 1000000000000,
-                    };
-                    SystemResult::Ok(ContractResult::Ok(
-                        to_json_binary(&response).unwrap()
-                    ))
-                } else {
-                    SystemResult::Err(SystemError::InvalidRequest {
-                        error: "Unknown contract".to_string(),
-                        request: msg.clone(),
-                    })
-                }
-            }
-            _ => SystemResult::Err(SystemError::InvalidRequest {
-                error: "Unknown query type".to_string(),
-                request: Binary::default(),
-            }),
-        }
-    });
-    
-    // Commit exactly $1
-    let commit_amount = Uint128::new(1_000_000); // 1 token = $1
+   let env = mock_env();
+
+// Mock factory oracle responses
+with_factory_oracle(&mut deps, Uint128::new(1_000_000)); // $1 per bluechip
+
+// Commit exactly $1
+let commit_amount = Uint128::new(1_000_000);
     
     let info = mock_info("user", &[Coin {
         denom: "stake".to_string(),
@@ -1665,7 +1625,6 @@ pub fn setup_pool_storage(deps: &mut OwnedDeps<MockStorage, MockApi, MockQuerier
     // Set up OracleInfo
     let oracle_info = OracleInfo {
         oracle_addr: Addr::unchecked("oracle_contract"),
-        oracle_symbol: "BLUECHIP".to_string(),
     };
     ORACLE_INFO.save(&mut deps.storage, &oracle_info).unwrap();
 
@@ -1728,8 +1687,6 @@ fn test_factory_impersonation_prevented() {
         commit_amount_for_threshold: Uint128::new(0),
         commit_amount_for_threshold_usd: Uint128::new(350_000_000_000),
         position_nft_address: Addr::unchecked("NFT_contract"),
-        oracle_addr: Addr::unchecked("oracle_contract"),
-        oracle_symbol: "BLUECHIP".to_string(),
         token_address: Addr::unchecked("token_contract"),
     };
     let info = mock_info("fake_factory", &[]); // Wrong sender!
