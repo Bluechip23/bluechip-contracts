@@ -1,11 +1,11 @@
 #![allow(non_snake_case)]
-use crate::contract::{DEFAULT_SLIPPAGE};
+use crate::contract::DEFAULT_SLIPPAGE;
 use crate::error::ContractError;
 
 use crate::generic_helpers::decimal2decimal256;
 
 use crate::state::{PoolState, POOL_INFO};
-use cosmwasm_std::{Decimal, Decimal256, Deps, Fraction, StdResult, Uint128, Uint256};
+use cosmwasm_std::{Decimal, Decimal256, Deps, Fraction, StdError, StdResult, Uint128, Uint256};
 use pool_factory_interfaces::{ConversionResponse, FactoryQueryMsg};
 use std::str::FromStr;
 
@@ -112,40 +112,58 @@ pub fn get_bluechip_value(deps: Deps, usd_amount: Uint128) -> StdResult<Uint128>
 //used in reverse query to find price for a desired amount of an unowned token in a token pair
 //compuets a required offer amount for a desired ask amount
 pub fn compute_offer_amount(
-    //current pool balance of token begin offered
+    //current pool balance of token being offered
     offer_pool: Uint128,
-    //curren pool balance of requested token
+    //current pool balance of requested token
     ask_pool: Uint128,
     ask_amount: Uint128,
     commission_rate: Decimal,
 ) -> StdResult<(Uint128, Uint128, Uint128)> {
-    //reverse commission adjustment
-    let one_minus_commission = Decimal256::one() - decimal2decimal256(commission_rate)?;
-    let inv_one_minus_commission = Decimal256::one() / one_minus_commission;
-
-    let ask_amount_256: Uint256 = ask_amount.into();
-    // accounts for commission by adjusting the ask amount upward
-    let offer_amount: Uint256 = Uint256::from(
-        ask_pool.checked_sub(
-            (ask_amount_256 * inv_one_minus_commission.numerator()
-                / inv_one_minus_commission.denominator())
-            .try_into()?,
-        )?,
-    );
-
-    let spread_amount = (offer_amount * Decimal256::from_ratio(ask_pool, offer_pool).numerator()
-        / Decimal256::from_ratio(ask_pool, offer_pool).denominator())
-    .checked_sub(offer_amount)?
-    .try_into()?;
-    let commission_amount = offer_amount * decimal2decimal256(commission_rate)?.numerator()
-        / decimal2decimal256(commission_rate)?.denominator();
+    let offer_pool: Uint256 = offer_pool.into();
+    let ask_pool: Uint256 = ask_pool.into();
+    let ask_amount: Uint256 = ask_amount.into();
+    let commission_rate = decimal2decimal256(commission_rate)?;
+    
+    // Calculate ask_amount before commission is applied
+    // ask_amount_with_commission = ask_amount / (1 - commission _rate)
+    let one_minus_commission = Decimal256::one() - commission_rate;
+   let ask_amount_before_commission = (Decimal256::from_ratio(ask_amount, 1u8) 
+    / one_minus_commission).numerator() / Decimal256::one().denominator();
+    
+    // Use constant product formula: k = offer_pool * ask_pool
+    // After swap: k = (offer_pool + offer_amount) * (ask_pool - ask_amount_before_commission)
+    // Therefore: offer_pool * ask_pool = (offer_pool + offer_amount) * (ask_pool - ask_amount_before_commission)
+    // Solving for offer_amount:
+    // offer_amount = (offer_pool * ask_pool) / (ask_pool - ask_amount_before_commission) - offer_pool
+    
+    let cp: Uint256 = offer_pool * ask_pool;
+    let new_ask_pool = ask_pool.checked_sub(ask_amount_before_commission)
+        .map_err(|_| StdError::generic_err("Insufficient liquidity in pool"))?;
+    
+    let new_offer_pool = cp.checked_div(new_ask_pool)
+        .map_err(|_| StdError::generic_err("Division error"))?;
+    
+    let offer_amount = new_offer_pool.checked_sub(offer_pool)
+        .map_err(|_| StdError::generic_err("Invalid offer amount calculation"))?;
+    
+    // Calculate spread amount (price impact)
+    // spread = offer_amount - (ask_amount_before_commission * offer_pool / ask_pool)
+    let expected_offer_amount = ask_amount_before_commission * offer_pool / ask_pool;
+    let spread_amount: Uint256 = offer_amount.saturating_sub(expected_offer_amount);
+    
+    // Calculate commission on the ask amount
+    let commission_amount: Uint256 = ask_amount_before_commission * commission_rate.numerator() 
+        / commission_rate.denominator();
+    
     Ok((
+        //amount trader must offer
         offer_amount.try_into()?,
-        spread_amount,
+        //slippage
+        spread_amount.try_into()?,
+        //fee to liquidity holders
         commission_amount.try_into()?,
     ))
 }
-
 //use either belief price or calculated spread amount
 pub fn assert_max_spread(
     //expeccted exchange rate

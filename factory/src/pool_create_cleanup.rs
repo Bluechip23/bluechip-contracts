@@ -16,27 +16,19 @@ pub fn cleanup_temp_state(storage: &mut dyn Storage) -> Result<(), ContractError
     Ok(())
 }
 
-//if partial transaction happens 
 pub fn create_cleanup_messages(creation_state: &PoolCreationState) -> Result<Vec<SubMsg>, ContractError> {
-    // Changed return type to Vec<SubMsg>
     let mut messages = vec![];
-
-    // if token was created, disable it by removing minter
     if let Some(token_addr) = &creation_state.creator_token_address {
         let disable_token_msg = WasmMsg::Execute {
             contract_addr: token_addr.to_string(),
             msg: to_json_binary(&Cw20ExecuteMsg::UpdateMinter {
-                new_minter: None, // remove minter entirely
+                new_minter: None, 
             })?,
             funds: vec![],
         };
-
-        // create SubMsg that will trigger reply handler
         let sub_msg: SubMsg = SubMsg::reply_on_error(disable_token_msg, CLEANUP_TOKEN_REPLY_ID);
         messages.push(sub_msg);
     }
-
-    // if NFT was created, disable it by removing minter
     if let Some(nft_addr) = &creation_state.mint_new_position_nft_address {
         let disable_nft_msg = WasmMsg::Execute {
             contract_addr: nft_addr.to_string(),
@@ -48,21 +40,15 @@ pub fn create_cleanup_messages(creation_state: &PoolCreationState) -> Result<Vec
             ))?,
             funds: vec![],
         };
-
-        // Create SubMsg that will trigger reply handler
         let sub_msg: SubMsg = SubMsg::reply_on_error(disable_nft_msg, CLEANUP_NFT_REPLY_ID);
         messages.push(sub_msg);
     }
 
     Ok(messages)
 }
-
-//handles replies for cleanup operations
 pub fn handle_cleanup_reply(deps: DepsMut, _env: Env, msg: Reply) -> Result<Response, ContractError> {
-    // Handle cleanup completion/failure
     match msg.result {
         SubMsgResult::Ok(_) => {
-            // Cleanup succeeded - remove creation state
             if let Ok(pool_id) = TEMPPOOLID.load(deps.storage) {
                 POOL_CREATION_STATES.remove(deps.storage, pool_id);
                 cleanup_temp_state(deps.storage)?;
@@ -87,7 +73,6 @@ pub fn handle_cleanup_reply(deps: DepsMut, _env: Env, msg: Reply) -> Result<Resp
     }
 }
 
-//pull contract addresss - can be used for multiple types.
 pub fn extract_contract_address(result: &SubMsgResponse) -> Result<Addr, ContractError> {
     result
         .events
@@ -104,7 +89,6 @@ pub fn extract_contract_address(result: &SubMsgResponse) -> Result<Addr, Contrac
         .and_then(|addr_str| Ok(Addr::unchecked(addr_str)))
 }
 
-//give pool minter responsibilities for both creator token and liquidty NFTs
 pub fn give_pool_ownership_cw20_and_nft(
     token_addr: &Addr,
     nft_addr: &Addr,
@@ -114,7 +98,6 @@ pub fn give_pool_ownership_cw20_and_nft(
         WasmMsg::Execute {
             contract_addr: token_addr.to_string(),
             msg: to_json_binary(&Cw20ExecuteMsg::UpdateMinter {
-                //make pool minter of the tokens, 
                 new_minter: Some(pool_addr.to_string()),
             })?,
             funds: vec![],
@@ -124,7 +107,6 @@ pub fn give_pool_ownership_cw20_and_nft(
             contract_addr: nft_addr.to_string(),
             msg: to_json_binary(&cw721_base::ExecuteMsg::<Empty, Empty>::UpdateOwnership(
                 Action::TransferOwnership {
-                    //pool now own nft contract to mint nfts to liquidity providers
                     new_owner: pool_addr.to_string(),
                     expiry: None,
                 },

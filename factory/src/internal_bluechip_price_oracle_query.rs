@@ -19,6 +19,7 @@ pub enum QueryMsg {
 pub fn query(deps: Deps, env: Env, msg: QueryMsg) -> StdResult<Binary> {
     match msg {
         QueryMsg::GetOraclePrice {} => to_json_binary(&query_oracle_price(deps)?),
+        //stale vs fresh price
         QueryMsg::GetOracleState {} => to_json_binary(&query_oracle_state(deps)?),
         QueryMsg::ConvertBluechipToUsd { amount } => {
             to_json_binary(&bluechip_to_usd(deps, amount, env)?)

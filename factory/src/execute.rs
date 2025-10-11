@@ -30,7 +30,6 @@ pub const CLEANUP_TOKEN_REPLY_ID: u64 = 100;
 pub const CLEANUP_NFT_REPLY_ID: u64 = 101;
 
 #[cfg_attr(not(feature = "library"), entry_point)]
-//instantiates the factory for pools to use.
 pub fn instantiate(
     deps: DepsMut,
     env: Env,
@@ -38,9 +37,7 @@ pub fn instantiate(
     msg: FactoryInstantiate,
 ) -> Result<Response, ContractError> {
     cw2::set_contract_version(deps.storage, CONTRACT_NAME, CONTRACT_VERSION)?;
-    // Save the factory parameters
     FACTORYINSTANTIATEINFO.save(deps.storage, &msg)?;
-    // Initialize the oracle properly using your dedicated function
     initialize_internal_bluechip_oracle(deps, env)?;
     Ok(Response::new().add_attribute("action", "init_contract"))
 }
@@ -88,14 +85,11 @@ fn execute_update_config(
     config: FactoryInstantiate,
 ) -> Result<Response, ContractError> {
     assert_correct_factory_address(deps.as_ref(), info)?;
-
     FACTORYINSTANTIATEINFO.save(deps.storage, &config)?;
-
     Ok(Response::new().add_attribute("action", "update_config"))
 }
 
-//create pool - 3 step pool process through reply function (mostly found in reply.rs)
-//partial creations will be cleaned up found in pool_create_cleanup
+
 fn execute_create_creator_pool(
     deps: DepsMut,
     env: Env,
@@ -109,13 +103,14 @@ fn execute_create_creator_pool(
     let config = FACTORYINSTANTIATEINFO.load(deps.storage)?;
     let sender = info.sender.clone();
     let pool_id = generate_unique_pool_id(&deps.as_ref(), &env, &info.sender)?;
+    //track used pool ids to ensure no duplicates
     USED_POOL_IDS.save(deps.storage, pool_id, &true)?;
     TEMPPOOLID.save(deps.storage, &pool_id)?;
     TEMPPOOLINFO.save(deps.storage, &pool_msg)?;
     TEMPCREATORWALLETADDR.save(deps.storage, &sender)?;
     let msg = WasmMsg::Instantiate {
         code_id: config.cw20_token_contract_id,
-        //creating the creator tokens - they are not minted yet. Simply created. Factory hands the minting responsibilities to pool.
+        //creating the creator token only, no minting. Factory hands the minting responsibilities to pool.
         msg: to_json_binary(&TokenInstantiateMsg {
             token_name: token_info.token_name.clone(),
             ticker: token_info.ticker.clone(),
@@ -129,11 +124,10 @@ fn execute_create_creator_pool(
         })?,
         //no initial balance. waits until threshold is crossed to mint creator tokens.
         funds: vec![],
-        //the factory is the admin to the pool so it can call upgrades to the pools as the chain advances.
         admin: Some(info.sender.to_string()),
         label: token_info.token_name,
     };
-    //set the tracking state for pool creation - all fields start as none and get populated throughout pool creation
+    //set the trackingfor pool creation 
     let creation_state = PoolCreationState {
         pool_id,
         creator: info.sender,
@@ -145,7 +139,6 @@ fn execute_create_creator_pool(
         retry_count: 0,
     };
     POOL_CREATION_STATES.save(deps.storage, pool_id, &creation_state)?;
-    //triggers reply function when things go well.
     let sub_msg = vec![SubMsg::reply_on_success(msg, SET_TOKENS)];
 
     Ok(Response::new()
@@ -156,8 +149,6 @@ fn execute_create_creator_pool(
 }
 
 #[entry_point]
-//called by execute create.
-//each step can either succeed (advancing to the next step) or fail (triggering cleanup) - found on reply.rs and pool_create_cleanup respectively
 pub fn pool_creation_reply(deps: DepsMut, env: Env, msg: Reply) -> Result<Response, ContractError> {
     match msg.id {
         SET_TOKENS => set_tokens(deps, env, msg),
@@ -181,19 +172,15 @@ pub fn generate_unique_pool_id(
         hasher.update(env.block.height.to_be_bytes());
         hasher.update(env.block.chain_id.as_bytes());
         hasher.update(creator.as_bytes());
-        hasher.update(attempt.to_be_bytes()); // Add attempt counter for uniqueness
-        
+        hasher.update(attempt.to_be_bytes());
         let hash = hasher.finalize();
         let pool_id = u64::from_be_bytes([
             hash[0], hash[1], hash[2], hash[3],
             hash[4], hash[5], hash[6], hash[7],
         ]);
-        
-        // Check if ID already exists
         if !USED_POOL_IDS.has(deps.storage, pool_id) {
             return Ok(pool_id);
         }
-        
         attempt += 1;
         if attempt > 100 {
             return Err(StdError::generic_err("Failed to generate unique pool ID after 100 attempts"));

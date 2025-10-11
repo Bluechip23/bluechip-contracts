@@ -13,34 +13,34 @@ use sha2::{Digest, Sha256};
 
 pub const ATOM_BLUECHIP_POOL_CONTRACT_ADDRESS: &str =
     "cosmos1atom_bluechip_pool_test_addr_000000000000";
-pub const ORACLE_POOL_COUNT: usize = 5; // Total pools to sample (including ATOM)
-pub const MIN_POOL_LIQUIDITY: Uint128 = Uint128::new(10_000_000_000); // Min liquidity for eligibility
-pub const TWAP_WINDOW: u64 = 3600; // 1 hour TWAP window
-pub const UPDATE_INTERVAL: u64 = 300; // 5 minutes between updates
-pub const ROTATION_INTERVAL: u64 = 3600; // Rotate random pools every hour
+pub const ORACLE_POOL_COUNT: usize = 5;
+pub const MIN_POOL_LIQUIDITY: Uint128 = Uint128::new(10_000_000_000); 
+pub const TWAP_WINDOW: u64 = 3600; 
+pub const UPDATE_INTERVAL: u64 = 300; 
+pub const ROTATION_INTERVAL: u64 = 3600; 
 pub const INTERNAL_ORACLE: Item<BlueChipPriceInternalOracle> = Item::new("internal_oracle");
 const PRICE_PRECISION: u128 = 1_000_000;
 
 #[cw_serde]
 pub struct BlueChipPriceInternalOracle {
-    pub selected_pools: Vec<String>, // Currently selected pools (always includes ATOM)
-    pub atom_pool_contract_address: Addr, // Permanent ATOM/BLUECHIP pool ID
-    pub last_rotation: u64,          // When pools were last rotated
-    pub rotation_interval: u64,      // How often to rotate pools
+    pub selected_pools: Vec<String>, 
+    pub atom_pool_contract_address: Addr, 
+    pub last_rotation: u64,          
+    pub rotation_interval: u64,      
     pub bluechip_price_cache: PriceCache,
-    pub update_interval: u64, // 5 minutes
+    pub update_interval: u64, 
 }
 #[cw_serde]
 pub struct PriceCache {
-    pub last_price: Uint128, // Last calculated TWAP
-    pub last_update: u64,    // Last update timestamp
+    pub last_price: Uint128, 
+    pub last_update: u64,    
     pub twap_observations: Vec<PriceObservation>,
 }
 #[cw_serde]
 pub struct PriceObservation {
     pub timestamp: u64,
-    pub price: Uint128,           // Weighted average across pools
-    pub atom_pool_price: Uint128, // Specific ATOM pool price for USD calc
+    pub price: Uint128,           
+    pub atom_pool_price: Uint128, 
 }
 
 pub fn select_random_pools_with_atom(
@@ -49,21 +49,14 @@ pub fn select_random_pools_with_atom(
     num_pools: usize,
 ) -> StdResult<Vec<String>> {
     let atom_pool_contract_contract_address = ATOM_BLUECHIP_POOL_CONTRACT_ADDRESS.to_string();
-
-    // Get all eligible creator token pools (excluding ATOM pool)
     let eligible_pools = get_eligible_creator_pools(deps, &atom_pool_contract_contract_address)?;
-
-    // Need num_pools - 1 random pools (ATOM is always included)
     let random_pools_needed = num_pools.saturating_sub(1);
 
     if eligible_pools.len() <= random_pools_needed {
-        // Use all available pools plus ATOM
         let mut all_pools = eligible_pools;
         all_pools.push(atom_pool_contract_contract_address);
         return Ok(all_pools);
     }
-
-    // Generate randomness from block data
     let mut hasher = Sha256::new();
     hasher.update(env.block.time.seconds().to_be_bytes());
     hasher.update(env.block.height.to_be_bytes());
@@ -72,11 +65,7 @@ pub fn select_random_pools_with_atom(
 
     let mut selected = Vec::new();
     let mut used_indices = std::collections::HashSet::new();
-
-    // ALWAYS add ATOM pool first
     selected.push(atom_pool_contract_contract_address);
-
-    // Add random creator token pools
     for i in 0..random_pools_needed {
         let seed = u64::from_be_bytes([
             hash[i % 32],
@@ -106,11 +95,8 @@ pub fn initialize_internal_bluechip_oracle(
     deps: DepsMut,
     env: Env,
 ) -> Result<Response, ContractError> {
-    // Initialize with ATOM pool and random selection
     let selected_pools =
         select_random_pools_with_atom(deps.as_ref(), env.clone(), ORACLE_POOL_COUNT)?;
-
-    // Validate we have at least the ATOM pool
     if selected_pools.is_empty() {
         return Err(ContractError::Std(StdError::generic_err(
             "Cannot initialize oracle: ATOM pool must exist",
@@ -149,8 +135,6 @@ pub fn get_eligible_creator_pools(
         if pool_address.as_str() == atom_pool_contract_address {
             continue;
         }
-        
-        // Query the actual pool contract for live reserve data
         let pool_state: PoolStateResponseForFactory = deps.querier.query_wasm_smart(
             pool_address.to_string(),
             &PoolQueryMsg::GetPoolState {
@@ -171,15 +155,12 @@ pub fn get_eligible_creator_pools(
 pub fn update_internal_oracle_price(deps: DepsMut, env: Env) -> Result<Response, ContractError> {
     let mut oracle = INTERNAL_ORACLE.load(deps.storage)?;
     let current_time = env.block.time.seconds();
-
-    // Check 5-minute interval
     if current_time < oracle.bluechip_price_cache.last_update + oracle.update_interval {
         return Err(ContractError::UpdateTooSoon {
             next_update: oracle.bluechip_price_cache.last_update + oracle.update_interval,
         });
     }
 
-    // Rotate pools every hour (but keep ATOM pool)
     let mut pools_to_use = oracle.selected_pools.clone();
     if current_time >= oracle.last_rotation + oracle.rotation_interval {
         pools_to_use =
@@ -187,12 +168,8 @@ pub fn update_internal_oracle_price(deps: DepsMut, env: Env) -> Result<Response,
         oracle.selected_pools = pools_to_use.clone();
         oracle.last_rotation = current_time;
     }
-
-    // Calculate weighted price from all pools
     let (weighted_price, atom_price) =
         calculate_weighted_price_with_atom(deps.as_ref(), &pools_to_use)?;
-
-    // Add new observation
     oracle
         .bluechip_price_cache
         .twap_observations
@@ -201,18 +178,13 @@ pub fn update_internal_oracle_price(deps: DepsMut, env: Env) -> Result<Response,
             price: weighted_price,
             atom_pool_price: atom_price,
         });
-
-    // Keep only observations within TWAP window
     let cutoff_time = current_time.saturating_sub(TWAP_WINDOW);
     oracle
         .bluechip_price_cache
         .twap_observations
         .retain(|obs| obs.timestamp > cutoff_time);
 
-    // Calculate TWAP
     let twap_price = calculate_twap(&oracle.bluechip_price_cache.twap_observations)?;
-
-    // Update cache
     oracle.bluechip_price_cache.last_price = twap_price;
     oracle.bluechip_price_cache.last_update = current_time;
 
@@ -229,8 +201,6 @@ fn calculate_weighted_price_with_atom(
     pool_addresses: &[String],
 ) -> Result<(Uint128, Uint128), ContractError> {
     let atom_pool_address = ATOM_BLUECHIP_POOL_CONTRACT_ADDRESS.to_string();
-
-    // Check ATOM pool is included
     if !pool_addresses.contains(&atom_pool_address) {
         return Err(ContractError::MissingAtomPool {});
     }
@@ -242,27 +212,23 @@ fn calculate_weighted_price_with_atom(
     let mut successful_pools = 0;
 
     for pool_address in pool_addresses {
-        // Query pool state with error handling
         match query_pool_safe(deps, pool_address) {
             Ok(pool_state) => {
-                // Skip pools with insufficient liquidity
                 let total_liquidity = pool_state
                     .reserve0
                     .checked_add(pool_state.reserve1)
                     .map_err(|_| ContractError::Std(StdError::generic_err("Liquidity overflow")))?;
 
                 if total_liquidity < MIN_POOL_LIQUIDITY {
-                    continue; // Skip this pool silently
+                    continue;
                 }
 
-                // Calculate price
                 match calculate_price_from_reserves(pool_state.reserve0, pool_state.reserve1) {
                     Ok(price) => {
                         let liquidity_weight = if pool_address == &atom_pool_address {
                             has_atom_pool = true;
                             atom_pool_price = price;
 
-                            // ATOM pool gets 2x weight for stability
                             pool_state
                                 .reserve0
                                 .checked_mul(Uint128::from(2u128))
@@ -270,11 +236,8 @@ fn calculate_weighted_price_with_atom(
                                     ContractError::Std(StdError::generic_err("Weight overflow"))
                                 })?
                         } else {
-                            // Normal weight for other pools
                             pool_state.reserve0
                         };
-
-                        // Add to weighted sum
                         weighted_sum = weighted_sum
                             .checked_add(
                                 Uint256::from(price)
@@ -298,19 +261,16 @@ fn calculate_weighted_price_with_atom(
                         successful_pools += 1;
                     }
                     Err(_) => {
-                        // Skip pools where price calculation fails
                         continue;
                     }
                 }
             }
             Err(_) => {
-                // Skip pools that fail to query
                 continue;
             }
         }
     }
 
-    // Check if ATOM pool was successfully processed
     if !has_atom_pool {
         return Err(ContractError::Std(StdError::generic_err(
             "ATOM pool price could not be calculated",
@@ -322,14 +282,11 @@ fn calculate_weighted_price_with_atom(
         return Err(ContractError::InsufficientData {});
     }
 
-    // Ensure we have non-zero weight
     if total_weight.is_zero() {
         return Err(ContractError::Std(StdError::generic_err(
             "Total weight is zero",
         )));
     }
-
-    // Calculate final weighted average
     let weighted_average = weighted_sum
         .checked_div(total_weight)
         .map_err(|_| ContractError::Std(StdError::generic_err("Division by zero")))?;
@@ -371,8 +328,6 @@ fn calculate_twap(observations: &[PriceObservation]) -> Result<Uint128, Contract
 }
 pub fn query_pyth_atom_usd_price(deps: Deps, env: Env) -> StdResult<Uint128> {
     let factory = FACTORYINSTANTIATEINFO.load(deps.storage)?;
-
-    // Query Pyth for ATOM/USD
     let query_msg = PythQueryMsg::PythConversionPriceFeed {
         id: ATOM_USD_PRICE_FEED_ID.to_string(), // The feed ID from before
     };
@@ -381,33 +336,22 @@ pub fn query_pyth_atom_usd_price(deps: Deps, env: Env) -> StdResult<Uint128> {
         .querier
         .query_wasm_smart(factory.pyth_contract_addr_for_conversions, &query_msg)?;
 
-    // Check if price is fresh
     let current_time = env.block.time.seconds() as i64;
     if current_time - response.price_feed.price.publish_time > 60 {
         return Err(StdError::generic_err("ATOM price is stale"));
     }
 
-    // Convert to Uint128 with 6 decimals (simplified)
     let price = response.price_feed.price.price as u128;
-    Ok(Uint128::from(price / 100)) // Adjust based on Pyth's exponent
+    Ok(Uint128::from(price / 100)) 
 }
 pub fn get_bluechip_usd_price(deps: Deps, env: Env) -> StdResult<Uint128> {
-    // Step 1: Get ATOM/USD from external oracle (Pyth, Band, etc.)
+
     let atom_usd_price = query_pyth_atom_usd_price(deps, env)?;
 
     let atom_pool_addr = Addr::unchecked(ATOM_BLUECHIP_POOL_CONTRACT_ADDRESS);
-    // Step 2: Get BLUECHIP/ATOM from your DEX pool
     let atom_pool = POOLS_BY_CONTRACT_ADDRESS.load(deps.storage, atom_pool_addr)?;
-
-    // Calculate how many BLUECHIP per ATOM
-    // If reserve0 = 1000 BLUECHIP and reserve1 = 10 ATOM
-    // Then 1 ATOM = 100 BLUECHIP
     let bluechip_per_atom =
         (atom_pool.reserve0 * Uint128::from(1_000_000u128)) / atom_pool.reserve1;
-
-    // Step 3: Calculate BLUECHIP price in USD
-    // If 1 ATOM = $10 and 1 ATOM = 100 BLUECHIP
-    // Then 1 BLUECHIP = $0.10
     let bluechip_usd_price = (atom_usd_price * Uint128::from(1_000_000u128)) / bluechip_per_atom;
 
     Ok(bluechip_usd_price)
