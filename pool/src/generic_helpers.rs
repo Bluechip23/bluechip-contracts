@@ -162,13 +162,13 @@ pub fn trigger_threshold_payout(
     //to creator
     msgs.push(mint_tokens(
         &pool_info.token_address,
-        &fee_info.creator_address,
+        &fee_info.creator_wallet_address,
         payout.creator_reward_amount,
     )?);
     //to BlueChip
     msgs.push(mint_tokens(
         &pool_info.token_address,
-        &fee_info.bluechip_address,
+        &fee_info.bluechip_wallet_address,
         payout.bluechip_reward_amount,
     )?);
     //to the creator pool + the amount of bluechips used to cross the threshold

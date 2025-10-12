@@ -47,8 +47,8 @@ pub struct FactoryInstantiateResponse {
 
 #[cw_serde]
 pub struct TokenInstantiateMsg {
-    pub token_name: String,
-    pub ticker: String,
+    pub name: String,
+    pub symbol: String,
     pub decimals: u8,
     pub initial_balances: Vec<Cw20Coin>,
     pub mint: Option<MinterResponse>,
@@ -56,7 +56,7 @@ pub struct TokenInstantiateMsg {
 
 #[cw_serde]
 pub struct CreatorTokenInfo {
-    pub token_name: String,
-    pub ticker: String,
+    pub name: String,
+    pub symbol: String,
     pub decimal: u8,
 }

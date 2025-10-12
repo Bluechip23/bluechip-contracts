@@ -66,8 +66,6 @@ pub struct PoolDetails {
     pub creator_pool_addr: Addr,
 }
 
-
-
 impl PoolDetails {
     pub fn query_pools(
         &self,

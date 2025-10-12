@@ -297,7 +297,7 @@ fn calculate_weighted_price_with_atom(
     Ok((final_price, atom_pool_price))
 }
 
-fn calculate_twap(observations: &[PriceObservation]) -> Result<Uint128, ContractError> {
+pub fn calculate_twap(observations: &[PriceObservation]) -> Result<Uint128, ContractError> {
     if observations.is_empty() {
         return Err(ContractError::InsufficientData {});
     }

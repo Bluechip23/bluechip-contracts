@@ -103,8 +103,8 @@ impl WasmMockQuerier {
                 if contract_addr == "factory" {
                     if let Ok(QueryMsg::FeeInfo {}) = from_json(&msg) {
                         let fee_info = CommitFeeInfo {
-                            bluechip_address: Addr::unchecked("bluechip"),
-                            creator_address: Addr::unchecked("creator"),
+                            bluechip_wallet_address: Addr::unchecked("bluechip"),
+                            creator_wallet_address: Addr::unchecked("creator"),
                             commit_fee_bluechip: Decimal::percent(10),
                             commit_fee_creator: Decimal::percent(10),
                         };
@@ -174,7 +174,7 @@ impl WasmMockQuerier {
                             name: "TOKEN".to_string(),
                             decimals: 6,
                             total_supply: supply,
-                            ticker: "TKN".to_string(),
+                            symbol: "TKN".to_string(),
                         };
                         let bin = to_json_binary(&info).unwrap();
                         SystemResult::Ok(cosmwasm_std::ContractResult::Ok(bin))

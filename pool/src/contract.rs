@@ -55,18 +55,18 @@ pub fn instantiate(
 ) -> Result<Response, ContractError> {
     //ensure the correct factory contract address was used in creating the pool
     let cfg = ExpectedFactory {
-        expected_factory_address: msg.factory_addr.clone(),
+        expected_factory_address: msg.used_factory_addr.clone(),
     };
     EXPECTED_FACTORY.save(deps.storage, &cfg)?;
     let real_factory = EXPECTED_FACTORY.load(deps.storage)?;
-    validate_factory_address(&real_factory.expected_factory_address, &msg.factory_addr)?;
+    validate_factory_address(&real_factory.expected_factory_address, &msg.used_factory_addr)?;
     if info.sender != real_factory.expected_factory_address {
         return Err(ContractError::Unauthorized {});
     }
-    msg.asset_infos[0].check(deps.api)?;
-    msg.asset_infos[1].check(deps.api)?;
+    msg.pool_token_info[0].check(deps.api)?;
+    msg.pool_token_info[1].check(deps.api)?;
 
-    if msg.asset_infos[0] == msg.asset_infos[1] {
+    if msg.pool_token_info[0] == msg.pool_token_info[1] {
         return Err(ContractError::DoublingAssets {});
     }
 
@@ -92,10 +92,10 @@ pub fn instantiate(
         pool_id: msg.pool_id,
         pool_info: PoolDetails {
             contract_addr: env.contract.address.clone(),
-            asset_infos: msg.asset_infos.clone(),
+            asset_infos: msg.pool_token_info.clone(),
             pool_type: PoolPairType::Xyk {},
         },
-        factory_addr: msg.factory_addr.clone(),
+        factory_addr: msg.used_factory_addr.clone(),
         token_address: msg.token_address.clone(),
         position_nft_address: msg.position_nft_address.clone(),
     };
@@ -124,12 +124,12 @@ pub fn instantiate(
     };
 
     let commit_config = CommitLimitInfo {
-        commit_amount_for_threshold_usd: msg.commit_amount_for_threshold_usd,
+        commit_amount_for_threshold_usd: msg.commit_threshold_limit_usd,
         commit_amount_for_threshold: msg.commit_amount_for_threshold,
     };
 
     let oracle_info = OracleInfo {
-        oracle_addr: msg.factory_addr.clone(),
+        oracle_addr: msg.used_factory_addr.clone(),
     };
 
     let pool_state = PoolState {
@@ -678,7 +678,7 @@ pub fn execute_commit_logic(
                 / fee_info.commit_fee_creator.denominator();
             // Create fee transfer messages
             let bluechip_transfer = get_bank_transfer_to_msg(
-                &fee_info.bluechip_address,
+                &fee_info.bluechip_wallet_address,
                 &denom,
                 commit_fee_bluechip_amt,
             )
@@ -689,7 +689,7 @@ pub fn execute_commit_logic(
                 )))
             })?;
             let creator_transfer =
-                get_bank_transfer_to_msg(&fee_info.creator_address, &denom, commit_fee_creator_amt)
+                get_bank_transfer_to_msg(&fee_info.creator_wallet_address, &denom, commit_fee_creator_amt)
                     .map_err(|e| {
                         ContractError::Std(StdError::generic_err(format!(
                             "Creator transfer failed: {}",

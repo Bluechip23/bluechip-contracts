@@ -1615,8 +1615,8 @@ pub fn setup_pool_storage(deps: &mut OwnedDeps<MockStorage, MockApi, MockQuerier
 
     // Set up FeeInfo
     let commit_fee_info = CommitFeeInfo {
-        bluechip_address: Addr::unchecked("bluechip_treasury"),
-        creator_address: Addr::unchecked("creator_wallet"),
+        bluechip_wallet_address: Addr::unchecked("bluechip_treasury"),
+        creator_wallet_address: Addr::unchecked("creator_wallet"),
         commit_fee_bluechip: Decimal::percent(1), // 1%
         commit_fee_creator: Decimal::percent(5),   // 5%
     };
@@ -1667,7 +1667,7 @@ fn test_factory_impersonation_prevented() {
     // Try to instantiate from non-factory address
       let msg = PoolInstantiateMsg {
         pool_id: 1u64,
-        asset_infos: [
+        pool_token_info: [
                 TokenType::Bluechip {
                     denom: "bluechip".to_string(),
                 },
@@ -1675,17 +1675,17 @@ fn test_factory_impersonation_prevented() {
                     contract_addr: Addr::unchecked("WILL_BE_CREATED_BY_FACTORY"),
                 },
             ],
-        token_code_id: 2u64,
+        cw20_token_contract_id: 2u64,
         threshold_payout: None,
-        factory_addr: Addr::unchecked("factory_contract"),
+        used_factory_addr: Addr::unchecked("factory_contract"),
         commit_fee_info: CommitFeeInfo {
-                bluechip_address: Addr::unchecked("bluechip"),
-                creator_address: Addr::unchecked("addr0000"),
+                bluechip_wallet_address: Addr::unchecked("bluechip"),
+                creator_wallet_address: Addr::unchecked("addr0000"),
                 commit_fee_bluechip: Decimal::from_ratio(10u128, 100u128),
                 commit_fee_creator: Decimal::from_ratio(10u128, 100u128),
             },
         commit_amount_for_threshold: Uint128::new(0),
-        commit_amount_for_threshold_usd: Uint128::new(350_000_000_000),
+        commit_threshold_limit_usd: Uint128::new(350_000_000_000),
         position_nft_address: Addr::unchecked("NFT_contract"),
         token_address: Addr::unchecked("token_contract"),
     };

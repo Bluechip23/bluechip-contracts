@@ -154,15 +154,15 @@ pub enum QueryMsg {
 pub struct PoolInstantiateMsg {
     pub pool_id: u64,
     // Information about the two assets in the pool
-    pub asset_infos: [TokenType; 2],
+    pub pool_token_info: [TokenType; 2],
     // The token contract code ID used for the tokens in the pool
-    pub token_code_id: u64,
+    pub cw20_token_contract_id: u64,
     // The factory contract address
-    pub factory_addr: Addr,
+    pub used_factory_addr: Addr,
     // gets set in reply function - amounts that go to each payout party
     pub threshold_payout: Option<Binary>,
     pub commit_fee_info: CommitFeeInfo,
-    pub commit_amount_for_threshold_usd: Uint128,
+    pub commit_threshold_limit_usd: Uint128,
     pub commit_amount_for_threshold: Uint128,
     pub position_nft_address: Addr,
     pub token_address: Addr,
@@ -189,9 +189,9 @@ pub struct CommiterInfo {
 #[cw_serde]
 pub struct CommitFeeInfo {
     //BlueChip wallet
-    pub bluechip_address: Addr,
+    pub bluechip_wallet_address: Addr,
     //pool creatpr wallet
-    pub creator_address: Addr,
+    pub creator_wallet_address: Addr,
     //amount of commit that goes to BlueChip
     pub commit_fee_bluechip: Decimal,
     //amount of commit taht goes to pool creator
