@@ -58,6 +58,9 @@ pub enum ContractError {
     #[error("invalid bluechip amount")]
     InvalidNativeAmount {},
 
+    #[error("Oracle price is invalid (zero or negative)")]
+    InvalidOraclePrice {},
+
     #[error("the pool is missing needed liquidity to carry out transaction")]
     InsufficientLiquidity {},
 

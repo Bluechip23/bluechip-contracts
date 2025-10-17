@@ -1,7 +1,5 @@
 use crate::state::{
-    CreationStatus, FactoryInstantiate, PoolCreationState, POOLS_BY_CONTRACT_ADDRESS, POOLS_BY_ID,
-    POOL_CREATION_STATES, SETCOMMIT, TEMPCREATORTOKENADDR, TEMPCREATORWALLETADDR, TEMPNFTADDR,
-    TEMPPOOLID, TEMPPOOLINFO,
+    CreationStatus, FactoryInstantiate, PoolCreationState, FACTORYINSTANTIATEINFO, POOLS_BY_CONTRACT_ADDRESS, POOLS_BY_ID, POOL_CREATION_STATES, SETCOMMIT, TEMPCREATORTOKENADDR, TEMPCREATORWALLETADDR, TEMPNFTADDR, TEMPPOOLID, TEMPPOOLINFO
 };
 use cosmwasm_std::{
     Addr, Binary, Decimal, Env, Event, OwnedDeps, Reply, SubMsgResponse, SubMsgResult, Uint128,
@@ -11,7 +9,7 @@ use crate::asset::{TokenInfo, TokenType};
 use crate::execute::{
     execute, instantiate, pool_creation_reply, FINALIZE_POOL, MINT_CREATE_POOL, SET_TOKENS,
 };
-use crate::internal_bluechip_price_oracle::{calculate_twap, PriceObservation, ATOM_BLUECHIP_POOL_CONTRACT_ADDRESS, INTERNAL_ORACLE};
+use crate::internal_bluechip_price_oracle::{bluechip_to_usd, calculate_twap, get_bluechip_usd_price, query_pyth_atom_usd_price, usd_to_bluechip, BlueChipPriceInternalOracle, PriceCache, PriceObservation, ATOM_BLUECHIP_POOL_CONTRACT_ADDRESS, INTERNAL_ORACLE, MOCK_PYTH_PRICE};
 use crate::mock_querier::{mock_dependencies, WasmMockQuerier};
 use crate::msg::{CreatorTokenInfo, ExecuteMsg};
 use crate::pool_struct::{CommitFeeInfo, CreatePool};
@@ -19,7 +17,7 @@ use cosmwasm_std::testing::{mock_env, mock_info, MockApi, MockStorage};
 use pool_factory_interfaces::PoolStateResponseForFactory;
 
 const ADMIN: &str = "admin";
-
+#[cfg(test)]
 fn create_default_instantiate_msg() -> FactoryInstantiate {
     FactoryInstantiate {
         factory_admin_address: Addr::unchecked(ADMIN),
@@ -1538,4 +1536,245 @@ fn test_oracle_handles_pools_with_different_liquidities() {
     
     // Optionally: verify that high-liquidity pools are weighted more heavily
     // (implementation dependent)
+}
+
+#[test]
+fn test_query_pyth_atom_usd_price_success() {
+    let mut deps = mock_dependencies(&[]);
+    
+    // Set up factory config
+    let config = FactoryInstantiate {
+        factory_admin_address: Addr::unchecked(ADMIN),
+        cw721_nft_contract_id: 58,
+        commit_amount_for_threshold_bluechip: Uint128::zero(),
+        commit_threshold_limit_usd: Uint128::new(100),
+        pyth_contract_addr_for_conversions: "pyth_oracle".to_string(),
+        pyth_atom_usd_price_feed_id: "ATOM_USD".to_string(),
+        cw20_token_contract_id: 10,
+        create_pool_wasm_contract_id: 11,
+        bluechip_wallet_address: Addr::unchecked("bluechip"),
+        commit_fee_bluechip: Decimal::percent(10),
+        commit_fee_creator: Decimal::percent(10),
+    };
+    FACTORYINSTANTIATEINFO.save(deps.as_mut().storage, &config).unwrap();
+    
+    // Mock Pyth price: ATOM = $10.00
+    MOCK_PYTH_PRICE.save(deps.as_mut().storage, &Uint128::new(10_000_000)).unwrap();
+    
+    let env = mock_env();
+    let result = query_pyth_atom_usd_price(deps.as_ref(), env);
+    
+    assert!(result.is_ok(), "Should successfully query Pyth price");
+    
+    let price = result.unwrap();
+    assert_eq!(
+        price,
+        Uint128::new(10_000_000),
+        "ATOM price should be $10.00 with 6 decimals"
+    );
+}
+
+#[test]
+fn test_query_pyth_atom_usd_price_default() {
+    let mut deps = mock_dependencies(&[]);
+    
+    let config = FactoryInstantiate {
+        factory_admin_address: Addr::unchecked(ADMIN),
+        cw721_nft_contract_id: 58,
+        commit_amount_for_threshold_bluechip: Uint128::zero(),
+        commit_threshold_limit_usd: Uint128::new(100),
+        pyth_contract_addr_for_conversions: "pyth_oracle".to_string(),
+        pyth_atom_usd_price_feed_id: "ATOM_USD".to_string(),
+        cw20_token_contract_id: 10,
+        create_pool_wasm_contract_id: 11,
+        bluechip_wallet_address: Addr::unchecked("bluechip"),
+        commit_fee_bluechip: Decimal::percent(10),
+        commit_fee_creator: Decimal::percent(10),
+    };
+    FACTORYINSTANTIATEINFO.save(deps.as_mut().storage, &config).unwrap();
+    
+    // Don't set MOCK_PYTH_PRICE - should use default of $10.00
+    
+    let env = mock_env();
+    let result = query_pyth_atom_usd_price(deps.as_ref(), env);
+    
+    assert!(result.is_ok(), "Should use default price");
+    let price = result.unwrap();
+    assert_eq!(price, Uint128::new(10_000_000), "Should default to $10.00");
+}
+
+#[test]
+fn test_query_pyth_extreme_atom_prices() {
+    let mut deps = mock_dependencies(&[]);
+    
+    let config = FactoryInstantiate {
+        factory_admin_address: Addr::unchecked(ADMIN),
+        cw721_nft_contract_id: 58,
+        commit_amount_for_threshold_bluechip: Uint128::zero(),
+        commit_threshold_limit_usd: Uint128::new(100),
+        pyth_contract_addr_for_conversions: "pyth_oracle".to_string(),
+        pyth_atom_usd_price_feed_id: "ATOM_USD".to_string(),
+        cw20_token_contract_id: 10,
+        create_pool_wasm_contract_id: 11,
+        bluechip_wallet_address: Addr::unchecked("bluechip"),
+        commit_fee_bluechip: Decimal::percent(10),
+        commit_fee_creator: Decimal::percent(10),
+    };
+    FACTORYINSTANTIATEINFO.save(deps.as_mut().storage, &config).unwrap();
+    
+    let env = mock_env();
+    
+    // Test 1: ATOM crash to $0.01
+    MOCK_PYTH_PRICE.save(deps.as_mut().storage, &Uint128::new(10_000)).unwrap();
+    let result_low = query_pyth_atom_usd_price(deps.as_ref(), env.clone());
+    assert!(result_low.is_ok(), "Should handle low ATOM price");
+    assert_eq!(result_low.unwrap(), Uint128::new(10_000)); // $0.01
+    
+    // Test 2: ATOM pump to $10,000
+    MOCK_PYTH_PRICE.save(deps.as_mut().storage, &Uint128::new(10_000_000_000)).unwrap();
+    let result_high = query_pyth_atom_usd_price(deps.as_ref(), env.clone());
+    assert!(result_high.is_ok(), "Should handle high ATOM price");
+    assert_eq!(result_high.unwrap(), Uint128::new(10_000_000_000)); // $10,000
+    
+    // Test 3: ATOM at $100
+    MOCK_PYTH_PRICE.save(deps.as_mut().storage, &Uint128::new(100_000_000)).unwrap();
+    let result_med = query_pyth_atom_usd_price(deps.as_ref(), env.clone());
+    assert!(result_med.is_ok(), "Should handle $100 ATOM price");
+    assert_eq!(result_med.unwrap(), Uint128::new(100_000_000)); // $100
+}
+
+#[test]
+fn test_get_bluechip_usd_price_with_pyth() {
+    let mut deps = mock_dependencies(&[]);
+    
+    // Set up ATOM pool: 1M bluechip : 100k ATOM
+    setup_atom_pool(&mut deps);
+    
+    let config = FactoryInstantiate {
+        factory_admin_address: Addr::unchecked(ADMIN),
+        cw721_nft_contract_id: 58,
+        commit_amount_for_threshold_bluechip: Uint128::zero(),
+        commit_threshold_limit_usd: Uint128::new(100),
+        pyth_contract_addr_for_conversions: "pyth_oracle".to_string(),
+        pyth_atom_usd_price_feed_id: "ATOM_USD".to_string(),
+        cw20_token_contract_id: 10,
+        create_pool_wasm_contract_id: 11,
+        bluechip_wallet_address: Addr::unchecked("bluechip"),
+        commit_fee_bluechip: Decimal::percent(10),
+        commit_fee_creator: Decimal::percent(10),
+    };
+    FACTORYINSTANTIATEINFO.save(deps.as_mut().storage, &config).unwrap();
+    
+    // Mock ATOM = $10.00
+    MOCK_PYTH_PRICE.save(deps.as_mut().storage, &Uint128::new(10_000_000)).unwrap();
+    
+    let env = mock_env();
+    let result = get_bluechip_usd_price(deps.as_ref(), env);
+    
+    assert!(result.is_ok(), "Should calculate bluechip USD price");
+    let bluechip_price = result.unwrap();
+    
+    println!("Calculated bluechip USD price: {}", bluechip_price);
+    
+    // Pool: 1M bluechip : 100k ATOM = 10 bluechip per ATOM
+    // ATOM = $10, so bluechip = $10 / 10 = $1.00
+    assert_eq!(
+        bluechip_price,
+        Uint128::new(1_000_000),
+        "Bluechip should be $1.00"
+    );
+}
+
+#[test]
+fn test_bluechip_usd_price_with_different_atom_prices() {
+    let mut deps = mock_dependencies(&[]);
+    setup_atom_pool(&mut deps);
+    
+    let config = FactoryInstantiate {
+        factory_admin_address: Addr::unchecked(ADMIN),
+        cw721_nft_contract_id: 58,
+        commit_amount_for_threshold_bluechip: Uint128::zero(),
+        commit_threshold_limit_usd: Uint128::new(100),
+        pyth_contract_addr_for_conversions: "pyth_oracle".to_string(),
+        pyth_atom_usd_price_feed_id: "ATOM_USD".to_string(),
+        cw20_token_contract_id: 10,
+        create_pool_wasm_contract_id: 11,
+        bluechip_wallet_address: Addr::unchecked("bluechip"),
+        commit_fee_bluechip: Decimal::percent(10),
+        commit_fee_creator: Decimal::percent(10),
+    };
+    FACTORYINSTANTIATEINFO.save(deps.as_mut().storage, &config).unwrap();
+    
+    let env = mock_env();
+    
+    // Scenario 1: ATOM = $5.00 -> bluechip = $0.50
+    MOCK_PYTH_PRICE.save(deps.as_mut().storage, &Uint128::new(5_000_000)).unwrap();
+    let price1 = get_bluechip_usd_price(deps.as_ref(), env.clone()).unwrap();
+    println!("ATOM=$5 -> Bluechip=${}", price1);
+    assert_eq!(price1, Uint128::new(500_000)); // $0.50
+    
+    // Scenario 2: ATOM = $20.00 -> bluechip = $2.00
+    MOCK_PYTH_PRICE.save(deps.as_mut().storage, &Uint128::new(20_000_000)).unwrap();
+    let price2 = get_bluechip_usd_price(deps.as_ref(), env.clone()).unwrap();
+    println!("ATOM=$20 -> Bluechip=${}", price2);
+    assert_eq!(price2, Uint128::new(2_000_000)); // $2.00
+    
+    // Scenario 3: ATOM = $100.00 -> bluechip = $10.00
+    MOCK_PYTH_PRICE.save(deps.as_mut().storage, &Uint128::new(100_000_000)).unwrap();
+    let price3 = get_bluechip_usd_price(deps.as_ref(), env.clone()).unwrap();
+    println!("ATOM=$100 -> Bluechip=${}", price3);
+    assert_eq!(price3, Uint128::new(10_000_000)); // $10.00
+}
+
+#[test]
+fn test_conversion_functions_with_pyth() {
+    let mut deps = mock_dependencies(&[]);
+    setup_atom_pool(&mut deps);
+    
+    let config = FactoryInstantiate {
+        factory_admin_address: Addr::unchecked(ADMIN),
+        cw721_nft_contract_id: 58,
+        commit_amount_for_threshold_bluechip: Uint128::zero(),
+        commit_threshold_limit_usd: Uint128::new(100),
+        pyth_contract_addr_for_conversions: "pyth_oracle".to_string(),
+        pyth_atom_usd_price_feed_id: "ATOM_USD".to_string(),
+        cw20_token_contract_id: 10,
+        create_pool_wasm_contract_id: 11,
+        bluechip_wallet_address: Addr::unchecked("bluechip"),
+        commit_fee_bluechip: Decimal::percent(10),
+        commit_fee_creator: Decimal::percent(10),
+    };
+    FACTORYINSTANTIATEINFO.save(deps.as_mut().storage, &config).unwrap();
+    
+    // Mock ATOM = $10.00
+    MOCK_PYTH_PRICE.save(deps.as_mut().storage, &Uint128::new(10_000_000)).unwrap();
+    
+    // Initialize oracle
+    let oracle = BlueChipPriceInternalOracle {
+        atom_pool_contract_address: Addr::unchecked(ATOM_BLUECHIP_POOL_CONTRACT_ADDRESS),
+        selected_pools: vec![ATOM_BLUECHIP_POOL_CONTRACT_ADDRESS.to_string()],
+        bluechip_price_cache: PriceCache {
+            last_price: Uint128::new(1_000_000), // $1.00
+            last_update: 1000,
+            twap_observations: vec![],
+        },
+        update_interval: 300,
+        rotation_interval: 3600,
+        last_rotation: 0,
+    };
+    INTERNAL_ORACLE.save(deps.as_mut().storage, &oracle).unwrap();
+    
+    let env = mock_env();
+    
+    // Test bluechip_to_usd
+    let bluechip_amount = Uint128::new(5_000_000); // 5 bluechip
+    let result = bluechip_to_usd(deps.as_ref(), bluechip_amount, env.clone());
+    assert!(result.is_ok(), "bluechip_to_usd should succeed");
+    println!("5 bluechip = ${}", result.as_ref().unwrap().amount);
+    
+    // Test usd_to_bluechip
+    let usd_amount = Uint128::new(5_000_000); // $5
+    let result2 = usd_to_bluechip(deps.as_ref(), usd_amount, env.clone());
+    assert!(result2.is_ok(), "usd_to_bluechip should succeed");
+    println!("$5 = {} bluechip", result2.as_ref().unwrap().amount);
 }

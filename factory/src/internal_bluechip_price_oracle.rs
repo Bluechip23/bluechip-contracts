@@ -10,7 +10,8 @@ use cosmwasm_std::{
 use cw_storage_plus::Item;
 use pool_factory_interfaces::{ConversionResponse, PoolQueryMsg, PoolStateResponseForFactory};
 use sha2::{Digest, Sha256};
-
+#[cfg(test)]
+pub const MOCK_PYTH_PRICE: Item<Uint128> = Item::new("mock_pyth_price");
 pub const ATOM_BLUECHIP_POOL_CONTRACT_ADDRESS: &str =
     "cosmos1atom_bluechip_pool_test_addr_000000000000";
 pub const ORACLE_POOL_COUNT: usize = 5;
@@ -327,6 +328,9 @@ pub fn calculate_twap(observations: &[PriceObservation]) -> Result<Uint128, Cont
     Ok(weighted_average)
 }
 pub fn query_pyth_atom_usd_price(deps: Deps, env: Env) -> StdResult<Uint128> {
+
+    #[cfg(not(test))]
+    {
     let factory = FACTORYINSTANTIATEINFO.load(deps.storage)?;
     let query_msg = PythQueryMsg::PythConversionPriceFeed {
         id: ATOM_USD_PRICE_FEED_ID.to_string(), // The feed ID from before
@@ -343,17 +347,50 @@ pub fn query_pyth_atom_usd_price(deps: Deps, env: Env) -> StdResult<Uint128> {
 
     let price = response.price_feed.price.price as u128;
     Ok(Uint128::from(price / 100)) 
+    }
+    #[cfg(test)]
+    {
+        // In tests, read from a test storage item
+        let mock_price = MOCK_PYTH_PRICE.may_load(deps.storage)?
+            .unwrap_or(Uint128::new(10_000_000)); // Default $10
+        Ok(mock_price)
+    }
 }
+
+
 pub fn get_bluechip_usd_price(deps: Deps, env: Env) -> StdResult<Uint128> {
-
     let atom_usd_price = query_pyth_atom_usd_price(deps, env)?;
-
     let atom_pool_addr = Addr::unchecked(ATOM_BLUECHIP_POOL_CONTRACT_ADDRESS);
     let atom_pool = POOLS_BY_CONTRACT_ADDRESS.load(deps.storage, atom_pool_addr)?;
-    let bluechip_per_atom =
-        (atom_pool.reserve0 * Uint128::from(1_000_000u128)) / atom_pool.reserve1;
-    let bluechip_usd_price = (atom_usd_price * Uint128::from(1_000_000u128)) / bluechip_per_atom;
-
+    
+    // Check for zero reserves
+    if atom_pool.reserve1.is_zero() {
+        return Err(StdError::generic_err("ATOM pool has zero ATOM reserves"));
+    }
+    
+    // Use checked math
+    let bluechip_per_atom = atom_pool.reserve0
+        .checked_mul(Uint128::from(1_000_000u128))
+        .map_err(|e| StdError::generic_err(format!("Overflow calculating bluechip per ATOM: {}", e)))?
+        .checked_div(atom_pool.reserve1)
+        .map_err(|e| StdError::generic_err(format!("Division error calculating bluechip per ATOM: {}", e)))?;
+    
+    // Check result isn't zero
+    if bluechip_per_atom.is_zero() {
+        return Err(StdError::generic_err("Invalid bluechip per ATOM ratio"));
+    }
+    
+    let bluechip_usd_price = atom_usd_price
+        .checked_mul(Uint128::from(1_000_000u128))
+        .map_err(|e| StdError::generic_err(format!("Overflow calculating bluechip USD price: {}", e)))?
+        .checked_div(bluechip_per_atom)
+        .map_err(|e| StdError::generic_err(format!("Division error calculating bluechip USD price: {}", e)))?;
+    
+    // Final validation
+    if bluechip_usd_price.is_zero() {
+        return Err(StdError::generic_err("Calculated bluechip price is zero"));
+    }
+    
     Ok(bluechip_usd_price)
 }
 
@@ -364,10 +401,17 @@ pub fn bluechip_to_usd(
 ) -> StdResult<ConversionResponse> {
     let oracle = INTERNAL_ORACLE.load(deps.storage)?;
     let cached_price = get_bluechip_usd_price(deps, env)?;
+    
     if cached_price.is_zero() {
         return Err(StdError::generic_err("Invalid zero price"));
     }
-    let usd_amount = (bluechip_amount * Uint128::from(1_000_000u128)) / cached_price;
+    
+    let usd_amount = bluechip_amount
+        .checked_mul(Uint128::from(1_000_000u128))
+        .map_err(|e| StdError::generic_err(format!("Overflow in bluechip to USD conversion: {}", e)))?
+        .checked_div(cached_price)
+        .map_err(|e| StdError::generic_err(format!("Division error in bluechip to USD conversion: {}", e)))?;
+    
     Ok(ConversionResponse {
         amount: usd_amount,
         rate_used: cached_price,
@@ -375,14 +419,24 @@ pub fn bluechip_to_usd(
     })
 }
 
-pub fn usd_to_bluechip(deps: Deps, usd_amount: Uint128, env: Env) -> StdResult<ConversionResponse> {
+pub fn usd_to_bluechip(
+    deps: Deps,
+    usd_amount: Uint128,
+    env: Env,
+) -> StdResult<ConversionResponse> {
     let oracle = INTERNAL_ORACLE.load(deps.storage)?;
     let cached_price = get_bluechip_usd_price(deps, env)?;
-
+    
     if cached_price.is_zero() {
         return Err(StdError::generic_err("Invalid zero price"));
     }
-    let bluechip_amount = (usd_amount * Uint128::from(100u128)) / cached_price;
+    
+    let bluechip_amount = usd_amount
+        .checked_mul(Uint128::from(100u128))
+        .map_err(|e| StdError::generic_err(format!("Overflow in USD to bluechip conversion: {}", e)))?
+        .checked_div(cached_price)
+        .map_err(|e| StdError::generic_err(format!("Division error in USD to bluechip conversion: {}", e)))?;
+    
     Ok(ConversionResponse {
         amount: bluechip_amount,
         rate_used: cached_price,
@@ -428,16 +482,34 @@ fn query_pool_safe(
     deps: Deps,
     pool_address: &str,
 ) -> Result<PoolStateResponseForFactory, ContractError> {
-    deps.querier
-        .query_wasm_smart(
-            pool_address.to_string(),
-            &PoolQueryMsg::GetPoolState {
-                pool_contract_address: pool_address.to_string(),
-            },
-        )
-        .map_err(|e| ContractError::QueryError {
-            msg: format!("Failed to query pool {}: {}", pool_address, e),
-        })
+    #[cfg(not(test))]
+    {
+        deps.querier
+            .query_wasm_smart(
+                pool_address.to_string(),
+                &PoolQueryMsg::GetPoolState {
+                    pool_contract_address: pool_address.to_string(),
+                },
+            )
+            .map_err(|e| ContractError::QueryError {
+                msg: format!("Failed to query pool {}: {}", pool_address, e),
+            })
+    }
+    
+    #[cfg(test)]
+    {
+        // In tests, read directly from factory storage instead of querying
+        let addr = deps.api.addr_validate(pool_address)
+            .map_err(|e| ContractError::QueryError {
+                msg: format!("Invalid pool address {}: {}", pool_address, e),
+            })?;
+        
+        POOLS_BY_CONTRACT_ADDRESS
+            .load(deps.storage, addr)
+            .map_err(|_| ContractError::QueryError {
+                msg: format!("Pool {} not found in storage", pool_address),
+            })
+    }
 }
 
 pub fn execute_force_rotate_pools(

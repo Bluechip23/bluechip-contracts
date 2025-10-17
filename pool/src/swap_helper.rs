@@ -11,42 +11,53 @@ use std::str::FromStr;
 
 // calculates swap amounts using constant product formula (x * y = k)
 pub fn compute_swap(
-    //pool balance of offer amount
     offer_pool: Uint128,
-    //pool balance of requested amount
     ask_pool: Uint128,
-    //amount being offered
     offer_amount: Uint128,
-    //pool fee rate
     commission_rate: Decimal,
 ) -> StdResult<(Uint128, Uint128, Uint128)> {
     let offer_pool: Uint256 = offer_pool.into();
     let ask_pool: Uint256 = ask_pool.into();
     let offer_amount: Uint256 = offer_amount.into();
     let commission_rate = decimal2decimal256(commission_rate)?;
-    // constant product
-    let cp: Uint256 = offer_pool * ask_pool;
+    
+    // constant product - use checked math
+    let cp: Uint256 = offer_pool
+        .checked_mul(ask_pool)
+        .map_err(|e| StdError::generic_err(format!("Overflow calculating constant product: {}", e)))?;
 
     let return_amount: Uint256 = (Decimal256::from_ratio(ask_pool, 1u8)
-        - Decimal256::from_ratio(cp, offer_pool + offer_amount))
-    .numerator()
+        - Decimal256::from_ratio(cp, offer_pool
+            .checked_add(offer_amount)
+            .map_err(|e| StdError::generic_err(format!("Overflow in pool calculation: {}", e)))?))
+        .numerator()
         / Decimal256::one().denominator();
 
-    // calculate spread(slippage) & commission
-    let spread_amount: Uint256 = (offer_amount
-        * Decimal256::from_ratio(ask_pool, offer_pool).numerator()
-        / Decimal256::from_ratio(ask_pool, offer_pool).denominator())
-        - return_amount;
-    let commission_amount: Uint256 =
-        return_amount * commission_rate.numerator() / commission_rate.denominator();
-    //subtract commission from return amount
-    let return_amount: Uint256 = return_amount - commission_amount;
+    // calculate spread - use checked math
+    let price_ratio = Decimal256::from_ratio(ask_pool, offer_pool);
+    let spread_amount: Uint256 = offer_amount
+        .checked_mul(price_ratio.numerator())
+        .map_err(|e| StdError::generic_err(format!("Overflow calculating spread: {}", e)))?
+        .checked_div(price_ratio.denominator())
+        .map_err(|e| StdError::generic_err(format!("Division error calculating spread: {}", e)))?
+        .checked_sub(return_amount)
+        .map_err(|e| StdError::generic_err(format!("Underflow calculating spread: {}", e)))?;
+    
+    // calculate commission - use checked math
+    let commission_amount: Uint256 = return_amount
+        .checked_mul(commission_rate.numerator())
+        .map_err(|e| StdError::generic_err(format!("Overflow calculating commission: {}", e)))?
+        .checked_div(commission_rate.denominator())
+        .map_err(|e| StdError::generic_err(format!("Division error calculating commission: {}", e)))?;
+    
+    // subtract commission from return amount - use checked math
+    let final_return_amount: Uint256 = return_amount
+        .checked_sub(commission_amount)
+        .map_err(|e| StdError::generic_err(format!("Underflow subtracting commission: {}", e)))?;
+    
     Ok((
-        //amount trader recieves
-        return_amount.try_into()?,
-        //slippage
+        final_return_amount.try_into()?,
         spread_amount.try_into()?,
-        //fee to liquidity holders
         commission_amount.try_into()?,
     ))
 }

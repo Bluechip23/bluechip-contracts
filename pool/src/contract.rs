@@ -59,7 +59,10 @@ pub fn instantiate(
     };
     EXPECTED_FACTORY.save(deps.storage, &cfg)?;
     let real_factory = EXPECTED_FACTORY.load(deps.storage)?;
-    validate_factory_address(&real_factory.expected_factory_address, &msg.used_factory_addr)?;
+    validate_factory_address(
+        &real_factory.expected_factory_address,
+        &msg.used_factory_addr,
+    )?;
     if info.sender != real_factory.expected_factory_address {
         return Err(ContractError::Unauthorized {});
     }
@@ -658,6 +661,11 @@ pub fn execute_commit_logic(
         return Err(ContractError::ZeroAmount {});
     }
     let usd_value = get_usd_value(deps.as_ref(), asset.amount)?;
+
+    if usd_value.is_zero() {
+        return Err(ContractError::InvalidOraclePrice {});
+    }
+
     match &asset.info {
         TokenType::Bluechip { denom } if denom == "stake" => {
             // Verify funds were actually sent
@@ -672,10 +680,37 @@ pub fn execute_commit_logic(
             }
             let mut messages: Vec<CosmosMsg> = Vec::new();
             // fees calculated right away
-            let commit_fee_bluechip_amt = amount * fee_info.commit_fee_bluechip.numerator()
-                / fee_info.commit_fee_bluechip.denominator();
-            let commit_fee_creator_amt = amount * fee_info.commit_fee_creator.numerator()
-                / fee_info.commit_fee_creator.denominator();
+            let commit_fee_bluechip_amt = amount
+                .checked_mul(fee_info.commit_fee_bluechip.numerator())
+                .map_err(|e| {
+                    ContractError::Std(StdError::generic_err(format!(
+                        "Fee calculation overflow: {}",
+                        e
+                    )))
+                })?
+                .checked_div(fee_info.commit_fee_bluechip.denominator())
+                .map_err(|e| {
+                    ContractError::Std(StdError::generic_err(format!(
+                        "Fee calculation error: {}",
+                        e
+                    )))
+                })?;
+
+            let commit_fee_creator_amt = amount
+                .checked_mul(fee_info.commit_fee_creator.numerator())
+                .map_err(|e| {
+                    ContractError::Std(StdError::generic_err(format!(
+                        "Fee calculation overflow: {}",
+                        e
+                    )))
+                })?
+                .checked_div(fee_info.commit_fee_creator.denominator())
+                .map_err(|e| {
+                    ContractError::Std(StdError::generic_err(format!(
+                        "Fee calculation error: {}",
+                        e
+                    )))
+                })?;
             // Create fee transfer messages
             let bluechip_transfer = get_bank_transfer_to_msg(
                 &fee_info.bluechip_wallet_address,
@@ -688,14 +723,17 @@ pub fn execute_commit_logic(
                     e
                 )))
             })?;
-            let creator_transfer =
-                get_bank_transfer_to_msg(&fee_info.creator_wallet_address, &denom, commit_fee_creator_amt)
-                    .map_err(|e| {
-                        ContractError::Std(StdError::generic_err(format!(
-                            "Creator transfer failed: {}",
-                            e
-                        )))
-                    })?;
+            let creator_transfer = get_bank_transfer_to_msg(
+                &fee_info.creator_wallet_address,
+                &denom,
+                commit_fee_creator_amt,
+            )
+            .map_err(|e| {
+                ContractError::Std(StdError::generic_err(format!(
+                    "Creator transfer failed: {}",
+                    e
+                )))
+            })?;
             messages.push(bluechip_transfer);
             messages.push(creator_transfer);
             // load state of threshold of the pool

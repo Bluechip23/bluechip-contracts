@@ -29,18 +29,36 @@ fn mock_dependencies_with_balance(balances: &[Coin]) -> OwnedDeps<MockStorage, M
 }
 fn with_factory_oracle(
     deps: &mut OwnedDeps<MockStorage, MockApi, MockQuerier>,
-    bluechip_to_usd_rate: Uint128, // e.g., Uint128::new(1_000_000) for $1 per bluechip
+    bluechip_to_usd_rate: Uint128,
 ) {
     deps.querier.update_wasm(move |query| {
         match query {
             WasmQuery::Smart { contract_addr, msg } => {
-                // Check if it's a factory query
                 if contract_addr == "factory_contract" {
-                    // Try to parse as FactoryQueryMsg
                     if let Ok(factory_query) = from_json::<FactoryQueryMsg>(msg) {
                         match factory_query {
                             FactoryQueryMsg::ConvertBluechipToUsd { amount } => {
-                                let usd_amount = amount * bluechip_to_usd_rate / Uint128::new(1_000_000);
+                                // Handle multiplication and division separately
+                                let intermediate = match amount.checked_mul(bluechip_to_usd_rate) {
+                                    Ok(v) => v,
+                                    Err(_) => {
+                                        return SystemResult::Err(SystemError::InvalidRequest {
+                                            error: "Overflow in mock oracle calculation".to_string(),
+                                            request: msg.clone(),
+                                        });
+                                    }
+                                };
+                                
+                                let usd_amount = match intermediate.checked_div(Uint128::new(1_000_000)) {
+                                    Ok(v) => v,
+                                    Err(_) => {
+                                        return SystemResult::Err(SystemError::InvalidRequest {
+                                            error: "Division error in mock oracle calculation".to_string(),
+                                            request: msg.clone(),
+                                        });
+                                    }
+                                };
+                                
                                 let response = ConversionResponse {
                                     amount: usd_amount,
                                     rate_used: bluechip_to_usd_rate,
@@ -51,7 +69,26 @@ fn with_factory_oracle(
                                 ));
                             }
                             FactoryQueryMsg::ConvertUsdToBluechip { amount } => {
-                                let bluechip_amount = amount * Uint128::new(1_000_000) / bluechip_to_usd_rate;
+                                let intermediate = match amount.checked_mul(Uint128::new(1_000_000)) {
+                                    Ok(v) => v,
+                                    Err(_) => {
+                                        return SystemResult::Err(SystemError::InvalidRequest {
+                                            error: "Overflow in mock oracle calculation".to_string(),
+                                            request: msg.clone(),
+                                        });
+                                    }
+                                };
+                                
+                                let bluechip_amount = match intermediate.checked_div(bluechip_to_usd_rate) {
+                                    Ok(v) => v,
+                                    Err(_) => {
+                                        return SystemResult::Err(SystemError::InvalidRequest {
+                                            error: "Division error in mock oracle calculation".to_string(),
+                                            request: msg.clone(),
+                                        });
+                                    }
+                                };
+                                
                                 let response = ConversionResponse {
                                     amount: bluechip_amount,
                                     rate_used: bluechip_to_usd_rate,
@@ -1986,3 +2023,494 @@ pub fn create_test_position(
             }
         }
     }
+
+    #[test]
+fn test_commit_with_changing_oracle_prices() {
+    let mut deps = mock_dependencies_with_balance(&[Coin {
+        denom: "stake".to_string(),
+        amount: Uint128::new(10_000_000_000),
+    }]);
+    setup_pool_storage(&mut deps);
+    
+    // First commit at $1 per bluechip
+    with_factory_oracle(&mut deps, Uint128::new(1_000_000));
+    
+    let env = mock_env();
+    let info1 = mock_info("user1", &[Coin {
+        denom: "stake".to_string(),
+        amount: Uint128::new(5_000_000),
+    }]);
+    
+    let msg1 = ExecuteMsg::Commit {
+        asset: TokenInfo {
+            info: TokenType::Bluechip { denom: "stake".to_string() },
+            amount: Uint128::new(5_000_000),
+        },
+        amount: Uint128::new(5_000_000),
+        transaction_deadline: None,
+        belief_price: None,
+        max_spread: None,
+    };
+    
+    execute(deps.as_mut(), env.clone(), info1, msg1).unwrap();
+    
+    let first_usd = USD_RAISED_FROM_COMMIT.load(&deps.storage).unwrap();
+    assert_eq!(first_usd, Uint128::new(5_000_000)); // $5
+    
+    // Price doubles to $2 per bluechip
+    with_factory_oracle(&mut deps, Uint128::new(2_000_000));
+    
+    let info2 = mock_info("user2", &[Coin {
+        denom: "stake".to_string(),
+        amount: Uint128::new(5_000_000), // Same bluechip amount
+    }]);
+    
+    let msg2 = ExecuteMsg::Commit {
+        asset: TokenInfo {
+            info: TokenType::Bluechip { denom: "stake".to_string() },
+            amount: Uint128::new(5_000_000),
+        },
+        amount: Uint128::new(5_000_000),
+        transaction_deadline: None,
+        belief_price: None,
+        max_spread: None,
+    };
+    
+    execute(deps.as_mut(), env, info2, msg2).unwrap();
+    
+    let total_usd = USD_RAISED_FROM_COMMIT.load(&deps.storage).unwrap();
+    assert_eq!(total_usd, Uint128::new(15_000_000)); // $5 + $10 = $15
+    
+    // Verify second user paid $10
+    let user2_commit = COMMIT_INFO.load(&deps.storage, &Addr::unchecked("user2")).unwrap();
+    assert_eq!(user2_commit.total_paid_usd, Uint128::new(10_000_000));
+}
+
+#[test]
+fn test_threshold_crossing_depends_on_oracle_price() {
+    // Scenario 1: High price means fewer tokens needed
+    let mut deps1 = mock_dependencies_with_balance(&[Coin {
+        denom: "stake".to_string(),
+        amount: Uint128::new(100_000_000_000),
+    }]);
+    setup_pool_storage(&mut deps1);
+    THRESHOLD_PROCESSING.save(&mut deps1.storage, &false).unwrap();
+    
+    // Oracle at $10 per token
+    with_factory_oracle(&mut deps1, Uint128::new(10_000_000));
+    
+    // Already at $24k
+    USD_RAISED_FROM_COMMIT.save(&mut deps1.storage, &Uint128::new(24_000_000_000)).unwrap();
+    
+    let env = mock_env();
+    
+    // Commit 100 tokens at $10 each = $1k, should hit $25k threshold
+    let info1 = mock_info("whale", &[Coin {
+        denom: "stake".to_string(),
+        amount: Uint128::new(100_000_000), // 100 tokens
+    }]);
+    
+    let msg1 = ExecuteMsg::Commit {
+        asset: TokenInfo {
+            info: TokenType::Bluechip { denom: "stake".to_string() },
+            amount: Uint128::new(100_000_000),
+        },
+        amount: Uint128::new(100_000_000),
+        transaction_deadline: None,
+        belief_price: None,
+        max_spread: None,
+    };
+    
+    execute(deps1.as_mut(), env.clone(), info1, msg1).unwrap();
+    assert_eq!(IS_THRESHOLD_HIT.load(&deps1.storage).unwrap(), true);
+    
+    // Scenario 2: Low price means more tokens needed
+    let mut deps2 = mock_dependencies_with_balance(&[Coin {
+        denom: "stake".to_string(),
+        amount: Uint128::new(100_000_000_000),
+    }]);
+    setup_pool_storage(&mut deps2);
+    THRESHOLD_PROCESSING.save(&mut deps2.storage, &false).unwrap();
+    
+    // Oracle at $0.10 per token
+    with_factory_oracle(&mut deps2, Uint128::new(100_000)); // $0.10
+    
+    USD_RAISED_FROM_COMMIT.save(&mut deps2.storage, &Uint128::new(24_000_000_000)).unwrap();
+    
+    // Same 100 tokens but at $0.10 each = $10, should NOT hit threshold
+    let info2 = mock_info("whale", &[Coin {
+        denom: "stake".to_string(),
+        amount: Uint128::new(100_000_000),
+    }]);
+    
+    let msg2 = ExecuteMsg::Commit {
+        asset: TokenInfo {
+            info: TokenType::Bluechip { denom: "stake".to_string() },
+            amount: Uint128::new(100_000_000),
+        },
+        amount: Uint128::new(100_000_000),
+        transaction_deadline: None,
+        belief_price: None,
+        max_spread: None,
+    };
+    
+    execute(deps2.as_mut(), env, info2, msg2).unwrap();
+    assert_eq!(IS_THRESHOLD_HIT.load(&deps2.storage).unwrap(), false);
+    
+    let total = USD_RAISED_FROM_COMMIT.load(&deps2.storage).unwrap();
+    assert_eq!(total, Uint128::new(24_010_000_000)); // $24k + $10
+}
+
+#[test]
+fn test_oracle_conversion_precision_various_prices() {
+    struct TestCase {
+        oracle_price: Uint128,
+        token_amount: Uint128,
+        expected_usd: Uint128,
+        description: &'static str,
+    }
+    
+    let test_cases = vec![
+        TestCase {
+            oracle_price: Uint128::new(1_000_000), // $1
+            token_amount: Uint128::new(1_000_000), // 1 token
+            expected_usd: Uint128::new(1_000_000), // $1
+            description: "$1 per token, 1 token",
+        },
+        TestCase {
+            oracle_price: Uint128::new(500_000), // $0.50
+            token_amount: Uint128::new(2_000_000), // 2 tokens
+            expected_usd: Uint128::new(1_000_000), // $1
+            description: "$0.50 per token, 2 tokens",
+        },
+        TestCase {
+            oracle_price: Uint128::new(10_000_000), // $10
+            token_amount: Uint128::new(100_000), // 0.1 tokens
+            expected_usd: Uint128::new(1_000_000), // $1
+            description: "$10 per token, 0.1 tokens",
+        },
+        TestCase {
+            oracle_price: Uint128::new(100_000), // $0.10
+            token_amount: Uint128::new(10_000_000), // 10 tokens
+            expected_usd: Uint128::new(1_000_000), // $1
+            description: "$0.10 per token, 10 tokens",
+        },
+        TestCase {
+            oracle_price: Uint128::new(3_333_333), // $3.33...
+            token_amount: Uint128::new(3_000_000), // 3 tokens
+            expected_usd: Uint128::new(9_999_999), // ~$10
+            description: "$3.33 per token, 3 tokens",
+        },
+    ];
+    
+    for test in test_cases {
+        let mut deps = mock_dependencies_with_balance(&[Coin {
+            denom: "stake".to_string(),
+            amount: test.token_amount,
+        }]);
+        setup_pool_storage(&mut deps);
+        
+        with_factory_oracle(&mut deps, test.oracle_price);
+        
+        let env = mock_env();
+        let info = mock_info("user", &[Coin {
+            denom: "stake".to_string(),
+            amount: test.token_amount,
+        }]);
+        
+        let msg = ExecuteMsg::Commit {
+            asset: TokenInfo {
+                info: TokenType::Bluechip { denom: "stake".to_string() },
+                amount: test.token_amount,
+            },
+            amount: test.token_amount,
+            transaction_deadline: None,
+            belief_price: None,
+            max_spread: None,
+        };
+        
+        execute(deps.as_mut(), env, info, msg).unwrap();
+        
+        let recorded_usd = USD_RAISED_FROM_COMMIT.load(&deps.storage).unwrap();
+        let tolerance = Uint128::new(10); // Allow small rounding error
+        
+        assert!(
+            recorded_usd >= test.expected_usd.saturating_sub(tolerance) && 
+            recorded_usd <= test.expected_usd + tolerance,
+            "{}: expected ~{}, got {}",
+            test.description, test.expected_usd, recorded_usd
+        );
+    }
+}
+
+#[test]
+fn test_extreme_oracle_prices() {
+    // Test very low price
+    let mut deps_low = mock_dependencies_with_balance(&[Coin {
+        denom: "stake".to_string(),
+        amount: Uint128::new(1_000_000_000_000), // 1M tokens
+    }]);
+    setup_pool_storage(&mut deps_low);
+    
+    with_factory_oracle(&mut deps_low, Uint128::new(1_000)); // $0.001
+    
+    let env = mock_env();
+    let info_low = mock_info("user", &[Coin {
+        denom: "stake".to_string(),
+        amount: Uint128::new(1_000_000_000), // 1k tokens
+    }]);
+    
+    let msg_low = ExecuteMsg::Commit {
+        asset: TokenInfo {
+            info: TokenType::Bluechip { denom: "stake".to_string() },
+            amount: Uint128::new(1_000_000_000),
+        },
+        amount: Uint128::new(1_000_000_000),
+        transaction_deadline: None,
+        belief_price: None,
+        max_spread: None,
+    };
+    
+    let res_low = execute(deps_low.as_mut(), env.clone(), info_low, msg_low);
+    assert!(res_low.is_ok(), "Should handle very low prices");
+    
+    let usd_low = USD_RAISED_FROM_COMMIT.load(&deps_low.storage).unwrap();
+    assert_eq!(usd_low, Uint128::new(1_000_000)); // $1 (1k tokens * $0.001)
+    
+    // Test very high price
+    let mut deps_high = mock_dependencies_with_balance(&[Coin {
+        denom: "stake".to_string(),
+        amount: Uint128::new(1_000_000),
+    }]);
+    setup_pool_storage(&mut deps_high);
+    
+    with_factory_oracle(&mut deps_high, Uint128::new(1_000_000_000)); // $1000
+    
+    let info_high = mock_info("user", &[Coin {
+        denom: "stake".to_string(),
+        amount: Uint128::new(1_000_000), // 1 token
+    }]);
+    
+    let msg_high = ExecuteMsg::Commit {
+        asset: TokenInfo {
+            info: TokenType::Bluechip { denom: "stake".to_string() },
+            amount: Uint128::new(1_000_000),
+        },
+        amount: Uint128::new(1_000_000),
+        transaction_deadline: None,
+        belief_price: None,
+        max_spread: None,
+    };
+    
+    let res_high = execute(deps_high.as_mut(), env, info_high, msg_high);
+    assert!(res_high.is_ok(), "Should handle very high prices");
+    
+    let usd_high = USD_RAISED_FROM_COMMIT.load(&deps_high.storage).unwrap();
+    assert_eq!(usd_high, Uint128::new(1_000_000_000)); // $1000
+}
+
+#[test]
+fn test_usd_tracking_consistency_across_commits() {
+    let mut deps = mock_dependencies_with_balance(&[Coin {
+        denom: "stake".to_string(),
+        amount: Uint128::new(100_000_000_000),
+    }]);
+    setup_pool_storage(&mut deps);
+    
+    with_factory_oracle(&mut deps, Uint128::new(2_500_000)); // $2.50 per token
+    
+    let env = mock_env();
+    
+    // Multiple commits
+    let commits = vec![
+        ("user1", 4_000_000u128), // 4 tokens * $2.50 = $10
+        ("user2", 8_000_000u128), // 8 tokens * $2.50 = $20
+        ("user3", 2_000_000u128), // 2 tokens * $2.50 = $5
+    ];
+    
+    let mut expected_total = Uint128::zero();
+    
+    for (user, amount) in commits {
+        let info = mock_info(user, &[Coin {
+            denom: "stake".to_string(),
+            amount: Uint128::new(amount),
+        }]);
+        
+        let msg = ExecuteMsg::Commit {
+            asset: TokenInfo {
+                info: TokenType::Bluechip { denom: "stake".to_string() },
+                amount: Uint128::new(amount),
+            },
+            amount: Uint128::new(amount),
+            transaction_deadline: None,
+            belief_price: None,
+            max_spread: None,
+        };
+        
+        execute(deps.as_mut(), env.clone(), info, msg).unwrap();
+        
+        // Calculate expected USD for this commit
+        let commit_usd = Uint128::new(amount) * Uint128::new(2_500_000) / Uint128::new(1_000_000);
+        expected_total += commit_usd;
+        
+        // Verify global USD tracking
+        let current_total = USD_RAISED_FROM_COMMIT.load(&deps.storage).unwrap();
+        assert_eq!(current_total, expected_total, "USD tracking inconsistent after {} commit", user);
+        
+        // Verify individual tracking
+        let user_commit = COMMIT_INFO.load(&deps.storage, &Addr::unchecked(user)).unwrap();
+        assert_eq!(user_commit.total_paid_usd, commit_usd, "User {} USD tracking incorrect", user);
+    }
+    
+    // Final totals: $10 + $20 + $5 = $35
+    assert_eq!(expected_total, Uint128::new(35_000_000));
+}
+
+#[test]
+fn test_commit_with_zero_oracle_price() {
+    let mut deps = mock_dependencies_with_balance(&[Coin {
+        denom: "stake".to_string(),
+        amount: Uint128::new(1_000_000),
+    }]);
+    setup_pool_storage(&mut deps);
+    
+    with_factory_oracle(&mut deps, Uint128::zero()); // ZERO PRICE
+    
+    let env = mock_env();
+    let info = mock_info("user", &[Coin {
+        denom: "stake".to_string(),
+        amount: Uint128::new(1_000_000),
+    }]);
+    
+    let msg = ExecuteMsg::Commit {
+        asset: TokenInfo {
+            info: TokenType::Bluechip { denom: "stake".to_string() },
+            amount: Uint128::new(1_000_000),
+        },
+        amount: Uint128::new(1_000_000),
+        transaction_deadline: None,
+        belief_price: None,
+        max_spread: None,
+    };
+    
+    let result = execute(deps.as_mut(), env, info, msg);
+    
+    // Should reject with clear error
+    assert!(result.is_err(), "Should reject zero oracle price");
+    
+    match result.unwrap_err() {
+        ContractError::InvalidOraclePrice {} => {
+            // Good! This is what we want
+        }
+        other => panic!("Wrong error type: {:?}", other),
+    }
+}
+#[test]
+fn test_usd_calculation_overflow() {
+    let mut deps = mock_dependencies_with_balance(&[Coin {
+        denom: "stake".to_string(),
+        amount: Uint128::new(u128::MAX / 1000),
+    }]);
+    setup_pool_storage(&mut deps);
+    
+    // Extremely high price that would cause overflow
+    with_factory_oracle(&mut deps, Uint128::new(1_000_000_000_000)); // $1M per token
+    
+    let env = mock_env();
+    let info = mock_info("whale", &[Coin {
+        denom: "stake".to_string(),
+        amount: Uint128::new(u128::MAX / 1000),
+    }]);
+    
+    let msg = ExecuteMsg::Commit {
+        asset: TokenInfo {
+            info: TokenType::Bluechip { denom: "stake".to_string() },
+            amount: Uint128::new(u128::MAX / 1000),
+        },
+        amount: Uint128::new(u128::MAX / 1000),
+        transaction_deadline: None,
+        belief_price: None,
+        max_spread: None,
+    };
+    
+    let result = execute(deps.as_mut(), env, info, msg);
+    
+    // Should return error, not panic
+    assert!(result.is_err(), "Should reject overflow");
+    
+    let err = result.unwrap_err();
+    
+    // Verify it's the overflow error we expect
+    assert!(
+        err.to_string().contains("Overflow") || 
+        err.to_string().contains("overflow") ||
+        err.to_string().contains("Querier system error"),
+        "Error should mention overflow, got: {}",
+        err
+    );
+    
+    println!("✅ Correctly rejected overflow with error: {}", err);
+}
+
+#[test]
+fn test_rounding_error_accumulation() {
+    let mut deps = mock_dependencies_with_balance(&[Coin {
+        denom: "stake".to_string(),
+        amount: Uint128::new(100_000_000_000),
+    }]);
+    setup_pool_storage(&mut deps);
+    
+    // Price that causes rounding issues
+    with_factory_oracle(&mut deps, Uint128::new(333_333)); // $0.333333...
+    
+    let env = mock_env();
+    
+    // Make 1000 tiny commits that should sum to specific amount
+    let mut manual_sum = Uint128::zero();
+    
+    for i in 0..1000 {
+        let user = format!("user{}", i);
+        let amount = Uint128::new(1_000); // Tiny amount
+        
+        // Manual calculation
+        let expected_usd = amount * Uint128::new(333_333) / Uint128::new(1_000_000);
+        manual_sum += expected_usd;
+        
+        let info = mock_info(&user, &[Coin {
+            denom: "stake".to_string(),
+            amount,
+        }]);
+        
+        let msg = ExecuteMsg::Commit {
+            asset: TokenInfo {
+                info: TokenType::Bluechip { denom: "stake".to_string() },
+                amount,
+            },
+            amount,
+            transaction_deadline: None,
+            belief_price: None,
+            max_spread: None,
+        };
+        
+        execute(deps.as_mut(), env.clone(), info, msg).unwrap();
+    }
+    
+    let total_usd = USD_RAISED_FROM_COMMIT.load(&deps.storage).unwrap();
+    
+    // Check if rounding errors accumulated significantly
+    let diff = if total_usd > manual_sum {
+        total_usd - manual_sum
+    } else {
+        manual_sum - total_usd
+    };
+    
+    println!("Rounding difference over 1000 commits: {}", diff);
+    
+    // Acceptable tolerance?
+    let max_acceptable = Uint128::new(1000); // 1000 units = 0.001 USD
+    assert!(
+        diff <= max_acceptable,
+        "Rounding errors accumulated too much: {}",
+        diff
+    );
+}
