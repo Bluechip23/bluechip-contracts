@@ -924,7 +924,9 @@ dependencies = [
  "cw721 0.18.0",
  "cw721-base 0.18.0",
  "integer-sqrt",
+ "pool-factory-interfaces",
  "protobuf",
+ "sha2 0.10.8",
  "thiserror 2.0.12",
 ]
 
@@ -1228,9 +1230,20 @@ dependencies = [
  "cw721-base 0.18.0",
  "easy-addr",
  "integer-sqrt",
+ "pool-factory-interfaces",
  "proptest",
  "protobuf",
+ "sha2 0.10.8",
  "thiserror 2.0.12",
+]
+
+[[package]]
+name = "pool-factory-interfaces"
+version = "1.0.0"
+dependencies = [
+ "cosmwasm-schema",
+ "cosmwasm-std 1.5.11",
+ "serde",
 ]
 
 [[package]]

@@ -3,14 +3,12 @@ use crate::{
     error::ContractError,
     execute::{FINALIZE_POOL, MINT_CREATE_POOL},
     msg::CreatePoolReplyMsg,
-    pool::{CommitFeeInfo, ThresholdPayoutAmounts},
+    pool_struct::{CommitFeeInfo, PoolDetails, ThresholdPayoutAmounts},
     pool_create_cleanup::{
-        cleanup_temp_state, create_cleanup_messages, give_pool_ownership_cw20_and_nft,
-        extract_contract_address,
+        cleanup_temp_state, create_cleanup_messages, extract_contract_address, give_pool_ownership_cw20_and_nft
     },
     state::{
-        CommitInfo, CreationStatus, SETCOMMIT, FACTORYINSTANTIATEINFO, CREATION_STATES, POOLS_BY_ID, TEMPCREATORWALLETADDR,
-        TEMPNFTADDR, TEMPPOOLINFO, TEMPPOOLID, TEMPCREATORTOKENADDR,
+        CommitInfo, CreationStatus, POOL_CREATION_STATES, FACTORYINSTANTIATEINFO, POOLS_BY_ID, SETCOMMIT, TEMPCREATORTOKENADDR, TEMPCREATORWALLETADDR, TEMPNFTADDR, TEMPPOOLID, TEMPPOOLINFO
     },
 };
 use cosmwasm_std::{
@@ -19,11 +17,9 @@ use cosmwasm_std::{
 };
 use cw721_base::msg::InstantiateMsg as Cw721InstantiateMsg;
 
-//extracts newly created token address, updates creation state, and initiates
-//instantiates NFT contract instantion as well
 pub fn set_tokens(deps: DepsMut, env: Env, msg: Reply) -> Result<Response, ContractError> {
     let pool_id = TEMPPOOLID.load(deps.storage)?;
-    let mut creation_state = CREATION_STATES.load(deps.storage, pool_id)?;
+    let mut creation_state = POOL_CREATION_STATES.load(deps.storage, pool_id)?;
     let used_factory_addr = env.contract.address.clone();
     match msg.result {
         SubMsgResult::Ok(result) => {
@@ -33,7 +29,7 @@ pub fn set_tokens(deps: DepsMut, env: Env, msg: Reply) -> Result<Response, Contr
             //update creation state to catch transaction failures.
             creation_state.creator_token_address = Some(token_address.clone());
             creation_state.status = CreationStatus::TokenCreated;
-            CREATION_STATES.save(deps.storage, pool_id, &creation_state)?;
+            POOL_CREATION_STATES.save(deps.storage, pool_id, &creation_state)?;
 
             // Save to temp storage for next step
             TEMPCREATORTOKENADDR.save(deps.storage, &token_address)?;
@@ -51,11 +47,9 @@ pub fn set_tokens(deps: DepsMut, env: Env, msg: Reply) -> Result<Response, Contr
                 msg: nft_instantiate_msg,
                 //no initial NFTs since no positions have been created yet
                 funds: vec![],
-                //set factory as admin
                 admin: Some(used_factory_addr.to_string()),
                 label: format!("AMM-LP-NFT-{}", token_address),
             };
-            //everything successful, move on to next step in creation
             let sub_msg = SubMsg::reply_on_success(nft_msg, MINT_CREATE_POOL);
 
             Ok(Response::new()
@@ -65,9 +59,9 @@ pub fn set_tokens(deps: DepsMut, env: Env, msg: Reply) -> Result<Response, Contr
                 .add_submessage(sub_msg))
         }
         SubMsgResult::Err(err) => {
-            // failure, mark as clean up and burn. Check helpers below.
+            // failure, mark as clean up and burn.
             creation_state.status = CreationStatus::Failed;
-            CREATION_STATES.save(deps.storage, pool_id, &creation_state)?;
+            POOL_CREATION_STATES.save(deps.storage, pool_id, &creation_state)?;
             cleanup_temp_state(deps.storage)?;
 
             Err(ContractError::TokenCreationFailed {
@@ -78,18 +72,16 @@ pub fn set_tokens(deps: DepsMut, env: Env, msg: Reply) -> Result<Response, Contr
     }
 }
 // extracts NFT address, configures threshold payouts, updates asset info with actual token address
-//initiates the final pool contract instantiation
 pub fn mint_create_pool(deps: DepsMut, env: Env, msg: Reply) -> Result<Response, ContractError> {
     let pool_id = TEMPPOOLID.load(deps.storage)?;
-    let mut creation_state = CREATION_STATES.load(deps.storage, pool_id)?;
+    let mut creation_state = POOL_CREATION_STATES.load(deps.storage, pool_id)?;
     let used_factory_addr = env.contract.address.clone();
     match msg.result {
         SubMsgResult::Ok(result) => {
             let nft_address = extract_contract_address(&result)?;
-            //set creation state for tracking and potential errors
             creation_state.mint_new_position_nft_address = Some(nft_address.clone());
             creation_state.status = CreationStatus::NftCreated;
-            CREATION_STATES.save(deps.storage, pool_id, &creation_state)?;
+            POOL_CREATION_STATES.save(deps.storage, pool_id, &creation_state)?;
 
             TEMPNFTADDR.save(deps.storage, &nft_address)?;
 
@@ -97,8 +89,6 @@ pub fn mint_create_pool(deps: DepsMut, env: Env, msg: Reply) -> Result<Response,
             let temp_pool_info = TEMPPOOLINFO.load(deps.storage)?;
             let temp_creator = TEMPCREATORWALLETADDR.load(deps.storage)?;
             let token_address = TEMPCREATORTOKENADDR.load(deps.storage)?;
-
-            //set threshold payouts for threshold crossing
             let threshold_payout = ThresholdPayoutAmounts {
                 creator_reward_amount: Uint128::new(325_000_000_000),
                 bluechip_reward_amount: Uint128::new(25_000_000_000),
@@ -116,7 +106,6 @@ pub fn mint_create_pool(deps: DepsMut, env: Env, msg: Reply) -> Result<Response,
                 }
             }
 
-            // Instantiate the pool with final values
             let pool_msg = WasmMsg::Instantiate {
                 code_id: config.create_pool_wasm_contract_id,
                 msg: to_json_binary(&CreatePoolReplyMsg {
@@ -133,8 +122,6 @@ pub fn mint_create_pool(deps: DepsMut, env: Env, msg: Reply) -> Result<Response,
                     },
                     commit_amount_for_threshold: config.commit_amount_for_threshold_bluechip,
                     commit_threshold_limit_usd: config.commit_threshold_limit_usd,
-                    oracle_contract_addr: config.oracle_contract_addr.clone(),
-                    oracle_ticker: config.oracle_ticker.clone(),
                     token_address: token_address,
                     position_nft_address: nft_address.clone(),
                 })?,
@@ -142,7 +129,6 @@ pub fn mint_create_pool(deps: DepsMut, env: Env, msg: Reply) -> Result<Response,
                 admin: Some(used_factory_addr.to_string()),
                 label: "Pair".to_string(),
             };
-            //goes well, move on to next step
             let sub_msg: SubMsg = SubMsg::reply_on_success(pool_msg, FINALIZE_POOL);
 
             Ok(Response::new()
@@ -154,7 +140,7 @@ pub fn mint_create_pool(deps: DepsMut, env: Env, msg: Reply) -> Result<Response,
         //doesnt go well, find which state the pool is in and behave accordingly.
         SubMsgResult::Err(err) => {
             creation_state.status = CreationStatus::CleaningUp;
-            CREATION_STATES.save(deps.storage, pool_id, &creation_state)?;
+            POOL_CREATION_STATES.save(deps.storage, pool_id, &creation_state)?;
 
             let cleanup_msgs = create_cleanup_messages(&creation_state)?;
 
@@ -168,17 +154,16 @@ pub fn mint_create_pool(deps: DepsMut, env: Env, msg: Reply) -> Result<Response,
 }
 
 //take created pool, give it minting rights, sync to necessary contracts to mint.
-//commit tracking set up
 pub fn finalize_pool(deps: DepsMut, _env: Env, msg: Reply) -> Result<Response, ContractError> {
     let pool_id = TEMPPOOLID.load(deps.storage)?;
-    let mut creation_state = CREATION_STATES.load(deps.storage, pool_id)?;
+    let mut creation_state = POOL_CREATION_STATES.load(deps.storage, pool_id)?;
     match msg.result {
         SubMsgResult::Ok(result) => {
             let pool_address = extract_contract_address(&result)?;
 
             creation_state.pool_address = Some(pool_address.clone());
             creation_state.status = CreationStatus::PoolCreated;
-            CREATION_STATES.save(deps.storage, pool_id, &creation_state)?;
+            POOL_CREATION_STATES.save(deps.storage, pool_id, &creation_state)?;
 
             let temp_creator = TEMPCREATORWALLETADDR.load(deps.storage)?;
             let temp_token_address = TEMPCREATORTOKENADDR.load(deps.storage)?;
@@ -190,20 +175,22 @@ pub fn finalize_pool(deps: DepsMut, _env: Env, msg: Reply) -> Result<Response, C
                 creator_token_addr: temp_token_address.clone(),
                 creator_pool_addr: pool_address.clone(),
             };
-            // save commit state to record future commit executions
+            let pool_details = PoolDetails {
+                pool_id,
+                pool_token_info: TEMPPOOLINFO.load(deps.storage)?.pool_token_info,
+                creator_pool_addr: pool_address.clone(),
+            };
             SETCOMMIT.save(deps.storage, &temp_creator.to_string(), &commit_info)?;
-            POOLS_BY_ID.save(deps.storage, pool_id, &commit_info)?;
+            POOLS_BY_ID.save(deps.storage, pool_id, &pool_details)?;
 
-            // make pool cw20 and cw721 (nft) minter for threshold payout - compartmentalizes pools so they can run without factory.
-            //1 factory for all pools instead of 1 factory 1 pool
+            // make pool cw20 and cw721 (nft) minter for threshold payout
             let ownership_msgs = give_pool_ownership_cw20_and_nft(
                 &temp_token_address,
                 &temp_nft_address,
                 &pool_address,
             )?;
-            //mark completed and clean all temp states since all values have all been updated and created.
             creation_state.status = CreationStatus::Completed;
-            CREATION_STATES.save(deps.storage, pool_id, &creation_state)?;
+            POOL_CREATION_STATES.save(deps.storage, pool_id, &creation_state)?;
 
             cleanup_temp_state(deps.storage)?;
 
@@ -214,9 +201,8 @@ pub fn finalize_pool(deps: DepsMut, _env: Env, msg: Reply) -> Result<Response, C
                 .add_attribute("pool_id", pool_id.to_string()))
         }
         SubMsgResult::Err(err) => {
-            // Pool creation failed - cleanup everything
             creation_state.status = CreationStatus::CleaningUp;
-            CREATION_STATES.save(deps.storage, pool_id, &creation_state)?;
+            POOL_CREATION_STATES.save(deps.storage, pool_id, &creation_state)?;
 
             let cleanup_msgs = create_cleanup_messages(&creation_state)?;
 

@@ -1,6 +1,6 @@
-use cosmwasm_schema::{cw_serde, QueryResponses};
-use crate::asset::{TokenInfo, TokenType, PoolDetails};
+use crate::asset::{PoolDetails, TokenInfo, TokenType};
 use crate::state::Commiting;
+use cosmwasm_schema::{cw_serde, QueryResponses};
 use cosmwasm_std::{Addr, Binary, Decimal, Timestamp, Uint128};
 use cw20::Cw20ReceiveMsg;
 
@@ -14,7 +14,9 @@ pub enum ExecuteMsg {
         to: Option<String>,
         transaction_deadline: Option<Timestamp>,
     },
-    UpdateConfig { params: Binary },
+    UpdateConfig {
+        params: Binary,
+    },
 
     Commit {
         asset: TokenInfo,
@@ -30,7 +32,9 @@ pub enum ExecuteMsg {
         min_amount1: Option<Uint128>,
         transaction_deadline: Option<Timestamp>,
     },
-    CollectFees { position_id: String },
+    CollectFees {
+        position_id: String,
+    },
     AddToPosition {
         position_id: String,
         amount0: Uint128, // bluechip token amount
@@ -51,7 +55,7 @@ pub enum ExecuteMsg {
         percentage: u64,
         transaction_deadline: Option<Timestamp>,
         min_amount0: Option<Uint128>,
-        min_amount1: Option<Uint128>, 
+        min_amount1: Option<Uint128>,
     },
     RemoveAllLiquidity {
         position_id: String,
@@ -74,14 +78,14 @@ pub enum Cw20HookMsg {
         amount0: Uint128,
         min_amount0: Option<Uint128>,
         min_amount1: Option<Uint128>,
-        transaction_deadline: Option<Timestamp>, 
+        transaction_deadline: Option<Timestamp>,
     },
     AddToPosition {
         position_id: String,
         amount0: Uint128,
         min_amount0: Option<Uint128>,
         min_amount1: Option<Uint128>,
-        transaction_deadline: Option<Timestamp>, 
+        transaction_deadline: Option<Timestamp>,
     },
 }
 
@@ -111,7 +115,7 @@ pub enum QueryMsg {
 
     #[returns(PoolCommitResponse)]
     PoolCommits {
-        pool_id: u64,
+        pool_contract_address: Addr,
         min_payment_usd: Option<Uint128>,
         after_timestamp: Option<u64>, // Unix timestamp
         start_after: Option<String>,  // For pagination
@@ -150,23 +154,19 @@ pub enum QueryMsg {
 pub struct PoolInstantiateMsg {
     pub pool_id: u64,
     // Information about the two assets in the pool
-    pub asset_infos: [TokenType; 2],
+    pub pool_token_info: [TokenType; 2],
     // The token contract code ID used for the tokens in the pool
-    pub token_code_id: u64,
+    pub cw20_token_contract_id: u64,
     // The factory contract address
-    pub factory_addr: Addr,
+    pub used_factory_addr: Addr,
     // gets set in reply function - amounts that go to each payout party
     pub threshold_payout: Option<Binary>,
     pub commit_fee_info: CommitFeeInfo,
-    pub commit_amount_for_threshold_usd: Uint128,
+    pub commit_threshold_limit_usd: Uint128,
     pub commit_amount_for_threshold: Uint128,
     pub position_nft_address: Addr,
-    pub oracle_addr: Addr,
-    pub oracle_symbol: String,
     pub token_address: Addr,
 }
-
-
 
 #[cw_serde]
 pub struct PoolCommitResponse {
@@ -189,22 +189,20 @@ pub struct CommiterInfo {
 #[cw_serde]
 pub struct CommitFeeInfo {
     //BlueChip wallet
-    pub bluechip_address: Addr,
+    pub bluechip_wallet_address: Addr,
     //pool creatpr wallet
-    pub creator_address: Addr,
+    pub creator_wallet_address: Addr,
     //amount of commit that goes to BlueChip
     pub commit_fee_bluechip: Decimal,
     //amount of commit taht goes to pool creator
     pub commit_fee_creator: Decimal,
 }
 
-
 #[cw_serde]
 pub struct PoolResponse {
     // The assets in the pool together with asset amounts
     pub assets: [TokenInfo; 2],
 }
-
 
 #[cw_serde]
 pub struct ConfigResponse {
@@ -226,7 +224,6 @@ pub struct LastCommitedResponse {
     pub last_payment_usd: Option<Uint128>,
 }
 
-
 #[cw_serde]
 pub struct SimulationResponse {
     //amount of ask assets returned by the swap
@@ -236,7 +233,6 @@ pub struct SimulationResponse {
     //amount of fees charged by the transaction
     pub commission_amount: Uint128,
 }
-
 
 #[cw_serde]
 pub struct ReverseSimulationResponse {
@@ -265,20 +261,17 @@ pub struct FeeInfoResponse {
     pub fee_info: CommitFeeInfo,
 }
 
-
 #[cw_serde]
 pub struct StablePoolParams {
     // The current stableswap pool amplification
     pub amp: u64,
 }
 
-
 #[cw_serde]
 pub struct StablePoolConfig {
     // The stableswap pool amplification
     pub amp: Decimal,
 }
-
 
 #[cw_serde]
 pub enum StablePoolUpdateParams {
@@ -324,12 +317,12 @@ pub struct PositionResponse {
     // fee_growth_global_0 was when position last collected - this is local to this position
     pub fee_growth_inside_0_last: Decimal,
     // fee_growth_global_1 was when position last collected - this is local to this position
-    pub fee_growth_inside_1_last: Decimal, 
+    pub fee_growth_inside_1_last: Decimal,
     pub created_at: u64,
-    //last time position collected fees from pool. 
+    //last time position collected fees from pool.
     pub last_fee_collection: u64,
     //fee_growth_global - fee_growth_inside
-    pub unclaimed_fees_0: Uint128, 
+    pub unclaimed_fees_0: Uint128,
     pub unclaimed_fees_1: Uint128,
 }
 

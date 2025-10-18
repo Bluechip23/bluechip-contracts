@@ -1,6 +1,6 @@
 use crate::{
-    asset::{TokenInfo, TokenType, PoolPairType},
-    msg::{CommitFeeInfo,},
+    asset::{PoolPairType, TokenInfo, TokenType},
+    msg::CommitFeeInfo,
 };
 use cosmwasm_schema::cw_serde;
 use cosmwasm_std::{Addr, Decimal, QuerierWrapper, StdResult, Timestamp, Uint128};
@@ -36,14 +36,15 @@ pub const EXPECTED_FACTORY: Item<ExpectedFactory> = Item::new("expected_factory"
 pub const USER_LAST_COMMIT: Map<&Addr, u64> = Map::new("user_last_commit");
 //information for pool including factory, pool, and token addresses
 pub const POOL_INFO: Item<PoolInfo> = Item::new("pool_info");
-//liquidity and reserve amounts for the pool
+//liquidity, reserve, and prices
 pub const POOL_STATE: Item<PoolState> = Item::new("pool_state");
 //lp fee for liquidity pools
 pub const POOL_SPECS: Item<PoolSpecs> = Item::new("pool_specs");
 //used to handle races cases when the threshold is being crossed
 pub const THRESHOLD_PROCESSING: Item<bool> = Item::new("threshold_processing");
 //amounts that get sent to designated areas when threhsold is crossed
-pub const THRESHOLD_PAYOUT_AMOUNTS: Item<ThresholdPayoutAmounts> = Item::new("threshold_payout_amounts");
+pub const THRESHOLD_PAYOUT_AMOUNTS: Item<ThresholdPayoutAmounts> =
+    Item::new("threshold_payout_amounts");
 //pool identifier incriments by 1 every pool
 pub const NEXT_POSITION_ID: Item<u64> = Item::new("next_position_id");
 //information liquiidty positions in pools
@@ -54,10 +55,11 @@ pub const COMMIT_LIMIT_INFO: Item<CommitLimitInfo> = Item::new("commit_config");
 pub const ORACLE_INFO: Item<OracleInfo> = Item::new("oracle_info");
 //tracking the global fee growth and total fees collected for the poolS
 pub const POOL_FEE_STATE: Item<PoolFeeState> = Item::new("pool_fee_state");
+pub const POOLS: Map<&str, PoolState> = Map::new("pools");
 
 #[cw_serde]
 pub struct Commiting {
-    pub pool_id: u64,
+    pub pool_contract_address: Addr,
     //commit transaction executer
     pub commiter: Addr,
     //amount paid converted to USD
@@ -67,17 +69,18 @@ pub struct Commiting {
     //last time someone commited to pool
     pub last_commited: Timestamp,
     //last amount of bluechips commited
-    pub last_payment_bluechip: Uint128,  
+    pub last_payment_bluechip: Uint128,
     //last amount converted to USD
-    pub last_payment_usd: Uint128, 
+    pub last_payment_usd: Uint128,
 }
 #[cw_serde]
 pub struct PoolState {
+    pub pool_contract_address: Addr,
     pub nft_ownership_accepted: bool,
     pub reserve0: Uint128, // bluechip token
     pub reserve1: Uint128, // cw20 token
     //how many liquidity units are deposited in the pool
-    pub total_liquidity: Uint128, 
+    pub total_liquidity: Uint128,
     pub block_time_last: u64,
     //
     pub price0_cumulative_last: Uint128,
@@ -132,10 +135,7 @@ pub struct PoolDetails {
 pub struct OracleInfo {
     //oracle contract addresss
     pub oracle_addr: Addr,
-    //asset symbol being viewed
-    pub oracle_symbol: String,
 }
-
 
 #[cw_serde]
 pub struct ThresholdPayoutAmounts {
@@ -167,7 +167,7 @@ pub struct Position {
     // when was position opened
     pub created_at: u64,
     pub last_fee_collection: u64,
-    //when positions are too small, they take a liquidity accumulation penalty. 
+    //when positions are too small, they take a liquidity accumulation penalty.
     pub fee_size_multiplier: Decimal,
 }
 

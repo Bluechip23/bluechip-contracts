@@ -342,7 +342,8 @@ pub fn add_to_position(
     liquidity_position.fee_growth_inside_0_last = pool_fee_state.fee_growth_global_0;
     liquidity_position.fee_growth_inside_1_last = pool_fee_state.fee_growth_global_1;
     liquidity_position.last_fee_collection = env.block.time.seconds();
-    liquidity_position.fee_size_multiplier = calculate_fee_size_multiplier(liquidity_position.liquidity);
+    liquidity_position.fee_size_multiplier =
+        calculate_fee_size_multiplier(liquidity_position.liquidity);
 
     pool_state.total_liquidity += additional_liquidity;
 
@@ -402,7 +403,6 @@ pub fn remove_all_liquidity(
     min_amount0: Option<Uint128>,
     min_amount1: Option<Uint128>,
 ) -> Result<Response, ContractError> {
-
     let pool_fee_state = POOL_FEE_STATE.load(deps.storage)?;
     let pool_info = POOL_INFO.load(deps.storage)?;
     let mut pool_state = POOL_STATE.load(deps.storage)?;
@@ -466,13 +466,14 @@ pub fn remove_all_liquidity(
         .total_liquidity
         .checked_sub(liquidity_to_subtract)?;
 
-    /* let burn_msg = WasmMsg::Execute {
-        contract_addr: pool_info.position_nft_address.to_string(), // External NFT contract
+    let burn_msg = WasmMsg::Execute {
+        contract_addr: pool_info.position_nft_address.to_string(),
         msg: to_json_binary(&cw721::Cw721ExecuteMsg::Burn {
             token_id: position_id.clone(),
         })?,
         funds: vec![],
-    };*/
+    };
+    let messages = vec![CosmosMsg::Wasm(burn_msg)];
 
     //update pool fees, collect fees, and reserve prices
     liquidity_position.fee_growth_inside_0_last = pool_fee_state.fee_growth_global_0;
@@ -484,6 +485,7 @@ pub fn remove_all_liquidity(
     LIQUIDITY_POSITIONS.remove(deps.storage, &position_id);
 
     let mut response = Response::new()
+        .add_messages(messages)
         .add_attribute("action", "remove_liquidity")
         .add_attribute("position_id", position_id)
         .add_attribute(
@@ -597,6 +599,26 @@ pub fn remove_partial_liquidity(
         .checked_div(pool_state.total_liquidity)
         .map_err(|_| ContractError::DivideByZero)?;
 
+    if let Some(min0) = min_amount0 {
+        if withdrawal_amount_0 < min0 {
+            return Err(ContractError::SlippageExceeded {
+                expected: min0,
+                actual: withdrawal_amount_0,
+                token: "bluechip".to_string(),
+            });
+        }
+    }
+
+    if let Some(min1) = min_amount1 {
+        if withdrawal_amount_1 < min1 {
+            return Err(ContractError::SlippageExceeded {
+                expected: min1,
+                actual: withdrawal_amount_1,
+                token: "cw20".to_string(),
+            });
+        }
+    }
+
     //add amounts to transfer back to user
     let total_amount_0 = withdrawal_amount_0 + fees_owed_0;
     let total_amount_1 = withdrawal_amount_1 + fees_owed_1;
@@ -609,9 +631,14 @@ pub fn remove_partial_liquidity(
     update_price_accumulator(&mut pool_state, env.block.time.seconds())?;
     POOL_STATE.save(deps.storage, &pool_state)?;
 
+    liquidity_position.last_fee_collection = env.block.time.seconds();
+
     liquidity_position.liquidity = liquidity_position
         .liquidity
         .checked_sub(liquidity_to_remove)?;
+
+    liquidity_position.fee_size_multiplier =
+        calculate_fee_size_multiplier(liquidity_position.liquidity);
 
     LIQUIDITY_POSITIONS.save(deps.storage, &position_id, &liquidity_position)?;
 
@@ -763,7 +790,7 @@ pub fn execute_remove_partial_liquidity_by_percent(
     min_amount0: Option<Uint128>,
     min_amount1: Option<Uint128>,
 ) -> Result<Response, ContractError> {
-    // cant remove zero 
+    // cant remove zero
     if percentage == 0 {
         return Err(ContractError::InvalidPercent {});
     }

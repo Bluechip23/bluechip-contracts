@@ -19,6 +19,7 @@ optimize = """docker run --rm -v "$(pwd)":/home/sweetdream/Work/coswasm/bluechip
 """
 
 [workspace.dependencies]
+sha2 = "0.10"
 cosmwasm-schema = "1.5.11"
 cosmwasm-std = "1.5.11"
 cosmwasm-storage = "1.5.2"

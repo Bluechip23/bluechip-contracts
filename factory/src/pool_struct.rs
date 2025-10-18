@@ -1,4 +1,4 @@
-use cosmwasm_schema::{cw_serde};
+use cosmwasm_schema::cw_serde;
 
 use crate::asset::{TokenInfo, TokenType};
 
@@ -18,14 +18,14 @@ pub struct CreatePool {
     pub commit_fee_info: CommitFeeInfo,
     // address for the newly created creator token. Autopopulated by the factory reply function
     pub creator_token_address: Addr,
-    //amount of bluechip that gets seeded into creator pool 
+    //amount of bluechip that gets seeded into creator pool
     pub commit_amount_for_threshold: Uint128,
     //the threshold limit for the contract. Once crossed, the pool mints and distributes new creator (CW20 token) and now behaves like a normal liquidity pool
     pub commit_limit_usd: Uint128,
     // the contract addr of the oracle being used to convert prices to and from dollars
-    pub oracle_contract_addr: Addr,
+    pub pyth_contract_addr_for_conversions: String,
     // the symbol the contract will be looking for for commit messages. the bluechip token's symbol
-    pub oracle_ticker: String,
+    pub pyth_atom_usd_price_feed_id: String,
 }
 #[cw_serde]
 pub struct ThresholdPayoutAmounts {
@@ -51,12 +51,6 @@ pub struct CommitFeeInfo {
 }
 
 #[cw_serde]
-pub enum ExecuteMsg {
-    // Update the pair configuration
-    UpdateConfig { params: Binary },
-}
-
-#[cw_serde]
 pub struct ConfigResponse {
     // Last timestamp when the cumulative prices in the pool were updated
     pub block_time_last: u64,
@@ -66,15 +60,13 @@ pub struct ConfigResponse {
 
 #[cw_serde]
 pub struct PoolDetails {
+    pub pool_id: u64,
     // information for the two tokens in the pool
     pub pool_token_info: [TokenType; 2],
-    // Pair contract address
-    pub contract_addr: Addr,
-    // Pair LP token address
+    pub creator_pool_addr: Addr,
 }
 
 impl PoolDetails {
-
     pub fn query_pools(
         &self,
         querier: &QuerierWrapper,
@@ -82,11 +74,11 @@ impl PoolDetails {
     ) -> StdResult<[TokenInfo; 2]> {
         Ok([
             TokenInfo {
-                amount: self.pool_token_info[0].query_pool(querier, contract_addr.clone())?,
+                amount: self.pool_token_info[0].query_pool_token_info(querier, contract_addr.clone())?,
                 info: self.pool_token_info[0].clone(),
             },
             TokenInfo {
-                amount: self.pool_token_info[1].query_pool(querier, contract_addr)?,
+                amount: self.pool_token_info[1].query_pool_token_info(querier, contract_addr)?,
                 info: self.pool_token_info[1].clone(),
             },
         ])

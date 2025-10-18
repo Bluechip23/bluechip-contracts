@@ -4,7 +4,7 @@ use cosmwasm_std::{Addr, Binary, Uint128};
 use cw20::{Cw20Coin, MinterResponse};
 
 use crate::asset::TokenType;
-use crate::pool::{CommitFeeInfo, CreatePool};
+use crate::pool_struct::{CommitFeeInfo, CreatePool};
 use crate::state::{FactoryInstantiate};
 
 
@@ -22,8 +22,6 @@ pub struct CreatePoolReplyMsg {
     pub commit_fee_info: CommitFeeInfo,
     pub commit_threshold_limit_usd: Uint128,
     pub commit_amount_for_threshold: Uint128,
-    pub oracle_contract_addr: Addr,
-    pub oracle_ticker: String,
     pub token_address: Addr,
     //address called by the pool to mint new liquidity position NFTs.
     pub position_nft_address: Addr,
@@ -38,6 +36,8 @@ pub enum ExecuteMsg {
         pool_msg: CreatePool,
         token_info: CreatorTokenInfo,
     },
+    UpdateOraclePrice {},
+    ForceRotateOraclePools {},
 }
 
 #[cw_serde]
@@ -47,8 +47,8 @@ pub struct FactoryInstantiateResponse {
 
 #[cw_serde]
 pub struct TokenInstantiateMsg {
-    pub token_name: String,
-    pub ticker: String,
+    pub name: String,
+    pub symbol: String,
     pub decimals: u8,
     pub initial_balances: Vec<Cw20Coin>,
     pub mint: Option<MinterResponse>,
@@ -56,7 +56,7 @@ pub struct TokenInstantiateMsg {
 
 #[cw_serde]
 pub struct CreatorTokenInfo {
-    pub token_name: String,
-    pub ticker: String,
+    pub name: String,
+    pub symbol: String,
     pub decimal: u8,
 }
