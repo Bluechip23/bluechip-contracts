@@ -3,7 +3,9 @@ use std::str::FromStr;
 use crate::error::ContractError;
 use crate::state::POOL_STATE;
 use cosmwasm_std::{Addr, Decimal, Deps, StdError, Uint128};
-
+pub const OPTIMAL_LIQUIDITY: Uint128 = Uint128::new(1_000_000);
+// 10% fees for tiny positions
+pub const MIN_MULTIPLIER: &str = "0.1";
 pub fn calculate_unclaimed_fees(
     liquidity: Uint128,
     //the fee_growth_global number the last time the position collected fees
@@ -40,9 +42,6 @@ pub fn calculate_fees_owed(
 //used to protect against many small liquidity positions
 pub fn calculate_fee_size_multiplier(liquidity: Uint128) -> Decimal {
     //if position has optimal liquidty they will not be punished
-    pub const OPTIMAL_LIQUIDITY: Uint128 = Uint128::new(1_000_000);
-    // 10% fees for tiny positions
-    pub const MIN_MULTIPLIER: &str = "0.1";
 
     if liquidity >= OPTIMAL_LIQUIDITY {
         //provide full fees for optimal size
