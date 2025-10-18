@@ -599,7 +599,7 @@ fn test_zero_liquidity_fee_collection() {
     };
     
     // Should execute without updating fee growth
-    let res = execute(deps.as_mut(), env, info, msg).unwrap();
+    execute(deps.as_mut(), env, info, msg).unwrap(); 
     
     // Fee growth should remain zero
     let fee_state = POOL_FEE_STATE.load(&deps.storage).unwrap();
