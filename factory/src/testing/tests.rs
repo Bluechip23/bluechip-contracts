@@ -1,7 +1,6 @@
 use crate::state::{
     CreationStatus, FactoryInstantiate, PoolCreationState, FACTORYINSTANTIATEINFO,
-    POOLS_BY_CONTRACT_ADDRESS, POOLS_BY_ID, POOL_CREATION_STATES, SETCOMMIT, TEMPCREATORTOKENADDR,
-    TEMPCREATORWALLETADDR, TEMPNFTADDR, TEMPPOOLID, TEMPPOOLINFO,
+    POOLS_BY_CONTRACT_ADDRESS, POOLS_BY_ID, POOL_CREATION_STATES, SETCOMMIT, TEMP_POOL_CREATION,
 };
 use cosmwasm_std::{
     Addr, Binary, Decimal, Env, Event, OwnedDeps, Reply, SubMsgResponse, SubMsgResult, Uint128,
@@ -18,7 +17,7 @@ use crate::internal_bluechip_price_oracle::{
 };
 use crate::mock_querier::{mock_dependencies, WasmMockQuerier};
 use crate::msg::{CreatorTokenInfo, ExecuteMsg};
-use crate::pool_struct::{CommitFeeInfo, CreatePool};
+use crate::pool_struct::{CommitFeeInfo, CreatePool, PoolDetails, TempPoolCreation};
 use cosmwasm_std::testing::{mock_env, mock_info, MockApi, MockStorage};
 use pool_factory_interfaces::PoolStateResponseForFactory;
 
@@ -141,7 +140,7 @@ fn test_oracle_initialization_with_no_other_pools() {
     let env = mock_env();
     let info = mock_info(ADMIN, &[]);
 
-    instantiate(deps.as_mut(), env.clone(), info, msg).unwrap(); 
+    instantiate(deps.as_mut(), env.clone(), info, msg).unwrap();
 
     // Verify oracle initialized with just ATOM pool
     let oracle = INTERNAL_ORACLE.load(&deps.storage).unwrap();
@@ -437,25 +436,34 @@ fn create_instantiate_reply(id: u64, contract_addr: &str) -> Reply {
 #[test]
 fn test_multiple_pool_creation() {
     let mut deps = mock_dependencies(&[]);
+
     // Set up ATOM pool
     setup_atom_pool(&mut deps);
+
     let msg = create_default_instantiate_msg();
     let env = mock_env();
     let info = mock_info(ADMIN, &[]);
     instantiate(deps.as_mut(), env.clone(), info, msg).unwrap();
-    // Create 3 pools and verify they're created with unique random IDs
+
+    // Create 3 pools and verify they're created with unique IDs
     let mut created_pool_ids = Vec::new();
+
     for i in 1u64..=3u64 {
         // Create pool
         let create_msg = create_pool_msg(&format!("Token{}", i));
         let info = mock_info(ADMIN, &[]);
         let res = execute(deps.as_mut(), env.clone(), info, create_msg).unwrap();
+
         assert!(
             res.attributes.iter().any(|attr| attr.key == "pool_id"),
             "Response should contain pool_id attribute"
         );
-        // Get the actual pool ID (it will be random, not sequential)
-        let pool_id = TEMPPOOLID.load(&deps.storage).unwrap();
+
+        // Load the pool context that was just created
+        let pool_context = TEMP_POOL_CREATION.load(&deps.storage).unwrap();
+        let pool_id = pool_context.pool_id;
+        let creator = pool_context.temp_creator_wallet.clone();
+
         // Verify this is a new unique ID
         assert!(
             !created_pool_ids.contains(&pool_id),
@@ -463,31 +471,30 @@ fn test_multiple_pool_creation() {
             pool_id
         );
         created_pool_ids.push(pool_id);
-        // SET UP CREATION STATE
-        let creator = TEMPCREATORWALLETADDR.load(&deps.storage).unwrap();
-        let creation_state = PoolCreationState {
-            pool_id,
-            creator: creator.clone(),
-            creator_token_address: None,
-            mint_new_position_nft_address: None,
-            pool_address: None,
-            creation_time: env.block.time,
-            status: CreationStatus::Started,
-            retry_count: 0,
-        };
-        POOL_CREATION_STATES
-            .save(deps.as_mut().storage, pool_id, &creation_state)
-            .unwrap();
+
+        // The creation state should already be created by execute, but verify it exists
+        let creation_state = POOL_CREATION_STATES.load(&deps.storage, pool_id).unwrap();
+        assert_eq!(creation_state.status, CreationStatus::Started);
+        assert_eq!(creation_state.creator, creator);
+
         // Simulate complete reply chain with the actual pool_id
         simulate_complete_reply_chain(&mut deps, env.clone(), pool_id);
+
         // Verify pool was created successfully
         assert!(
             POOLS_BY_ID.load(&deps.storage, pool_id).is_ok(),
             "Pool should be stored by ID"
         );
+
         // Verify creation state shows completed
         let final_state = POOL_CREATION_STATES.load(&deps.storage, pool_id).unwrap();
         assert_eq!(final_state.status, CreationStatus::Completed);
+
+        // Verify temp storage was cleaned up after completion
+        assert!(
+            TEMP_POOL_CREATION.load(&deps.storage).is_err(),
+            "Temp storage should be cleaned up after pool creation"
+        );
     }
 
     // Verify we created 3 unique pools
@@ -497,7 +504,7 @@ fn test_multiple_pool_creation() {
 fn test_complete_pool_creation_flow() {
     let mut deps = mock_dependencies(&[]);
 
-    // Set up ATOM pool
+    // Set up ATOM pool first
     setup_atom_pool(&mut deps);
 
     let msg = FactoryInstantiate {
@@ -518,31 +525,34 @@ fn test_complete_pool_creation_flow() {
     let info = mock_info(ADMIN, &[]);
     instantiate(deps.as_mut(), env.clone(), info, msg).unwrap();
 
-    let create_msg = ExecuteMsg::Create {
-        pool_msg: CreatePool {
-            pool_token_info: [
-                TokenType::Bluechip {
-                    denom: "bluechip".to_string(),
-                },
-                TokenType::CreatorToken {
-                    contract_addr: Addr::unchecked("token0000"),
-                },
-            ],
-            factory_to_create_pool_addr: Addr::unchecked("factory"),
-            cw20_token_contract_id: 10,
-            threshold_payout: None,
-            commit_fee_info: CommitFeeInfo {
-                bluechip_wallet_address: Addr::unchecked("bluechip"),
-                creator_wallet_address: Addr::unchecked("addr0000"),
-                commit_fee_bluechip: Decimal::from_ratio(10u128, 100u128),
-                commit_fee_creator: Decimal::from_ratio(10u128, 100u128),
+    // Create the pool message
+    let pool_msg = CreatePool {
+        pool_token_info: [
+            TokenType::Bluechip {
+                denom: "bluechip".to_string(),
             },
-            commit_amount_for_threshold: Uint128::zero(),
-            commit_limit_usd: Uint128::new(100),
-            pyth_contract_addr_for_conversions: "oracle0000".to_string(),
-            pyth_atom_usd_price_feed_id: "ORCL".to_string(),
-            creator_token_address: Addr::unchecked("token0000"),
+            TokenType::CreatorToken {
+                contract_addr: Addr::unchecked("WILL_BE_CREATED_BY_FACTORY"),
+            },
+        ],
+        factory_to_create_pool_addr: Addr::unchecked("factory"),
+        cw20_token_contract_id: 10,
+        threshold_payout: None,
+        commit_fee_info: CommitFeeInfo {
+            bluechip_wallet_address: Addr::unchecked("bluechip"),
+            creator_wallet_address: Addr::unchecked("addr0000"),
+            commit_fee_bluechip: Decimal::from_ratio(10u128, 100u128),
+            commit_fee_creator: Decimal::from_ratio(10u128, 100u128),
         },
+        commit_amount_for_threshold: Uint128::zero(),
+        commit_limit_usd: Uint128::new(100),
+        pyth_contract_addr_for_conversions: "oracle0000".to_string(),
+        pyth_atom_usd_price_feed_id: "ORCL".to_string(),
+        creator_token_address: Addr::unchecked("token0000"),
+    };
+
+    let create_msg = ExecuteMsg::Create {
+        pool_msg: pool_msg.clone(),
         token_info: CreatorTokenInfo {
             name: "Test Token".to_string(),
             symbol: "TEST".to_string(),
@@ -563,33 +573,25 @@ fn test_complete_pool_creation_flow() {
         "Should have exactly one submessage for token instantiation"
     );
 
-    assert!(TEMPPOOLID.load(&deps.storage).is_ok());
-    assert!(TEMPPOOLINFO.load(&deps.storage).is_ok());
-    assert!(TEMPCREATORWALLETADDR.load(&deps.storage).is_ok());
+    // Load the pool context that was created during execute
+    let pool_context = TEMP_POOL_CREATION.load(&deps.storage).unwrap();
+    let pool_id = pool_context.pool_id;
+    let creator = pool_context.temp_creator_wallet.clone();
 
-    let pool_id = TEMPPOOLID.load(&deps.storage).unwrap();
-    let creator = TEMPCREATORWALLETADDR.load(&deps.storage).unwrap();
+    assert!(pool_id > 0);
+    assert_eq!(pool_context.temp_creator_wallet, Addr::unchecked(ADMIN));
+    assert!(pool_context.creator_token_addr.is_none());
+    assert!(pool_context.nft_addr.is_none());
 
-    let creation_state = PoolCreationState {
-        pool_id,
-        creator: creator.clone(),
-        creator_token_address: None,
-        mint_new_position_nft_address: None,
-        pool_address: None,
-        creation_time: env.block.time,
-        status: CreationStatus::Started,
-        retry_count: 0,
-    };
-    POOL_CREATION_STATES
-        .save(deps.as_mut().storage, pool_id, &creation_state)
-        .unwrap();
-
+    // Step 1: Token Creation Reply
     let token_reply = create_instantiate_reply(SET_TOKENS, "token_address");
     let res = pool_creation_reply(deps.as_mut(), env.clone(), token_reply).unwrap();
 
+    // Reload context and check token was set
+    let pool_context = TEMP_POOL_CREATION.load(&deps.storage).unwrap();
     assert_eq!(
-        TEMPCREATORTOKENADDR.load(&deps.storage).unwrap(),
-        Addr::unchecked("token_address")
+        pool_context.creator_token_addr,
+        Some(Addr::unchecked("token_address"))
     );
     assert_eq!(res.messages.len(), 1);
 
@@ -600,13 +602,13 @@ fn test_complete_pool_creation_flow() {
         Some(Addr::unchecked("token_address"))
     );
 
+    // Step 2: NFT Creation Reply
     let nft_reply = create_instantiate_reply(MINT_CREATE_POOL, "nft_address");
     let res = pool_creation_reply(deps.as_mut(), env.clone(), nft_reply).unwrap();
 
-    assert_eq!(
-        TEMPNFTADDR.load(&deps.storage).unwrap(),
-        Addr::unchecked("nft_address")
-    );
+    // Reload context and check NFT was set
+    let pool_context = TEMP_POOL_CREATION.load(&deps.storage).unwrap();
+    assert_eq!(pool_context.nft_addr, Some(Addr::unchecked("nft_address")));
     assert_eq!(res.messages.len(), 1);
 
     let updated_state = POOL_CREATION_STATES.load(&deps.storage, pool_id).unwrap();
@@ -616,10 +618,11 @@ fn test_complete_pool_creation_flow() {
         Some(Addr::unchecked("nft_address"))
     );
 
+    // Step 3: Pool Finalization Reply
     let pool_reply = create_instantiate_reply(FINALIZE_POOL, "pool_address");
     let res = pool_creation_reply(deps.as_mut(), env.clone(), pool_reply).unwrap();
 
-    let creator = Addr::unchecked(ADMIN);
+    // Check commit info was saved
     let commit_info = SETCOMMIT.load(&deps.storage, &creator.to_string()).unwrap();
     assert_eq!(commit_info.pool_id, pool_id);
     assert_eq!(
@@ -627,18 +630,17 @@ fn test_complete_pool_creation_flow() {
         Addr::unchecked("pool_address")
     );
 
+    // Check pool was indexed by ID
     let pool_by_id = POOLS_BY_ID.load(&deps.storage, pool_id).unwrap();
     assert_eq!(
         pool_by_id.creator_pool_addr,
         Addr::unchecked("pool_address")
     );
 
-    assert!(TEMPPOOLID.load(&deps.storage).is_err());
-    assert!(TEMPPOOLINFO.load(&deps.storage).is_err());
-    assert!(TEMPCREATORWALLETADDR.load(&deps.storage).is_err());
-    assert!(TEMPCREATORTOKENADDR.load(&deps.storage).is_err());
-    assert!(TEMPNFTADDR.load(&deps.storage).is_err());
+    // Verify temp storage was cleaned up
+    assert!(TEMP_POOL_CREATION.load(&deps.storage).is_err());
 
+    // Check final state
     let final_state = POOL_CREATION_STATES.load(&deps.storage, pool_id).unwrap();
     assert_eq!(final_state.status, CreationStatus::Completed);
     assert_eq!(
@@ -646,6 +648,7 @@ fn test_complete_pool_creation_flow() {
         Some(Addr::unchecked("pool_address"))
     );
 
+    // Should have 2 messages for ownership transfer (CW20 and NFT)
     assert_eq!(res.messages.len(), 2);
 }
 
@@ -787,29 +790,15 @@ fn test_reply_handling() {
     let _res = instantiate(deps.as_mut(), env.clone(), info, msg).unwrap();
 
     let pool_id = 1u64;
-    TEMPPOOLID.save(deps.as_mut().storage, &pool_id).unwrap();
 
-    let creation_state = PoolCreationState {
-        pool_id,
-        creator: addr.clone(),
-        creator_token_address: None,
-        mint_new_position_nft_address: None,
-        pool_address: None,
-        creation_time: env.block.time,
-        status: CreationStatus::Started,
-        retry_count: 0,
-    };
-    POOL_CREATION_STATES
-        .save(deps.as_mut().storage, pool_id, &creation_state)
-        .unwrap();
-
+    // Create the pool message
     let pool_msg = CreatePool {
         pool_token_info: [
             TokenType::Bluechip {
                 denom: "bluechip".to_string(),
             },
             TokenType::CreatorToken {
-                contract_addr: Addr::unchecked("token0000"),
+                contract_addr: Addr::unchecked("WILL_BE_CREATED_BY_FACTORY"), // Use placeholder
             },
         ],
         factory_to_create_pool_addr: Addr::unchecked("factory"),
@@ -828,13 +817,38 @@ fn test_reply_handling() {
         creator_token_address: Addr::unchecked("token0000"),
     };
 
-    TEMPPOOLINFO.save(deps.as_mut().storage, &pool_msg).unwrap();
-    TEMPCREATORWALLETADDR
-        .save(deps.as_mut().storage, &addr)
+    // Create the consolidated pool creation context
+    let pool_context = TempPoolCreation {
+        pool_id,
+        temp_creator_wallet: addr.clone(),
+        temp_pool_info: pool_msg,
+        creator_token_addr: None,
+        nft_addr: None,
+    };
+
+    // Save the consolidated context
+    TEMP_POOL_CREATION
+        .save(deps.as_mut().storage, &pool_context)
+        .unwrap();
+
+    // Set up the creation state
+    let creation_state = PoolCreationState {
+        pool_id,
+        creator: addr.clone(),
+        creator_token_address: None,
+        mint_new_position_nft_address: None,
+        pool_address: None,
+        creation_time: env.block.time,
+        status: CreationStatus::Started,
+        retry_count: 0,
+    };
+    POOL_CREATION_STATES
+        .save(deps.as_mut().storage, pool_id, &creation_state)
         .unwrap();
 
     let contract_addr = "token_contract_address";
 
+    // Create the reply message
     let reply_msg = Reply {
         id: SET_TOKENS,
         result: SubMsgResult::Ok(SubMsgResponse {
@@ -845,13 +859,16 @@ fn test_reply_handling() {
         }),
     };
 
+    // Call the reply handler
     let res = pool_creation_reply(deps.as_mut(), env.clone(), reply_msg).unwrap();
 
+    // Verify response attributes
     assert_eq!(res.attributes.len(), 3);
     assert_eq!(res.attributes[0], ("action", "token_created_successfully"));
     assert_eq!(res.attributes[1], ("token_address", contract_addr));
     assert_eq!(res.attributes[2], ("pool_id", "1"));
 
+    // Verify the creation state was updated
     let updated_state = POOL_CREATION_STATES
         .load(deps.as_ref().storage, pool_id)
         .unwrap();
@@ -861,8 +878,14 @@ fn test_reply_handling() {
         Some(Addr::unchecked(contract_addr))
     );
 
-    let temp_token = TEMPCREATORTOKENADDR.load(deps.as_ref().storage).unwrap();
-    assert_eq!(temp_token, Addr::unchecked(contract_addr));
+    // Verify the pool context was updated with the token address
+    let updated_context = TEMP_POOL_CREATION.load(deps.as_ref().storage).unwrap();
+    assert_eq!(
+        updated_context.creator_token_addr,
+        Some(Addr::unchecked(contract_addr))
+    );
+    assert_eq!(updated_context.pool_id, pool_id);
+    assert_eq!(updated_context.temp_creator_wallet, addr);
 }
 
 #[test]
@@ -1352,54 +1375,69 @@ fn test_oracle_aggregates_multiple_pool_prices() {
     // Set up ATOM pool: bluechip = $1.00
     setup_atom_pool(&mut deps);
 
+    // Helper function to add a pool with both storage entries
+    let add_test_pool = |deps: &mut OwnedDeps<MockStorage, MockApi, WasmMockQuerier>,
+                         pool_addr: Addr,
+                         pool_id: u64,
+                         reserve0: u128,
+                         reserve1: u128| {
+        // Add to POOLS_BY_CONTRACT_ADDRESS
+        let pool_state = PoolStateResponseForFactory {
+            pool_contract_address: pool_addr.clone(),
+            nft_ownership_accepted: true,
+            reserve0: Uint128::new(reserve0),
+            reserve1: Uint128::new(reserve1),
+            total_liquidity: Uint128::new(10_000_000),
+            block_time_last: 0,
+            price0_cumulative_last: Uint128::zero(),
+            price1_cumulative_last: Uint128::zero(),
+        };
+        POOLS_BY_CONTRACT_ADDRESS
+            .save(&mut deps.storage, pool_addr.clone(), &pool_state)
+            .unwrap();
+
+        // Add to POOLS_BY_ID with token info
+        let pool_details = PoolDetails {
+            pool_id,
+            pool_token_info: [
+                TokenType::Bluechip {
+                    denom: "bluechip".to_string(),
+                },
+                TokenType::CreatorToken {
+                    contract_addr: Addr::unchecked("creator_token"),
+                },
+            ],
+            creator_pool_addr: pool_addr,
+        };
+        POOLS_BY_ID
+            .save(&mut deps.storage, pool_id, &pool_details)
+            .unwrap();
+    };
+
     // Add 3 creator pools with different bluechip prices
-    // Pool 1: 45k bluechip : 10k token -> bluechip slightly higher value
-    let pool1_addr = Addr::unchecked("creator_pool_1");
-    let pool1_state = PoolStateResponseForFactory {
-        pool_contract_address: pool1_addr.clone(),
-        nft_ownership_accepted: true,
-        reserve0: Uint128::new(45_000_000_000), // 45k bluechip
-        reserve1: Uint128::new(10_000_000_000), // 10k creator token
-        total_liquidity: Uint128::new(10_000_000),
-        block_time_last: 0,
-        price0_cumulative_last: Uint128::zero(),
-        price1_cumulative_last: Uint128::zero(),
-    };
-    POOLS_BY_CONTRACT_ADDRESS
-        .save(deps.as_mut().storage, pool1_addr, &pool1_state)
-        .unwrap();
+    add_test_pool(
+        &mut deps,
+        Addr::unchecked("creator_pool_1"),
+        1,
+        45_000_000_000, // 45k bluechip
+        10_000_000_000, // 10k creator token
+    );
 
-    // Pool 2: 55k bluechip : 10k token -> bluechip slightly lower value
-    let pool2_addr = Addr::unchecked("creator_pool_2");
-    let pool2_state = PoolStateResponseForFactory {
-        pool_contract_address: pool2_addr.clone(),
-        nft_ownership_accepted: true,
-        reserve0: Uint128::new(55_000_000_000),
-        reserve1: Uint128::new(10_000_000_000),
-        total_liquidity: Uint128::new(10_000_000),
-        block_time_last: 0,
-        price0_cumulative_last: Uint128::zero(),
-        price1_cumulative_last: Uint128::zero(),
-    };
-    POOLS_BY_CONTRACT_ADDRESS
-        .save(deps.as_mut().storage, pool2_addr, &pool2_state)
-        .unwrap();
+    add_test_pool(
+        &mut deps,
+        Addr::unchecked("creator_pool_2"),
+        2,
+        55_000_000_000, // 55k bluechip
+        15_000_000_000, // 10k creator token
+    );
 
-    // Pool 3: 50k bluechip : 10k token -> bluechip = expected value
-    let pool3_addr = Addr::unchecked("creator_pool_3");
-    let pool3_state = PoolStateResponseForFactory {
-        pool_contract_address: pool3_addr.clone(),
-        nft_ownership_accepted: true,
-        reserve0: Uint128::new(50_000_000_000),
-        reserve1: Uint128::new(10_000_000_000),
-        total_liquidity: Uint128::new(10_000_000),
-        block_time_last: 0,
-        price0_cumulative_last: Uint128::zero(),
-        price1_cumulative_last: Uint128::zero(),
-    };
-    POOLS_BY_CONTRACT_ADDRESS
-        .save(deps.as_mut().storage, pool3_addr, &pool3_state)
-        .unwrap();
+    add_test_pool(
+        &mut deps,
+        Addr::unchecked("creator_pool_3"),
+        3,
+        50_000_000_000, // 50k bluechip
+        10_000_000_000, // 10k creator token
+    );
 
     let msg = create_default_instantiate_msg();
     let env = mock_env();
@@ -1422,15 +1460,20 @@ fn test_oracle_aggregates_multiple_pool_prices() {
     // Verify multiple pools were used
     assert!(
         oracle.selected_pools.len() > 1,
-        "Should aggregate from multiple pools"
+        "Should aggregate from multiple pools - found: {:?}",
+        oracle.selected_pools
     );
 
     // The aggregated price should be reasonable
-    // (exact value depends on your aggregation algorithm - median, mean, weighted, etc.)
     let price = oracle.bluechip_price_cache.last_price;
     assert!(
         price > Uint128::zero(),
         "Aggregated price should be calculated"
+    );
+    assert!(
+        price >= Uint128::new(9_000_000) && price <= Uint128::new(10_000_000),
+        "Price should be in expected range, got: {}",
+        price
     );
 }
 

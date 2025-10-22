@@ -1,29 +1,29 @@
-use cosmwasm_std::{to_json_binary, Addr, CosmosMsg, DepsMut, Empty, Env, Reply, Response, Storage, SubMsg, SubMsgResponse, SubMsgResult, WasmMsg};
+use cosmwasm_std::{
+    to_json_binary, Addr, CosmosMsg, DepsMut, Empty, Env, Reply, Response, StdResult, Storage,
+    SubMsg, SubMsgResponse, SubMsgResult, WasmMsg,
+};
 use cw20::Cw20ExecuteMsg;
 use cw721_base::Action;
 
 use crate::error::ContractError;
 use crate::execute::{BURN_ADDRESS, CLEANUP_NFT_REPLY_ID, CLEANUP_TOKEN_REPLY_ID};
-use crate::state::{PoolCreationState, CreationStatus, POOL_CREATION_STATES, TEMPCREATORWALLETADDR, TEMPNFTADDR, TEMPPOOLINFO, TEMPPOOLID, TEMPCREATORTOKENADDR};
+use crate::state::{CreationStatus, PoolCreationState, POOL_CREATION_STATES, TEMP_POOL_CREATION};
 
 //clean and remove all temp information used during pool creation
-pub fn cleanup_temp_state(storage: &mut dyn Storage) -> Result<(), ContractError> {
-    TEMPPOOLID.remove(storage);
-    TEMPPOOLINFO.remove(storage);
-    TEMPCREATORWALLETADDR.remove(storage);
-    TEMPCREATORTOKENADDR.remove(storage);
-    TEMPNFTADDR.remove(storage);
+pub fn cleanup_temp_state(storage: &mut dyn Storage) -> StdResult<()> {
+    // Only need to remove one item now
+    TEMP_POOL_CREATION.remove(storage);
     Ok(())
 }
 
-pub fn create_cleanup_messages(creation_state: &PoolCreationState) -> Result<Vec<SubMsg>, ContractError> {
+pub fn create_cleanup_messages(
+    creation_state: &PoolCreationState,
+) -> Result<Vec<SubMsg>, ContractError> {
     let mut messages = vec![];
     if let Some(token_addr) = &creation_state.creator_token_address {
         let disable_token_msg = WasmMsg::Execute {
             contract_addr: token_addr.to_string(),
-            msg: to_json_binary(&Cw20ExecuteMsg::UpdateMinter {
-                new_minter: None, 
-            })?,
+            msg: to_json_binary(&Cw20ExecuteMsg::UpdateMinter { new_minter: None })?,
             funds: vec![],
         };
         let sub_msg: SubMsg = SubMsg::reply_on_error(disable_token_msg, CLEANUP_TOKEN_REPLY_ID);
@@ -46,19 +46,23 @@ pub fn create_cleanup_messages(creation_state: &PoolCreationState) -> Result<Vec
 
     Ok(messages)
 }
-pub fn handle_cleanup_reply(deps: DepsMut, _env: Env, msg: Reply) -> Result<Response, ContractError> {
+pub fn handle_cleanup_reply(
+    deps: DepsMut,
+    _env: Env,
+    msg: Reply,
+) -> Result<Response, ContractError> {
     match msg.result {
         SubMsgResult::Ok(_) => {
-            if let Ok(pool_id) = TEMPPOOLID.load(deps.storage) {
+            if let Ok(temp_state) = TEMP_POOL_CREATION.load(deps.storage) {
+                let pool_id = temp_state.pool_id;
                 POOL_CREATION_STATES.remove(deps.storage, pool_id);
                 cleanup_temp_state(deps.storage)?;
             }
-
             Ok(Response::new().add_attribute("action", "cleanup_completed"))
         }
         SubMsgResult::Err(err) => {
-            
-            if let Ok(pool_id) = TEMPPOOLID.load(deps.storage) {
+            if let Ok(temp_state) = TEMP_POOL_CREATION.load(deps.storage) {
+                let pool_id = temp_state.pool_id;
                 if let Ok(mut state) = POOL_CREATION_STATES.load(deps.storage, pool_id) {
                     state.status = CreationStatus::Failed;
                     state.retry_count += 1;

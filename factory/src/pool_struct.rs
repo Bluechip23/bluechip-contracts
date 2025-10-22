@@ -2,7 +2,7 @@ use cosmwasm_schema::cw_serde;
 
 use crate::asset::{TokenInfo, TokenType};
 
-use cosmwasm_std::{Addr, Binary, Decimal, QuerierWrapper, StdResult, Uint128};
+use cosmwasm_std::{Addr, Binary, Decimal, QuerierWrapper, StdError, StdResult, Uint128};
 
 #[cw_serde]
 pub struct CreatePool {
@@ -27,6 +27,16 @@ pub struct CreatePool {
     // the symbol the contract will be looking for for commit messages. the bluechip token's symbol
     pub pyth_atom_usd_price_feed_id: String,
 }
+
+#[cw_serde]
+pub struct TempPoolCreation {
+    pub temp_pool_info: CreatePool,
+    pub temp_creator_wallet: Addr,
+    pub pool_id: u64,
+    pub creator_token_addr: Option<Addr>,
+    pub nft_addr: Option<Addr>,
+}
+
 #[cw_serde]
 pub struct ThresholdPayoutAmounts {
     // once the threshold is crossed, the amount distributed directly to the creator
@@ -74,7 +84,8 @@ impl PoolDetails {
     ) -> StdResult<[TokenInfo; 2]> {
         Ok([
             TokenInfo {
-                amount: self.pool_token_info[0].query_pool_token_info(querier, contract_addr.clone())?,
+                amount: self.pool_token_info[0]
+                    .query_pool_token_info(querier, contract_addr.clone())?,
                 info: self.pool_token_info[0].clone(),
             },
             TokenInfo {
@@ -82,5 +93,21 @@ impl PoolDetails {
                 info: self.pool_token_info[1].clone(),
             },
         ])
+    }
+}
+
+impl ThresholdPayoutAmounts {
+    pub fn validate(&self, total_mint: Uint128) -> StdResult<()> {
+        let sum = self.creator_reward_amount
+            + self.bluechip_reward_amount
+            + self.pool_seed_amount
+            + self.commit_return_amount;
+
+        if sum != total_mint {
+            return Err(StdError::generic_err(
+                "Payout amounts don't sum to total mint",
+            ));
+        }
+        Ok(())
     }
 }
