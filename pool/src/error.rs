@@ -9,6 +9,9 @@ pub enum ContractError {
     #[error("Unauthorized")]
     Unauthorized {},
 
+    #[error("No distribution in progress")]
+    NoDistributionInProgress {},
+
     #[error("The Factory address used is not permitted to create a pool")]
     InvalidFactory {},
 

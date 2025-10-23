@@ -1,7 +1,7 @@
 #![allow(non_snake_case)]
 use crate::error::ContractError;
-use crate::msg::CommitFeeInfo;
-use crate::state::PoolState;
+use crate::msg::{CommitFeeInfo, ExecuteMsg};
+use crate::state::{DistributionState, PoolState, DISTRIBUTION_STATE, MAX_DISTRIBUTIONS_PER_TX};
 use crate::state::{
     CommitLimitInfo, PoolFeeState, PoolInfo, PoolSpecs, ThresholdPayoutAmounts, COMMIT_LEDGER,
     POOL_FEE_STATE, POOL_STATE, USER_LAST_COMMIT,
@@ -11,6 +11,7 @@ use cosmwasm_std::{
     StdResult, Storage, Timestamp, Uint128, Uint256, WasmMsg,
 };
 use cw20::Cw20ExecuteMsg;
+use cw_storage_plus::Bound;
 use std::vec;
 
 // Update fee growth based on which token was offered
@@ -142,67 +143,96 @@ pub fn trigger_threshold_payout(
     fee_info: &CommitFeeInfo,
     env: &Env,
 ) -> StdResult<Vec<CosmosMsg>> {
-    let mut msgs = Vec::<CosmosMsg>::new();
+    let mut msgs = Vec::new();
+
+    // Validate total payout integrity
     let total = payout.creator_reward_amount
         + payout.bluechip_reward_amount
         + payout.pool_seed_amount
         + payout.commit_return_amount;
 
     if total != Uint128::new(1_200_000_000_000) {
-        return Err(StdError::generic_err(
-            "Threshold payout corruption detected",
-        ));
+        return Err(StdError::generic_err("Threshold payout corruption detected"));
     }
 
-    let creator_ratio = payout.creator_reward_amount.multiply_ratio(100u128, total);
-    if creator_ratio < Uint128::new(26) || creator_ratio > Uint128::new(28) {
-        return Err(StdError::generic_err("Invalid creator ratio"));
-    }
-    //mint tokens directly to the desired places
-    //to creator
+    // --- Single transfers (creator, bluechip, pool seed) ---
     msgs.push(mint_tokens(
         &pool_info.token_address,
         &fee_info.creator_wallet_address,
         payout.creator_reward_amount,
     )?);
-    //to BlueChip
+
     msgs.push(mint_tokens(
         &pool_info.token_address,
         &fee_info.bluechip_wallet_address,
         payout.bluechip_reward_amount,
     )?);
-    //to the creator pool + the amount of bluechips used to cross the threshold
+
     msgs.push(mint_tokens(
         &pool_info.token_address,
         &env.contract.address,
         payout.pool_seed_amount + commit_config.commit_amount_for_threshold,
     )?);
-    //calculate return to pre threshold commiters
-    let held_amount = payout.commit_return_amount;
-    //find each payer inside the ledger
-    for payer_res in COMMIT_LEDGER.keys(storage, None, None, Order::Ascending) {
-        let payer: Addr = payer_res?;
-        //how much they commited
-        let usd_paid = COMMIT_LEDGER.load(storage, &payer)?;
-        let reward = Uint128::try_from(
-            (Uint256::from(usd_paid) * Uint256::from(held_amount))
-                / Uint256::from(commit_config.commit_amount_for_threshold_usd),
-        )?;
 
-        if !reward.is_zero() {
-            msgs.push(mint_tokens(&pool_info.token_address, &payer, reward)?);
+    // --- Committer payouts ---
+    let total_committers = COMMIT_LEDGER
+        .keys(storage, None, None, Order::Ascending)
+        .count();
+
+    if total_committers == 0 {
+        // No committers to pay — nothing to do
+    } else if total_committers <= MAX_DISTRIBUTIONS_PER_TX as usize {
+        // Collect all committers first (immutable borrow)
+        let committers: Vec<(Addr, Uint128)> = COMMIT_LEDGER
+            .range(storage, None, None, Order::Ascending)
+            .map(|r| r.map_err(|e| StdError::generic_err(e.to_string())))
+            .collect::<StdResult<Vec<_>>>()?;
+
+        // Now safely mutate storage
+        for (payer, usd_paid) in committers {
+            let reward = calculate_committer_reward(
+                usd_paid,
+                payout.commit_return_amount,
+                commit_config.commit_amount_for_threshold_usd,
+            )?;
+
+            if !reward.is_zero() {
+                msgs.push(mint_tokens(&pool_info.token_address, &payer, reward)?);
+            }
+
+            COMMIT_LEDGER.remove(storage, &payer);
         }
-    }
-    COMMIT_LEDGER.clear(storage);
+    } else {
+        // Too many committers, need batched distribution
+        let dist_state = DistributionState {
+            is_distributing: true,
+            total_to_distribute: payout.commit_return_amount,
+            total_committed_usd: commit_config.commit_amount_for_threshold_usd,
+            last_processed_key: None,
+            distributions_remaining: total_committers as u32,
+        };
+        DISTRIBUTION_STATE.save(storage, &dist_state)?;
 
+        // Process first batch immediately
+        let batch_msgs = process_distribution_batch(
+            storage,
+            pool_info,
+            env,
+            MAX_DISTRIBUTIONS_PER_TX,
+        )?;
+        msgs.extend(batch_msgs);
+    }
+
+    // --- Update pool and fee state ---
     let total_fee_rate = fee_info.commit_fee_bluechip + fee_info.commit_fee_creator;
     let pools_bluechip_seed =
         commit_config.commit_amount_for_threshold * (Decimal::one() - total_fee_rate);
 
-    pool_state.reserve0 = pools_bluechip_seed; // No LP positions created yet
-    pool_state.reserve1 = payout.pool_seed_amount; // No LP positions created yet
-                                                   //Initial seed liquidity is not owned by anyone and cannot be withdrawn. This is intentional to prevent pool draining attacks and unneccesary pool rewards
+    pool_state.reserve0 = pools_bluechip_seed;
+    pool_state.reserve1 = payout.pool_seed_amount;
     pool_state.total_liquidity = Uint128::zero();
+
+    // Reset fee growth and collection tracking
     pool_fee_state.fee_growth_global_0 = Decimal::zero();
     pool_fee_state.fee_growth_global_1 = Decimal::zero();
     pool_fee_state.total_fees_collected_0 = Uint128::zero();
@@ -212,6 +242,92 @@ pub fn trigger_threshold_payout(
     POOL_FEE_STATE.save(storage, pool_fee_state)?;
 
     Ok(msgs)
+}
+
+
+pub fn process_distribution_batch(
+    storage: &mut dyn Storage,
+    pool_info: &PoolInfo,
+    env: &Env,
+    batch_size: u32,
+) -> StdResult<Vec<CosmosMsg>> {
+    let mut msgs = Vec::new();
+    let dist_state = DISTRIBUTION_STATE.load(storage)?;
+    
+    // Determine starting point
+    let start_after = dist_state.last_processed_key
+        .as_ref()
+        .map(|addr| Bound::exclusive(addr));
+    
+    // Process batch
+    let batch: Vec<_> = COMMIT_LEDGER
+        .range(storage, start_after, None, Order::Ascending)
+        .take(batch_size as usize)
+        .collect::<StdResult<Vec<_>>>()?;
+    
+    let actual_batch_size = batch.len() as u32;
+    let mut last_processed = None;
+    
+    for (payer, usd_paid) in batch {
+        let reward = calculate_committer_reward(
+            usd_paid,
+            dist_state.total_to_distribute,
+            dist_state.total_committed_usd,
+        )?;
+        
+        if !reward.is_zero() {
+            msgs.push(mint_tokens(&pool_info.token_address, &payer, reward)?);
+        }
+        
+        COMMIT_LEDGER.remove(storage, &payer);
+        last_processed = Some(payer);
+    }
+    
+    // Update state
+    let new_remaining = dist_state.distributions_remaining
+        .saturating_sub(actual_batch_size);
+    
+    if new_remaining == 0 {
+        // All done
+        DISTRIBUTION_STATE.remove(storage);
+    } else {
+        // Save progress
+        let updated_state = DistributionState {
+            is_distributing: true,
+            total_to_distribute: dist_state.total_to_distribute,
+            total_committed_usd: dist_state.total_committed_usd,
+            last_processed_key: last_processed,
+            distributions_remaining: new_remaining,
+        };
+        DISTRIBUTION_STATE.save(storage, &updated_state)?;
+        
+        // Trigger continuation
+        msgs.push(CosmosMsg::Wasm(WasmMsg::Execute {
+            contract_addr: env.contract.address.to_string(),
+            msg: to_json_binary(&ExecuteMsg::ContinueDistribution {})?,
+            funds: vec![],
+        }));
+    }
+    
+    Ok(msgs)
+}
+
+fn calculate_committer_reward(
+    usd_paid: Uint128,
+    total_to_distribute: Uint128,
+    total_committed_usd: Uint128,
+) -> StdResult<Uint128> {
+    if total_committed_usd.is_zero() {
+        return Ok(Uint128::zero());
+    }
+    
+    let reward = Uint128::try_from(
+        Uint256::from(usd_paid)
+            .checked_mul(Uint256::from(total_to_distribute))?
+            .checked_div(Uint256::from(total_committed_usd))?
+    )?;
+    
+    Ok(reward)
 }
 
 //converts decimal to decimal256 for higher precision
