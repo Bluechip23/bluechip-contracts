@@ -17,7 +17,7 @@ pub enum ExecuteMsg {
     UpdateConfig {
         params: Binary,
     },
-
+    ContinueDistribution {},
     Commit {
         asset: TokenInfo,
         amount: Uint128,

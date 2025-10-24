@@ -56,25 +56,13 @@ impl TokenType {
     }
 
     pub fn equal(&self, asset: &TokenType) -> bool {
-        match self {
-            TokenType::CreatorToken { contract_addr, .. } => {
-                let self_contract_addr = contract_addr;
-                match asset {
-                    TokenType::CreatorToken { contract_addr, .. } => {
-                        self_contract_addr == contract_addr
-                    }
-                    TokenType::Bluechip { .. } => false,
-                }
-            }
-            TokenType::Bluechip { denom, .. } => {
-                let self_denom = denom;
-                match asset {
-                    TokenType::CreatorToken { .. } => false,
-                    TokenType::Bluechip { denom, .. } => self_denom == denom,
-                }
-            }
-        }
-    }
+       // This could be simplified using derive(PartialEq)
+       match (self, asset) {
+           (TokenType::CreatorToken { contract_addr: a }, TokenType::CreatorToken { contract_addr: b }) => a == b,
+           (TokenType::Bluechip { denom: a }, TokenType::Bluechip { denom: b }) => a == b,
+           _ => false,
+       }
+   }
 
     pub fn as_bytes(&self) -> &[u8] {
         match self {

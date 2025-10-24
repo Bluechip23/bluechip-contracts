@@ -1,7 +1,5 @@
 use crate::{
-    error::ContractError,
-    pyth_types::{PythPriceFeedResponse, PythQueryMsg},
-    state::{ATOM_USD_PRICE_FEED_ID, FACTORYINSTANTIATEINFO, POOLS_BY_CONTRACT_ADDRESS},
+    asset::TokenType, error::ContractError, pyth_types::{PythPriceFeedResponse, PythQueryMsg}, state::{ATOM_USD_PRICE_FEED_ID, FACTORYINSTANTIATEINFO, POOLS_BY_CONTRACT_ADDRESS, POOLS_BY_ID}
 };
 use cosmwasm_schema::cw_serde;
 use cosmwasm_std::{
@@ -134,6 +132,26 @@ pub fn get_eligible_creator_pools(
 
     for (pool_address, _pool_data) in all_pools {
         if pool_address.as_str() == atom_pool_contract_address {
+            continue;
+        }
+
+            let pool_has_bluechip = POOLS_BY_ID
+            .range(deps.storage, None, None, Order::Ascending)
+            .any(|result| {
+                if let Ok((_, pool_details)) = result {
+                    // Check if this pool matches our address AND contains bluechip
+                    if pool_details.creator_pool_addr == pool_address {
+                        // Check if either token in the pair is bluechip
+                        return pool_details.pool_token_info.iter().any(|token| {
+                            matches!(token, TokenType::Bluechip { .. })
+                        });
+                    }
+                }
+                false
+            });
+        
+        // Skip pools that don't contain bluechip
+        if !pool_has_bluechip {
             continue;
         }
         let pool_state: PoolStateResponseForFactory = deps.querier.query_wasm_smart(
@@ -370,7 +388,7 @@ pub fn get_bluechip_usd_price(deps: Deps, env: Env) -> StdResult<Uint128> {
     
     // Use checked math
     let bluechip_per_atom = atom_pool.reserve0
-        .checked_mul(Uint128::from(1_000_000u128))
+        .checked_mul(Uint128::from(PRICE_PRECISION))
         .map_err(|e| StdError::generic_err(format!("Overflow calculating bluechip per ATOM: {}", e)))?
         .checked_div(atom_pool.reserve1)
         .map_err(|e| StdError::generic_err(format!("Division error calculating bluechip per ATOM: {}", e)))?;
@@ -381,7 +399,7 @@ pub fn get_bluechip_usd_price(deps: Deps, env: Env) -> StdResult<Uint128> {
     }
     
     let bluechip_usd_price = atom_usd_price
-        .checked_mul(Uint128::from(1_000_000u128))
+        .checked_mul(Uint128::from(PRICE_PRECISION))
         .map_err(|e| StdError::generic_err(format!("Overflow calculating bluechip USD price: {}", e)))?
         .checked_div(bluechip_per_atom)
         .map_err(|e| StdError::generic_err(format!("Division error calculating bluechip USD price: {}", e)))?;
@@ -407,7 +425,7 @@ pub fn bluechip_to_usd(
     }
     
     let usd_amount = bluechip_amount
-        .checked_mul(Uint128::from(1_000_000u128))
+        .checked_mul(Uint128::from(PRICE_PRECISION))
         .map_err(|e| StdError::generic_err(format!("Overflow in bluechip to USD conversion: {}", e)))?
         .checked_div(cached_price)
         .map_err(|e| StdError::generic_err(format!("Division error in bluechip to USD conversion: {}", e)))?;
@@ -432,7 +450,7 @@ pub fn usd_to_bluechip(
     }
     
     let bluechip_amount = usd_amount
-        .checked_mul(Uint128::from(100u128))
+        .checked_mul(Uint128::from(PRICE_PRECISION))
         .map_err(|e| StdError::generic_err(format!("Overflow in USD to bluechip conversion: {}", e)))?
         .checked_div(cached_price)
         .map_err(|e| StdError::generic_err(format!("Division error in USD to bluechip conversion: {}", e)))?;
@@ -535,3 +553,4 @@ pub fn execute_force_rotate_pools(
         .add_attribute("action", "force_rotate_pools")
         .add_attribute("pools_count", new_pools.len().to_string()))
 }
+

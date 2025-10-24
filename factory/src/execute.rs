@@ -5,19 +5,17 @@ use crate::internal_bluechip_price_oracle::{
 use crate::msg::{CreatorTokenInfo, ExecuteMsg, TokenInstantiateMsg};
 use crate::pool_create_cleanup::handle_cleanup_reply;
 use crate::pool_creation_reply::{finalize_pool, mint_create_pool, set_tokens};
-use crate::pool_struct::CreatePool;
+use crate::pool_struct::{CreatePool, TempPoolCreation};
 use crate::state::{
-    CreationStatus, FactoryInstantiate, PoolCreationState, FACTORYINSTANTIATEINFO,
-    POOL_CREATION_STATES, TEMPCREATORWALLETADDR, TEMPPOOLID, TEMPPOOLINFO, USED_POOL_IDS,
+    CreationStatus, FactoryInstantiate, PoolCreationState, FACTORYINSTANTIATEINFO, POOL_COUNTER,
+    POOL_CREATION_STATES, TEMP_POOL_CREATION,
 };
 #[cfg(not(feature = "library"))]
 use cosmwasm_std::{
-    entry_point, to_json_binary, Addr, Deps, DepsMut, Env, MessageInfo, Reply, Response, StdError,
+    entry_point, to_json_binary, Deps, DepsMut, Env, MessageInfo, Reply, Response, StdError,
     StdResult, SubMsg, Uint128, WasmMsg,
 };
 use cw20::MinterResponse;
-use cw_storage_plus::Endian;
-use sha2::{Digest, Sha256};
 use std::env;
 
 const CONTRACT_NAME: &str = "bluechip_factory";
@@ -92,12 +90,19 @@ fn execute_create_creator_pool(
     assert_correct_factory_address(deps.as_ref(), info.clone())?;
     let config = FACTORYINSTANTIATEINFO.load(deps.storage)?;
     let sender = info.sender.clone();
-    let pool_id = generate_unique_pool_id(&deps.as_ref(), &env, &info.sender)?;
-    //track used pool ids to ensure no duplicates
-    USED_POOL_IDS.save(deps.storage, pool_id, &true)?;
-    TEMPPOOLID.save(deps.storage, &pool_id)?;
-    TEMPPOOLINFO.save(deps.storage, &pool_msg)?;
-    TEMPCREATORWALLETADDR.save(deps.storage, &sender)?;
+    let pool_counter = POOL_COUNTER.load(deps.storage).unwrap_or(0);
+    let pool_id = pool_counter + 1;
+    POOL_COUNTER.save(deps.storage, &pool_id)?;
+    TEMP_POOL_CREATION.save(
+        deps.storage,
+        &TempPoolCreation {
+            temp_pool_info: pool_msg,
+            temp_creator_wallet: info.sender.clone(),
+            pool_id,
+            creator_token_addr: None,
+            nft_addr: None,
+        },
+    )?;
     let msg = WasmMsg::Instantiate {
         code_id: config.cw20_token_contract_id,
         //creating the creator token only, no minting.
@@ -151,30 +156,5 @@ pub fn pool_creation_reply(deps: DepsMut, env: Env, msg: Reply) -> Result<Respon
         CLEANUP_TOKEN_REPLY_ID => handle_cleanup_reply(deps, env, msg),
         CLEANUP_NFT_REPLY_ID => handle_cleanup_reply(deps, env, msg),
         _ => Err(ContractError::UnknownReplyId { id: msg.id }),
-    }
-}
-//unique pool id to track pool creation.
-pub fn generate_unique_pool_id(deps: &Deps, env: &Env, creator: &Addr) -> StdResult<u64> {
-    let mut attempt = 0;
-    loop {
-        let mut hasher = Sha256::new();
-        hasher.update(env.block.time.nanos().to_be_bytes());
-        hasher.update(env.block.height.to_be_bytes());
-        hasher.update(env.block.chain_id.as_bytes());
-        hasher.update(creator.as_bytes());
-        hasher.update(attempt.to_be_bytes());
-        let hash = hasher.finalize();
-        let pool_id = u64::from_be_bytes([
-            hash[0], hash[1], hash[2], hash[3], hash[4], hash[5], hash[6], hash[7],
-        ]);
-        if !USED_POOL_IDS.has(deps.storage, pool_id) {
-            return Ok(pool_id);
-        }
-        attempt += 1;
-        if attempt > 100 {
-            return Err(StdError::generic_err(
-                "Failed to generate unique pool ID after 100 attempts",
-            ));
-        }
     }
 }

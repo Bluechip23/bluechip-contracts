@@ -3,8 +3,8 @@ use crate::asset::{PoolPairType, TokenInfo, TokenType};
 use crate::error::ContractError;
 use crate::generic_helpers::{
     check_rate_limit, enforce_transaction_deadline, get_bank_transfer_to_msg,
-    trigger_threshold_payout, update_pool_fee_growth, validate_factory_address,
-    validate_pool_threshold_payments,
+    process_distribution_batch, trigger_threshold_payout, update_pool_fee_growth,
+    validate_factory_address, validate_pool_threshold_payments,
 };
 use crate::liquidity::{
     execute_add_to_position, execute_collect_fees, execute_deposit_liquidity,
@@ -17,9 +17,9 @@ use crate::response::MsgInstantiateContractResponse;
 use crate::state::{
     CommitLimitInfo, ExpectedFactory, OracleInfo, PoolDetails, PoolFeeState, PoolInfo, PoolSpecs,
     ThresholdPayoutAmounts, COMMITFEEINFO, COMMITSTATUS, COMMIT_LEDGER, COMMIT_LIMIT_INFO,
-    EXPECTED_FACTORY, IS_THRESHOLD_HIT, NATIVE_RAISED_FROM_COMMIT, ORACLE_INFO, POOL_FEE_STATE,
-    POOL_INFO, POOL_SPECS, POOL_STATE, RATE_LIMIT_GUARD, THRESHOLD_PAYOUT_AMOUNTS,
-    THRESHOLD_PROCESSING, USD_RAISED_FROM_COMMIT,
+    DISTRIBUTION_STATE, EXPECTED_FACTORY, IS_THRESHOLD_HIT, MAX_DISTRIBUTIONS_PER_TX,
+    NATIVE_RAISED_FROM_COMMIT, ORACLE_INFO, POOL_FEE_STATE, POOL_INFO, POOL_SPECS, POOL_STATE,
+    RATE_LIMIT_GUARD, THRESHOLD_PAYOUT_AMOUNTS, THRESHOLD_PROCESSING, USD_RAISED_FROM_COMMIT,
 };
 use crate::state::{
     Commiting, PoolState, Position, COMMIT_INFO, LIQUIDITY_POSITIONS, NEXT_POSITION_ID,
@@ -200,6 +200,7 @@ pub fn execute(
             belief_price,
             max_spread,
         ),
+        ExecuteMsg::ContinueDistribution {} => execute_continue_distribution(deps, env, info),
         //a standard swap - this can only be called IF the asset is the bluechip. if not, performing a swap will require executing the CW20 contract
         ExecuteMsg::SimpleSwap {
             offer_asset,
@@ -1179,4 +1180,29 @@ pub fn get_cw20_transfer_msg(
     };
     let cw20_transfer_msg: CosmosMsg = exec_cw20_transfer_msg.into();
     Ok(cw20_transfer_msg)
+}
+
+pub fn execute_continue_distribution(
+    deps: DepsMut,
+    env: Env,
+    info: MessageInfo,
+) -> Result<Response, ContractError> {
+    // Only contract can call itself
+    if info.sender != env.contract.address {
+        return Err(ContractError::Unauthorized {});
+    }
+
+    let dist_state = DISTRIBUTION_STATE.load(deps.storage)?;
+    if !dist_state.is_distributing {
+        return Err(ContractError::NoDistributionInProgress {});
+    }
+
+    let pool_info = POOL_INFO.load(deps.storage)?;
+    let msgs =
+        process_distribution_batch(deps.storage, &pool_info, &env, MAX_DISTRIBUTIONS_PER_TX)?;
+
+    Ok(Response::new()
+        .add_messages(msgs)
+        .add_attribute("action", "continue_distribution")
+        .add_attribute("remaining", dist_state.distributions_remaining.to_string()))
 }

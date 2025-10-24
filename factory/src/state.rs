@@ -1,4 +1,4 @@
-use crate::{pool_struct::{CreatePool, PoolDetails}};
+use crate::pool_struct::{PoolDetails, TempPoolCreation};
 use cosmwasm_schema::cw_serde;
 use cosmwasm_std::{Addr, Decimal, Timestamp, Uint128};
 use cw_storage_plus::{Item, Map};
@@ -7,11 +7,9 @@ use pool_factory_interfaces::PoolStateResponseForFactory;
 //states used during the pool and factory creation process. 
 //there is TEMPdata to keep the creation process going, TEMPdata is eventually removed after sucessful pool creation
 pub const FACTORYINSTANTIATEINFO: Item<FactoryInstantiate> = Item::new("config");
-pub const TEMPPOOLINFO: Item<CreatePool> = Item::new("temp_pool_info");
-pub const TEMPCREATORWALLETADDR: Item<Addr> = Item::new("temp_admin");
-pub const TEMPPOOLID: Item<u64> = Item::new("temp_pool_id");
-pub const TEMPCREATORTOKENADDR: Item<Addr> = Item::new("temp_token_addr");
-pub const TEMPNFTADDR: Item<Addr> = Item::new("temp_nft_addr");
+pub const TEMP_POOL_CREATION: Item<TempPoolCreation> = Item::new("temp_pool_creation");
+
+pub const POOL_COUNTER: Item<u64> = Item::new("pool_counter");
 //setting the commit field inside the pool
 pub const SETCOMMIT: Map<&str, CommitInfo> = Map::new("commit_info");
 //tracking pool id for querys etc
@@ -27,8 +25,6 @@ pub const PYTH_CONTRACT_ADDR: &str = "neutron1m2emc93m9gpwgsrsf2vylv9xvgqh654630
 pub const ATOM_USD_PRICE_FEED_ID: &str = "0xb00b60f88b03a6a625a8d1c048c3f66653edf217439983d037e7222c4e612819";
 pub const MAX_PRICE_AGE_SECONDS_BEFORE_STALE: u64 = 3000;
 pub const ATOM_BLUECHIP_ANCHOR_POOL_ADDRESS: Item<Addr> = Item::new("atom_pool_address");
-pub const USED_POOL_IDS: Map<u64, bool> = Map::new("used_pool_ids");
-
 
 #[cw_serde]
 pub struct FactoryInstantiate {
