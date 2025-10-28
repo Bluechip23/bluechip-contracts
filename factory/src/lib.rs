@@ -11,6 +11,7 @@ pub mod pool_create_cleanup;
 pub mod pyth_types;
 pub mod internal_bluechip_price_oracle;
 pub mod internal_bluechip_price_oracle_query;
+pub mod migrate;
 
 #[cfg(test)]
 mod testing;

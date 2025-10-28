@@ -1,10 +1,10 @@
 use crate::pool_struct::{PoolDetails, TempPoolCreation};
 use cosmwasm_schema::cw_serde;
-use cosmwasm_std::{Addr, Decimal, Timestamp, Uint128};
+use cosmwasm_std::{Addr, Binary, Decimal, Timestamp, Uint128};
 use cw_storage_plus::{Item, Map};
 use pool_factory_interfaces::PoolStateResponseForFactory;
 
-//states used during the pool and factory creation process. 
+//states used during the pool and factory creation process.
 //there is TEMPdata to keep the creation process going, TEMPdata is eventually removed after sucessful pool creation
 pub const FACTORYINSTANTIATEINFO: Item<FactoryInstantiate> = Item::new("config");
 pub const TEMP_POOL_CREATION: Item<TempPoolCreation> = Item::new("temp_pool_creation");
@@ -15,16 +15,22 @@ pub const SETCOMMIT: Map<&str, CommitInfo> = Map::new("commit_info");
 //tracking pool id for querys etc
 //used in querys to grab multiple pools
 pub const POOLS_BY_ID: Map<u64, PoolDetails> = Map::new("pools_by_id");
-pub const POOLS_BY_CONTRACT_ADDRESS: Map<Addr, PoolStateResponseForFactory> = Map::new("pools_by_contract_address");
+pub const POOLS_BY_CONTRACT_ADDRESS: Map<Addr, PoolStateResponseForFactory> =
+    Map::new("pools_by_contract_address");
 //keep track of pool creation state in case any corruption or bad executes.
 pub const POOL_CONTRACT_ADDRESS: Item<Addr> = Item::new("pool_contract_addr");
 pub const POOL_CREATION_STATES: Map<u64, PoolCreationState> = Map::new("creation_states");
 //pyth info for conversions
-pub const PYTH_CONTRACT_ADDR: &str = "neutron1m2emc93m9gpwgsrsf2vylv9xvgqh654630v7dfrhrkmr5slly53spg85wv";
+pub const PYTH_CONTRACT_ADDR: &str =
+    "neutron1m2emc93m9gpwgsrsf2vylv9xvgqh654630v7dfrhrkmr5slly53spg85wv";
 //direct feed used from pyth contract that exposes ATOM/USD price
-pub const ATOM_USD_PRICE_FEED_ID: &str = "0xb00b60f88b03a6a625a8d1c048c3f66653edf217439983d037e7222c4e612819";
+pub const ATOM_USD_PRICE_FEED_ID: &str =
+    "0xb00b60f88b03a6a625a8d1c048c3f66653edf217439983d037e7222c4e612819";
 pub const MAX_PRICE_AGE_SECONDS_BEFORE_STALE: u64 = 3000;
 pub const ATOM_BLUECHIP_ANCHOR_POOL_ADDRESS: Item<Addr> = Item::new("atom_pool_address");
+pub const POOL_REGISTRY: Map<u64, Addr> = Map::new("pool_registry");
+pub const POOL_CODE_ID: Item<u64> = Item::new("pool_code_id");
+pub const PENDING_POOL_UPGRADE: Item<PoolUpgrade> = Item::new("pending_upgrade");
 
 #[cw_serde]
 pub struct FactoryInstantiate {
@@ -32,11 +38,11 @@ pub struct FactoryInstantiate {
     pub factory_admin_address: Addr,
     //amount of bluechip spent to cross the commit threshold
     pub commit_amount_for_threshold_bluechip: Uint128,
-    //threshold needed to be crossed for pool to become fully active - priced in USD 
+    //threshold needed to be crossed for pool to become fully active - priced in USD
     pub commit_threshold_limit_usd: Uint128,
     //pyth is used to obtain atom prices in dollar to eventually convert bluechip to dollars
     pub pyth_contract_addr_for_conversions: String,
-    pub pyth_atom_usd_price_feed_id: String,    
+    pub pyth_atom_usd_price_feed_id: String,
     //CW20 contract id that is store on the chain for the pool to use when minting new NFTs
     pub cw20_token_contract_id: u64,
     //nft contract id that is store on the chain for the pool to use when minting new NFTs
@@ -59,7 +65,6 @@ pub struct CommitInfo {
     pub creator_token_addr: Addr,
     pub creator_pool_addr: Addr,
 }
-
 
 //used to track the state of the pool throughout creation. Will trigger different events upon partial or complete creation
 #[cw_serde]
@@ -89,4 +94,12 @@ pub enum CreationStatus {
     Completed,
     Failed,
     CleaningUp,
+}
+
+#[cw_serde]
+pub struct PoolUpgrade {
+    pub new_code_id: u64,
+    pub migrate_msg: Binary,
+    pub pools_to_upgrade: Vec<u64>,
+    pub upgraded_count: u32,
 }
