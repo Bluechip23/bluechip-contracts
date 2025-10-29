@@ -6,6 +6,7 @@ use cosmwasm_std::{
 };
 
 use crate::asset::TokenType;
+use crate::error::ContractError;
 use crate::execute::{execute, instantiate};
 use crate::msg::ExecuteMsg;
 use crate::pool_struct::{CommitFeeInfo, PoolConfigUpdate, PoolDetails};
@@ -172,6 +173,22 @@ fn test_migration_with_large_pool_count() {
     let pending = PENDING_POOL_UPGRADE.load(&deps.storage).unwrap();
     assert_eq!(pending.pools_to_upgrade.len(), 25);
     assert_eq!(pending.upgraded_count, 0);
+}
+#[test]
+fn test_continue_upgrade_unauthorized() {
+    let mut deps = mock_dependencies();
+    setup_factory(&mut deps);
+    
+    // Try to call continue as external user
+    let info = mock_info("hacker", &[]);
+    let err = execute(
+        deps.as_mut(),
+        mock_env(),
+        info,
+        ExecuteMsg::ContinuePoolUpgrade {}
+    ).unwrap_err();
+    
+    assert!(matches!(err, ContractError::Unauthorized {}));
 }
 
 fn setup_factory(deps: &mut OwnedDeps<MockStorage, MockApi, MockQuerier>) {
