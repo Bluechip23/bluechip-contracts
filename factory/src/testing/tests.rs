@@ -859,10 +859,8 @@ fn test_reply_handling() {
         }),
     };
 
-    // Call the reply handler
     let res = pool_creation_reply(deps.as_mut(), env.clone(), reply_msg).unwrap();
 
-    // Verify response attributes
     assert_eq!(res.attributes.len(), 3);
     assert_eq!(res.attributes[0], ("action", "token_created_successfully"));
     assert_eq!(res.attributes[1], ("token_address", contract_addr));
@@ -892,7 +890,6 @@ fn test_reply_handling() {
 fn test_oracle_execute_update_price() {
     let mut deps = mock_dependencies(&[]);
 
-    // Set up ATOM pool and some creator pools
     setup_atom_pool(&mut deps);
 
     for i in 1..=3 {
@@ -917,14 +914,12 @@ fn test_oracle_execute_update_price() {
     let info = mock_info(ADMIN, &[]);
     instantiate(deps.as_mut(), env.clone(), info, msg).unwrap();
 
-    // Manually set the oracle's last_update to current time to simulate a recent update
     let mut oracle = INTERNAL_ORACLE.load(&deps.storage).unwrap();
     oracle.bluechip_price_cache.last_update = env.block.time.seconds();
     INTERNAL_ORACLE
         .save(deps.as_mut().storage, &oracle)
         .unwrap();
 
-    // Try to update price immediately (should fail - too soon)
     let update_msg = ExecuteMsg::UpdateOraclePrice {};
     let info = mock_info(ADMIN, &[]);
     let result = execute(deps.as_mut(), env.clone(), info.clone(), update_msg.clone());
@@ -936,7 +931,7 @@ fn test_oracle_execute_update_price() {
     let mut future_env = env.clone();
     future_env.block.time = future_env.block.time.plus_seconds(360);
 
-    // Now it should succeed
+    // should succeed
     let result = execute(deps.as_mut(), future_env.clone(), info, update_msg);
     assert!(result.is_ok());
 
@@ -948,7 +943,6 @@ fn test_oracle_execute_update_price() {
     assert!(res.attributes.iter().any(|attr| attr.key == "twap_price"));
     assert!(res.attributes.iter().any(|attr| attr.key == "pools_used"));
 
-    // Verify oracle state was updated
     let oracle = INTERNAL_ORACLE.load(&deps.storage).unwrap();
     assert!(oracle.bluechip_price_cache.last_update > 0);
     assert!(!oracle.bluechip_price_cache.twap_observations.is_empty());
@@ -957,7 +951,6 @@ fn test_oracle_execute_update_price() {
 fn test_oracle_force_rotate_pools() {
     let mut deps = mock_dependencies(&[]);
 
-    // Set up ATOM pool and multiple creator pools
     setup_atom_pool(&mut deps);
 
     for i in 1..=10 {
@@ -982,7 +975,6 @@ fn test_oracle_force_rotate_pools() {
     let info = mock_info(ADMIN, &[]);
     instantiate(deps.as_mut(), env.clone(), info, msg).unwrap();
 
-    // Store initial pool selection
     let oracle = INTERNAL_ORACLE.load(&deps.storage).unwrap();
     let initial_pools = oracle.selected_pools.clone();
 
@@ -1009,7 +1001,6 @@ fn test_oracle_force_rotate_pools() {
         .any(|attr| attr.key == "action" && attr.value == "force_rotate_pools"));
     assert!(res.attributes.iter().any(|attr| attr.key == "pools_count"));
 
-    // Verify pools were rotated
     let oracle = INTERNAL_ORACLE.load(&deps.storage).unwrap();
     let new_pools = oracle.selected_pools.clone();
 
@@ -1017,7 +1008,6 @@ fn test_oracle_force_rotate_pools() {
     assert!(new_pools.contains(&ATOM_BLUECHIP_POOL_CONTRACT_ADDRESS.to_string()));
 
     // With 10 creator pools, rotation should potentially select different pools
-    // (though there's a chance they're the same due to randomness)
     assert_eq!(new_pools.len(), initial_pools.len());
 }
 
@@ -1025,37 +1015,27 @@ fn test_oracle_force_rotate_pools() {
 fn test_oracle_calculates_correct_bluechip_price() {
     let mut deps = mock_dependencies(&[]);
 
-    // Set up ATOM pool: 1M bluechip : 100k ATOM
     setup_atom_pool(&mut deps);
 
-    // Manually calculate what the price should be
     let atom_reserve = Uint128::new(100_000_000_000); // 100k ATOM with 6 decimals
     let bluechip_reserve = Uint128::new(1_000_000_000_000); // 1M bluechip with 6 decimals
     let atom_price_usd = Uint128::new(10_000_000); // $10.00 with 6 decimals
 
-    // Formula: bluechip_price_usd = (atom_reserve * atom_price_usd) / bluechip_reserve
     let expected_bluechip_price = atom_reserve
         .checked_mul(atom_price_usd)
         .unwrap()
         .checked_div(bluechip_reserve)
         .unwrap();
 
-    // Expected: (100k * $10) / 1M = $1,000,000 / 1,000,000 = $1.00
     assert_eq!(
         expected_bluechip_price,
         Uint128::new(1_000_000),
         "Math check failed"
     );
-
-    // Now test that your oracle's internal calculation function produces the same result
-    // If you have a public function like calculate_bluechip_price_from_pool, test it directly:
-    // let calculated = calculate_bluechip_price_from_pool(atom_reserve, bluechip_reserve, atom_price_usd);
-    // assert_eq!(calculated, expected_bluechip_price);
 }
 
 #[test]
 fn test_oracle_price_calculation_with_different_ratios() {
-    // Test case 1: Equal reserves
     let atom_reserve = Uint128::new(1_000_000_000); // 1k ATOM
     let bluechip_reserve = Uint128::new(1_000_000_000); // 1k bluechip
     let atom_price = Uint128::new(10_000_000); // $10.00
@@ -1093,13 +1073,10 @@ fn test_oracle_price_calculation_with_different_ratios() {
 
 #[test]
 fn test_oracle_handles_zero_reserves_safely() {
-    // Test that division by zero is handled
     let atom_reserve = Uint128::new(100_000_000);
     let bluechip_reserve = Uint128::zero(); // ZERO reserves
     let atom_price = Uint128::new(10_000_000);
 
-    // Your code should handle this - either with checked_div returning None
-    // or by filtering out pools with zero reserves before calculation
     let result = atom_reserve
         .checked_mul(atom_price)
         .unwrap()
@@ -1247,7 +1224,6 @@ fn test_oracle_twap_observations_max_length() {
     instantiate(deps.as_mut(), env.clone(), info, msg).unwrap();
 
     // Add more observations than the max (let's say max is 10)
-    // You'll need to check what your actual MAX_TWAP_OBSERVATIONS constant is
     for i in 1..=15 {
         env.block.time = env.block.time.plus_seconds(360);
 
@@ -1259,7 +1235,6 @@ fn test_oracle_twap_observations_max_length() {
         )
         .unwrap();
 
-        // Use 'i' for debugging/verification
         let oracle = INTERNAL_ORACLE.load(&deps.storage).unwrap();
         let observations = &oracle.bluechip_price_cache.twap_observations;
 
@@ -1291,7 +1266,6 @@ fn test_oracle_twap_observations_max_length() {
     let oracle = INTERNAL_ORACLE.load(&deps.storage).unwrap();
     let observations = &oracle.bluechip_price_cache.twap_observations;
 
-    // Verify it doesn't exceed max length
     assert!(
         observations.len() <= 10,
         "TWAP observations should not exceed max length, got: {}",
@@ -1300,7 +1274,6 @@ fn test_oracle_twap_observations_max_length() {
 
     // Verify oldest observations were pruned (most recent should be kept)
     if observations.len() == 10 {
-        // The last observation should be the most recent
         let last_timestamp = observations.last().unwrap().timestamp;
         assert_eq!(last_timestamp, env.block.time.seconds());
     }
@@ -1308,29 +1281,25 @@ fn test_oracle_twap_observations_max_length() {
 
 #[test]
 fn test_oracle_twap_with_volatile_prices() {
-    // Test TWAP smoothing with simulated volatile observations
-
-    // Simulate volatile price movements with ratios: 10 -> 2 -> 20 -> 5
-    // These represent bluechip/token ratios at different times
     let observations = vec![
         PriceObservation {
             timestamp: 1000,
-            price: Uint128::new(10_000_000), // Ratio 10
+            price: Uint128::new(10_000_000),
             atom_pool_price: Uint128::new(10_000_000),
         },
         PriceObservation {
-            timestamp: 1360,                // +360s
-            price: Uint128::new(2_000_000), // Ratio 2 (5x drop)
+            timestamp: 1360,                
+            price: Uint128::new(2_000_000), 
             atom_pool_price: Uint128::new(2_000_000),
         },
         PriceObservation {
-            timestamp: 1720,                 // +360s
-            price: Uint128::new(20_000_000), // Ratio 20 (10x spike)
+            timestamp: 1720,               
+            price: Uint128::new(20_000_000), 
             atom_pool_price: Uint128::new(20_000_000),
         },
         PriceObservation {
-            timestamp: 2080,                // +360s
-            price: Uint128::new(5_000_000), // Ratio 5 (back to normal)
+            timestamp: 2080,                
+            price: Uint128::new(5_000_000), 
             atom_pool_price: Uint128::new(5_000_000),
         },
     ];
@@ -1339,15 +1308,6 @@ fn test_oracle_twap_with_volatile_prices() {
 
     println!("Volatile observations: 10M -> 2M -> 20M -> 5M");
     println!("TWAP result: {}", twap);
-
-    // TWAP calculation:
-    // Interval 1 (1000->1360): avg = (10M + 2M) / 2 = 6M, time = 360s
-    // Interval 2 (1360->1720): avg = (2M + 20M) / 2 = 11M, time = 360s
-    // Interval 3 (1720->2080): avg = (20M + 5M) / 2 = 12.5M, time = 360s
-    // TWAP = (6M * 360 + 11M * 360 + 12.5M * 360) / 1080
-    //      = (6M + 11M + 12.5M) / 3
-    //      = 29.5M / 3 = 9.833M
-
     let expected_twap = Uint128::new(9_833_333); // ~9.83M
     let tolerance = Uint128::new(100_000); // 0.1M tolerance
 
@@ -1372,16 +1332,13 @@ fn test_oracle_twap_with_volatile_prices() {
 fn test_oracle_aggregates_multiple_pool_prices() {
     let mut deps = mock_dependencies(&[]);
 
-    // Set up ATOM pool: bluechip = $1.00
     setup_atom_pool(&mut deps);
 
-    // Helper function to add a pool with both storage entries
     let add_test_pool = |deps: &mut OwnedDeps<MockStorage, MockApi, WasmMockQuerier>,
                          pool_addr: Addr,
                          pool_id: u64,
                          reserve0: u128,
                          reserve1: u128| {
-        // Add to POOLS_BY_CONTRACT_ADDRESS
         let pool_state = PoolStateResponseForFactory {
             pool_contract_address: pool_addr.clone(),
             nft_ownership_accepted: true,
@@ -1396,7 +1353,6 @@ fn test_oracle_aggregates_multiple_pool_prices() {
             .save(&mut deps.storage, pool_addr.clone(), &pool_state)
             .unwrap();
 
-        // Add to POOLS_BY_ID with token info
         let pool_details = PoolDetails {
             pool_id,
             pool_token_info: [
@@ -1444,7 +1400,6 @@ fn test_oracle_aggregates_multiple_pool_prices() {
     let info = mock_info(ADMIN, &[]);
     instantiate(deps.as_mut(), env.clone(), info, msg).unwrap();
 
-    // Update oracle price
     let mut future_env = env.clone();
     future_env.block.time = future_env.block.time.plus_seconds(360);
     execute(
@@ -1457,14 +1412,12 @@ fn test_oracle_aggregates_multiple_pool_prices() {
 
     let oracle = INTERNAL_ORACLE.load(&deps.storage).unwrap();
 
-    // Verify multiple pools were used
     assert!(
         oracle.selected_pools.len() > 1,
         "Should aggregate from multiple pools - found: {:?}",
         oracle.selected_pools
     );
 
-    // The aggregated price should be reasonable
     let price = oracle.bluechip_price_cache.last_price;
     assert!(
         price > Uint128::zero(),
@@ -1481,10 +1434,8 @@ fn test_oracle_aggregates_multiple_pool_prices() {
 fn test_oracle_filters_outlier_pool_prices() {
     let mut deps = mock_dependencies(&[]);
 
-    // Set up ATOM pool: 1M bluechip : 100k ATOM = ratio of 10
     setup_atom_pool(&mut deps);
 
-    // Add 3 normal pools with ratio around 5 (similar to ATOM pool's 10)
     for i in 1..=3 {
         let pool_addr = Addr::unchecked(format!("normal_pool_{}", i));
         let pool_state = PoolStateResponseForFactory {
@@ -1553,34 +1504,18 @@ fn test_oracle_filters_outlier_pool_prices() {
     println!("Final aggregated price: {}", price);
 
     if manipulated_was_selected {
-        // If the manipulated pool was randomly selected, the price should still
-        // be reasonable due to liquidity weighting and median/averaging
-
-        // Expected: ATOM pool (10) has 2x weight, 3 normal pools (5 each), 1 manipulated (0.05)
-        // Weighted by reserve0 (liquidity):
-        // ATOM: 1M * 2 = 2M weight
-        // Normal pools: 50k each = 150k total weight
-        // Manipulated: 0.5k weight
-        // Total weight: ~2.15M
-
-        // Should be dominated by ATOM pool's ratio of 10
         assert!(
             price >= Uint128::new(4_000_000) && price <= Uint128::new(11_000_000),
             "Even with outlier, price should be near normal range (4-11), got: {}",
             price
         );
     } else {
-        // If manipulated pool wasn't selected, price should be very close to normal
-        // ATOM (10) + normal pools (5 each) weighted average
         assert!(
             price >= Uint128::new(4_000_000) && price <= Uint128::new(11_000_000),
             "Without outlier, price should be in normal range (4-11), got: {}",
             price
         );
     }
-
-    // The key test: price should NOT be close to the outlier's extreme value
-    // Outlier ratio is 0.05, which would be 50_000 with precision
     assert!(
         price > Uint128::new(1_000_000), // Should be well above the outlier's influence
         "Price should not be driven down to outlier level, got: {}",
@@ -1593,7 +1528,6 @@ fn test_oracle_handles_pools_with_different_liquidities() {
     let mut deps = mock_dependencies(&[]);
     setup_atom_pool(&mut deps);
 
-    // Small liquidity pool
     let small_pool = Addr::unchecked("small_pool");
     let small_state = PoolStateResponseForFactory {
         pool_contract_address: small_pool.clone(),
@@ -1609,7 +1543,6 @@ fn test_oracle_handles_pools_with_different_liquidities() {
         .save(deps.as_mut().storage, small_pool, &small_state)
         .unwrap();
 
-    // Large liquidity pool
     let large_pool = Addr::unchecked("large_pool");
     let large_state = PoolStateResponseForFactory {
         pool_contract_address: large_pool.clone(),
@@ -1642,16 +1575,12 @@ fn test_oracle_handles_pools_with_different_liquidities() {
 
     // Should handle different liquidity levels without errors
     assert!(result.is_ok(), "Should handle pools with varying liquidity");
-
-    // Optionally: verify that high-liquidity pools are weighted more heavily
-    // (implementation dependent)
 }
 
 #[test]
 fn test_query_pyth_atom_usd_price_success() {
     let mut deps = mock_dependencies(&[]);
 
-    // Set up factory config
     let config = FactoryInstantiate {
         factory_admin_address: Addr::unchecked(ADMIN),
         cw721_nft_contract_id: 58,
@@ -1707,9 +1636,6 @@ fn test_query_pyth_atom_usd_price_default() {
     FACTORYINSTANTIATEINFO
         .save(deps.as_mut().storage, &config)
         .unwrap();
-
-    // Don't set MOCK_PYTH_PRICE - should use default of $10.00
-
     let env = mock_env();
     let result = query_pyth_atom_usd_price(deps.as_ref(), env);
 
@@ -1770,7 +1696,6 @@ fn test_query_pyth_extreme_atom_prices() {
 fn test_get_bluechip_usd_price_with_pyth() {
     let mut deps = mock_dependencies(&[]);
 
-    // Set up ATOM pool: 1M bluechip : 100k ATOM
     setup_atom_pool(&mut deps);
 
     let config = FactoryInstantiate {
@@ -1803,8 +1728,6 @@ fn test_get_bluechip_usd_price_with_pyth() {
 
     println!("Calculated bluechip USD price: {}", bluechip_price);
 
-    // Pool: 1M bluechip : 100k ATOM = 10 bluechip per ATOM
-    // ATOM = $10, so bluechip = $10 / 10 = $1.00
     assert_eq!(
         bluechip_price,
         Uint128::new(1_000_000),
@@ -1907,13 +1830,11 @@ fn test_conversion_functions_with_pyth() {
 
     let env = mock_env();
 
-    // Test bluechip_to_usd
     let bluechip_amount = Uint128::new(5_000_000); // 5 bluechip
     let result = bluechip_to_usd(deps.as_ref(), bluechip_amount, env.clone());
     assert!(result.is_ok(), "bluechip_to_usd should succeed");
     println!("5 bluechip = ${}", result.as_ref().unwrap().amount);
 
-    // Test usd_to_bluechip
     let usd_amount = Uint128::new(5_000_000); // $5
     let result2 = usd_to_bluechip(deps.as_ref(), usd_amount, env.clone());
     assert!(result2.is_ok(), "usd_to_bluechip should succeed");

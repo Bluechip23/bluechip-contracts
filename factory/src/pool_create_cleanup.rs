@@ -9,9 +9,7 @@ use crate::error::ContractError;
 use crate::execute::{BURN_ADDRESS, CLEANUP_NFT_REPLY_ID, CLEANUP_TOKEN_REPLY_ID};
 use crate::state::{CreationStatus, PoolCreationState, POOL_CREATION_STATES, TEMP_POOL_CREATION};
 
-//clean and remove all temp information used during pool creation
 pub fn cleanup_temp_state(storage: &mut dyn Storage) -> StdResult<()> {
-    // Only need to remove one item now
     TEMP_POOL_CREATION.remove(storage);
     Ok(())
 }

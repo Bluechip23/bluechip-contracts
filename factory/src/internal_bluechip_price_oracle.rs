@@ -139,9 +139,7 @@ pub fn get_eligible_creator_pools(
             .range(deps.storage, None, None, Order::Ascending)
             .any(|result| {
                 if let Ok((_, pool_details)) = result {
-                    // Check if this pool matches our address AND contains bluechip
                     if pool_details.creator_pool_addr == pool_address {
-                        // Check if either token in the pair is bluechip
                         return pool_details.pool_token_info.iter().any(|token| {
                             matches!(token, TokenType::Bluechip { .. })
                         });
@@ -150,7 +148,6 @@ pub fn get_eligible_creator_pools(
                 false
             });
         
-        // Skip pools that don't contain bluechip
         if !pool_has_bluechip {
             continue;
         }
@@ -296,7 +293,6 @@ fn calculate_weighted_price_with_atom(
         )));
     }
 
-    // Ensure we have at least one successful pool
     if successful_pools == 0 {
         return Err(ContractError::InsufficientData {});
     }
@@ -351,7 +347,7 @@ pub fn query_pyth_atom_usd_price(deps: Deps, env: Env) -> StdResult<Uint128> {
     {
     let factory = FACTORYINSTANTIATEINFO.load(deps.storage)?;
     let query_msg = PythQueryMsg::PythConversionPriceFeed {
-        id: ATOM_USD_PRICE_FEED_ID.to_string(), // The feed ID from before
+        id: ATOM_USD_PRICE_FEED_ID.to_string(), 
     };
 
     let response: PythPriceFeedResponse = deps
@@ -368,7 +364,6 @@ pub fn query_pyth_atom_usd_price(deps: Deps, env: Env) -> StdResult<Uint128> {
     }
     #[cfg(test)]
     {
-        // In tests, read from a test storage item
         let mock_price = MOCK_PYTH_PRICE.may_load(deps.storage)?
             .unwrap_or(Uint128::new(10_000_000)); // Default $10
         Ok(mock_price)
@@ -381,19 +376,16 @@ pub fn get_bluechip_usd_price(deps: Deps, env: Env) -> StdResult<Uint128> {
     let atom_pool_addr = Addr::unchecked(ATOM_BLUECHIP_POOL_CONTRACT_ADDRESS);
     let atom_pool = POOLS_BY_CONTRACT_ADDRESS.load(deps.storage, atom_pool_addr)?;
     
-    // Check for zero reserves
     if atom_pool.reserve1.is_zero() {
         return Err(StdError::generic_err("ATOM pool has zero ATOM reserves"));
     }
     
-    // Use checked math
     let bluechip_per_atom = atom_pool.reserve0
         .checked_mul(Uint128::from(PRICE_PRECISION))
         .map_err(|e| StdError::generic_err(format!("Overflow calculating bluechip per ATOM: {}", e)))?
         .checked_div(atom_pool.reserve1)
         .map_err(|e| StdError::generic_err(format!("Division error calculating bluechip per ATOM: {}", e)))?;
     
-    // Check result isn't zero
     if bluechip_per_atom.is_zero() {
         return Err(StdError::generic_err("Invalid bluechip per ATOM ratio"));
     }
@@ -404,7 +396,6 @@ pub fn get_bluechip_usd_price(deps: Deps, env: Env) -> StdResult<Uint128> {
         .checked_div(bluechip_per_atom)
         .map_err(|e| StdError::generic_err(format!("Division error calculating bluechip USD price: {}", e)))?;
     
-    // Final validation
     if bluechip_usd_price.is_zero() {
         return Err(StdError::generic_err("Calculated bluechip price is zero"));
     }
@@ -481,12 +472,10 @@ fn calculate_price_from_reserves(
     reserve0: Uint128, // bluechip
     reserve1: Uint128, // other token
 ) -> Result<Uint128, ContractError> {
-    // Check for zero reserves
     if reserve1.is_zero() {
         return Err(ContractError::Std(StdError::generic_err("Zero reserves")));
     }
 
-    // price = (reserve0 * PRECISION) / reserve1
     let price = reserve0
         .checked_mul(Uint128::from(PRICE_PRECISION))
         .map_err(|_| ContractError::Std(StdError::generic_err("Price calculation overflow")))?
@@ -516,7 +505,6 @@ fn query_pool_safe(
     
     #[cfg(test)]
     {
-        // In tests, read directly from factory storage instead of querying
         let addr = deps.api.addr_validate(pool_address)
             .map_err(|e| ContractError::QueryError {
                 msg: format!("Invalid pool address {}: {}", pool_address, e),
@@ -542,7 +530,6 @@ pub fn execute_force_rotate_pools(
     }
 
     let mut oracle = INTERNAL_ORACLE.load(deps.storage)?;
-    // Force rotation regardless of time
     let new_pools = select_random_pools_with_atom(deps.as_ref(), env.clone(), ORACLE_POOL_COUNT)?;
     oracle.selected_pools = new_pools.clone();
     oracle.last_rotation = env.block.time.seconds();

@@ -48,9 +48,9 @@ fn test_pool_update_config_from_factory() {
         pyth_contract_addr_for_conversions: Some("new_oracle_addr".to_string()),
         pyth_atom_usd_price_feed_id: Some("new_feed_id".to_string()),
         commit_amount_for_threshold: Some(Uint128::new(30_000_000_000)), // 30k
-        threshold_payout: None, // Usually don't change this after creation
-        cw20_token_contract_id: None, // Can't change after pool created
-        cw721_nft_contract_id: None, // Can't change after pool created
+        threshold_payout: None, 
+        cw20_token_contract_id: None, 
+        cw721_nft_contract_id: None, 
         lp_fee: Some(Decimal::permille(3)), // 0.3% LP fee
         min_commit_interval: 120, // 2 minutes between commits
         usd_payment_tolerance_bps: 100, // 1% tolerance (100 basis points)
@@ -64,11 +64,8 @@ fn test_pool_update_config_from_factory() {
     )
     .unwrap();
 
-    // Response has no `is_ok()`; unwrap() above already panicked on error.
-    // Check response contents instead (for example, no outgoing messages).
     assert!(res.messages.is_empty());
 
-    // Non-factory should fail: recreate the update (the previous `update` was moved).
     let update_for_hacker = PoolConfigUpdate {
         commit_fee_info: Some(CommitFeeInfo {
             bluechip_wallet_address: Addr::unchecked("new_bluechip"),
@@ -80,9 +77,9 @@ fn test_pool_update_config_from_factory() {
         pyth_contract_addr_for_conversions: Some("new_oracle_addr".to_string()),
         pyth_atom_usd_price_feed_id: Some("new_feed_id".to_string()),
         commit_amount_for_threshold: Some(Uint128::new(30_000_000_000)), // 30k
-        threshold_payout: None, // Usually don't change this after creation
-        cw20_token_contract_id: None, // Can't change after pool created
-        cw721_nft_contract_id: None, // Can't change after pool created
+        threshold_payout: None, 
+        cw20_token_contract_id: None, 
+        cw721_nft_contract_id: None, 
         lp_fee: Some(Decimal::permille(3)), // 0.3% LP fee
         min_commit_interval: 120, // 2 minutes between commits
         usd_payment_tolerance_bps: 100, // 1% tolerance (100 basis points)

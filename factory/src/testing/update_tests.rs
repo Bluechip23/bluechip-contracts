@@ -22,7 +22,6 @@ fn test_pool_registry_population() {
         .save(&mut deps.storage, pool_id, &pool_address)
         .unwrap();
 
-    // Verify it's saved
     let loaded = POOL_REGISTRY.load(&deps.storage, pool_id).unwrap();
     assert_eq!(loaded, pool_address);
 }
@@ -32,7 +31,6 @@ fn test_upgrade_pools_with_registry() {
     let mut deps = mock_dependencies();
     setup_factory(&mut deps);
 
-    // Populate registry with test pools
     for i in 1..=5 {
         let pool_addr = Addr::unchecked(format!("pool_{}", i));
         POOL_REGISTRY
@@ -40,20 +38,17 @@ fn test_upgrade_pools_with_registry() {
             .unwrap();
     }
 
-    // Execute upgrade
     let admin_info = mock_info("admin", &[]);
     let upgrade_msg = ExecuteMsg::UpgradePools {
         new_code_id: 200,
-        pool_ids: None, // All pools
+        pool_ids: None, 
         migrate_msg: to_json_binary(&Empty {}).unwrap(),
     };
 
     let res = execute(deps.as_mut(), mock_env(), admin_info, upgrade_msg).unwrap();
 
-    // Should have 5 migrate messages (all pools fit in one batch since < 10)
     assert_eq!(res.messages.len(), 5);
 
-    // Verify each message is correct
     for (i, msg) in res.messages.iter().enumerate() {
         match &msg.msg {
             CosmosMsg::Wasm(WasmMsg::Migrate {
@@ -74,14 +69,12 @@ fn test_update_specific_pool_from_registry() {
     let mut deps = mock_dependencies();
     setup_factory(&mut deps);
 
-    // Register a pool
     let pool_id = 3u64;
     let pool_addr = Addr::unchecked("pool_3_address");
     POOL_REGISTRY
         .save(&mut deps.storage, pool_id, &pool_addr)
         .unwrap();
 
-    // Also need it in POOLS_BY_ID for the update to work
     let pool_details = PoolDetails {
         pool_id,
         pool_token_info: [
@@ -98,7 +91,6 @@ fn test_update_specific_pool_from_registry() {
         .save(&mut deps.storage, pool_id, &pool_details)
         .unwrap();
 
-    // Update this specific pool
     let admin_info = mock_info("admin", &[]);
     let pool_config = PoolConfigUpdate {
         commit_fee_info: Some(CommitFeeInfo {
@@ -107,13 +99,13 @@ fn test_update_specific_pool_from_registry() {
             commit_fee_bluechip: Decimal::percent(2), // Changed
             commit_fee_creator: Decimal::percent(10), // Changed
         }),
-        commit_limit_usd: Some(Uint128::new(30_000_000_000)), // Changed from 25k to 30k
-        pyth_contract_addr_for_conversions: None,             // No change
-        pyth_atom_usd_price_feed_id: None,                    // No change
+        commit_limit_usd: Some(Uint128::new(30_000_000_000)),
+        pyth_contract_addr_for_conversions: None,            
+        pyth_atom_usd_price_feed_id: None,                 
         commit_amount_for_threshold: Some(Uint128::new(30_000_000_000)), // Changed
-        threshold_payout: None,                               // No change
-        cw20_token_contract_id: None,                         // No change
-        cw721_nft_contract_id: None,                          // No change
+        threshold_payout: None,                             
+        cw20_token_contract_id: None,                
+        cw721_nft_contract_id: None,                    
     };
 
     let update_msg = ExecuteMsg::UpdatePoolConfig {
@@ -123,7 +115,6 @@ fn test_update_specific_pool_from_registry() {
 
     let res = execute(deps.as_mut(), mock_env(), admin_info, update_msg).unwrap();
 
-    // Should send message to the correct pool
     assert_eq!(res.messages.len(), 1);
     match &res.messages[0].msg {
         CosmosMsg::Wasm(WasmMsg::Execute { contract_addr, .. }) => {
@@ -137,7 +128,6 @@ fn test_migration_with_large_pool_count() {
     let mut deps = mock_dependencies();
     setup_factory(&mut deps);
 
-    // Create 25 pools (more than 2 batches)
     for i in 1..=25 {
         POOL_REGISTRY
             .save(
@@ -157,10 +147,8 @@ fn test_migration_with_large_pool_count() {
 
     let res = execute(deps.as_mut(), mock_env(), admin_info, upgrade_msg).unwrap();
 
-    // First batch: 10 pools + 1 continuation message
     assert_eq!(res.messages.len(), 11);
 
-    // Last message should be continuation
     match &res.messages[10].msg {
         CosmosMsg::Wasm(WasmMsg::Execute { msg, .. }) => {
             let exec_msg: ExecuteMsg = from_json(msg).unwrap();
@@ -169,7 +157,6 @@ fn test_migration_with_large_pool_count() {
         _ => panic!("Expected continuation message"),
     }
 
-    // Verify pending state
     let pending = PENDING_POOL_UPGRADE.load(&deps.storage).unwrap();
     assert_eq!(pending.pools_to_upgrade.len(), 25);
     assert_eq!(pending.upgraded_count, 0);
@@ -179,7 +166,6 @@ fn test_continue_upgrade_unauthorized() {
     let mut deps = mock_dependencies();
     setup_factory(&mut deps);
     
-    // Try to call continue as external user
     let info = mock_info("hacker", &[]);
     let err = execute(
         deps.as_mut(),
