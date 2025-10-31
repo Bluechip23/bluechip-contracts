@@ -1,8 +1,8 @@
 use thiserror::Error;
-
+use semver::Error as SemVerError;
 use cosmwasm_std::{OverflowError, StdError, Uint128};
 
-#[derive(Error, Debug, PartialEq)]
+#[derive(Error, Debug)]
 pub enum ContractError {
     #[error("{0}")]
     Std(#[from] StdError),
@@ -37,6 +37,9 @@ pub enum ContractError {
 
     #[error("Contract Failed Creating  {}", id)]
     UnknownReplyId { id: u64 },
+
+    #[error("SemVer parse error: {0}")]
+    SemVer(#[from] SemVerError),
 }
 
 impl From<OverflowError> for ContractError {

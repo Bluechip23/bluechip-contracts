@@ -1,6 +1,7 @@
 #![allow(non_snake_case)]
 use crate::asset::{PoolPairType, TokenInfo, TokenType};
 use crate::error::ContractError;
+
 use crate::generic_helpers::{
     check_rate_limit, enforce_transaction_deadline, get_bank_transfer_to_msg,
     process_distribution_batch, trigger_threshold_payout, update_pool_fee_growth,
@@ -11,7 +12,7 @@ use crate::liquidity::{
     execute_remove_all_liquidity, execute_remove_partial_liquidity,
     execute_remove_partial_liquidity_by_percent,
 };
-use crate::msg::{Cw20HookMsg, ExecuteMsg, PoolInstantiateMsg};
+use crate::msg::{Cw20HookMsg, ExecuteMsg, MigrateMsg, PoolConfigUpdate, PoolInstantiateMsg};
 use crate::query::query_check_commit;
 use crate::response::MsgInstantiateContractResponse;
 use crate::state::{
@@ -43,7 +44,7 @@ pub const MAX_ALLOWED_SLIPPAGE: &str = "0.5";
 // Decimal precision for TWAP results
 pub const TWAP_PRECISION: u8 = 6;
 // Contract name that is used for migration.
-const CONTRACT_NAME: &str = "betfi-pair";
+const CONTRACT_NAME: &str = "bluechip-contracts-pool";
 // Contract version that is used for migration.
 const CONTRACT_VERSION: &str = env!("CARGO_PKG_VERSION");
 #[cfg_attr(not(feature = "library"), entry_point)]
@@ -182,8 +183,23 @@ pub fn execute(
     msg: ExecuteMsg,
 ) -> Result<Response, ContractError> {
     match msg {
-        ExecuteMsg::UpdateConfig { .. } => Err(ContractError::NonSupported {}),
-        //special swap funcntion that behaves differently before and after a threshold - contributed to commit ledger prior to crossing the threshold - acts a swap post threshold
+        ExecuteMsg::UpdateConfigFromFactory { update } => {
+            // Verify sender is factory
+            let pool_info = POOL_INFO.load(deps.storage)?;
+            if info.sender != pool_info.factory_addr {
+                return Err(ContractError::Unauthorized {});
+            }
+
+            // Apply updates
+            if let Some(fee) = update.lp_fee {
+                POOL_SPECS.update(deps.storage, |mut specs| -> StdResult<_> {
+                    specs.lp_fee = fee;
+                    Ok(specs)
+                })?;
+            }
+
+            Ok(Response::new().add_attribute("action", "config_updated"))
+        }
         ExecuteMsg::Commit {
             asset,
             amount,
@@ -1205,4 +1221,48 @@ pub fn execute_continue_distribution(
         .add_messages(msgs)
         .add_attribute("action", "continue_distribution")
         .add_attribute("remaining", dist_state.distributions_remaining.to_string()))
+}
+
+pub fn execute_update_config(
+    deps: DepsMut,
+    info: MessageInfo,
+    update: PoolConfigUpdate,
+) -> Result<Response, ContractError> {
+    let pool_info = POOL_INFO.load(deps.storage)?;
+
+    // Only factory can update
+    if info.sender != pool_info.factory_addr {
+        return Err(ContractError::Unauthorized {});
+    }
+
+    // Apply updates
+    if let Some(lp_fee) = update.lp_fee {
+        let mut pool_specs = POOL_SPECS.load(deps.storage)?;
+        pool_specs.lp_fee = lp_fee;
+        POOL_SPECS.save(deps.storage, &pool_specs)?;
+    }
+
+    Ok(Response::new()
+        .add_attribute("action", "update_config")
+        .add_attribute("sender", info.sender))
+}
+
+#[entry_point]
+pub fn migrate(deps: DepsMut, _env: Env, msg: MigrateMsg) -> StdResult<Response> {
+    let pool_info = POOL_INFO.load(deps.storage)?;
+    match msg {
+        MigrateMsg::UpdateFees { new_fees } => {
+            POOL_SPECS.update(deps.storage, |mut specs| -> StdResult<_> {
+                specs.lp_fee = new_fees;
+                Ok(specs)
+            })?;
+        }
+        MigrateMsg::UpdateVersion {} => {}
+    }
+
+    set_contract_version(deps.storage, CONTRACT_NAME, CONTRACT_VERSION)?;
+
+    Ok(Response::new()
+        .add_attribute("action", "migrate")
+        .add_attribute("version", CONTRACT_VERSION))
 }

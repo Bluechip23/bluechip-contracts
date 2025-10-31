@@ -14,8 +14,8 @@ pub enum ExecuteMsg {
         to: Option<String>,
         transaction_deadline: Option<Timestamp>,
     },
-    UpdateConfig {
-        params: Binary,
+    UpdateConfigFromFactory {
+        update: PoolConfigUpdate,
     },
     ContinueDistribution {},
     Commit {
@@ -63,6 +63,12 @@ pub enum ExecuteMsg {
         min_amount0: Option<Uint128>,
         min_amount1: Option<Uint128>,
     },
+}
+
+#[cw_serde]
+pub enum MigrateMsg {
+    UpdateFees { new_fees: Decimal },
+    UpdateVersion {}, // Simple version update
 }
 
 #[cw_serde]
@@ -174,6 +180,21 @@ pub struct PoolCommitResponse {
     pub total_count: u32,
     //lists of wallets commited
     pub commiters: Vec<CommiterInfo>,
+}
+
+#[cw_serde]
+pub struct PoolConfigUpdate {
+    pub commit_fee_info: Option<CommitFeeInfo>,
+    pub commit_limit_usd: Option<Uint128>,
+    pub pyth_contract_addr_for_conversions: Option<String>,
+    pub pyth_atom_usd_price_feed_id: Option<String>,
+    pub commit_amount_for_threshold: Option<Uint128>,
+    pub threshold_payout: Option<Binary>,
+    pub cw20_token_contract_id: Option<u64>,
+    pub cw721_nft_contract_id: Option<u64>,
+    pub lp_fee: Option<Decimal>,
+    pub min_commit_interval: u64,
+    pub usd_payment_tolerance_bps: u16,
 }
 
 #[cw_serde]

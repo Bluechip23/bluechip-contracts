@@ -30,7 +30,6 @@ fn mock_dependencies_with_balance(
     balances: &[Coin],
 ) -> OwnedDeps<MockStorage, MockApi, MockQuerier> {
     let mut deps = mock_dependencies();
-    // Give the contract some balance
     deps.querier
         .update_balance(MOCK_CONTRACT_ADDR, balances.to_vec());
     deps
@@ -46,7 +45,6 @@ fn with_factory_oracle(
                     if let Ok(factory_query) = from_json::<FactoryQueryMsg>(msg) {
                         match factory_query {
                             FactoryQueryMsg::ConvertBluechipToUsd { amount } => {
-                                // Handle multiplication and division separately
                                 let intermediate = match amount.checked_mul(bluechip_to_usd_rate) {
                                     Ok(v) => v,
                                     Err(_) => {
@@ -120,9 +118,7 @@ fn with_factory_oracle(
                     }
                 }
 
-                // Handle NFT ownership queries
                 if contract_addr == "nft_contract" {
-                    // Your existing NFT mock logic
                 }
 
                 SystemResult::Err(SystemError::InvalidRequest {
@@ -141,7 +137,7 @@ fn with_factory_oracle(
 fn test_commit_pre_threshold_basic() {
     let mut deps = mock_dependencies_with_balance(&[Coin {
         denom: "stake".to_string(),
-        amount: Uint128::new(1_000_000_000), // Give contract 1000 tokens
+        amount: Uint128::new(1_000_000_000), 
     }]);
     setup_pool_storage(&mut deps);
 
@@ -172,19 +168,15 @@ fn test_commit_pre_threshold_basic() {
 
     let res = execute(deps.as_mut(), env.clone(), info, msg).unwrap();
 
-    // Verify fees were sent (1% bluechip, 5% creator)
-    assert_eq!(res.messages.len(), 2); // Two fee transfers
+    assert_eq!(res.messages.len(), 2); 
 
-    // Verify commit was recorded in USD
     let user_addr = Addr::unchecked("user1");
     let user_commit_usd = COMMIT_LEDGER.load(&deps.storage, &user_addr).unwrap();
     assert_eq!(user_commit_usd, Uint128::new(1_000_000_000)); // $1k with 6 decimals
 
-    // Verify USD raised updated
     let total_usd = USD_RAISED_FROM_COMMIT.load(&deps.storage).unwrap();
     assert_eq!(total_usd, Uint128::new(1_000_000_000));
 
-    // Verify threshold not hit
     assert_eq!(IS_THRESHOLD_HIT.load(&deps.storage).unwrap(), false);
 
     let commiting = COMMIT_INFO.load(&deps.storage, &user_addr).unwrap();
@@ -204,18 +196,15 @@ fn test_race_condition_commits_crossing_threshold() {
         .save(&mut deps.storage, &false)
         .unwrap();
 
-    // Just below threshold
     USD_RAISED_FROM_COMMIT
         .save(&mut deps.storage, &Uint128::new(24_900_000_000))
         .unwrap();
 
-    // Mock oracle: $1 per token
     with_factory_oracle(&mut deps, Uint128::new(1_000_000)); // $1 per bluechip with 6 decimals
 
     let commit_amount = Uint128::new(200_000_000); // $200 per commit
     let env = mock_env();
 
-    // -------- First Commit --------
     let info1 = mock_info(
         "alice",
         &[Coin {
@@ -236,7 +225,6 @@ fn test_race_condition_commits_crossing_threshold() {
         max_spread: None,
     };
 
-    // Run first commit
     let res1 = execute(deps.as_mut(), env.clone(), info1, msg1).unwrap();
     println!(
         "[Commit 1] USD_RAISED_FROM_COMMIT: {}, IS_THRESHOLD_HIT: {}, THRESHOLD_PROCESSING: {}, Attributes: {:?}",
@@ -251,7 +239,6 @@ fn test_race_condition_commits_crossing_threshold() {
         .iter()
         .any(|a| a.value == "threshold_crossing"));
     assert_eq!(IS_THRESHOLD_HIT.load(&deps.storage).unwrap(), true);
-    // --- Simulate race: threshold processing still TRUE ---
     THRESHOLD_PROCESSING.save(&mut deps.storage, &true).unwrap();
     println!(
         "Simulated race -> USD_RAISED_FROM_COMMIT: {}, IS_THRESHOLD_HIT: {}, THRESHOLD_PROCESSING: {}",
@@ -259,7 +246,6 @@ fn test_race_condition_commits_crossing_threshold() {
         IS_THRESHOLD_HIT.load(&deps.storage).unwrap(),
         THRESHOLD_PROCESSING.load(&deps.storage).unwrap()
     );
-    // -------- Second Commit (same block) --------
     let info2 = mock_info(
         "bob",
         &[Coin {
@@ -317,22 +303,18 @@ fn test_commit_crosses_threshold() {
 
     setup_pool_storage(&mut deps);
 
-    // CRITICAL: Initialize the new threshold processing flag
     THRESHOLD_PROCESSING
         .save(&mut deps.storage, &false)
         .unwrap();
 
-    // Set USD raised to just below threshold
     USD_RAISED_FROM_COMMIT
         .save(&mut deps.storage, &Uint128::new(24_900_000_000))
         .unwrap(); // $24.9k
 
-    // Also need to set up COMMIT_LIMIT_INFO if not in setup_pool_storage
 
     let env = mock_env();
     let commit_amount = Uint128::new(200_000_000); // 200 tokens = $200
 
-    // Mock oracle response for $1 per token
     with_factory_oracle(&mut deps, Uint128::new(1_000_000)); // $1 per bluechip with 6 decimals
     let info = mock_info(
         "whale",
@@ -357,31 +339,23 @@ fn test_commit_crosses_threshold() {
 
     let res = execute(deps.as_mut(), env, info, msg).unwrap();
 
-    // Verify threshold was hit
     assert_eq!(IS_THRESHOLD_HIT.load(&deps.storage).unwrap(), true);
 
-    // Verify threshold processing flag was cleared
     assert_eq!(THRESHOLD_PROCESSING.load(&deps.storage).unwrap(), false);
-
-    // Check for threshold crossing attribute
     assert!(res
         .attributes
         .iter()
         .any(|attr| attr.key == "phase" && attr.value == "threshold_crossing"));
 
-    // Verify multiple messages were sent
-    // Should have: 2 fee transfers + token mints + bluechip seed transfer
     assert!(
         res.messages.len() >= 6,
         "Expected at least 6 messages, got {}",
         res.messages.len()
     );
 
-    // Verify pool state was initialized
     let pool_state = POOL_STATE.load(&deps.storage).unwrap();
     assert_eq!(pool_state.total_liquidity, Uint128::zero()); // Unowned seed liquidity
 
-    // Verify commit ledger was cleared
     assert_eq!(
         COMMIT_LEDGER
             .keys(&deps.storage, None, None, Order::Ascending)
@@ -427,15 +401,12 @@ fn test_commit_post_threshold_swap() {
 
     let res = execute(deps.as_mut(), env, info, msg).unwrap();
 
-    // Verify it performed a swap (fees + CW20 transfer)
-    assert!(res.messages.len() >= 3); // 2 fees + 1 CW20 transfer
+    assert!(res.messages.len() >= 3); 
 
-    // Verify pool reserves updated
     let pool_state = POOL_STATE.load(&deps.storage).unwrap();
     assert!(pool_state.reserve0 > Uint128::new(23_500_000_000)); // Increased from commit
     assert!(pool_state.reserve1 < Uint128::new(350_000_000_000)); // Decreased from swap
 
-    // Verify fee growth updated
     let fee_state = POOL_FEE_STATE.load(&deps.storage).unwrap();
     assert!(fee_state.fee_growth_global_0 > Decimal::zero());
     assert!(fee_state.total_fees_collected_0 > Uint128::zero());
@@ -446,7 +417,6 @@ fn test_threshold_payout_integrity_check() {
     let mut deps = mock_dependencies();
     setup_pool_storage(&mut deps);
 
-    // Corrupt the threshold payout state
     let mut bad_payout = THRESHOLD_PAYOUT_AMOUNTS
         .load(&deps.storage)
         .expect("failed to load payout");
@@ -455,7 +425,6 @@ fn test_threshold_payout_integrity_check() {
         .save(&mut deps.storage, &bad_payout)
         .expect("failed to save payout");
 
-    // Prepare required pool state structs
     let pool_info = POOL_INFO.load(&deps.storage).expect("pool_info");
     let mut pool_state = POOL_STATE.load(&deps.storage).expect("pool_state");
     let mut pool_fee_state = POOL_FEE_STATE.load(&deps.storage).expect("pool_fee_state");
@@ -465,7 +434,6 @@ fn test_threshold_payout_integrity_check() {
     let fee_info = COMMITFEEINFO.load(&deps.storage).expect("fee_info");
     let env = mock_env();
 
-    // Trigger threshold payout — should fail the integrity check
     let result = trigger_threshold_payout(
         &mut deps.storage,
         &pool_info,
@@ -477,7 +445,6 @@ fn test_threshold_payout_integrity_check() {
         &env,
     );
 
-    // Validate failure
     assert!(result.is_err(), "expected integrity check failure");
     let err_msg = result.unwrap_err().to_string();
     assert!(
@@ -492,7 +459,6 @@ fn test_continue_distribution_rejects_external_call() {
     let mut deps = mock_dependencies();
     setup_pool_storage(&mut deps);
 
-    // Simulate an active distribution
     let dist_state = DistributionState {
         is_distributing: true,
         total_to_distribute: Uint128::new(1_000_000_000),
@@ -503,14 +469,11 @@ fn test_continue_distribution_rejects_external_call() {
     DISTRIBUTION_STATE
         .save(&mut deps.storage, &dist_state)
         .unwrap();
-
-    // Try to call as an external user
     let msg = ExecuteMsg::ContinueDistribution {};
     let info = mock_info("random_user", &[]);
 
     let res = execute(deps.as_mut(), mock_env(), info, msg);
 
-    // Should be unauthorized
     assert!(res.is_err());
     assert!(
         matches!(res.unwrap_err(), ContractError::Unauthorized {}),
@@ -523,7 +486,6 @@ fn test_continue_distribution_internal_self_call_succeeds() {
     let mut deps = mock_dependencies();
     setup_pool_storage(&mut deps);
 
-    // Active distribution
     let dist_state = DistributionState {
         is_distributing: true,
         total_to_distribute: Uint128::new(1_000_000_000),
@@ -535,7 +497,6 @@ fn test_continue_distribution_internal_self_call_succeeds() {
         .save(&mut deps.storage, &dist_state)
         .unwrap();
 
-    // Simulate a call coming from the contract itself
     let env = mock_env();
     let info = mock_info(env.contract.address.as_str(), &[]);
 
@@ -555,7 +516,6 @@ fn test_commit_reentrancy_protection() {
     let mut deps = mock_dependencies();
     setup_pool_storage(&mut deps);
 
-    // Set reentrancy guard
     RATE_LIMIT_GUARD.save(&mut deps.storage, &true).unwrap();
 
     let env = mock_env();
@@ -598,7 +558,6 @@ fn test_commit_rate_limiting() {
     let mut env = mock_env();
     let user = Addr::unchecked("user");
 
-    // First commit succeeds
     let info = mock_info(
         user.as_str(),
         &[Coin {
@@ -624,13 +583,12 @@ fn test_commit_rate_limiting() {
 
     execute(deps.as_mut(), env.clone(), info.clone(), msg.clone()).unwrap();
 
-    // Second commit too soon should fail
     env.block.time = env.block.time.plus_seconds(30); // Only 30 seconds later
 
     let err = execute(deps.as_mut(), env, info, msg).unwrap_err();
     match err {
         ContractError::TooFrequentCommits { wait_time } => {
-            assert_eq!(wait_time, 30); // Should wait 30 more seconds (60 total - 30 elapsed)
+            assert_eq!(wait_time, 30); 
         }
         _ => panic!("Expected TooFrequentCommits error"),
     }
@@ -640,8 +598,8 @@ fn test_commit_rate_limiting() {
 fn test_commit_with_deadline() {
     let mut deps = mock_dependencies_with_balance(&[Coin {
         denom: "stake".to_string(),
-        amount: Uint128::new(1_000_000_000), // Give contract 1000 tokens
-    }]);
+        amount: Uint128::new(1_000_000_000), 
+   }]);
     setup_pool_storage(&mut deps);
 
     let mut env = mock_env();
@@ -655,7 +613,6 @@ fn test_commit_with_deadline() {
         }],
     );
 
-    // Set deadline in the past
     let msg = ExecuteMsg::Commit {
         asset: TokenInfo {
             info: TokenType::Bluechip {
@@ -676,13 +633,12 @@ fn test_commit_with_deadline() {
     }
 }
 
-// ============= SWAP TESTS =============
 
 #[test]
 fn test_simple_swap_bluechip_to_cw20() {
     let mut deps = mock_dependencies_with_balance(&[Coin {
         denom: "stake".to_string(),
-        amount: Uint128::new(1_000_000_000), // Give contract 1000 tokens
+        amount: Uint128::new(1_000_000_000), 
     }]);
     setup_pool_post_threshold(&mut deps);
 
@@ -712,7 +668,6 @@ fn test_simple_swap_bluechip_to_cw20() {
 
     let res = execute(deps.as_mut(), env, info, msg).unwrap();
 
-    // Verify swap executed
     assert_eq!(
         res.attributes
             .iter()
@@ -722,12 +677,10 @@ fn test_simple_swap_bluechip_to_cw20() {
         "swap"
     );
 
-    // Verify reserves updated
     let pool_state = POOL_STATE.load(&deps.storage).unwrap();
     assert!(pool_state.reserve0 > Uint128::new(23_500_000_000)); // Native increased
     assert!(pool_state.reserve1 < Uint128::new(350_000_000_000)); // CW20 decreased
 
-    // Verify fee growth
     let fee_state = POOL_FEE_STATE.load(&deps.storage).unwrap();
     assert!(fee_state.fee_growth_global_0 > Decimal::zero());
 }
@@ -748,7 +701,6 @@ fn test_swap_with_max_spread() {
         }],
     );
 
-    // Set very tight max spread (0.1%)
     let msg = ExecuteMsg::SimpleSwap {
         offer_asset: TokenInfo {
             info: TokenType::Bluechip {
@@ -762,7 +714,6 @@ fn test_swap_with_max_spread() {
         transaction_deadline: None,
     };
 
-    // Large swap should exceed max spread
     let err = execute(deps.as_mut(), env, info, msg).unwrap_err();
     match err {
         ContractError::MaxSpreadAssertion {} => (),
@@ -774,7 +725,7 @@ fn test_swap_with_max_spread() {
 fn test_commit_threshold_overshoot_split() {
     let mut deps = mock_dependencies_with_balance(&[Coin {
         denom: "stake".to_string(),
-        amount: Uint128::new(100_000_000_000), // Plenty for all operations
+        amount: Uint128::new(100_000_000_000), 
     }]);
 
     setup_pool_storage(&mut deps);
@@ -782,14 +733,12 @@ fn test_commit_threshold_overshoot_split() {
         .save(&mut deps.storage, &false)
         .unwrap();
 
-    // Set USD raised to just below threshold
     USD_RAISED_FROM_COMMIT
         .save(&mut deps.storage, &Uint128::new(24_999_000_000))
         .unwrap(); // $24,999
 
     let env = mock_env();
 
-    // Mock factory oracle at $1 per bluechip
     with_factory_oracle(&mut deps, Uint128::new(1_000_000));
 
     let commit_amount = Uint128::new(5_000_000);
@@ -934,7 +883,6 @@ fn test_commit_exact_threshold() {
     THRESHOLD_PROCESSING
         .save(&mut deps.storage, &false)
         .unwrap();
-    // Set USD raised to need exactly $1 more
     USD_RAISED_FROM_COMMIT
         .save(&mut deps.storage, &Uint128::new(24_999_000_000))
         .unwrap();
@@ -951,7 +899,6 @@ fn test_commit_exact_threshold() {
 
     let env = mock_env();
 
-    // Mock factory oracle responses
     with_factory_oracle(&mut deps, Uint128::new(1_000_000)); // $1 per bluechip
 
     // Commit exactly $1
@@ -990,9 +937,7 @@ fn test_commit_exact_threshold() {
         "threshold_hit_exact"
     );
 
-    // Verify threshold hit
     assert_eq!(IS_THRESHOLD_HIT.load(&deps.storage).unwrap(), true);
-    // verify that the total USD raised is at the threshold
     let total_usd = USD_RAISED_FROM_COMMIT.load(&deps.storage).unwrap();
     assert_eq!(total_usd, Uint128::new(25_000_000_000)); // Should be exactly at $25k threshold
 }
@@ -1001,15 +946,13 @@ fn test_swap_cw20_via_hook() {
     let mut deps = mock_dependencies();
     setup_pool_post_threshold(&mut deps);
 
-    // Mock CW20 balance query for the pool contract
     deps.querier.update_wasm(move |query| {
         match query {
             WasmQuery::Smart { contract_addr, msg } => {
                 if contract_addr == "token_contract" {
-                    // Parse the query to check if it's a balance query
                     if msg.to_string().contains("balance") {
                         let balance_response = cw20::BalanceResponse {
-                            balance: Uint128::new(350_000_000_000), // Pool has 350k tokens
+                            balance: Uint128::new(350_000_000_000), 
                         };
                         SystemResult::Ok(ContractResult::Ok(
                             to_json_binary(&balance_response).unwrap(),
@@ -1037,7 +980,6 @@ fn test_swap_cw20_via_hook() {
     let env = mock_env();
     let swap_amount = Uint128::new(10_000_000_000); // 10k tokens
 
-    // Message from CW20 token contract
     let info = mock_info("token_contract", &[]);
 
     let cw20_msg = Cw20ReceiveMsg {
@@ -1045,7 +987,7 @@ fn test_swap_cw20_via_hook() {
         amount: swap_amount,
         msg: to_json_binary(&Cw20HookMsg::Swap {
             belief_price: None,
-            max_spread: Some(Decimal::percent(10)), // Allow spread
+            max_spread: Some(Decimal::percent(10)), 
             to: None,
             transaction_deadline: None,
         })
@@ -1054,7 +996,6 @@ fn test_swap_cw20_via_hook() {
 
     let res = execute_swap_cw20(deps.as_mut(), env, info, cw20_msg).unwrap();
 
-    // Verify swap executed
     assert_eq!(
         res.attributes
             .iter()
@@ -1064,7 +1005,6 @@ fn test_swap_cw20_via_hook() {
         "swap"
     );
 
-    // Verify reserves updated (opposite direction from bluechip swap)
     let pool_state = POOL_STATE.load(&deps.storage).unwrap();
     assert!(pool_state.reserve0 < Uint128::new(23_500_000_000)); // Native decreased
     assert!(pool_state.reserve1 > Uint128::new(350_000_000_000)); // CW20 increased
@@ -1138,7 +1078,6 @@ fn test_swap_price_accumulator_update() {
 
     execute(deps.as_mut(), env.clone(), info, msg).unwrap();
 
-    // Verify price accumulator updated
     let updated_state = POOL_STATE.load(&deps.storage).unwrap();
     assert!(updated_state.price0_cumulative_last > initial_price0);
     assert_eq!(updated_state.block_time_last, env.block.time.seconds());
@@ -1148,7 +1087,6 @@ fn test_swap_price_accumulator_update() {
 fn test_factory_impersonation_prevented() {
     let mut deps = mock_dependencies();
 
-    // Try to instantiate from non-factory address
     let msg = PoolInstantiateMsg {
         pool_id: 1u64,
         pool_token_info: [
@@ -1190,7 +1128,6 @@ fn test_commit_with_changing_oracle_prices() {
     }]);
     setup_pool_storage(&mut deps);
 
-    // First commit at $1 per bluechip
     with_factory_oracle(&mut deps, Uint128::new(1_000_000));
 
     let env = mock_env();
@@ -1220,14 +1157,13 @@ fn test_commit_with_changing_oracle_prices() {
     let first_usd = USD_RAISED_FROM_COMMIT.load(&deps.storage).unwrap();
     assert_eq!(first_usd, Uint128::new(5_000_000)); // $5
 
-    // Price doubles to $2 per bluechip
     with_factory_oracle(&mut deps, Uint128::new(2_000_000));
 
     let info2 = mock_info(
         "user2",
         &[Coin {
             denom: "stake".to_string(),
-            amount: Uint128::new(5_000_000), // Same bluechip amount
+            amount: Uint128::new(5_000_000), 
         }],
     );
 
@@ -1249,7 +1185,6 @@ fn test_commit_with_changing_oracle_prices() {
     let total_usd = USD_RAISED_FROM_COMMIT.load(&deps.storage).unwrap();
     assert_eq!(total_usd, Uint128::new(15_000_000)); // $5 + $10 = $15
 
-    // Verify second user paid $10
     let user2_commit = COMMIT_INFO
         .load(&deps.storage, &Addr::unchecked("user2"))
         .unwrap();
@@ -1258,7 +1193,6 @@ fn test_commit_with_changing_oracle_prices() {
 
 #[test]
 fn test_threshold_crossing_depends_on_oracle_price() {
-    // Scenario 1: High price means fewer tokens needed
     let mut deps1 = mock_dependencies_with_balance(&[Coin {
         denom: "stake".to_string(),
         amount: Uint128::new(100_000_000_000),
@@ -1268,17 +1202,12 @@ fn test_threshold_crossing_depends_on_oracle_price() {
         .save(&mut deps1.storage, &false)
         .unwrap();
 
-    // Oracle at $10 per token
     with_factory_oracle(&mut deps1, Uint128::new(10_000_000));
-
-    // Already at $24k
     USD_RAISED_FROM_COMMIT
         .save(&mut deps1.storage, &Uint128::new(24_000_000_000))
         .unwrap();
 
     let env = mock_env();
-
-    // Commit 100 tokens at $10 each = $1k, should hit $25k threshold
     let info1 = mock_info(
         "whale",
         &[Coin {
@@ -1302,8 +1231,6 @@ fn test_threshold_crossing_depends_on_oracle_price() {
 
     execute(deps1.as_mut(), env.clone(), info1, msg1).unwrap();
     assert_eq!(IS_THRESHOLD_HIT.load(&deps1.storage).unwrap(), true);
-
-    // Scenario 2: Low price means more tokens needed
     let mut deps2 = mock_dependencies_with_balance(&[Coin {
         denom: "stake".to_string(),
         amount: Uint128::new(100_000_000_000),
@@ -1313,14 +1240,12 @@ fn test_threshold_crossing_depends_on_oracle_price() {
         .save(&mut deps2.storage, &false)
         .unwrap();
 
-    // Oracle at $0.10 per token
     with_factory_oracle(&mut deps2, Uint128::new(100_000)); // $0.10
 
     USD_RAISED_FROM_COMMIT
         .save(&mut deps2.storage, &Uint128::new(24_000_000_000))
         .unwrap();
 
-    // Same 100 tokens but at $0.10 each = $10, should NOT hit threshold
     let info2 = mock_info(
         "whale",
         &[Coin {
@@ -1440,7 +1365,6 @@ fn test_oracle_conversion_precision_various_prices() {
 
 #[test]
 fn test_extreme_oracle_prices() {
-    // Test very low price
     let mut deps_low = mock_dependencies_with_balance(&[Coin {
         denom: "stake".to_string(),
         amount: Uint128::new(1_000_000_000_000), // 1M tokens
@@ -1454,7 +1378,7 @@ fn test_extreme_oracle_prices() {
         "user",
         &[Coin {
             denom: "stake".to_string(),
-            amount: Uint128::new(1_000_000_000), // 1k tokens
+            amount: Uint128::new(1_000_000_000), 
         }],
     );
 
@@ -1475,9 +1399,8 @@ fn test_extreme_oracle_prices() {
     assert!(res_low.is_ok(), "Should handle very low prices");
 
     let usd_low = USD_RAISED_FROM_COMMIT.load(&deps_low.storage).unwrap();
-    assert_eq!(usd_low, Uint128::new(1_000_000)); // $1 (1k tokens * $0.001)
+    assert_eq!(usd_low, Uint128::new(1_000_000)); 
 
-    // Test very high price
     let mut deps_high = mock_dependencies_with_balance(&[Coin {
         denom: "stake".to_string(),
         amount: Uint128::new(1_000_000),
@@ -1511,7 +1434,7 @@ fn test_extreme_oracle_prices() {
     assert!(res_high.is_ok(), "Should handle very high prices");
 
     let usd_high = USD_RAISED_FROM_COMMIT.load(&deps_high.storage).unwrap();
-    assert_eq!(usd_high, Uint128::new(1_000_000_000)); // $1000
+    assert_eq!(usd_high, Uint128::new(1_000_000_000)); 
 }
 
 #[test]
@@ -1559,19 +1482,15 @@ fn test_usd_tracking_consistency_across_commits() {
 
         execute(deps.as_mut(), env.clone(), info, msg).unwrap();
 
-        // Calculate expected USD for this commit
         let commit_usd = Uint128::new(amount) * Uint128::new(2_500_000) / Uint128::new(1_000_000);
         expected_total += commit_usd;
 
-        // Verify global USD tracking
         let current_total = USD_RAISED_FROM_COMMIT.load(&deps.storage).unwrap();
         assert_eq!(
             current_total, expected_total,
             "USD tracking inconsistent after {} commit",
             user
         );
-
-        // Verify individual tracking
         let user_commit = COMMIT_INFO
             .load(&deps.storage, &Addr::unchecked(user))
             .unwrap();
@@ -1582,7 +1501,6 @@ fn test_usd_tracking_consistency_across_commits() {
         );
     }
 
-    // Final totals: $10 + $20 + $5 = $35
     assert_eq!(expected_total, Uint128::new(35_000_000));
 }
 
@@ -1620,12 +1538,10 @@ fn test_commit_with_zero_oracle_price() {
 
     let result = execute(deps.as_mut(), env, info, msg);
 
-    // Should reject with clear error
     assert!(result.is_err(), "Should reject zero oracle price");
 
     match result.unwrap_err() {
         ContractError::InvalidOraclePrice {} => {
-            // Good! This is what we want
         }
         other => panic!("Wrong error type: {:?}", other),
     }
@@ -1638,7 +1554,6 @@ fn test_usd_calculation_overflow() {
     }]);
     setup_pool_storage(&mut deps);
 
-    // Extremely high price that would cause overflow
     with_factory_oracle(&mut deps, Uint128::new(1_000_000_000_000)); // $1M per token
 
     let env = mock_env();
@@ -1665,12 +1580,10 @@ fn test_usd_calculation_overflow() {
 
     let result = execute(deps.as_mut(), env, info, msg);
 
-    // Should return error, not panic
     assert!(result.is_err(), "Should reject overflow");
 
     let err = result.unwrap_err();
 
-    // Verify it's the overflow error we expect
     assert!(
         err.to_string().contains("Overflow")
             || err.to_string().contains("overflow")
@@ -1679,7 +1592,7 @@ fn test_usd_calculation_overflow() {
         err
     );
 
-    println!("✅ Correctly rejected overflow with error: {}", err);
+    println!("Correctly rejected overflow with error: {}", err);
 }
 
 #[test]
@@ -1690,12 +1603,10 @@ fn test_rounding_error_accumulation() {
     }]);
     setup_pool_storage(&mut deps);
 
-    // Price that causes rounding issues
     with_factory_oracle(&mut deps, Uint128::new(333_333)); // $0.333333...
 
     let env = mock_env();
 
-    // Make 1000 tiny commits that should sum to specific amount
     let mut manual_sum = Uint128::zero();
 
     for i in 0..1000 {
@@ -1741,7 +1652,6 @@ fn test_rounding_error_accumulation() {
 
     println!("Rounding difference over 1000 commits: {}", diff);
 
-    // Acceptable tolerance?
     let max_acceptable = Uint128::new(1000); // 1000 units = 0.001 USD
     assert!(
         diff <= max_acceptable,
@@ -1761,8 +1671,6 @@ fn test_swap_with_belief_price_protection() {
     let env = mock_env();
     let swap_amount = Uint128::new(100_000_000); // 100 bluechip
 
-    // User believes they'll get at least 1.4 tokens per bluechip
-    // Pool ratio is ~14.89 (350M/23.5M), so actual is much higher
     let belief_price = Some(Decimal::from_ratio(140u128, 100u128)); // 1.4
 
     let info = mock_info(
@@ -1810,10 +1718,6 @@ fn test_swap_belief_price_rejects_bad_price_corrected() {
     let env = mock_env();
     let swap_amount = Uint128::new(10_000_000_000); // 10k bluechip
 
-    // Actual return will be ~104B tokens
-    // To fail, we need to expect MORE than that
-    // If belief_price = 0.05, expected = 10B / 0.05 = 200B
-    // Since actual (104B) < expected (200B), it should fail
     let belief_price = Some(Decimal::from_ratio(5u128, 100u128)); // 0.05
 
     let info = mock_info(
@@ -1858,7 +1762,6 @@ fn test_belief_price_with_zero_price() {
         }],
     );
 
-    // Belief price of zero should be rejected
     let msg = ExecuteMsg::SimpleSwap {
         offer_asset: TokenInfo {
             info: TokenType::Bluechip {
@@ -1884,7 +1787,6 @@ fn test_swap_cw20_to_bluechip_direct() {
     let mut deps = mock_dependencies();
     setup_pool_post_threshold(&mut deps);
 
-    // Mock CW20 balance and transfer
     deps.querier.update_wasm(move |query| match query {
         WasmQuery::Smart { contract_addr, msg } => {
             if contract_addr == "token_contract" {
@@ -1911,7 +1813,6 @@ fn test_swap_cw20_to_bluechip_direct() {
     let env = mock_env();
     let swap_amount = Uint128::new(10_000_000_000); // 10k CW20 tokens
 
-    // Simulate CW20 receive hook
     let info = mock_info("token_contract", &[]);
     let cw20_msg = Cw20ReceiveMsg {
         sender: "trader".to_string(),
@@ -1927,7 +1828,6 @@ fn test_swap_cw20_to_bluechip_direct() {
 
     let res = execute_swap_cw20(deps.as_mut(), env, info, cw20_msg).unwrap();
 
-    // Verify swap executed
     assert_eq!(
         res.attributes
             .iter()
@@ -1950,8 +1850,6 @@ fn test_swap_cw20_to_bluechip_direct() {
         .messages
         .iter()
         .any(|msg| { matches!(&msg.msg, CosmosMsg::Bank(BankMsg::Send { .. })) }));
-
-    // Verify reserves updated correctly
     let pool_state = POOL_STATE.load(&deps.storage).unwrap();
     assert!(pool_state.reserve0 < Uint128::new(23_500_000_000)); // Bluechip decreased
     assert!(pool_state.reserve1 > Uint128::new(350_000_000_000)); // CW20 increased
@@ -1962,7 +1860,6 @@ fn test_swap_cw20_with_custom_recipient() {
     let mut deps = mock_dependencies();
     setup_pool_post_threshold(&mut deps);
 
-    // Mock CW20 queries
     deps.querier.update_wasm(move |query| match query {
         WasmQuery::Smart { contract_addr, msg } => {
             if contract_addr == "token_contract" {
@@ -2005,7 +1902,6 @@ fn test_swap_cw20_with_custom_recipient() {
 
     let res = execute_swap_cw20(deps.as_mut(), env, info, cw20_msg).unwrap();
 
-    // Verify bluechip sent to custom recipient
     let bank_msg = res
         .messages
         .iter()
@@ -2056,7 +1952,6 @@ fn test_cw20_swap_with_belief_price() {
     let env = mock_env();
     let swap_amount = Uint128::new(100_000_000_000); // Large amount for slippage
 
-    // Expect at least 0.05 bluechip per CW20 token
     let belief_price = Some(Decimal::from_ratio(5u128, 100u128));
 
     let info = mock_info("token_contract", &[]);
@@ -2072,7 +1967,6 @@ fn test_cw20_swap_with_belief_price() {
         .unwrap(),
     };
 
-    // Should fail due to slippage from large swap
     let err = execute_swap_cw20(deps.as_mut(), env, info, cw20_msg).unwrap_err();
     match err {
         ContractError::MaxSpreadAssertion {} => (),
@@ -2095,7 +1989,6 @@ fn test_race_condition_not_manually_set() {
         .save(&mut deps.storage, &false)
         .unwrap();
 
-    // Just below threshold
     USD_RAISED_FROM_COMMIT
         .save(&mut deps.storage, &Uint128::new(24_900_000_000))
         .unwrap();
@@ -2103,7 +1996,6 @@ fn test_race_condition_not_manually_set() {
 
     let env = mock_env();
 
-    // Alice's commit that crosses threshold
     let alice_info = mock_info(
         "alice",
         &[Coin {
@@ -2125,24 +2017,20 @@ fn test_race_condition_not_manually_set() {
         max_spread: None,
     };
 
-    // Execute Alice's commit
     let alice_res = execute(deps.as_mut(), env.clone(), alice_info, alice_msg).unwrap();
 
-    // Verify threshold was crossed
     assert_eq!(IS_THRESHOLD_HIT.load(&deps.storage).unwrap(), true);
     assert!(alice_res
         .attributes
         .iter()
         .any(|a| a.value == "threshold_crossing"));
 
-    // CRITICAL: Verify THRESHOLD_PROCESSING was properly cleared after successful threshold
     assert_eq!(
         THRESHOLD_PROCESSING.load(&deps.storage).unwrap(),
         false,
         "THRESHOLD_PROCESSING should be cleared after successful threshold crossing"
     );
 
-    // Bob tries to commit after threshold - should work as normal swap
     let bob_info = mock_info(
         "bob",
         &[Coin {
@@ -2171,7 +2059,6 @@ fn test_race_condition_not_manually_set() {
 
     let bob_res = execute(deps.as_mut(), env.clone(), bob_info.clone(), bob_msg).unwrap();
 
-    // Verify Bob's commit was processed as swap
     assert!(bob_res
         .attributes
         .iter()
@@ -2181,7 +2068,6 @@ fn test_race_condition_not_manually_set() {
         .iter()
         .any(|a| a.key == "action" && a.value == "commit"));
 
-    // CRITICAL: Verify Bob's swap was recorded in pool state
     let pool_state = POOL_STATE.load(&deps.storage).unwrap();
     assert!(
         pool_state.reserve0 > before.reserve0,
@@ -2201,12 +2087,10 @@ fn test_concurrent_commits_both_recorded() {
         .save(&mut deps.storage, &false)
         .unwrap();
 
-    // Set up near threshold
     USD_RAISED_FROM_COMMIT
         .save(&mut deps.storage, &Uint128::new(24_900_000_000))
         .unwrap();
 
-    // Add previous committers to ledger
     COMMIT_LEDGER
         .save(
             &mut deps.storage,
@@ -2225,7 +2109,6 @@ fn test_concurrent_commits_both_recorded() {
     with_factory_oracle(&mut deps, Uint128::new(1_000_000));
     let env = mock_env();
 
-    // Alice crosses threshold
     let alice_info = mock_info(
         "alice",
         &[Coin {
@@ -2249,7 +2132,6 @@ fn test_concurrent_commits_both_recorded() {
 
     execute(deps.as_mut(), env.clone(), alice_info.clone(), alice_msg).unwrap();
 
-    // Verify Alice was added to ledger before threshold processing
     assert!(
         COMMIT_LEDGER
             .load(&deps.storage, &alice_info.sender)
@@ -2257,7 +2139,6 @@ fn test_concurrent_commits_both_recorded() {
         "Alice should have been cleared from ledger after threshold"
     );
 
-    // Bob commits after threshold with his own amount
     let bob_amount = Uint128::new(100_000_000);
     let bob_info = mock_info(
         "bob",
@@ -2288,7 +2169,6 @@ fn test_concurrent_commits_both_recorded() {
 
     let bob_res = execute(deps.as_mut(), env.clone(), bob_info.clone(), bob_msg).unwrap();
 
-    // Verify it was processed as a swap
     assert!(
         bob_res
             .attributes
@@ -2297,20 +2177,17 @@ fn test_concurrent_commits_both_recorded() {
         "Bob's transaction should be a swap after threshold"
     );
 
-    // Verify Bob's commit is NOT in the ledger (it's a swap now)
     assert!(
         COMMIT_LEDGER.load(&deps.storage, &bob_info.sender).is_err(),
         "Bob shouldn't be in commit ledger - his transaction is a swap"
     );
 
-    // But verify Bob's transaction affected the pool
     let pool_state = POOL_STATE.load(&deps.storage).unwrap();
     println!(
         "Pool reserves after Bob's swap - reserve0: {}, reserve1: {}",
         pool_state.reserve0, pool_state.reserve1
     );
 
-    // Pool starts with ~23.5M bluechip, Bob adds more (minus fees)
     assert!(
         pool_state.reserve0 > before.reserve0,
         "Pool reserve0 should have increased from Bob's bluechip swap"
