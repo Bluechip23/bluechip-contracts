@@ -19,7 +19,7 @@ use crate::response::MsgInstantiateContractResponse;
 use crate::state::{
     CommitLimitInfo, ExpectedFactory, OracleInfo, PoolDetails, PoolFeeState, PoolInfo, PoolSpecs,
     ThresholdPayoutAmounts, COMMITFEEINFO, COMMITSTATUS, COMMIT_LEDGER, COMMIT_LIMIT_INFO,
-    DISTRIBUTION_STATE, EXPECTED_FACTORY, IS_THRESHOLD_HIT, MAX_DISTRIBUTIONS_PER_TX,
+    DISTRIBUTION_STATE, EXPECTED_FACTORY, IS_THRESHOLD_HIT,
     NATIVE_RAISED_FROM_COMMIT, ORACLE_INFO, POOL_FEE_STATE, POOL_INFO, POOL_SPECS, POOL_STATE,
     RATE_LIMIT_GUARD, THRESHOLD_PAYOUT_AMOUNTS, THRESHOLD_PROCESSING, USD_RAISED_FROM_COMMIT,
 };
@@ -1218,8 +1218,7 @@ pub fn execute_continue_distribution(
     }
 
     let pool_info = POOL_INFO.load(deps.storage)?;
-    let msgs =
-        process_distribution_batch(deps.storage, &pool_info, &env, MAX_DISTRIBUTIONS_PER_TX)?;
+    let msgs = process_distribution_batch(deps.storage, &pool_info, &env)?;
 
     Ok(Response::new()
         .add_messages(msgs)
@@ -1253,7 +1252,6 @@ pub fn execute_update_config(
 
 #[entry_point]
 pub fn migrate(deps: DepsMut, _env: Env, msg: MigrateMsg) -> StdResult<Response> {
-    let pool_info = POOL_INFO.load(deps.storage)?;
     match msg {
         MigrateMsg::UpdateFees { new_fees } => {
             POOL_SPECS.update(deps.storage, |mut specs| -> StdResult<_> {

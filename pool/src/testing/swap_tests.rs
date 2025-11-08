@@ -1,9 +1,10 @@
 use crate::asset::{TokenInfo, TokenType};
 use crate::error::ContractError;
+use crate::generic_helpers::calculate_effective_batch_size;
 use crate::msg::ExecuteMsg;
 use crate::state::{
-    COMMIT_INFO, COMMIT_LEDGER, IS_THRESHOLD_HIT, POOL_FEE_STATE, POOL_STATE, RATE_LIMIT_GUARD,
-    USD_RAISED_FROM_COMMIT,
+    COMMIT_INFO, COMMIT_LEDGER, DEFAULT_ESTIMATED_GAS_PER_DISTRIBUTION, DEFAULT_MAX_GAS_PER_TX,
+    IS_THRESHOLD_HIT, POOL_FEE_STATE, POOL_STATE, RATE_LIMIT_GUARD, USD_RAISED_FROM_COMMIT,
 };
 use crate::{
     contract::{execute, execute_swap_cw20, instantiate},
@@ -38,106 +39,98 @@ fn with_factory_oracle(
     deps: &mut OwnedDeps<MockStorage, MockApi, MockQuerier>,
     bluechip_to_usd_rate: Uint128,
 ) {
-    deps.querier.update_wasm(move |query| {
-        match query {
-            WasmQuery::Smart { contract_addr, msg } => {
-                if contract_addr == "factory_contract" {
-                    if let Ok(factory_query) = from_json::<FactoryQueryMsg>(msg) {
-                        match factory_query {
-                            FactoryQueryMsg::ConvertBluechipToUsd { amount } => {
-                                let intermediate = match amount.checked_mul(bluechip_to_usd_rate) {
-                                    Ok(v) => v,
-                                    Err(_) => {
-                                        return SystemResult::Err(SystemError::InvalidRequest {
-                                            error: "Overflow in mock oracle calculation"
-                                                .to_string(),
-                                            request: msg.clone(),
-                                        });
-                                    }
-                                };
+    deps.querier.update_wasm(move |query| match query {
+        WasmQuery::Smart { contract_addr, msg } => {
+            if contract_addr == "factory_contract" {
+                if let Ok(factory_query) = from_json::<FactoryQueryMsg>(msg) {
+                    match factory_query {
+                        FactoryQueryMsg::ConvertBluechipToUsd { amount } => {
+                            let intermediate = match amount.checked_mul(bluechip_to_usd_rate) {
+                                Ok(v) => v,
+                                Err(_) => {
+                                    return SystemResult::Err(SystemError::InvalidRequest {
+                                        error: "Overflow in mock oracle calculation".to_string(),
+                                        request: msg.clone(),
+                                    });
+                                }
+                            };
 
-                                let usd_amount = match intermediate
-                                    .checked_div(Uint128::new(1_000_000))
-                                {
-                                    Ok(v) => v,
-                                    Err(_) => {
-                                        return SystemResult::Err(SystemError::InvalidRequest {
-                                            error: "Division error in mock oracle calculation"
-                                                .to_string(),
-                                            request: msg.clone(),
-                                        });
-                                    }
-                                };
+                            let usd_amount = match intermediate.checked_div(Uint128::new(1_000_000))
+                            {
+                                Ok(v) => v,
+                                Err(_) => {
+                                    return SystemResult::Err(SystemError::InvalidRequest {
+                                        error: "Division error in mock oracle calculation"
+                                            .to_string(),
+                                        request: msg.clone(),
+                                    });
+                                }
+                            };
 
-                                let response = ConversionResponse {
-                                    amount: usd_amount,
-                                    rate_used: bluechip_to_usd_rate,
-                                    timestamp: 1_600_000_000,
-                                };
-                                return SystemResult::Ok(ContractResult::Ok(
-                                    to_json_binary(&response).unwrap(),
-                                ));
-                            }
-                            FactoryQueryMsg::ConvertUsdToBluechip { amount } => {
-                                let intermediate = match amount.checked_mul(Uint128::new(1_000_000))
-                                {
-                                    Ok(v) => v,
-                                    Err(_) => {
-                                        return SystemResult::Err(SystemError::InvalidRequest {
-                                            error: "Overflow in mock oracle calculation"
-                                                .to_string(),
-                                            request: msg.clone(),
-                                        });
-                                    }
-                                };
-
-                                let bluechip_amount = match intermediate
-                                    .checked_div(bluechip_to_usd_rate)
-                                {
-                                    Ok(v) => v,
-                                    Err(_) => {
-                                        return SystemResult::Err(SystemError::InvalidRequest {
-                                            error: "Division error in mock oracle calculation"
-                                                .to_string(),
-                                            request: msg.clone(),
-                                        });
-                                    }
-                                };
-
-                                let response = ConversionResponse {
-                                    amount: bluechip_amount,
-                                    rate_used: bluechip_to_usd_rate,
-                                    timestamp: 1_600_000_000,
-                                };
-                                return SystemResult::Ok(ContractResult::Ok(
-                                    to_json_binary(&response).unwrap(),
-                                ));
-                            }
-                            _ => {}
+                            let response = ConversionResponse {
+                                amount: usd_amount,
+                                rate_used: bluechip_to_usd_rate,
+                                timestamp: 1_600_000_000,
+                            };
+                            return SystemResult::Ok(ContractResult::Ok(
+                                to_json_binary(&response).unwrap(),
+                            ));
                         }
+                        FactoryQueryMsg::ConvertUsdToBluechip { amount } => {
+                            let intermediate = match amount.checked_mul(Uint128::new(1_000_000)) {
+                                Ok(v) => v,
+                                Err(_) => {
+                                    return SystemResult::Err(SystemError::InvalidRequest {
+                                        error: "Overflow in mock oracle calculation".to_string(),
+                                        request: msg.clone(),
+                                    });
+                                }
+                            };
+
+                            let bluechip_amount =
+                                match intermediate.checked_div(bluechip_to_usd_rate) {
+                                    Ok(v) => v,
+                                    Err(_) => {
+                                        return SystemResult::Err(SystemError::InvalidRequest {
+                                            error: "Division error in mock oracle calculation"
+                                                .to_string(),
+                                            request: msg.clone(),
+                                        });
+                                    }
+                                };
+
+                            let response = ConversionResponse {
+                                amount: bluechip_amount,
+                                rate_used: bluechip_to_usd_rate,
+                                timestamp: 1_600_000_000,
+                            };
+                            return SystemResult::Ok(ContractResult::Ok(
+                                to_json_binary(&response).unwrap(),
+                            ));
+                        }
+                        _ => {}
                     }
                 }
-
-                if contract_addr == "nft_contract" {
-                }
-
-                SystemResult::Err(SystemError::InvalidRequest {
-                    error: "Unknown contract or query".to_string(),
-                    request: msg.clone(),
-                })
             }
-            _ => SystemResult::Err(SystemError::InvalidRequest {
-                error: "Unknown query type".to_string(),
-                request: Binary::default(),
-            }),
+
+            if contract_addr == "nft_contract" {}
+
+            SystemResult::Err(SystemError::InvalidRequest {
+                error: "Unknown contract or query".to_string(),
+                request: msg.clone(),
+            })
         }
+        _ => SystemResult::Err(SystemError::InvalidRequest {
+            error: "Unknown query type".to_string(),
+            request: Binary::default(),
+        }),
     });
 }
 #[test]
 fn test_commit_pre_threshold_basic() {
     let mut deps = mock_dependencies_with_balance(&[Coin {
         denom: "stake".to_string(),
-        amount: Uint128::new(1_000_000_000), 
+        amount: Uint128::new(1_000_000_000),
     }]);
     setup_pool_storage(&mut deps);
 
@@ -168,7 +161,7 @@ fn test_commit_pre_threshold_basic() {
 
     let res = execute(deps.as_mut(), env.clone(), info, msg).unwrap();
 
-    assert_eq!(res.messages.len(), 2); 
+    assert_eq!(res.messages.len(), 2);
 
     let user_addr = Addr::unchecked("user1");
     let user_commit_usd = COMMIT_LEDGER.load(&deps.storage, &user_addr).unwrap();
@@ -311,7 +304,6 @@ fn test_commit_crosses_threshold() {
         .save(&mut deps.storage, &Uint128::new(24_900_000_000))
         .unwrap(); // $24.9k
 
-
     let env = mock_env();
     let commit_amount = Uint128::new(200_000_000); // 200 tokens = $200
 
@@ -401,7 +393,7 @@ fn test_commit_post_threshold_swap() {
 
     let res = execute(deps.as_mut(), env, info, msg).unwrap();
 
-    assert!(res.messages.len() >= 3); 
+    assert!(res.messages.len() >= 3);
 
     let pool_state = POOL_STATE.load(&deps.storage).unwrap();
     assert!(pool_state.reserve0 > Uint128::new(23_500_000_000)); // Increased from commit
@@ -465,6 +457,10 @@ fn test_continue_distribution_rejects_external_call() {
         total_committed_usd: Uint128::new(1_000_000_000),
         last_processed_key: None,
         distributions_remaining: 10,
+        max_gas_per_tx: DEFAULT_MAX_GAS_PER_TX,
+        estimated_gas_per_distribution: DEFAULT_ESTIMATED_GAS_PER_DISTRIBUTION,
+        last_successful_batch_size: None, // Already has this field - good!
+        consecutive_failures: 0,          // Add this if you implement failure tracking
     };
     DISTRIBUTION_STATE
         .save(&mut deps.storage, &dist_state)
@@ -486,12 +482,26 @@ fn test_continue_distribution_internal_self_call_succeeds() {
     let mut deps = mock_dependencies();
     setup_pool_storage(&mut deps);
 
+    for i in 0..5 {
+        COMMIT_LEDGER
+            .save(
+                &mut deps.storage,
+                &Addr::unchecked(format!("user{}", i)),
+                &Uint128::new(100),
+            )
+            .unwrap();
+    }
+
     let dist_state = DistributionState {
         is_distributing: true,
         total_to_distribute: Uint128::new(1_000_000_000),
         total_committed_usd: Uint128::new(1_000_000_000),
         last_processed_key: None,
         distributions_remaining: 5,
+        max_gas_per_tx: DEFAULT_MAX_GAS_PER_TX,
+        estimated_gas_per_distribution: DEFAULT_ESTIMATED_GAS_PER_DISTRIBUTION,
+        last_successful_batch_size: Some(3), // Test with previous successful batch size
+        consecutive_failures: 0,
     };
     DISTRIBUTION_STATE
         .save(&mut deps.storage, &dist_state)
@@ -508,6 +518,373 @@ fn test_continue_distribution_internal_self_call_succeeds() {
             .iter()
             .any(|a| a.value == "continue_distribution"),
         "Response should include continue_distribution attribute"
+    );
+
+    // Verify batch size was conservative based on last_successful_batch_size
+    // Should process min of (90% of 3 = 2) or calculated batch size
+    assert!(
+        res.messages.len() <= 3,
+        "Should not exceed last successful batch size"
+    );
+}
+
+#[test]
+fn test_continue_distribution_batches_by_gas() {
+    let mut deps = mock_dependencies();
+    setup_pool_storage(&mut deps);
+
+    // Add 10 committers
+    for i in 0..10 {
+        COMMIT_LEDGER
+            .save(
+                &mut deps.storage,
+                &Addr::unchecked(format!("user{}", i)),
+                &Uint128::new(100),
+            )
+            .unwrap();
+    }
+
+    let dist_state = DistributionState {
+        is_distributing: true,
+        total_to_distribute: Uint128::new(1_000_000),
+        total_committed_usd: Uint128::new(1_000_000),
+        last_processed_key: None,
+        distributions_remaining: 10,
+        max_gas_per_tx: 200,
+        estimated_gas_per_distribution: 50,
+        last_successful_batch_size: None,
+        consecutive_failures: 0,
+    };
+    DISTRIBUTION_STATE
+        .save(&mut deps.storage, &dist_state)
+        .unwrap();
+
+    let env = mock_env();
+    let info = mock_info(env.contract.address.as_str(), &[]);
+    let res = execute(
+        deps.as_mut(),
+        env.clone(),
+        info,
+        ExecuteMsg::ContinueDistribution {},
+    )
+    .unwrap();
+
+    // Calculate expected batch size
+    let base_batch_size =
+        (dist_state.max_gas_per_tx / dist_state.estimated_gas_per_distribution).max(1) as u32;
+    let expected_batch_size = if dist_state.last_successful_batch_size.is_none() {
+        base_batch_size.min(10).max(1) as usize
+    } else {
+        base_batch_size as usize
+    };
+
+    let actual_expected = expected_batch_size.min(dist_state.distributions_remaining as usize);
+
+    // Check how many committers were actually processed
+    let committers_after = COMMIT_LEDGER
+        .range(&deps.storage, None, None, Order::Ascending)
+        .count();
+    let processed = 10 - committers_after;
+
+    println!(
+        "Debug: processed={}, expected={}, committers_after={}",
+        processed, actual_expected, committers_after
+    );
+
+    assert_eq!(
+        processed, actual_expected,
+        "Should process exactly {} committers based on gas limits",
+        actual_expected
+    );
+
+    // Check if state was updated or removed
+    match DISTRIBUTION_STATE.may_load(&deps.storage).unwrap() {
+        Some(new_state) => {
+            // State exists, so distribution is ongoing
+            assert_eq!(
+                new_state.distributions_remaining,
+                dist_state.distributions_remaining - processed as u32,
+                "Distributions remaining should be updated correctly"
+            );
+
+            assert_eq!(
+                new_state.last_successful_batch_size,
+                Some(processed as u32),
+                "Should record the actual batch size that was processed"
+            );
+
+            // Should have a continuation message
+            let has_continue = res.messages.iter().any(|submsg| match &submsg.msg {
+                CosmosMsg::Wasm(WasmMsg::Execute { msg, .. }) => {
+                    from_json::<ExecuteMsg>(msg.clone()).map_or(false, |decoded| {
+                        matches!(decoded, ExecuteMsg::ContinueDistribution { .. })
+                    })
+                }
+                _ => false,
+            });
+            println!(
+                "Debug: new_state.distributions_remaining={}, has_continue={}",
+                new_state.distributions_remaining, has_continue
+            );
+
+            assert!(
+                has_continue,
+                "Should have continuation message when {} distributions remain",
+                new_state.distributions_remaining
+            );
+        }
+        None => {
+            // State was removed, so all distributions were completed
+            assert_eq!(
+                processed, 10,
+                "If state is removed, all 10 committers should have been processed"
+            );
+        }
+    }
+}
+#[test]
+fn test_adaptive_batch_sizing_with_history() {
+    let mut deps = mock_dependencies();
+    setup_pool_storage(&mut deps);
+
+    // Add many committers
+    for i in 0..20 {
+        COMMIT_LEDGER
+            .save(
+                &mut deps.storage,
+                &Addr::unchecked(format!("user{}", i)),
+                &Uint128::new(100),
+            )
+            .unwrap();
+    }
+
+    let dist_state = DistributionState {
+        is_distributing: true,
+        total_to_distribute: Uint128::new(1_000_000),
+        total_committed_usd: Uint128::new(1_000_000),
+        last_processed_key: None,
+        distributions_remaining: 20,
+        max_gas_per_tx: 1000,
+        estimated_gas_per_distribution: 50,
+        last_successful_batch_size: Some(12),
+        consecutive_failures: 0,
+    };
+    DISTRIBUTION_STATE
+        .save(&mut deps.storage, &dist_state)
+        .unwrap();
+
+    // Let's verify what's in the COMMIT_LEDGER before processing
+    let total_before = COMMIT_LEDGER
+        .range(&deps.storage, None, None, Order::Ascending)
+        .count();
+    println!("Total committers before: {}", total_before);
+
+    let env = mock_env();
+    let info = mock_info(env.contract.address.as_str(), &[]);
+    let res = execute(
+        deps.as_mut(),
+        env.clone(),
+        info,
+        ExecuteMsg::ContinueDistribution {},
+    )
+    .unwrap();
+
+    // Check what's left in COMMIT_LEDGER after processing
+    let total_after = COMMIT_LEDGER
+        .range(&deps.storage, None, None, Order::Ascending)
+        .count();
+    println!("Total committers after: {}", total_after);
+    println!("Processed: {}", total_before - total_after);
+
+    // Count messages
+    let all_messages = res.messages.len();
+    let continue_messages = res
+        .messages
+        .iter()
+        .filter(|submsg| match &submsg.msg {
+            CosmosMsg::Wasm(WasmMsg::Execute { msg, .. }) => {
+                msg.to_string().contains("ContinueDistribution")
+            }
+            _ => false,
+        })
+        .count();
+    let mint_messages = all_messages - continue_messages;
+
+    println!(
+        "Total messages: {}, Mint messages: {}, Continue messages: {}",
+        all_messages, mint_messages, continue_messages
+    );
+
+    // Also check the updated state
+    if let Ok(new_state) = DISTRIBUTION_STATE.load(&deps.storage) {
+        println!(
+            "New last_successful_batch_size: {:?}",
+            new_state.last_successful_batch_size
+        );
+        println!(
+            "Remaining distributions: {}",
+            new_state.distributions_remaining
+        );
+    }
+
+    // The effective batch size should be 10
+    let expected = 10;
+
+    // Check against committers actually removed from ledger
+    let actually_processed = total_before - total_after;
+    assert_eq!(
+        actually_processed, expected,
+        "Should process exactly {} committers based on effective batch size",
+        expected
+    );
+}
+
+#[test]
+fn test_calculate_effective_batch_size() {
+    // Test with history
+    let dist_state = DistributionState {
+        is_distributing: true,
+        total_to_distribute: Uint128::new(1_000_000),
+        total_committed_usd: Uint128::new(1_000_000),
+        last_processed_key: None,
+        distributions_remaining: 20,
+        max_gas_per_tx: 1000,
+        estimated_gas_per_distribution: 50,
+        last_successful_batch_size: Some(12),
+        consecutive_failures: 0,
+    };
+
+    let batch_size = calculate_effective_batch_size(&dist_state);
+
+    // Should be min(20, 10) = 10
+    assert_eq!(batch_size, 10, "Should use 90% of last successful");
+
+    // Test without history
+    let dist_state_no_history = DistributionState {
+        is_distributing: true,
+        total_to_distribute: Uint128::new(1_000_000),
+        total_committed_usd: Uint128::new(1_000_000),
+        last_processed_key: None,
+        distributions_remaining: 20,
+        max_gas_per_tx: 1000,
+        estimated_gas_per_distribution: 50,
+        last_successful_batch_size: None,
+        consecutive_failures: 0,
+    };
+
+    let batch_size = calculate_effective_batch_size(&dist_state_no_history);
+
+    // Should be min(20, 10) = 10 (conservative for first run)
+    assert_eq!(batch_size, 10, "Should be conservative on first run");
+}
+
+#[test]
+fn test_batch_size_with_consecutive_failures() {
+    let mut deps = mock_dependencies();
+    setup_pool_storage(&mut deps);
+
+    // Add committers
+    for i in 0..10 {
+        COMMIT_LEDGER
+            .save(
+                &mut deps.storage,
+                &Addr::unchecked(format!("user{}", i)),
+                &Uint128::new(100),
+            )
+            .unwrap();
+    }
+
+    // Simulate state after multiple failures
+    let dist_state = DistributionState {
+        is_distributing: true,
+        total_to_distribute: Uint128::new(1_000_000),
+        total_committed_usd: Uint128::new(1_000_000),
+        last_processed_key: None,
+        distributions_remaining: 10,
+        max_gas_per_tx: 1000,
+        estimated_gas_per_distribution: 200, // High estimate due to failures
+        last_successful_batch_size: Some(2), // Last success was small
+        consecutive_failures: 2,             // Had 2 failures
+    };
+    DISTRIBUTION_STATE
+        .save(&mut deps.storage, &dist_state)
+        .unwrap();
+
+    let env = mock_env();
+    let info = mock_info(env.contract.address.as_str(), &[]);
+    let res = execute(
+        deps.as_mut(),
+        env.clone(),
+        info,
+        ExecuteMsg::ContinueDistribution {},
+    )
+    .unwrap();
+
+    // Should be very conservative after failures
+    assert!(
+        res.messages.len() <= 2,
+        "Should use very small batch size after failures"
+    );
+}
+
+#[test]
+fn test_final_batch_completes_distribution() {
+    let mut deps = mock_dependencies();
+    setup_pool_storage(&mut deps);
+
+    // Add exactly 3 committers
+    for i in 0..3 {
+        COMMIT_LEDGER
+            .save(
+                &mut deps.storage,
+                &Addr::unchecked(format!("user{}", i)),
+                &Uint128::new(100),
+            )
+            .unwrap();
+    }
+
+    let dist_state = DistributionState {
+        is_distributing: true,
+        total_to_distribute: Uint128::new(1_000_000),
+        total_committed_usd: Uint128::new(300),
+        last_processed_key: None,
+        distributions_remaining: 3,
+        max_gas_per_tx: 1000,
+        estimated_gas_per_distribution: 50,
+        last_successful_batch_size: Some(5),
+        consecutive_failures: 0,
+    };
+    DISTRIBUTION_STATE
+        .save(&mut deps.storage, &dist_state)
+        .unwrap();
+
+    let env = mock_env();
+    let info = mock_info(env.contract.address.as_str(), &[]);
+    let res = execute(
+        deps.as_mut(),
+        env.clone(),
+        info,
+        ExecuteMsg::ContinueDistribution {},
+    )
+    .unwrap();
+
+    // Should complete all remaining
+    assert_eq!(
+        DISTRIBUTION_STATE.may_load(&deps.storage).unwrap(),
+        None,
+        "Distribution state should be removed after completion"
+    );
+
+    // Should NOT have a ContinueDistribution message since we're done
+    let has_continue_msg = res.messages.iter().any(|submsg| match &submsg.msg {
+        CosmosMsg::Wasm(WasmMsg::Execute { msg, .. }) => {
+            msg.to_string().contains("ContinueDistribution")
+        }
+        _ => false,
+    });
+    assert!(
+        !has_continue_msg,
+        "Should not trigger continuation when complete"
     );
 }
 
@@ -588,7 +965,7 @@ fn test_commit_rate_limiting() {
     let err = execute(deps.as_mut(), env, info, msg).unwrap_err();
     match err {
         ContractError::TooFrequentCommits { wait_time } => {
-            assert_eq!(wait_time, 30); 
+            assert_eq!(wait_time, 30);
         }
         _ => panic!("Expected TooFrequentCommits error"),
     }
@@ -598,8 +975,8 @@ fn test_commit_rate_limiting() {
 fn test_commit_with_deadline() {
     let mut deps = mock_dependencies_with_balance(&[Coin {
         denom: "stake".to_string(),
-        amount: Uint128::new(1_000_000_000), 
-   }]);
+        amount: Uint128::new(1_000_000_000),
+    }]);
     setup_pool_storage(&mut deps);
 
     let mut env = mock_env();
@@ -633,12 +1010,11 @@ fn test_commit_with_deadline() {
     }
 }
 
-
 #[test]
 fn test_simple_swap_bluechip_to_cw20() {
     let mut deps = mock_dependencies_with_balance(&[Coin {
         denom: "stake".to_string(),
-        amount: Uint128::new(1_000_000_000), 
+        amount: Uint128::new(1_000_000_000),
     }]);
     setup_pool_post_threshold(&mut deps);
 
@@ -725,7 +1101,7 @@ fn test_swap_with_max_spread() {
 fn test_commit_threshold_overshoot_split() {
     let mut deps = mock_dependencies_with_balance(&[Coin {
         denom: "stake".to_string(),
-        amount: Uint128::new(100_000_000_000), 
+        amount: Uint128::new(100_000_000_000),
     }]);
 
     setup_pool_storage(&mut deps);
@@ -946,35 +1322,33 @@ fn test_swap_cw20_via_hook() {
     let mut deps = mock_dependencies();
     setup_pool_post_threshold(&mut deps);
 
-    deps.querier.update_wasm(move |query| {
-        match query {
-            WasmQuery::Smart { contract_addr, msg } => {
-                if contract_addr == "token_contract" {
-                    if msg.to_string().contains("balance") {
-                        let balance_response = cw20::BalanceResponse {
-                            balance: Uint128::new(350_000_000_000), 
-                        };
-                        SystemResult::Ok(ContractResult::Ok(
-                            to_json_binary(&balance_response).unwrap(),
-                        ))
-                    } else {
-                        SystemResult::Err(SystemError::InvalidRequest {
-                            error: "Unknown query".to_string(),
-                            request: msg.clone(),
-                        })
-                    }
+    deps.querier.update_wasm(move |query| match query {
+        WasmQuery::Smart { contract_addr, msg } => {
+            if contract_addr == "token_contract" {
+                if msg.to_string().contains("balance") {
+                    let balance_response = cw20::BalanceResponse {
+                        balance: Uint128::new(350_000_000_000),
+                    };
+                    SystemResult::Ok(ContractResult::Ok(
+                        to_json_binary(&balance_response).unwrap(),
+                    ))
                 } else {
                     SystemResult::Err(SystemError::InvalidRequest {
-                        error: "Unknown contract".to_string(),
+                        error: "Unknown query".to_string(),
                         request: msg.clone(),
                     })
                 }
+            } else {
+                SystemResult::Err(SystemError::InvalidRequest {
+                    error: "Unknown contract".to_string(),
+                    request: msg.clone(),
+                })
             }
-            _ => SystemResult::Err(SystemError::InvalidRequest {
-                error: "Unknown query type".to_string(),
-                request: Binary::default(),
-            }),
         }
+        _ => SystemResult::Err(SystemError::InvalidRequest {
+            error: "Unknown query type".to_string(),
+            request: Binary::default(),
+        }),
     });
 
     let env = mock_env();
@@ -987,7 +1361,7 @@ fn test_swap_cw20_via_hook() {
         amount: swap_amount,
         msg: to_json_binary(&Cw20HookMsg::Swap {
             belief_price: None,
-            max_spread: Some(Decimal::percent(10)), 
+            max_spread: Some(Decimal::percent(10)),
             to: None,
             transaction_deadline: None,
         })
@@ -1165,7 +1539,7 @@ fn test_commit_with_changing_oracle_prices() {
         "user2",
         &[Coin {
             denom: "stake".to_string(),
-            amount: Uint128::new(5_000_000), 
+            amount: Uint128::new(5_000_000),
         }],
     );
 
@@ -1380,7 +1754,7 @@ fn test_extreme_oracle_prices() {
         "user",
         &[Coin {
             denom: "stake".to_string(),
-            amount: Uint128::new(1_000_000_000), 
+            amount: Uint128::new(1_000_000_000),
         }],
     );
 
@@ -1401,7 +1775,7 @@ fn test_extreme_oracle_prices() {
     assert!(res_low.is_ok(), "Should handle very low prices");
 
     let usd_low = USD_RAISED_FROM_COMMIT.load(&deps_low.storage).unwrap();
-    assert_eq!(usd_low, Uint128::new(1_000_000)); 
+    assert_eq!(usd_low, Uint128::new(1_000_000));
 
     let mut deps_high = mock_dependencies_with_balance(&[Coin {
         denom: "stake".to_string(),
@@ -1436,7 +1810,7 @@ fn test_extreme_oracle_prices() {
     assert!(res_high.is_ok(), "Should handle very high prices");
 
     let usd_high = USD_RAISED_FROM_COMMIT.load(&deps_high.storage).unwrap();
-    assert_eq!(usd_high, Uint128::new(1_000_000_000)); 
+    assert_eq!(usd_high, Uint128::new(1_000_000_000));
 }
 
 #[test]
@@ -1543,8 +1917,7 @@ fn test_commit_with_zero_oracle_price() {
     assert!(result.is_err(), "Should reject zero oracle price");
 
     match result.unwrap_err() {
-        ContractError::InvalidOraclePrice {} => {
-        }
+        ContractError::InvalidOraclePrice {} => {}
         other => panic!("Wrong error type: {:?}", other),
     }
 }

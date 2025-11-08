@@ -1,10 +1,14 @@
 #![allow(non_snake_case)]
 use crate::error::ContractError;
 use crate::msg::{CommitFeeInfo, ExecuteMsg};
-use crate::state::{CREATOR_EXCESS_POSITION, CreatorExcessLiquidity, DISTRIBUTION_STATE, DistributionState, MAX_DISTRIBUTIONS_PER_TX, PoolState};
 use crate::state::{
     CommitLimitInfo, PoolFeeState, PoolInfo, PoolSpecs, ThresholdPayoutAmounts, COMMIT_LEDGER,
-    POOL_FEE_STATE, POOL_STATE, USER_LAST_COMMIT,
+    DEFAULT_ESTIMATED_GAS_PER_DISTRIBUTION, DEFAULT_MAX_GAS_PER_TX, POOL_FEE_STATE, POOL_STATE,
+    USER_LAST_COMMIT,
+};
+use crate::state::{
+    CreatorExcessLiquidity, DistributionState, PoolState, CREATOR_EXCESS_POSITION,
+    DISTRIBUTION_STATE,
 };
 use cosmwasm_std::{
     to_json_binary, Addr, Coin, CosmosMsg, Decimal, Decimal256, DepsMut, Env, Order, StdError,
@@ -151,7 +155,9 @@ pub fn trigger_threshold_payout(
         + payout.commit_return_amount;
 
     if total != Uint128::new(1_200_000_000_000) {
-        return Err(StdError::generic_err("Threshold payout corruption detected"));
+        return Err(StdError::generic_err(
+            "Threshold payout corruption detected",
+        ));
     }
 
     msgs.push(mint_tokens(
@@ -176,10 +182,25 @@ pub fn trigger_threshold_payout(
         .keys(storage, None, None, Order::Ascending)
         .count();
 
+    let (estimated_gas_per_distribution, max_gas_per_tx) = {
+        // If you have global config, read it; otherwise derive from defaults or dist_state if present.
+        // Here we use same defaults you used when saving dist_state earlier.
+        let default_estimated = DEFAULT_ESTIMATED_GAS_PER_DISTRIBUTION;
+        let default_max_gas = DEFAULT_MAX_GAS_PER_TX;
+        (default_estimated, default_max_gas)
+    };
+
+    let batch_size = if estimated_gas_per_distribution == 0 {
+        1u32
+    } else {
+        (max_gas_per_tx / estimated_gas_per_distribution).max(1) as u32
+    };
+
+    // total_committers is usize; be careful when comparing
     if total_committers == 0 {
         // No committers to pay — nothing to do
-    } else if total_committers <= MAX_DISTRIBUTIONS_PER_TX as usize {
-        // Collect all committers first (immutable borrow)
+    } else if total_committers <= batch_size as usize {
+        // We can process them all in a single TX (batch_size large enough)
         let committers: Vec<(Addr, Uint128)> = COMMIT_LEDGER
             .range(storage, None, None, Order::Ascending)
             .map(|r| r.map_err(|e| StdError::generic_err(e.to_string())))
@@ -206,16 +227,13 @@ pub fn trigger_threshold_payout(
             total_committed_usd: commit_config.commit_amount_for_threshold_usd,
             last_processed_key: None,
             distributions_remaining: total_committers as u32,
+            estimated_gas_per_distribution: DEFAULT_ESTIMATED_GAS_PER_DISTRIBUTION,
+            max_gas_per_tx: DEFAULT_MAX_GAS_PER_TX,
+            last_successful_batch_size: None,
+            consecutive_failures: 0,
         };
         DISTRIBUTION_STATE.save(storage, &dist_state)?;
-
-        // Process first batch immediately
-        let batch_msgs = process_distribution_batch(
-            storage,
-            pool_info,
-            env,
-            MAX_DISTRIBUTIONS_PER_TX,
-        )?;
+        let batch_msgs = process_distribution_batch(storage, pool_info, env)?;
         msgs.extend(batch_msgs);
     }
 
@@ -224,29 +242,34 @@ pub fn trigger_threshold_payout(
         commit_config.commit_amount_for_threshold * (Decimal::one() - total_fee_rate);
 
     if pools_bluechip_seed > commit_config.max_bluechip_lock_per_pool {
-    let excess_bluechip = pools_bluechip_seed - commit_config.max_bluechip_lock_per_pool;
-        
+        let excess_bluechip = pools_bluechip_seed - commit_config.max_bluechip_lock_per_pool;
+
         // Calculate proportional creator tokens for the excess
         // (excess_bluechip / total_bluechip) * total_creator_tokens
-        let excess_creator_tokens = payout.pool_seed_amount
+        let excess_creator_tokens = payout
+            .pool_seed_amount
             .checked_mul(excess_bluechip)?
             .checked_div(pools_bluechip_seed)?;
-        
+
         // Store creator's locked excess position
-        CREATOR_EXCESS_POSITION.save(storage, &CreatorExcessLiquidity {
-            creator: fee_info.creator_wallet_address.clone(),
-            bluechip_amount: excess_bluechip,
-            token_amount: excess_creator_tokens,
-            unlock_time: env.block.time.plus_seconds(
-                commit_config.creator_excess_liquidity_lock_days * 86400
-            ),
-            excess_nft_id: None,
-        })?;
-        
+        CREATOR_EXCESS_POSITION.save(
+            storage,
+            &CreatorExcessLiquidity {
+                creator: fee_info.creator_wallet_address.clone(),
+                bluechip_amount: excess_bluechip,
+                token_amount: excess_creator_tokens,
+                unlock_time: env
+                    .block
+                    .time
+                    .plus_seconds(commit_config.creator_excess_liquidity_lock_days * 86400),
+                excess_nft_id: None,
+            },
+        )?;
+
         // Set capped reserves for dead liquidity
         pool_state.reserve0 = commit_config.max_bluechip_lock_per_pool;
         pool_state.reserve1 = payout.pool_seed_amount - excess_creator_tokens;
-        
+
         // Add excess to reserves (tracked but owned by creator after unlock)
         pool_state.reserve0 += excess_bluechip;
         pool_state.reserve1 += excess_creator_tokens;
@@ -269,49 +292,50 @@ pub fn trigger_threshold_payout(
     Ok(msgs)
 }
 
-
 pub fn process_distribution_batch(
     storage: &mut dyn Storage,
     pool_info: &PoolInfo,
     env: &Env,
-    batch_size: u32,
 ) -> StdResult<Vec<CosmosMsg>> {
     let mut msgs = Vec::new();
     let dist_state = DISTRIBUTION_STATE.load(storage)?;
-    
+
     // Determine starting point
-    let start_after = dist_state.last_processed_key
+    let start_after = dist_state
+        .last_processed_key
         .as_ref()
         .map(|addr| Bound::exclusive(addr));
-    
+
+    let effective_batch_size = calculate_effective_batch_size(&dist_state);
     // Process batch
     let batch: Vec<_> = COMMIT_LEDGER
         .range(storage, start_after, None, Order::Ascending)
-        .take(batch_size as usize)
+        .take(effective_batch_size as usize)
         .collect::<StdResult<Vec<_>>>()?;
-    
+
     let actual_batch_size = batch.len() as u32;
     let mut last_processed = None;
-    
+
     for (payer, usd_paid) in batch {
         let reward = calculate_committer_reward(
             usd_paid,
             dist_state.total_to_distribute,
             dist_state.total_committed_usd,
         )?;
-        
+
         if !reward.is_zero() {
             msgs.push(mint_tokens(&pool_info.token_address, &payer, reward)?);
         }
-        
+
         COMMIT_LEDGER.remove(storage, &payer);
         last_processed = Some(payer);
     }
-    
+
     // Update state
-    let new_remaining = dist_state.distributions_remaining
+    let new_remaining = dist_state
+        .distributions_remaining
         .saturating_sub(actual_batch_size);
-    
+
     if new_remaining == 0 {
         // All done
         DISTRIBUTION_STATE.remove(storage);
@@ -323,18 +347,43 @@ pub fn process_distribution_batch(
             total_committed_usd: dist_state.total_committed_usd,
             last_processed_key: last_processed,
             distributions_remaining: new_remaining,
+            estimated_gas_per_distribution: dist_state.estimated_gas_per_distribution,
+            max_gas_per_tx: dist_state.max_gas_per_tx,
+            last_successful_batch_size: Some(actual_batch_size),
+            consecutive_failures: 0,
         };
         DISTRIBUTION_STATE.save(storage, &updated_state)?;
-        
+
         // Trigger continuation
         msgs.push(CosmosMsg::Wasm(WasmMsg::Execute {
             contract_addr: env.contract.address.to_string(),
             msg: to_json_binary(&ExecuteMsg::ContinueDistribution {})?,
             funds: vec![],
         }));
+        println!("Debug: msgs.len() = {}, new_remaining = {}", msgs.len(), new_remaining);
     }
-    
+
     Ok(msgs)
+    
+}
+
+pub fn calculate_effective_batch_size(dist_state: &DistributionState) -> u32 {
+    // Base calculation from gas estimates
+    let base_batch_size = if dist_state.estimated_gas_per_distribution == 0 {
+        1u32
+    } else {
+        (dist_state.max_gas_per_tx / dist_state.estimated_gas_per_distribution) as u32
+    };
+    
+    // If we have a record of successful batch size, use it as reference
+    if let Some(last_successful) = dist_state.last_successful_batch_size {
+        // Use 90% of last successful to be safe
+        let safe_size = (last_successful * 9) / 10;
+        base_batch_size.min(safe_size).max(1)
+    } else {
+        // First run or no history - be conservative
+        base_batch_size.min(10).max(1)
+    }
 }
 
 fn calculate_committer_reward(
@@ -345,13 +394,13 @@ fn calculate_committer_reward(
     if total_committed_usd.is_zero() {
         return Ok(Uint128::zero());
     }
-    
+
     let reward = Uint128::try_from(
         Uint256::from(usd_paid)
             .checked_mul(Uint256::from(total_to_distribute))?
-            .checked_div(Uint256::from(total_committed_usd))?
+            .checked_div(Uint256::from(total_committed_usd))?,
     )?;
-    
+
     Ok(reward)
 }
 
