@@ -26,7 +26,7 @@ pub fn setup_pool_with_excess_config(deps: &mut OwnedDeps<MockStorage, MockApi, 
     let commit_config = CommitLimitInfo {
         commit_amount_for_threshold: Uint128::new(25_000_000_000),
         commit_amount_for_threshold_usd: Uint128::new(25_000_000_000),
-        max_bluechip_lock_per_pool: Uint128::new(100_000_000_000), 
+        max_bluechip_lock_per_pool: Uint128::new(100_000), 
         creator_excess_liquidity_lock_days: 14,                 
     };
 

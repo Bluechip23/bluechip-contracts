@@ -12,6 +12,7 @@ pub mod pyth_types;
 pub mod internal_bluechip_price_oracle;
 pub mod internal_bluechip_price_oracle_query;
 pub mod migrate;
+pub mod mint_bluechips_pool_creation;
 
 #[cfg(test)]
 mod testing;

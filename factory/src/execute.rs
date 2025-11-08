@@ -2,19 +2,21 @@ use crate::error::ContractError;
 use crate::internal_bluechip_price_oracle::{
     execute_force_rotate_pools, initialize_internal_bluechip_oracle, update_internal_oracle_price,
 };
+use crate::mint_bluechips_pool_creation::calculate_and_mint_bluechip;
 use crate::msg::{CreatorTokenInfo, ExecuteMsg, TokenInstantiateMsg};
 use crate::pool_create_cleanup::handle_cleanup_reply;
 use crate::pool_creation_reply::{finalize_pool, mint_create_pool, set_tokens};
 use crate::pool_struct::{CreatePool, PoolConfigUpdate, TempPoolCreation};
 use crate::state::{
-    CreationStatus, FactoryInstantiate, PoolCreationState, PoolUpgrade, FACTORYINSTANTIATEINFO, PENDING_POOL_UPGRADE, POOL_COUNTER, POOL_CREATION_STATES, POOL_REGISTRY, TEMP_POOL_CREATION
+    CreationStatus, FactoryInstantiate, PoolCreationState, PoolUpgrade, FACTORYINSTANTIATEINFO,
+    PENDING_POOL_UPGRADE, POOL_COUNTER, POOL_CREATION_STATES, POOL_REGISTRY, TEMP_POOL_CREATION,
 };
-use cosmwasm_std::{Binary, CosmosMsg, Order};
 #[cfg(not(feature = "library"))]
 use cosmwasm_std::{
     entry_point, to_json_binary, Deps, DepsMut, Env, MessageInfo, Reply, Response, StdError,
     StdResult, SubMsg, Uint128, WasmMsg,
 };
+use cosmwasm_std::{Binary, CosmosMsg, Order};
 use cw20::MinterResponse;
 use std::env;
 
@@ -55,12 +57,16 @@ pub fn execute(
         } => execute_create_creator_pool(deps, env, info, pool_msg, token_info),
         ExecuteMsg::UpdateOraclePrice {} => update_internal_oracle_price(deps, env),
         ExecuteMsg::ForceRotateOraclePools {} => execute_force_rotate_pools(deps, env, info),
-         ExecuteMsg::UpgradePools { new_code_id, pool_ids, migrate_msg } => 
-            execute_upgrade_pools(deps, env, info, new_code_id, pool_ids, migrate_msg),
-        ExecuteMsg::ContinuePoolUpgrade {} => 
-            execute_continue_pool_upgrade(deps, env, info),
-        ExecuteMsg::UpdatePoolConfig { pool_id, pool_config } => 
-            execute_update_pool_config(deps, env, info, pool_id, pool_config),
+        ExecuteMsg::UpgradePools {
+            new_code_id,
+            pool_ids,
+            migrate_msg,
+        } => execute_upgrade_pools(deps, env, info, new_code_id, pool_ids, migrate_msg),
+        ExecuteMsg::ContinuePoolUpgrade {} => execute_continue_pool_upgrade(deps, env, info),
+        ExecuteMsg::UpdatePoolConfig {
+            pool_id,
+            pool_config,
+        } => execute_update_pool_config(deps, env, info, pool_id, pool_config),
     }
 }
 
@@ -87,7 +93,7 @@ fn execute_update_config(
 }
 
 fn execute_create_creator_pool(
-    deps: DepsMut,
+    mut deps: DepsMut, 
     env: Env,
     info: MessageInfo,
     pool_msg: CreatePool,
@@ -99,6 +105,7 @@ fn execute_create_creator_pool(
     let pool_counter = POOL_COUNTER.load(deps.storage).unwrap_or(0);
     let pool_id = pool_counter + 1;
     POOL_COUNTER.save(deps.storage, &pool_id)?;
+    let mint_messages = calculate_and_mint_bluechip(&mut deps, env.clone(), pool_id)?;
     TEMP_POOL_CREATION.save(
         deps.storage,
         &TempPoolCreation {
@@ -140,9 +147,11 @@ fn execute_create_creator_pool(
         retry_count: 0,
     };
     POOL_CREATION_STATES.save(deps.storage, pool_id, &creation_state)?;
+    // calculate mint messages after we've used `deps` for saves to avoid moving it earlier
     let sub_msg = vec![SubMsg::reply_on_success(msg, SET_TOKENS)];
 
     Ok(Response::new()
+        .add_messages(mint_messages)
         .add_attribute("action", "create")
         .add_attribute("creator", sender.to_string())
         .add_attribute("pool_id", pool_id.to_string())
@@ -175,7 +184,7 @@ pub fn execute_upgrade_pools(
     migrate_msg: Binary,
 ) -> Result<Response, ContractError> {
     assert_correct_factory_address(deps.as_ref(), info)?;
-    
+
     // Get pools to upgrade
     let pools_to_upgrade = if let Some(ids) = pool_ids {
         ids
@@ -185,19 +194,22 @@ pub fn execute_upgrade_pools(
             .keys(deps.storage, None, None, Order::Ascending)
             .collect::<StdResult<Vec<_>>>()?
     };
-    
+
     // Store upgrade info
-    PENDING_POOL_UPGRADE.save(deps.storage, &PoolUpgrade {
-        new_code_id,
-        migrate_msg: migrate_msg.clone(),
-        pools_to_upgrade: pools_to_upgrade.clone(),
-        upgraded_count: 0,
-    })?;
-    
+    PENDING_POOL_UPGRADE.save(
+        deps.storage,
+        &PoolUpgrade {
+            new_code_id,
+            migrate_msg: migrate_msg.clone(),
+            pools_to_upgrade: pools_to_upgrade.clone(),
+            upgraded_count: 0,
+        },
+    )?;
+
     // Start upgrading (batch to avoid gas issues)
     let batch_size = 10; // Upgrade 10 pools per tx
     let mut messages = vec![];
-    
+
     for pool_id in pools_to_upgrade.iter().take(batch_size) {
         let pool_addr = POOL_REGISTRY.load(deps.storage, *pool_id)?;
         messages.push(CosmosMsg::Wasm(WasmMsg::Migrate {
@@ -206,7 +218,7 @@ pub fn execute_upgrade_pools(
             msg: migrate_msg.clone(),
         }));
     }
-    
+
     // If more pools remain, trigger continuation
     if pools_to_upgrade.len() > batch_size {
         messages.push(CosmosMsg::Wasm(WasmMsg::Execute {
@@ -215,7 +227,7 @@ pub fn execute_upgrade_pools(
             funds: vec![],
         }));
     }
-    
+
     Ok(Response::new()
         .add_messages(messages)
         .add_attribute("action", "upgrade_pools")
@@ -231,9 +243,9 @@ pub fn execute_update_pool_config(
     update_msg: PoolConfigUpdate,
 ) -> Result<Response, ContractError> {
     assert_correct_factory_address(deps.as_ref(), info)?;
-    
+
     let pool_addr = POOL_REGISTRY.load(deps.storage, pool_id)?;
-    
+
     // Send update message to specific pool
     let msg = CosmosMsg::Wasm(WasmMsg::Execute {
         contract_addr: pool_addr.to_string(),
@@ -243,7 +255,7 @@ pub fn execute_update_pool_config(
         })?,
         funds: vec![],
     });
-    
+
     Ok(Response::new()
         .add_message(msg)
         .add_attribute("action", "update_pool_config")
@@ -259,16 +271,17 @@ pub fn execute_continue_pool_upgrade(
     if info.sender != env.contract.address {
         return Err(ContractError::Unauthorized {});
     }
-    
+
     let mut upgrade = PENDING_POOL_UPGRADE.load(deps.storage)?;
-    
+
     // Skip already upgraded pools (borrow the vector immutably to avoid moving `upgrade`)
-    let remaining_pools: Vec<u64> = upgrade.pools_to_upgrade
+    let remaining_pools: Vec<u64> = upgrade
+        .pools_to_upgrade
         .iter()
         .cloned()
         .skip(upgrade.upgraded_count as usize)
         .collect();
-    
+
     if remaining_pools.is_empty() {
         // All done
         PENDING_POOL_UPGRADE.remove(deps.storage);
@@ -276,10 +289,10 @@ pub fn execute_continue_pool_upgrade(
             .add_attribute("action", "upgrade_complete")
             .add_attribute("total_upgraded", upgrade.upgraded_count.to_string()));
     }
-    
+
     let batch_size = 10;
     let mut messages = vec![];
-    
+
     for pool_id in remaining_pools.iter().take(batch_size) {
         let pool_addr = POOL_REGISTRY.load(deps.storage, *pool_id)?;
         messages.push(CosmosMsg::Wasm(WasmMsg::Migrate {
@@ -289,10 +302,10 @@ pub fn execute_continue_pool_upgrade(
         }));
         upgrade.upgraded_count += 1;
     }
-    
+
     // Save progress
     PENDING_POOL_UPGRADE.save(deps.storage, &upgrade)?;
-    
+
     // Continue if more remain
     if remaining_pools.len() > batch_size {
         messages.push(CosmosMsg::Wasm(WasmMsg::Execute {
@@ -304,7 +317,7 @@ pub fn execute_continue_pool_upgrade(
         // This was the last batch
         PENDING_POOL_UPGRADE.remove(deps.storage);
     }
-    
+
     Ok(Response::new()
         .add_messages(messages.clone())
         .add_attribute("action", "continue_upgrade")
