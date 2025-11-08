@@ -55,6 +55,10 @@ pub struct FactoryInstantiate {
     pub commit_fee_bluechip: Decimal,
     //fee distributed to creator ever commit - 5%
     pub commit_fee_creator: Decimal,
+    //max bluechip that can be locked per pool - protects against pools locking to much bluechip in extreme market conditions
+    pub max_bluechip_lock_per_pool: Uint128,
+    //days until creator gains access to above max locked bluechip for their pool. 
+    pub creator_excess_liquidity_lock_days: u64,
 }
 //info about creator and pool for commit tracking
 #[cw_serde]

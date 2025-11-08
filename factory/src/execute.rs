@@ -94,7 +94,7 @@ fn execute_create_creator_pool(
     token_info: CreatorTokenInfo,
 ) -> Result<Response, ContractError> {
     assert_correct_factory_address(deps.as_ref(), info.clone())?;
-    let config = FACTORYINSTANTIATEINFO.load(deps.storage)?;
+    let factory_cw20 = FACTORYINSTANTIATEINFO.load(deps.storage)?;
     let sender = info.sender.clone();
     let pool_counter = POOL_COUNTER.load(deps.storage).unwrap_or(0);
     let pool_id = pool_counter + 1;
@@ -110,7 +110,7 @@ fn execute_create_creator_pool(
         },
     )?;
     let msg = WasmMsg::Instantiate {
-        code_id: config.cw20_token_contract_id,
+        code_id: factory_cw20.cw20_token_contract_id,
         //creating the creator token only, no minting.
         msg: to_json_binary(&TokenInstantiateMsg {
             name: token_info.name.clone(),

@@ -1,8 +1,15 @@
 use std::str::FromStr;
 
-use crate::error::ContractError;
-use crate::state::POOL_STATE;
-use cosmwasm_std::{Addr, Decimal, Deps, StdError, Uint128};
+use crate::state::{
+    Position, TokenMetadata, LIQUIDITY_POSITIONS, NEXT_POSITION_ID, POOL_FEE_STATE, POOL_INFO,
+    POOL_STATE,
+};
+use crate::{error::ContractError, state::CREATOR_EXCESS_POSITION};
+use cosmwasm_std::{
+    to_json_binary, Addr, CosmosMsg, Decimal, Deps, DepsMut, Env, MessageInfo, Response, StdError,
+    StdResult, Uint128, WasmMsg,
+};
+use cw721_base::ExecuteMsg as CW721BaseExecuteMsg;
 pub const OPTIMAL_LIQUIDITY: Uint128 = Uint128::new(1_000_000);
 // 10% fees for tiny positions
 pub const MIN_MULTIPLIER: &str = "0.1";
@@ -148,4 +155,80 @@ pub fn verify_position_ownership(
     }
 
     Ok(())
+}
+
+pub fn execute_claim_creator_excess(
+    deps: DepsMut,
+    env: Env,
+    info: MessageInfo,
+) -> Result<Response, ContractError> {
+    let excess_position = CREATOR_EXCESS_POSITION.load(deps.storage)?;
+    let pool_info = POOL_INFO.load(deps.storage)?;
+    let pool_fee_state = POOL_FEE_STATE.load(deps.storage)?;
+
+    if info.sender != excess_position.creator {
+        return Err(ContractError::Unauthorized {});
+    }
+
+    if env.block.time < excess_position.unlock_time {
+        return Err(ContractError::PositionLocked {
+            unlock_time: excess_position.unlock_time,
+        });
+    }
+
+    // Generate position ID
+    let position_counter =
+        NEXT_POSITION_ID.update(deps.storage, |n| -> StdResult<_> { Ok(n + 1) })?;
+    let position_id = format!("position_{}", position_counter);
+
+    // Create metadata for the NFT
+    let metadata = TokenMetadata {
+        name: Some("Creator excess position".to_string()),
+        description: Some("Claim for excess bluechip/token liquidity".to_string()),
+    };
+
+    // Use your existing NFT minting pattern
+    let mint_liquidity_nft = WasmMsg::Execute {
+        contract_addr: pool_info.position_nft_address.to_string(),
+        msg: to_json_binary(
+            &CW721BaseExecuteMsg::<TokenMetadata, cosmwasm_std::Empty>::Mint {
+                token_id: position_id.clone(),
+                owner: excess_position.creator.to_string(),
+                token_uri: None,
+                extension: metadata,
+            },
+        )?,
+        funds: vec![],
+    };
+
+    // Calculate liquidity value for this position
+    let product = excess_position
+        .bluechip_amount
+        .checked_mul(excess_position.token_amount)
+        .map_err(|_| ContractError::Std(StdError::generic_err("overflow on multiplication")))?;
+    let liquidity = integer_sqrt(product).max(Uint128::new(1));
+
+    let fee_size_multiplier = calculate_fee_size_multiplier(liquidity);
+
+    // Store position using your existing structure
+    let position = Position {
+        liquidity,
+        owner: excess_position.creator.clone(),
+        fee_growth_inside_0_last: pool_fee_state.fee_growth_global_0,
+        fee_growth_inside_1_last: pool_fee_state.fee_growth_global_1,
+        created_at: env.block.time.seconds(),
+        last_fee_collection: env.block.time.seconds(),
+        fee_size_multiplier,
+    };
+
+    LIQUIDITY_POSITIONS.save(deps.storage, &position_id, &position)?;
+
+    // Clean up the excess position record
+    CREATOR_EXCESS_POSITION.remove(deps.storage);
+
+    Ok(Response::new()
+        .add_message(CosmosMsg::Wasm(mint_liquidity_nft))
+        .add_attribute("action", "claim_creator_excess")
+        .add_attribute("position_id", position_id)
+        .add_attribute("liquidity", liquidity.to_string()))
 }

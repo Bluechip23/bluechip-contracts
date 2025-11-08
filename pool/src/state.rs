@@ -58,9 +58,7 @@ pub const ORACLE_INFO: Item<OracleInfo> = Item::new("oracle_info");
 //tracking the global fee growth and total fees collected for the poolS
 pub const POOL_FEE_STATE: Item<PoolFeeState> = Item::new("pool_fee_state");
 pub const POOLS: Map<&str, PoolState> = Map::new("pools");
-
-
-
+pub const CREATOR_EXCESS_POSITION: Item<CreatorExcessLiquidity> = Item::new("creator_excess");
 
 #[cw_serde]
 pub struct DistributionState {
@@ -167,6 +165,16 @@ pub struct ThresholdPayoutAmounts {
 pub struct CommitLimitInfo {
     pub commit_amount_for_threshold: Uint128,
     pub commit_amount_for_threshold_usd: Uint128,
+    pub max_bluechip_lock_per_pool: Uint128,
+    pub creator_excess_liquidity_lock_days: u64,
+}
+#[cw_serde]
+pub struct CreatorExcessLiquidity {
+    pub creator: Addr,
+    pub bluechip_amount: Uint128, // Excess bluechip amount
+    pub token_amount: Uint128,    // Proportional creator tokens
+    pub unlock_time: Timestamp,
+    pub excess_nft_id: Option<String>, 
 }
 
 #[cw_serde]

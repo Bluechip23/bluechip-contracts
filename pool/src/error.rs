@@ -1,4 +1,4 @@
-use cosmwasm_std::{OverflowError, StdError, Uint128};
+use cosmwasm_std::{OverflowError, StdError, Timestamp, Uint128};
 use thiserror::Error;
 
 #[derive(Error, Debug, PartialEq)]
@@ -8,6 +8,11 @@ pub enum ContractError {
 
     #[error("Unauthorized")]
     Unauthorized {},
+
+    #[error("")]
+    PositionLocked {
+        unlock_time: Timestamp,
+    },
 
     #[error("No distribution in progress")]
     NoDistributionInProgress {},

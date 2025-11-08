@@ -190,6 +190,8 @@ fn setup_factory(deps: &mut OwnedDeps<MockStorage, MockApi, MockQuerier>) {
         bluechip_wallet_address: Addr::unchecked("bluechip"),
         commit_fee_bluechip: Decimal::percent(1),
         commit_fee_creator: Decimal::percent(5),
+        max_bluechip_lock_per_pool: Uint128::new(10_000_000_000),
+        creator_excess_liquidity_lock_days: 7,
     };
 
     instantiate(deps.as_mut(), mock_env(), mock_info("deployer", &[]), msg).unwrap();

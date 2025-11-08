@@ -12,6 +12,7 @@ use crate::liquidity::{
     execute_remove_all_liquidity, execute_remove_partial_liquidity,
     execute_remove_partial_liquidity_by_percent,
 };
+use crate::liquidity_helpers::execute_claim_creator_excess;
 use crate::msg::{Cw20HookMsg, ExecuteMsg, MigrateMsg, PoolConfigUpdate, PoolInstantiateMsg};
 use crate::query::query_check_commit;
 use crate::response::MsgInstantiateContractResponse;
@@ -130,6 +131,8 @@ pub fn instantiate(
     let commit_config = CommitLimitInfo {
         commit_amount_for_threshold_usd: msg.commit_threshold_limit_usd,
         commit_amount_for_threshold: msg.commit_amount_for_threshold,
+        max_bluechip_lock_per_pool: msg.max_bluechip_lock_per_pool,
+        creator_excess_liquidity_lock_days: msg.creator_excess_liquidity_lock_days,
     };
 
     let oracle_info = OracleInfo {
@@ -352,6 +355,7 @@ pub fn execute(
             min_amount0,
             min_amount1,
         ),
+        ExecuteMsg::ClaimCreatorExcessLiquidity {} => execute_claim_creator_excess(deps, env, info),
     }
 }
 

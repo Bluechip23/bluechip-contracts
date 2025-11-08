@@ -91,7 +91,7 @@ pub fn mint_create_pool(deps: DepsMut, env: Env, msg: Reply) -> Result<Response,
             creation_state.status = CreationStatus::NftCreated;
             POOL_CREATION_STATES.save(deps.storage, pool_id, &creation_state)?;
 
-            let config = FACTORYINSTANTIATEINFO.load(deps.storage)?;
+            let factory_config = FACTORYINSTANTIATEINFO.load(deps.storage)?;
             let token_address = pool_context.creator_token_addr.clone().ok_or_else(|| {
                 ContractError::Std(StdError::generic_err("missing token address"))
             })?;
@@ -119,23 +119,26 @@ pub fn mint_create_pool(deps: DepsMut, env: Env, msg: Reply) -> Result<Response,
                 }
             }
             let pool_msg = WasmMsg::Instantiate {
-                code_id: config.create_pool_wasm_contract_id,
+                code_id: factory_config.create_pool_wasm_contract_id,
                 msg: to_json_binary(&CreatePoolReplyMsg {
                     pool_id,
                     pool_token_info: updated_asset_infos,
                     used_factory_addr: env.contract.address.clone(),
-                    cw20_token_contract_id: config.cw20_token_contract_id,
+                    cw20_token_contract_id: factory_config.cw20_token_contract_id,
                     threshold_payout: Some(threshold_binary),
                     commit_fee_info: CommitFeeInfo {
-                        bluechip_wallet_address: config.bluechip_wallet_address.clone(),
+                        bluechip_wallet_address: factory_config.bluechip_wallet_address.clone(),
                         creator_wallet_address: pool_context.temp_creator_wallet.clone(),
-                        commit_fee_bluechip: config.commit_fee_bluechip,
-                        commit_fee_creator: config.commit_fee_creator,
+                        commit_fee_bluechip: factory_config.commit_fee_bluechip,
+                        commit_fee_creator: factory_config.commit_fee_creator,
                     },
-                    commit_amount_for_threshold: config.commit_amount_for_threshold_bluechip,
-                    commit_threshold_limit_usd: config.commit_threshold_limit_usd,
+                    commit_amount_for_threshold: factory_config.commit_amount_for_threshold_bluechip,
+                    commit_threshold_limit_usd: factory_config.commit_threshold_limit_usd,
                     token_address,
                     position_nft_address: nft_address.clone(),
+                    max_bluechip_lock_per_pool: factory_config.max_bluechip_lock_per_pool,
+                    creator_excess_liquidity_lock_days: factory_config.creator_excess_liquidity_lock_days,
+
                 })?,
                 funds: vec![],
                 admin: Some(env.contract.address.to_string()),

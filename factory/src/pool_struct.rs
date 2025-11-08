@@ -26,6 +26,8 @@ pub struct CreatePool {
     pub pyth_contract_addr_for_conversions: String,
     // the symbol the contract will be looking for for commit messages. the bluechip token's symbol
     pub pyth_atom_usd_price_feed_id: String,
+    pub max_bluechip_lock_per_pool: Uint128,
+    pub creator_excess_liquidity_lock_days: u64,
 }
 #[cw_serde]
 pub struct PoolConfigUpdate {
