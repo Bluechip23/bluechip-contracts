@@ -48,7 +48,6 @@ pub const THRESHOLD_PAYOUT_AMOUNTS: Item<ThresholdPayoutAmounts> =
 //pool identifier incriments by 1 every pool
 pub const NEXT_POSITION_ID: Item<u64> = Item::new("next_position_id");
 pub const DISTRIBUTION_STATE: Item<DistributionState> = Item::new("distribution_state");
-pub const MAX_DISTRIBUTIONS_PER_TX: u32 = 40;
 //information liquiidty positions in pools
 pub const LIQUIDITY_POSITIONS: Map<&str, Position> = Map::new("positions");
 //commit limit and amount of bluechips that will be stored in pool
@@ -59,6 +58,9 @@ pub const ORACLE_INFO: Item<OracleInfo> = Item::new("oracle_info");
 pub const POOL_FEE_STATE: Item<PoolFeeState> = Item::new("pool_fee_state");
 pub const POOLS: Map<&str, PoolState> = Map::new("pools");
 pub const CREATOR_EXCESS_POSITION: Item<CreatorExcessLiquidity> = Item::new("creator_excess");
+pub const DEFAULT_ESTIMATED_GAS_PER_DISTRIBUTION: u64 = 50_000;
+pub const DEFAULT_MAX_GAS_PER_TX: u64 = 2_000_000;
+pub const MAX_DISTRIBUTIONS_PER_TX: u32 = 40;
 
 #[cw_serde]
 pub struct DistributionState {
@@ -67,6 +69,10 @@ pub struct DistributionState {
     pub total_committed_usd: Uint128,
     pub last_processed_key: Option<Addr>,
     pub distributions_remaining: u32,
+    pub estimated_gas_per_distribution: u64, 
+    pub max_gas_per_tx: u64,
+    pub last_successful_batch_size: Option<u32>,
+    pub consecutive_failures: u32,
 }
 
 #[cw_serde]
@@ -174,7 +180,7 @@ pub struct CreatorExcessLiquidity {
     pub bluechip_amount: Uint128, // Excess bluechip amount
     pub token_amount: Uint128,    // Proportional creator tokens
     pub unlock_time: Timestamp,
-    pub excess_nft_id: Option<String>, 
+    pub excess_nft_id: Option<String>,
 }
 
 #[cw_serde]
