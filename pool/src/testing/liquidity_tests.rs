@@ -777,6 +777,8 @@ pub fn setup_pool_storage(deps: &mut OwnedDeps<MockStorage, MockApi, MockQuerier
     let commit_config = CommitLimitInfo {
         commit_amount_for_threshold: Uint128::new(100_000_000), // 100 bluechip tokens
         commit_amount_for_threshold_usd: Uint128::new(25_000_000_000), // $25k with 6 decimals
+        max_bluechip_lock_per_pool: Uint128::new(10_000_000_000),
+        creator_excess_liquidity_lock_days: 7,
     };
     COMMIT_LIMIT_INFO.save(&mut deps.storage, &commit_config).unwrap();
 
@@ -1787,3 +1789,5 @@ pub fn create_test_position(
             }
         }
     }
+
+    

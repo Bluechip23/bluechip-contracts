@@ -1,7 +1,7 @@
 #![allow(non_snake_case)]
 use crate::error::ContractError;
 use crate::msg::{CommitFeeInfo, ExecuteMsg};
-use crate::state::{DistributionState, PoolState, DISTRIBUTION_STATE, MAX_DISTRIBUTIONS_PER_TX};
+use crate::state::{CREATOR_EXCESS_POSITION, CreatorExcessLiquidity, DISTRIBUTION_STATE, DistributionState, MAX_DISTRIBUTIONS_PER_TX, PoolState};
 use crate::state::{
     CommitLimitInfo, PoolFeeState, PoolInfo, PoolSpecs, ThresholdPayoutAmounts, COMMIT_LEDGER,
     POOL_FEE_STATE, POOL_STATE, USER_LAST_COMMIT,
@@ -145,7 +145,6 @@ pub fn trigger_threshold_payout(
 ) -> StdResult<Vec<CosmosMsg>> {
     let mut msgs = Vec::new();
 
-    // Validate total payout integrity
     let total = payout.creator_reward_amount
         + payout.bluechip_reward_amount
         + payout.pool_seed_amount
@@ -155,7 +154,6 @@ pub fn trigger_threshold_payout(
         return Err(StdError::generic_err("Threshold payout corruption detected"));
     }
 
-    // --- Single transfers (creator, bluechip, pool seed) ---
     msgs.push(mint_tokens(
         &pool_info.token_address,
         &fee_info.creator_wallet_address,
@@ -174,7 +172,6 @@ pub fn trigger_threshold_payout(
         payout.pool_seed_amount + commit_config.commit_amount_for_threshold,
     )?);
 
-    // --- Committer payouts ---
     let total_committers = COMMIT_LEDGER
         .keys(storage, None, None, Order::Ascending)
         .count();
@@ -188,7 +185,6 @@ pub fn trigger_threshold_payout(
             .map(|r| r.map_err(|e| StdError::generic_err(e.to_string())))
             .collect::<StdResult<Vec<_>>>()?;
 
-        // Now safely mutate storage
         for (payer, usd_paid) in committers {
             let reward = calculate_committer_reward(
                 usd_paid,
@@ -223,13 +219,42 @@ pub fn trigger_threshold_payout(
         msgs.extend(batch_msgs);
     }
 
-    // --- Update pool and fee state ---
     let total_fee_rate = fee_info.commit_fee_bluechip + fee_info.commit_fee_creator;
     let pools_bluechip_seed =
         commit_config.commit_amount_for_threshold * (Decimal::one() - total_fee_rate);
 
-    pool_state.reserve0 = pools_bluechip_seed;
-    pool_state.reserve1 = payout.pool_seed_amount;
+    if pools_bluechip_seed > commit_config.max_bluechip_lock_per_pool {
+    let excess_bluechip = pools_bluechip_seed - commit_config.max_bluechip_lock_per_pool;
+        
+        // Calculate proportional creator tokens for the excess
+        // (excess_bluechip / total_bluechip) * total_creator_tokens
+        let excess_creator_tokens = payout.pool_seed_amount
+            .checked_mul(excess_bluechip)?
+            .checked_div(pools_bluechip_seed)?;
+        
+        // Store creator's locked excess position
+        CREATOR_EXCESS_POSITION.save(storage, &CreatorExcessLiquidity {
+            creator: fee_info.creator_wallet_address.clone(),
+            bluechip_amount: excess_bluechip,
+            token_amount: excess_creator_tokens,
+            unlock_time: env.block.time.plus_seconds(
+                commit_config.creator_excess_liquidity_lock_days * 86400
+            ),
+            excess_nft_id: None,
+        })?;
+        
+        // Set capped reserves for dead liquidity
+        pool_state.reserve0 = commit_config.max_bluechip_lock_per_pool;
+        pool_state.reserve1 = payout.pool_seed_amount - excess_creator_tokens;
+        
+        // Add excess to reserves (tracked but owned by creator after unlock)
+        pool_state.reserve0 += excess_bluechip;
+        pool_state.reserve1 += excess_creator_tokens;
+    } else {
+        // Normal case - no excess
+        pool_state.reserve0 = pools_bluechip_seed;
+        pool_state.reserve1 = payout.pool_seed_amount;
+    }
     pool_state.total_liquidity = Uint128::zero();
 
     // Reset fee growth and collection tracking

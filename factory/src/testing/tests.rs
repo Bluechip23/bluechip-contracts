@@ -36,6 +36,8 @@ fn create_default_instantiate_msg() -> FactoryInstantiate {
         bluechip_wallet_address: Addr::unchecked("bluechip"),
         commit_fee_bluechip: Decimal::percent(1),
         commit_fee_creator: Decimal::percent(5),
+        max_bluechip_lock_per_pool: Uint128::new(1),
+        creator_excess_liquidity_lock_days: 7,
     }
 }
 
@@ -77,6 +79,8 @@ fn proper_initialization() {
         bluechip_wallet_address: Addr::unchecked("bluechip"),
         commit_fee_bluechip: Decimal::percent(10),
         commit_fee_creator: Decimal::percent(10),
+        max_bluechip_lock_per_pool: Uint128::new(10_000_000_000),
+        creator_excess_liquidity_lock_days: 7,
     };
 
     let env = mock_env();
@@ -228,6 +232,8 @@ fn create_pair() {
         bluechip_wallet_address: Addr::unchecked("bluechip"),
         commit_fee_bluechip: Decimal::percent(1),
         commit_fee_creator: Decimal::percent(5),
+        max_bluechip_lock_per_pool: Uint128::new(10_000_000_000),
+        creator_excess_liquidity_lock_days: 7,
     };
 
     let env = mock_env();
@@ -270,6 +276,8 @@ fn create_pair() {
                 pyth_contract_addr_for_conversions: "oracle0000".to_string(),
                 pyth_atom_usd_price_feed_id: "BLUECHIP".to_string(),
                 creator_token_address: Addr::unchecked("WILL_BE_CREATED_BY_FACTORY"),
+                max_bluechip_lock_per_pool: Uint128::new(10_000_000_000),
+        creator_excess_liquidity_lock_days: 7,
             },
             token_info: CreatorTokenInfo {
                 name: "Test Token".to_string(),
@@ -307,6 +315,8 @@ fn test_create_pair_with_custom_params() {
         bluechip_wallet_address: Addr::unchecked("bluechip"),
         commit_fee_bluechip: Decimal::percent(1),
         commit_fee_creator: Decimal::percent(5),
+        max_bluechip_lock_per_pool: Uint128::new(10_000_000_000),
+        creator_excess_liquidity_lock_days: 7,
     };
 
     let env = mock_env();
@@ -339,6 +349,8 @@ fn test_create_pair_with_custom_params() {
             pyth_contract_addr_for_conversions: "oracle0000".to_string(),
             pyth_atom_usd_price_feed_id: "BLUECHIP".to_string(),
             creator_token_address: Addr::unchecked("WILL_BE_CREATED_BY_FACTORY"),
+            max_bluechip_lock_per_pool: Uint128::new(10_000_000_000),
+            creator_excess_liquidity_lock_days: 7,
         },
         token_info: CreatorTokenInfo {
             name: "Custom Token".to_string(),
@@ -379,6 +391,8 @@ fn create_pool_msg(name: &str) -> ExecuteMsg {
             pyth_contract_addr_for_conversions: "oracle0000".to_string(),
             pyth_atom_usd_price_feed_id: "BLUECHIP".to_string(),
             creator_token_address: Addr::unchecked("WILL_BE_CREATED_BY_FACTORY"),
+            max_bluechip_lock_per_pool: Uint128::new(10_000_000_000),
+            creator_excess_liquidity_lock_days: 7,
         },
         token_info: CreatorTokenInfo {
             name: name.to_string(),
@@ -519,6 +533,8 @@ fn test_complete_pool_creation_flow() {
         bluechip_wallet_address: Addr::unchecked("bluechip"),
         commit_fee_bluechip: Decimal::percent(1),
         commit_fee_creator: Decimal::percent(5),
+        max_bluechip_lock_per_pool: Uint128::new(10_000_000_000),
+        creator_excess_liquidity_lock_days: 7,
     };
 
     let env = mock_env();
@@ -549,6 +565,8 @@ fn test_complete_pool_creation_flow() {
         pyth_contract_addr_for_conversions: "oracle0000".to_string(),
         pyth_atom_usd_price_feed_id: "ORCL".to_string(),
         creator_token_address: Addr::unchecked("token0000"),
+        max_bluechip_lock_per_pool: Uint128::new(10_000_000_000),
+        creator_excess_liquidity_lock_days: 7,
     };
 
     let create_msg = ExecuteMsg::Create {
@@ -686,6 +704,8 @@ fn test_config() {
         bluechip_wallet_address: Addr::unchecked("bluechip1..."),
         commit_fee_bluechip: Decimal::percent(10),
         commit_fee_creator: Decimal::percent(10),
+        max_bluechip_lock_per_pool: Uint128::new(10_000_000_000),
+        creator_excess_liquidity_lock_days: 7,
     };
 
     assert_eq!(config.factory_admin_address, Addr::unchecked("admin1..."));
@@ -718,6 +738,8 @@ fn test_update_config() {
         bluechip_wallet_address: Addr::unchecked("bluechip"),
         commit_fee_bluechip: Decimal::from_ratio(10u128, 100u128),
         commit_fee_creator: Decimal::from_ratio(10u128, 100u128),
+        max_bluechip_lock_per_pool: Uint128::new(10_000_000_000),
+        creator_excess_liquidity_lock_days: 7,
     };
 
     let env = mock_env();
@@ -741,6 +763,8 @@ fn test_update_config() {
             bluechip_wallet_address: Addr::unchecked("bluechip"),
             commit_fee_bluechip: Decimal::from_ratio(10u128, 100u128),
             commit_fee_creator: Decimal::from_ratio(10u128, 100u128),
+            max_bluechip_lock_per_pool: Uint128::new(10_000_000_000),
+            creator_excess_liquidity_lock_days: 7,
         },
     };
 
@@ -781,6 +805,8 @@ fn test_reply_handling() {
         bluechip_wallet_address: Addr::unchecked("bluechip"),
         commit_fee_bluechip: Decimal::from_ratio(10u128, 100u128),
         commit_fee_creator: Decimal::from_ratio(10u128, 100u128),
+        max_bluechip_lock_per_pool: Uint128::new(10_000_000_000),
+        creator_excess_liquidity_lock_days: 7,
     };
 
     let env = mock_env();
@@ -815,6 +841,8 @@ fn test_reply_handling() {
         pyth_contract_addr_for_conversions: "oracle0000".to_string(),
         pyth_atom_usd_price_feed_id: "ORCL".to_string(),
         creator_token_address: Addr::unchecked("token0000"),
+        max_bluechip_lock_per_pool: Uint128::new(10_000_000_000),
+        creator_excess_liquidity_lock_days: 7,
     };
 
     // Create the consolidated pool creation context
@@ -1288,18 +1316,18 @@ fn test_oracle_twap_with_volatile_prices() {
             atom_pool_price: Uint128::new(10_000_000),
         },
         PriceObservation {
-            timestamp: 1360,                
-            price: Uint128::new(2_000_000), 
+            timestamp: 1360,
+            price: Uint128::new(2_000_000),
             atom_pool_price: Uint128::new(2_000_000),
         },
         PriceObservation {
-            timestamp: 1720,               
-            price: Uint128::new(20_000_000), 
+            timestamp: 1720,
+            price: Uint128::new(20_000_000),
             atom_pool_price: Uint128::new(20_000_000),
         },
         PriceObservation {
-            timestamp: 2080,                
-            price: Uint128::new(5_000_000), 
+            timestamp: 2080,
+            price: Uint128::new(5_000_000),
             atom_pool_price: Uint128::new(5_000_000),
         },
     ];
@@ -1593,6 +1621,8 @@ fn test_query_pyth_atom_usd_price_success() {
         bluechip_wallet_address: Addr::unchecked("bluechip"),
         commit_fee_bluechip: Decimal::percent(10),
         commit_fee_creator: Decimal::percent(10),
+        max_bluechip_lock_per_pool: Uint128::new(10_000_000_000),
+        creator_excess_liquidity_lock_days: 7,
     };
     FACTORYINSTANTIATEINFO
         .save(deps.as_mut().storage, &config)
@@ -1632,6 +1662,8 @@ fn test_query_pyth_atom_usd_price_default() {
         bluechip_wallet_address: Addr::unchecked("bluechip"),
         commit_fee_bluechip: Decimal::percent(10),
         commit_fee_creator: Decimal::percent(10),
+        max_bluechip_lock_per_pool: Uint128::new(10_000_000_000),
+        creator_excess_liquidity_lock_days: 7,
     };
     FACTORYINSTANTIATEINFO
         .save(deps.as_mut().storage, &config)
@@ -1660,6 +1692,8 @@ fn test_query_pyth_extreme_atom_prices() {
         bluechip_wallet_address: Addr::unchecked("bluechip"),
         commit_fee_bluechip: Decimal::percent(10),
         commit_fee_creator: Decimal::percent(10),
+        max_bluechip_lock_per_pool: Uint128::new(10_000_000_000),
+        creator_excess_liquidity_lock_days: 7,
     };
     FACTORYINSTANTIATEINFO
         .save(deps.as_mut().storage, &config)
@@ -1710,6 +1744,8 @@ fn test_get_bluechip_usd_price_with_pyth() {
         bluechip_wallet_address: Addr::unchecked("bluechip"),
         commit_fee_bluechip: Decimal::percent(10),
         commit_fee_creator: Decimal::percent(10),
+        max_bluechip_lock_per_pool: Uint128::new(10_000_000_000),
+        creator_excess_liquidity_lock_days: 7,
     };
     FACTORYINSTANTIATEINFO
         .save(deps.as_mut().storage, &config)
@@ -1752,6 +1788,8 @@ fn test_bluechip_usd_price_with_different_atom_prices() {
         bluechip_wallet_address: Addr::unchecked("bluechip"),
         commit_fee_bluechip: Decimal::percent(10),
         commit_fee_creator: Decimal::percent(10),
+        max_bluechip_lock_per_pool: Uint128::new(10_000_000_000),
+        creator_excess_liquidity_lock_days: 7,
     };
     FACTORYINSTANTIATEINFO
         .save(deps.as_mut().storage, &config)
@@ -1801,6 +1839,8 @@ fn test_conversion_functions_with_pyth() {
         bluechip_wallet_address: Addr::unchecked("bluechip"),
         commit_fee_bluechip: Decimal::percent(10),
         commit_fee_creator: Decimal::percent(10),
+        max_bluechip_lock_per_pool: Uint128::new(10_000_000_000),
+        creator_excess_liquidity_lock_days: 7,
     };
     FACTORYINSTANTIATEINFO
         .save(deps.as_mut().storage, &config)

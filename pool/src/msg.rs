@@ -63,6 +63,7 @@ pub enum ExecuteMsg {
         min_amount0: Option<Uint128>,
         min_amount1: Option<Uint128>,
     },
+    ClaimCreatorExcessLiquidity {},
 }
 
 #[cw_serde]
@@ -172,6 +173,8 @@ pub struct PoolInstantiateMsg {
     pub commit_amount_for_threshold: Uint128,
     pub position_nft_address: Addr,
     pub token_address: Addr,
+    pub max_bluechip_lock_per_pool: Uint128,
+    pub creator_excess_liquidity_lock_days: u64,
 }
 
 #[cw_serde]

@@ -1106,6 +1106,8 @@ fn test_factory_impersonation_prevented() {
             commit_fee_bluechip: Decimal::from_ratio(10u128, 100u128),
             commit_fee_creator: Decimal::from_ratio(10u128, 100u128),
         },
+        max_bluechip_lock_per_pool: Uint128::new(10_000_000_000),
+        creator_excess_liquidity_lock_days: 7,
         commit_amount_for_threshold: Uint128::new(0),
         commit_threshold_limit_usd: Uint128::new(350_000_000_000),
         position_nft_address: Addr::unchecked("NFT_contract"),
