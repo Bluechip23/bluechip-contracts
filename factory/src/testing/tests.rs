@@ -1,9 +1,9 @@
+use crate::mint_bluechips_pool_creation::calculate_mint_amount;
 use crate::state::{
-    CreationStatus, FactoryInstantiate, PoolCreationState, FACTORYINSTANTIATEINFO,
-    POOLS_BY_CONTRACT_ADDRESS, POOLS_BY_ID, POOL_CREATION_STATES, SETCOMMIT, TEMP_POOL_CREATION,
+    CreationStatus, FACTORYINSTANTIATEINFO, FIRST_POOL_TIMESTAMP, FactoryInstantiate, POOL_COUNTER, POOL_CREATION_STATES, POOLS_BY_CONTRACT_ADDRESS, POOLS_BY_ID, PoolCreationState, SETCOMMIT, TEMP_POOL_CREATION
 };
 use cosmwasm_std::{
-    Addr, Binary, Decimal, Env, Event, OwnedDeps, Reply, SubMsgResponse, SubMsgResult, Uint128,
+    Addr, BankMsg, Binary, CosmosMsg, Decimal, Env, Event, OwnedDeps, Reply, SubMsgResponse, SubMsgResult, Uint128
 };
 
 use crate::asset::{TokenInfo, TokenType};
@@ -277,7 +277,7 @@ fn create_pair() {
                 pyth_atom_usd_price_feed_id: "BLUECHIP".to_string(),
                 creator_token_address: Addr::unchecked("WILL_BE_CREATED_BY_FACTORY"),
                 max_bluechip_lock_per_pool: Uint128::new(10_000_000_000),
-        creator_excess_liquidity_lock_days: 7,
+                creator_excess_liquidity_lock_days: 7,
             },
             token_info: CreatorTokenInfo {
                 name: "Test Token".to_string(),
@@ -363,7 +363,11 @@ fn test_create_pair_with_custom_params() {
     let info = mock_info(ADMIN, &[]);
     let res = execute(deps.as_mut(), env, info, create_msg).unwrap();
 
-    assert_eq!(res.messages.len(), 1);
+    assert!(
+        res.messages.len() >= 1 && res.messages.len() <= 2,
+        "Should have 1-2 messages (token instantiation + possibly mint), got {}",
+        res.messages.len()
+    );
 }
 
 fn create_pool_msg(name: &str) -> ExecuteMsg {
@@ -585,10 +589,10 @@ fn test_complete_pool_creation_flow() {
         !res.attributes.is_empty(),
         "Should have response attributes"
     );
-    assert_eq!(
-        res.messages.len(),
-        1,
-        "Should have exactly one submessage for token instantiation"
+    assert!(
+        res.messages.len() >= 1 && res.messages.len() <= 2,
+        "Should have 1-2 messages total (token instantiation + possibly mint), got {}",
+        res.messages.len()
     );
 
     // Load the pool context that was created during execute
@@ -1879,4 +1883,193 @@ fn test_conversion_functions_with_pyth() {
     let result2 = usd_to_bluechip(deps.as_ref(), usd_amount, env.clone());
     assert!(result2.is_ok(), "usd_to_bluechip should succeed");
     println!("$5 = {} bluechip", result2.as_ref().unwrap().amount);
+}
+
+#[test]
+fn test_mint_formula() {
+    // Test case 1: First pool (x=1, s=0)
+    let amount = calculate_mint_amount(0, 1).unwrap();
+    // 500 - ((5*1 + 1) / (0/6 + 333*1)) = 500 - (6/333) ≈ 499.98
+    assert!(amount > Uint128::new(499_900_000));
+
+    // Test case 2: 10 pools after 1 hour (x=10, s=3600)
+    let amount = calculate_mint_amount(3600, 10).unwrap();
+    // 500 - ((5*100 + 10) / (600 + 3330)) = 500 - (510/3930) ≈ 499.87
+    assert!(amount > Uint128::new(499_800_000));
+
+    // Test case 3: Many pools - with 5x^2+x this won't go to 0 easily
+    let amount = calculate_mint_amount(3600, 1000).unwrap();
+    // Should still be positive, around 485 tokens
+    assert!(amount > Uint128::new(480_000_000));
+}
+
+#[test]
+fn test_bluechip_minting_on_pool_creation() {
+    let mut deps = mock_dependencies(&[]);
+    
+    // Setup factory
+    setup_atom_pool(&mut deps);
+    let msg = FactoryInstantiate {
+        factory_admin_address: Addr::unchecked(ADMIN),
+        cw721_nft_contract_id: 58,
+        commit_amount_for_threshold_bluechip: Uint128::zero(),
+        commit_threshold_limit_usd: Uint128::new(25_000_000_000),
+        pyth_contract_addr_for_conversions: "oracle0000".to_string(),
+        pyth_atom_usd_price_feed_id: "BLUECHIP".to_string(),
+        cw20_token_contract_id: 10,
+        create_pool_wasm_contract_id: 11,
+        bluechip_wallet_address: Addr::unchecked("bluechip_wallet"),
+        commit_fee_bluechip: Decimal::percent(1),
+        commit_fee_creator: Decimal::percent(5),
+        max_bluechip_lock_per_pool: Uint128::new(10_000_000_000),
+        creator_excess_liquidity_lock_days: 7,
+    };
+    
+    let env = mock_env();
+    let info = mock_info(ADMIN, &[]);
+    instantiate(deps.as_mut(), env.clone(), info, msg).unwrap();
+    
+    // Create first pool - should set timestamp and mint ~500 tokens
+    let create_msg = ExecuteMsg::Create {
+        pool_msg: create_test_pool_msg(),
+        token_info: CreatorTokenInfo {
+            name: "First Token".to_string(),
+            symbol: "FIRST".to_string(),
+            decimal: 6,
+        },
+    };
+    
+    let info = mock_info(ADMIN, &[]);
+    let res = execute(deps.as_mut(), env.clone(), info, create_msg).unwrap();
+    
+    // Check that first pool timestamp was set
+    let first_timestamp = FIRST_POOL_TIMESTAMP.load(&deps.storage).unwrap();
+    assert_eq!(first_timestamp, env.block.time);
+    
+    // Find the mint message in the response
+    let mint_msg = res.messages.iter()
+        .find(|m| matches!(m.msg, CosmosMsg::Bank(BankMsg::Send { .. })));
+    
+    assert!(mint_msg.is_some(), "Should have mint message for first pool");
+    
+    if let CosmosMsg::Bank(BankMsg::Send { to_address, amount }) = &mint_msg.unwrap().msg {
+        assert_eq!(to_address, "bluechip_wallet");
+        assert_eq!(amount.len(), 1);
+        assert_eq!(amount[0].denom, "bluechip");
+        // First pool (x=1, s=0) should mint close to 500 tokens
+        assert!(amount[0].amount > Uint128::new(499_000_000));
+        assert!(amount[0].amount <= Uint128::new(500_000_000));
+    }
+    
+    // Create second pool after 1 hour
+    let mut env2 = mock_env();
+    env2.block.time = env.block.time.plus_seconds(3600); 
+    
+    let create_msg2 = ExecuteMsg::Create {
+        pool_msg: create_test_pool_msg(),
+        token_info: CreatorTokenInfo {
+            name: "Second Token".to_string(),
+            symbol: "SECOND".to_string(),
+            decimal: 6,
+        },
+    };
+    
+    let info = mock_info(ADMIN, &[]);
+    let res = execute(deps.as_mut(), env2.clone(), info, create_msg2).unwrap();
+    
+    // Check mint message for second pool
+    let mint_msg2 = res.messages.iter()
+        .find(|m| matches!(m.msg, CosmosMsg::Bank(BankMsg::Send { .. })));
+    
+    assert!(mint_msg2.is_some(), "Should have mint message for second pool");
+    
+    if let CosmosMsg::Bank(BankMsg::Send { amount, .. }) = &mint_msg2.unwrap().msg {
+        assert!(amount[0].amount <= Uint128::new(500_000_000));
+        assert!(amount[0].amount > Uint128::new(495_000_000));
+    }
+    
+    // Verify first pool timestamp hasn't changed
+    let first_timestamp_after = FIRST_POOL_TIMESTAMP.load(&deps.storage).unwrap();
+    assert_eq!(first_timestamp_after, first_timestamp, "First timestamp should not change");
+    
+    // Verify pool counter incremented correctly
+    let pool_count = POOL_COUNTER.load(&deps.storage).unwrap();
+    assert_eq!(pool_count, 2);
+}
+
+#[test]
+fn test_no_mint_when_amount_is_zero() {
+    let mut deps = mock_dependencies(&[]);
+    setup_atom_pool(&mut deps);
+    let msg = FactoryInstantiate {
+        factory_admin_address: Addr::unchecked(ADMIN),
+        cw721_nft_contract_id: 58,
+        commit_amount_for_threshold_bluechip: Uint128::zero(),
+        commit_threshold_limit_usd: Uint128::new(25_000_000_000),
+        pyth_contract_addr_for_conversions: "oracle0000".to_string(),
+        pyth_atom_usd_price_feed_id: "BLUECHIP".to_string(),
+        cw20_token_contract_id: 10,
+        create_pool_wasm_contract_id: 11,
+        bluechip_wallet_address: Addr::unchecked("bluechip_wallet"),
+        commit_fee_bluechip: Decimal::percent(1),
+        commit_fee_creator: Decimal::percent(5),
+        max_bluechip_lock_per_pool: Uint128::new(10_000_000_000),
+        creator_excess_liquidity_lock_days: 7,
+    };
+    
+    let env = mock_env();
+    instantiate(deps.as_mut(), env.clone(), mock_info(ADMIN, &[]), msg).unwrap();
+    
+    // Manually set pool counter to a very high number where mint would be 0
+    POOL_COUNTER.save(&mut deps.storage, &10_000_000_000_000).unwrap();
+    
+    // Set first timestamp to simulate many pools already created
+    FIRST_POOL_TIMESTAMP.save(&mut deps.storage, &env.block.time).unwrap();
+    
+    let create_msg = ExecuteMsg::Create {
+        pool_msg: create_test_pool_msg(),
+        token_info: CreatorTokenInfo {
+            name: "Test Token".to_string(),
+            symbol: "TEST".to_string(),
+            decimal: 6,
+        },
+    };
+    
+    let info = mock_info(ADMIN, &[]);
+    let res = execute(deps.as_mut(), env, info, create_msg).unwrap();
+    
+    let has_bank_msg = res.messages.iter()
+        .any(|m| matches!(m.msg, CosmosMsg::Bank(BankMsg::Send { .. })));
+    
+    assert!(!has_bank_msg, "Should not mint when amount would be zero");
+}
+
+// Helper function for creating a test pool message
+fn create_test_pool_msg() -> CreatePool {
+    CreatePool {
+        pool_token_info: [
+            TokenType::Bluechip {
+                denom: "bluechip".to_string(),
+            },
+            TokenType::CreatorToken {
+                contract_addr: Addr::unchecked("WILL_BE_CREATED_BY_FACTORY"),
+            },
+        ],
+        factory_to_create_pool_addr: Addr::unchecked("factory"),
+        cw20_token_contract_id: 10,
+        threshold_payout: None,
+        commit_fee_info: CommitFeeInfo {
+            bluechip_wallet_address: Addr::unchecked("bluechip"),
+            creator_wallet_address: Addr::unchecked(ADMIN),
+            commit_fee_bluechip: Decimal::percent(1),
+            commit_fee_creator: Decimal::percent(5),
+        },
+        commit_amount_for_threshold: Uint128::zero(),
+        commit_limit_usd: Uint128::new(25_000_000_000),
+        pyth_contract_addr_for_conversions: "oracle0000".to_string(),
+        pyth_atom_usd_price_feed_id: "BLUECHIP".to_string(),
+        creator_token_address: Addr::unchecked("WILL_BE_CREATED_BY_FACTORY"),
+        max_bluechip_lock_per_pool: Uint128::new(10_000_000_000),
+        creator_excess_liquidity_lock_days: 7,
+    }
 }

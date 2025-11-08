@@ -38,7 +38,6 @@ pub const USER_LAST_COMMIT: Map<&Addr, u64> = Map::new("user_last_commit");
 pub const POOL_INFO: Item<PoolInfo> = Item::new("pool_info");
 //liquidity, reserve, and prices
 pub const POOL_STATE: Item<PoolState> = Item::new("pool_state");
-pub const MAX_DISTRIBUTIONS_PER_TX: u32 = 40;
 //lp fee for liquidity pools
 pub const POOL_SPECS: Item<PoolSpecs> = Item::new("pool_specs");
 //used to handle races cases when the threshold is being crossed
@@ -49,6 +48,7 @@ pub const THRESHOLD_PAYOUT_AMOUNTS: Item<ThresholdPayoutAmounts> =
 //pool identifier incriments by 1 every pool
 pub const NEXT_POSITION_ID: Item<u64> = Item::new("next_position_id");
 pub const DISTRIBUTION_STATE: Item<DistributionState> = Item::new("distribution_state");
+pub const MAX_DISTRIBUTIONS_PER_TX: u32 = 40;
 //information liquiidty positions in pools
 pub const LIQUIDITY_POSITIONS: Map<&str, Position> = Map::new("positions");
 //commit limit and amount of bluechips that will be stored in pool

@@ -31,6 +31,7 @@ pub const ATOM_BLUECHIP_ANCHOR_POOL_ADDRESS: Item<Addr> = Item::new("atom_pool_a
 pub const POOL_REGISTRY: Map<u64, Addr> = Map::new("pool_registry");
 pub const POOL_CODE_ID: Item<u64> = Item::new("pool_code_id");
 pub const PENDING_POOL_UPGRADE: Item<PoolUpgrade> = Item::new("pending_upgrade");
+pub const FIRST_POOL_TIMESTAMP: Item<Timestamp> = Item::new("first_pool_timestamp");
 
 #[cw_serde]
 pub struct FactoryInstantiate {
