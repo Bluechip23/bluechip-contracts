@@ -41,7 +41,6 @@ fn create_default_instantiate_msg() -> FactoryInstantiate {
     }
 }
 
-// Helper function to set up ATOM pool in storage before instantiation
 fn setup_atom_pool(deps: &mut OwnedDeps<MockStorage, MockApi, WasmMockQuerier>) {
     let atom_pool_addr = Addr::unchecked(ATOM_BLUECHIP_POOL_CONTRACT_ADDRESS);
     let atom_pool_state = PoolStateResponseForFactory {
@@ -64,7 +63,6 @@ fn setup_atom_pool(deps: &mut OwnedDeps<MockStorage, MockApi, WasmMockQuerier>) 
 fn proper_initialization() {
     let mut deps = mock_dependencies(&[]);
 
-    // Set up ATOM pool first
     setup_atom_pool(&mut deps);
 
     let msg = FactoryInstantiate {
@@ -89,7 +87,6 @@ fn proper_initialization() {
 
     let res = instantiate(deps.as_mut(), env.clone(), info, msg.clone()).unwrap();
 
-    // Verify oracle was initialized
     let oracle = INTERNAL_ORACLE.load(&deps.storage).unwrap();
     assert!(
         !oracle.selected_pools.is_empty(),
@@ -107,13 +104,11 @@ fn proper_initialization() {
         "Selected pools should include ATOM pool"
     );
 
-    // Verify response attributes
     assert!(res
         .attributes
         .iter()
         .any(|attr| attr.key == "action" && attr.value == "init_contract"));
 
-    // Test multiple instantiations with fresh dependencies
     let mut deps2 = mock_dependencies(&[]);
     setup_atom_pool(&mut deps2);
 
@@ -146,7 +141,6 @@ fn test_oracle_initialization_with_no_other_pools() {
 
     instantiate(deps.as_mut(), env.clone(), info, msg).unwrap();
 
-    // Verify oracle initialized with just ATOM pool
     let oracle = INTERNAL_ORACLE.load(&deps.storage).unwrap();
     assert_eq!(
         oracle.selected_pools.len(),
@@ -158,7 +152,6 @@ fn test_oracle_initialization_with_no_other_pools() {
         ATOM_BLUECHIP_POOL_CONTRACT_ADDRESS
     );
 
-    // Verify cache is initialized
     assert_eq!(oracle.bluechip_price_cache.last_price, Uint128::zero());
     assert_eq!(oracle.bluechip_price_cache.last_update, 0);
     assert!(oracle.bluechip_price_cache.twap_observations.is_empty());
@@ -168,7 +161,6 @@ fn test_oracle_initialization_with_no_other_pools() {
 fn test_oracle_initialization_with_multiple_pools() {
     let mut deps = mock_dependencies(&[]);
 
-    // Set up ATOM pool
     setup_atom_pool(&mut deps);
 
     // Add 5 more creator pools with sufficient liquidity
@@ -217,7 +209,6 @@ fn test_oracle_initialization_with_multiple_pools() {
 fn create_pair() {
     let mut deps = mock_dependencies(&[]);
 
-    // Set up ATOM pool
     setup_atom_pool(&mut deps);
 
     let msg = FactoryInstantiate {
@@ -300,7 +291,6 @@ fn create_pair() {
 fn test_create_pair_with_custom_params() {
     let mut deps = mock_dependencies(&[]);
 
-    // Set up ATOM pool
     setup_atom_pool(&mut deps);
 
     let msg = FactoryInstantiate {
@@ -455,7 +445,6 @@ fn create_instantiate_reply(id: u64, contract_addr: &str) -> Reply {
 fn test_multiple_pool_creation() {
     let mut deps = mock_dependencies(&[]);
 
-    // Set up ATOM pool
     setup_atom_pool(&mut deps);
 
     let msg = create_default_instantiate_msg();
@@ -498,24 +487,21 @@ fn test_multiple_pool_creation() {
         // Simulate complete reply chain with the actual pool_id
         simulate_complete_reply_chain(&mut deps, env.clone(), pool_id);
 
-        // Verify pool was created successfully
         assert!(
             POOLS_BY_ID.load(&deps.storage, pool_id).is_ok(),
             "Pool should be stored by ID"
         );
 
-        // Verify creation state shows completed
         let final_state = POOL_CREATION_STATES.load(&deps.storage, pool_id).unwrap();
         assert_eq!(final_state.status, CreationStatus::Completed);
 
-        // Verify temp storage was cleaned up after completion
         assert!(
             TEMP_POOL_CREATION.load(&deps.storage).is_err(),
             "Temp storage should be cleaned up after pool creation"
         );
     }
 
-    // Verify we created 3 unique pools
+    // Verify 3 unique pools
     assert_eq!(created_pool_ids.len(), 3, "Should have created 3 pools");
 }
 #[test]
@@ -595,7 +581,6 @@ fn test_complete_pool_creation_flow() {
         res.messages.len()
     );
 
-    // Load the pool context that was created during execute
     let pool_context = TEMP_POOL_CREATION.load(&deps.storage).unwrap();
     let pool_id = pool_context.pool_id;
     let creator = pool_context.temp_creator_wallet.clone();
@@ -605,7 +590,6 @@ fn test_complete_pool_creation_flow() {
     assert!(pool_context.creator_token_addr.is_none());
     assert!(pool_context.nft_addr.is_none());
 
-    // Step 1: Token Creation Reply
     let token_reply = create_instantiate_reply(SET_TOKENS, "token_address");
     let res = pool_creation_reply(deps.as_mut(), env.clone(), token_reply).unwrap();
 
@@ -628,7 +612,6 @@ fn test_complete_pool_creation_flow() {
     let nft_reply = create_instantiate_reply(MINT_CREATE_POOL, "nft_address");
     let res = pool_creation_reply(deps.as_mut(), env.clone(), nft_reply).unwrap();
 
-    // Reload context and check NFT was set
     let pool_context = TEMP_POOL_CREATION.load(&deps.storage).unwrap();
     assert_eq!(pool_context.nft_addr, Some(Addr::unchecked("nft_address")));
     assert_eq!(res.messages.len(), 1);
@@ -644,7 +627,6 @@ fn test_complete_pool_creation_flow() {
     let pool_reply = create_instantiate_reply(FINALIZE_POOL, "pool_address");
     let res = pool_creation_reply(deps.as_mut(), env.clone(), pool_reply).unwrap();
 
-    // Check commit info was saved
     let commit_info = SETCOMMIT.load(&deps.storage, &creator.to_string()).unwrap();
     assert_eq!(commit_info.pool_id, pool_id);
     assert_eq!(
@@ -652,17 +634,14 @@ fn test_complete_pool_creation_flow() {
         Addr::unchecked("pool_address")
     );
 
-    // Check pool was indexed by ID
     let pool_by_id = POOLS_BY_ID.load(&deps.storage, pool_id).unwrap();
     assert_eq!(
         pool_by_id.creator_pool_addr,
         Addr::unchecked("pool_address")
     );
 
-    // Verify temp storage was cleaned up
     assert!(TEMP_POOL_CREATION.load(&deps.storage).is_err());
 
-    // Check final state
     let final_state = POOL_CREATION_STATES.load(&deps.storage, pool_id).unwrap();
     assert_eq!(final_state.status, CreationStatus::Completed);
     assert_eq!(
@@ -670,7 +649,6 @@ fn test_complete_pool_creation_flow() {
         Some(Addr::unchecked("pool_address"))
     );
 
-    // Should have 2 messages for ownership transfer (CW20 and NFT)
     assert_eq!(res.messages.len(), 2);
 }
 
@@ -784,7 +762,6 @@ fn test_update_config() {
         "Generic error: Only the admin can execute this function. Admin: addr0000, Sender: unauthorized"
     );
 
-    // Update config successfully
     let res = execute(deps.as_mut(), env.clone(), info, update_msg).unwrap();
     assert_eq!(1, res.attributes.len());
     assert_eq!(("action", "update_config"), res.attributes[0]);
@@ -849,7 +826,6 @@ fn test_reply_handling() {
         creator_excess_liquidity_lock_days: 7,
     };
 
-    // Create the consolidated pool creation context
     let pool_context = TempPoolCreation {
         pool_id,
         temp_creator_wallet: addr.clone(),
@@ -858,7 +834,6 @@ fn test_reply_handling() {
         nft_addr: None,
     };
 
-    // Save the consolidated context
     TEMP_POOL_CREATION
         .save(deps.as_mut().storage, &pool_context)
         .unwrap();
@@ -898,7 +873,6 @@ fn test_reply_handling() {
     assert_eq!(res.attributes[1], ("token_address", contract_addr));
     assert_eq!(res.attributes[2], ("pool_id", "1"));
 
-    // Verify the creation state was updated
     let updated_state = POOL_CREATION_STATES
         .load(deps.as_ref().storage, pool_id)
         .unwrap();
@@ -908,7 +882,6 @@ fn test_reply_handling() {
         Some(Addr::unchecked(contract_addr))
     );
 
-    // Verify the pool context was updated with the token address
     let updated_context = TEMP_POOL_CREATION.load(deps.as_ref().storage).unwrap();
     assert_eq!(
         updated_context.creator_token_addr,
@@ -956,7 +929,6 @@ fn test_oracle_execute_update_price() {
     let info = mock_info(ADMIN, &[]);
     let result = execute(deps.as_mut(), env.clone(), info.clone(), update_msg.clone());
 
-    // Should fail because not enough time has passed
     assert!(result.is_err());
 
     // Fast forward time by 6 minutes (UPDATE_INTERVAL is 5 minutes)
@@ -1010,7 +982,7 @@ fn test_oracle_force_rotate_pools() {
     let oracle = INTERNAL_ORACLE.load(&deps.storage).unwrap();
     let initial_pools = oracle.selected_pools.clone();
 
-    // Try to force rotate as non-admin (should fail)
+    // Try to force rotate as non-admin - fail
     let unauthorized_info = mock_info("unauthorized", &[]);
     let rotate_msg = ExecuteMsg::ForceRotateOraclePools {};
     let result = execute(
@@ -1021,7 +993,7 @@ fn test_oracle_force_rotate_pools() {
     );
     assert!(result.is_err());
 
-    // Force rotate as admin (should succeed)
+    // Force rotate as admin - success
     let admin_info = mock_info(ADMIN, &[]);
     let result = execute(deps.as_mut(), env.clone(), admin_info, rotate_msg);
     assert!(result.is_ok());
@@ -1080,7 +1052,6 @@ fn test_oracle_price_calculation_with_different_ratios() {
 
     assert_eq!(bluechip_price, Uint128::new(10_000_000)); // Should also be $10.00
 
-    // Test case 2: 10:1 ratio
     let atom_reserve = Uint128::new(100_000_000); // 100 ATOM
     let bluechip_reserve = Uint128::new(1_000_000_000); // 1k bluechip
     let bluechip_price = atom_reserve
@@ -1091,7 +1062,6 @@ fn test_oracle_price_calculation_with_different_ratios() {
 
     assert_eq!(bluechip_price, Uint128::new(1_000_000)); // Should be $1.00
 
-    // Test case 3: Very small bluechip value
     let atom_reserve = Uint128::new(10_000_000); // 10 ATOM
     let bluechip_reserve = Uint128::new(1_000_000_000_000); // 1M bluechip
     let bluechip_price = atom_reserve
@@ -1128,7 +1098,6 @@ fn test_oracle_overflow_protection() {
     let mult_result = atom_reserve.checked_mul(atom_price);
     assert!(mult_result.is_err(), "Multiplication should overflow");
 
-    // Test that even if multiplication succeeded, we handle it safely
     let safe_atom_reserve = Uint128::new(1_000_000_000);
     let product = safe_atom_reserve.checked_mul(atom_price).unwrap();
     let div_result = product.checked_div(bluechip_reserve);
@@ -1137,7 +1106,6 @@ fn test_oracle_overflow_protection() {
 
 #[test]
 fn test_oracle_twap_calculation_with_manual_observations() {
-    // Test the TWAP calculation logic directly without full oracle update
     let observations = vec![
         PriceObservation {
             timestamp: 1000,
@@ -1183,9 +1151,7 @@ fn test_oracle_twap_with_three_observations() {
 
     let twap = calculate_twap(&observations).unwrap();
 
-    // Interval 1 (1000->1360): 360s, avg = 7.5M
-    // Interval 2 (1360->1720): 360s, avg = 9M
-    // TWAP = (7.5M * 360 + 9M * 360) / 720 = 8.25M
+
     let expected_twap = Uint128::new(8_250_000);
 
     assert_eq!(twap, expected_twap, "TWAP should be 8.25M, got: {}", twap);
@@ -1255,7 +1221,6 @@ fn test_oracle_twap_observations_max_length() {
     let info = mock_info(ADMIN, &[]);
     instantiate(deps.as_mut(), env.clone(), info, msg).unwrap();
 
-    // Add more observations than the max (let's say max is 10)
     for i in 1..=15 {
         env.block.time = env.block.time.plus_seconds(360);
 
@@ -1277,7 +1242,6 @@ fn test_oracle_twap_observations_max_length() {
             env.block.time.seconds()
         );
 
-        // Verify behavior at different stages
         if i <= 10 {
             // Before hitting the max, should keep growing
             assert_eq!(
@@ -1402,7 +1366,6 @@ fn test_oracle_aggregates_multiple_pool_prices() {
             .unwrap();
     };
 
-    // Add 3 creator pools with different bluechip prices
     add_test_pool(
         &mut deps,
         Addr::unchecked("creator_pool_1"),
@@ -1485,8 +1448,6 @@ fn test_oracle_filters_outlier_pool_prices() {
             .unwrap();
     }
 
-    // Add 1 manipulated pool with extreme ratio of 0.05 (very low bluechip)
-    // This represents a 200x manipulation attempt
     let manipulated_pool = Addr::unchecked("manipulated_pool");
     let manipulated_state = PoolStateResponseForFactory {
         pool_contract_address: manipulated_pool.clone(),
@@ -1604,8 +1565,6 @@ fn test_oracle_handles_pools_with_different_liquidities() {
         mock_info(ADMIN, &[]),
         ExecuteMsg::UpdateOraclePrice {},
     );
-
-    // Should handle different liquidity levels without errors
     assert!(result.is_ok(), "Should handle pools with varying liquidity");
 }
 
@@ -1632,7 +1591,6 @@ fn test_query_pyth_atom_usd_price_success() {
         .save(deps.as_mut().storage, &config)
         .unwrap();
 
-    // Mock Pyth price: ATOM = $10.00
     MOCK_PYTH_PRICE
         .save(deps.as_mut().storage, &Uint128::new(10_000_000))
         .unwrap();
@@ -1705,7 +1663,6 @@ fn test_query_pyth_extreme_atom_prices() {
 
     let env = mock_env();
 
-    // Test 1: ATOM crash to $0.01
     MOCK_PYTH_PRICE
         .save(deps.as_mut().storage, &Uint128::new(10_000))
         .unwrap();
@@ -1713,7 +1670,6 @@ fn test_query_pyth_extreme_atom_prices() {
     assert!(result_low.is_ok(), "Should handle low ATOM price");
     assert_eq!(result_low.unwrap(), Uint128::new(10_000)); // $0.01
 
-    // Test 2: ATOM pump to $10,000
     MOCK_PYTH_PRICE
         .save(deps.as_mut().storage, &Uint128::new(10_000_000_000))
         .unwrap();
@@ -1721,7 +1677,6 @@ fn test_query_pyth_extreme_atom_prices() {
     assert!(result_high.is_ok(), "Should handle high ATOM price");
     assert_eq!(result_high.unwrap(), Uint128::new(10_000_000_000)); // $10,000
 
-    // Test 3: ATOM at $100
     MOCK_PYTH_PRICE
         .save(deps.as_mut().storage, &Uint128::new(100_000_000))
         .unwrap();
@@ -1801,7 +1756,6 @@ fn test_bluechip_usd_price_with_different_atom_prices() {
 
     let env = mock_env();
 
-    // Scenario 1: ATOM = $5.00 -> bluechip = $0.50
     MOCK_PYTH_PRICE
         .save(deps.as_mut().storage, &Uint128::new(5_000_000))
         .unwrap();
@@ -1809,7 +1763,6 @@ fn test_bluechip_usd_price_with_different_atom_prices() {
     println!("ATOM=$5 -> Bluechip=${}", price1);
     assert_eq!(price1, Uint128::new(500_000)); // $0.50
 
-    // Scenario 2: ATOM = $20.00 -> bluechip = $2.00
     MOCK_PYTH_PRICE
         .save(deps.as_mut().storage, &Uint128::new(20_000_000))
         .unwrap();
@@ -1817,7 +1770,6 @@ fn test_bluechip_usd_price_with_different_atom_prices() {
     println!("ATOM=$20 -> Bluechip=${}", price2);
     assert_eq!(price2, Uint128::new(2_000_000)); // $2.00
 
-    // Scenario 3: ATOM = $100.00 -> bluechip = $10.00
     MOCK_PYTH_PRICE
         .save(deps.as_mut().storage, &Uint128::new(100_000_000))
         .unwrap();
@@ -1874,7 +1826,7 @@ fn test_conversion_functions_with_pyth() {
 
     let env = mock_env();
 
-    let bluechip_amount = Uint128::new(5_000_000); // 5 bluechip
+    let bluechip_amount = Uint128::new(5_000_000); 
     let result = bluechip_to_usd(deps.as_ref(), bluechip_amount, env.clone());
     assert!(result.is_ok(), "bluechip_to_usd should succeed");
     println!("5 bluechip = ${}", result.as_ref().unwrap().amount);
@@ -1897,9 +1849,7 @@ fn test_mint_formula() {
     // 500 - ((5*100 + 10) / (600 + 3330)) = 500 - (510/3930) ≈ 499.87
     assert!(amount > Uint128::new(499_800_000));
 
-    // Test case 3: Many pools - with 5x^2+x this won't go to 0 easily
     let amount = calculate_mint_amount(3600, 1000).unwrap();
-    // Should still be positive, around 485 tokens
     assert!(amount > Uint128::new(480_000_000));
 }
 
@@ -1907,7 +1857,6 @@ fn test_mint_formula() {
 fn test_bluechip_minting_on_pool_creation() {
     let mut deps = mock_dependencies(&[]);
     
-    // Setup factory
     setup_atom_pool(&mut deps);
     let msg = FactoryInstantiate {
         factory_admin_address: Addr::unchecked(ADMIN),
@@ -1942,11 +1891,9 @@ fn test_bluechip_minting_on_pool_creation() {
     let info = mock_info(ADMIN, &[]);
     let res = execute(deps.as_mut(), env.clone(), info, create_msg).unwrap();
     
-    // Check that first pool timestamp was set
     let first_timestamp = FIRST_POOL_TIMESTAMP.load(&deps.storage).unwrap();
     assert_eq!(first_timestamp, env.block.time);
     
-    // Find the mint message in the response
     let mint_msg = res.messages.iter()
         .find(|m| matches!(m.msg, CosmosMsg::Bank(BankMsg::Send { .. })));
     
@@ -2020,10 +1967,8 @@ fn test_no_mint_when_amount_is_zero() {
     let env = mock_env();
     instantiate(deps.as_mut(), env.clone(), mock_info(ADMIN, &[]), msg).unwrap();
     
-    // Manually set pool counter to a very high number where mint would be 0
     POOL_COUNTER.save(&mut deps.storage, &10_000_000_000_000).unwrap();
     
-    // Set first timestamp to simulate many pools already created
     FIRST_POOL_TIMESTAMP.save(&mut deps.storage, &env.block.time).unwrap();
     
     let create_msg = ExecuteMsg::Create {

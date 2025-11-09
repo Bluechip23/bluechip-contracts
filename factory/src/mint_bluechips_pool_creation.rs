@@ -5,7 +5,7 @@ use crate::{
 use cosmwasm_std::{BankMsg, Coin, CosmosMsg, DepsMut, Env, StdError, StdResult, Uint128};
 
 pub fn calculate_mint_amount(seconds_elapsed: u64, pools_created: u64) -> StdResult<Uint128> {
-    // Formula: 500 - (((5x * x^2) / ((s/6) + 333x))
+    // Formula: 500 - (((5x^2 + x) / ((s/6) + 333x))
 
     let x = pools_created as u128;
     let s = seconds_elapsed as u128;

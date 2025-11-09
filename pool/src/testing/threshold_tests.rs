@@ -267,7 +267,6 @@ fn test_no_excess_when_under_cap() {
     deps.querier.update_wasm(move |query| {
         match query {
             WasmQuery::Smart { msg, .. } => {
-                // Return ConversionResponse, not just Uint128
                 let response = ConversionResponse {
                     amount: Uint128::new(1_000_000),
                     rate_used: Uint128::new(1_000_000),

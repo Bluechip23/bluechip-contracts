@@ -53,7 +53,6 @@ pub(crate) fn pairs_to_map(pairs: &[(&String, &PoolDetails)]) -> HashMap<String,
 
 impl Querier for WasmMockQuerier {
     fn raw_query(&self, bin_request: &[u8]) -> QuerierResult {
-        // MockQuerier doesn't support Custom, so we ignore it completely
         let request: QueryRequest<Empty> = match from_json(bin_request) {
             Ok(v) => v,
             Err(e) => {
@@ -96,7 +95,6 @@ impl WasmMockQuerier {
                     }
                 }
                 
-                // Try parsing as factory QueryMsg (for factory queries)
                 if let Ok(factory_msg) = from_json::<QueryMsg>(&msg) {
                     match factory_msg {
                         QueryMsg::Pool { pool_address } => {
@@ -132,10 +130,5 @@ impl WasmMockQuerier {
             base,
             betfi_pair_querier: BetfiPairQuerier::default(),
         }
-    }
-
-    // Configure the betfi pair
-    pub fn with_betfi_pairs(&mut self, pairs: &[(&String, &PoolDetails)]) {
-        self.betfi_pair_querier = BetfiPairQuerier::new(pairs);
     }
 }

@@ -183,8 +183,6 @@ pub fn trigger_threshold_payout(
         .count();
 
     let (estimated_gas_per_distribution, max_gas_per_tx) = {
-        // If you have global config, read it; otherwise derive from defaults or dist_state if present.
-        // Here we use same defaults you used when saving dist_state earlier.
         let default_estimated = DEFAULT_ESTIMATED_GAS_PER_DISTRIBUTION;
         let default_max_gas = DEFAULT_MAX_GAS_PER_TX;
         (default_estimated, default_max_gas)
@@ -196,11 +194,8 @@ pub fn trigger_threshold_payout(
         (max_gas_per_tx / estimated_gas_per_distribution).max(1) as u32
     };
 
-    // total_committers is usize; be careful when comparing
     if total_committers == 0 {
-        // No committers to pay — nothing to do
     } else if total_committers <= batch_size as usize {
-        // We can process them all in a single TX (batch_size large enough)
         let committers: Vec<(Addr, Uint128)> = COMMIT_LEDGER
             .range(storage, None, None, Order::Ascending)
             .map(|r| r.map_err(|e| StdError::generic_err(e.to_string())))
@@ -274,13 +269,11 @@ pub fn trigger_threshold_payout(
         pool_state.reserve0 += excess_bluechip;
         pool_state.reserve1 += excess_creator_tokens;
     } else {
-        // Normal case - no excess
         pool_state.reserve0 = pools_bluechip_seed;
         pool_state.reserve1 = payout.pool_seed_amount;
     }
     pool_state.total_liquidity = Uint128::zero();
 
-    // Reset fee growth and collection tracking
     pool_fee_state.fee_growth_global_0 = Decimal::zero();
     pool_fee_state.fee_growth_global_1 = Decimal::zero();
     pool_fee_state.total_fees_collected_0 = Uint128::zero();
@@ -331,7 +324,6 @@ pub fn process_distribution_batch(
         last_processed = Some(payer);
     }
 
-    // Update state
     let new_remaining = dist_state
         .distributions_remaining
         .saturating_sub(actual_batch_size);
@@ -340,7 +332,6 @@ pub fn process_distribution_batch(
         // All done
         DISTRIBUTION_STATE.remove(storage);
     } else {
-        // Save progress
         let updated_state = DistributionState {
             is_distributing: true,
             total_to_distribute: dist_state.total_to_distribute,
@@ -375,7 +366,7 @@ pub fn calculate_effective_batch_size(dist_state: &DistributionState) -> u32 {
         (dist_state.max_gas_per_tx / dist_state.estimated_gas_per_distribution) as u32
     };
     
-    // If we have a record of successful batch size, use it as reference
+    // If record of successful batch size, use it as reference
     if let Some(last_successful) = dist_state.last_successful_batch_size {
         // Use 90% of last successful to be safe
         let safe_size = (last_successful * 9) / 10;
@@ -414,7 +405,6 @@ pub fn decimal2decimal256(dec_value: Decimal) -> StdResult<Decimal256> {
     })
 }
 
-// creates a bank transfer message for sending bluechip tokens
 pub fn get_bank_transfer_to_msg(
     recipient: &Addr,
     denom: &str,
@@ -432,7 +422,6 @@ pub fn get_bank_transfer_to_msg(
 }
 
 pub fn mint_tokens(token_addr: &Addr, recipient: &Addr, amount: Uint128) -> StdResult<CosmosMsg> {
-    //mint the tokens and send them to the correct contract witht he correct amounts
     let mint_msg = Cw20ExecuteMsg::Mint {
         recipient: recipient.to_string(),
         amount,

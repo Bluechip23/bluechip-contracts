@@ -281,7 +281,6 @@ fn test_race_condition_commits_crossing_threshold() {
         "Second commit should not run threshold logic while THRESHOLD_PROCESSING is true"
     );
 
-    // At the end, reset processing flag manually for cleanup
     THRESHOLD_PROCESSING
         .save(&mut deps.storage, &false)
         .unwrap();
@@ -367,7 +366,6 @@ fn test_commit_post_threshold_swap() {
     let env = mock_env();
     let commit_amount = Uint128::new(100_000_000); // 100 bluechip
 
-    // Mock oracle response
     with_factory_oracle(&mut deps, Uint128::new(1_000_000)); // $1 per bluechip with 6 decimals
 
     let info = mock_info(
@@ -519,9 +517,6 @@ fn test_continue_distribution_internal_self_call_succeeds() {
             .any(|a| a.value == "continue_distribution"),
         "Response should include continue_distribution attribute"
     );
-
-    // Verify batch size was conservative based on last_successful_batch_size
-    // Should process min of (90% of 3 = 2) or calculated batch size
     assert!(
         res.messages.len() <= 3,
         "Should not exceed last successful batch size"
@@ -529,11 +524,10 @@ fn test_continue_distribution_internal_self_call_succeeds() {
 }
 
 #[test]
-fn test_continue_distribution_batches_by_gas() {
+fn test_continue_distribution_batches() {
     let mut deps = mock_dependencies();
     setup_pool_storage(&mut deps);
 
-    // Add 10 committers
     for i in 0..10 {
         COMMIT_LEDGER
             .save(
@@ -600,7 +594,6 @@ fn test_continue_distribution_batches_by_gas() {
     // Check if state was updated or removed
     match DISTRIBUTION_STATE.may_load(&deps.storage).unwrap() {
         Some(new_state) => {
-            // State exists, so distribution is ongoing
             assert_eq!(
                 new_state.distributions_remaining,
                 dist_state.distributions_remaining - processed as u32,
@@ -613,7 +606,6 @@ fn test_continue_distribution_batches_by_gas() {
                 "Should record the actual batch size that was processed"
             );
 
-            // Should have a continuation message
             let has_continue = res.messages.iter().any(|submsg| match &submsg.msg {
                 CosmosMsg::Wasm(WasmMsg::Execute { msg, .. }) => {
                     from_json::<ExecuteMsg>(msg.clone()).map_or(false, |decoded| {
@@ -634,7 +626,6 @@ fn test_continue_distribution_batches_by_gas() {
             );
         }
         None => {
-            // State was removed, so all distributions were completed
             assert_eq!(
                 processed, 10,
                 "If state is removed, all 10 committers should have been processed"
@@ -673,7 +664,6 @@ fn test_adaptive_batch_sizing_with_history() {
         .save(&mut deps.storage, &dist_state)
         .unwrap();
 
-    // Let's verify what's in the COMMIT_LEDGER before processing
     let total_before = COMMIT_LEDGER
         .range(&deps.storage, None, None, Order::Ascending)
         .count();
@@ -689,14 +679,13 @@ fn test_adaptive_batch_sizing_with_history() {
     )
     .unwrap();
 
-    // Check what's left in COMMIT_LEDGER after processing
+    // Check what's left in ledger after processing
     let total_after = COMMIT_LEDGER
         .range(&deps.storage, None, None, Order::Ascending)
         .count();
     println!("Total committers after: {}", total_after);
     println!("Processed: {}", total_before - total_after);
 
-    // Count messages
     let all_messages = res.messages.len();
     let continue_messages = res
         .messages
@@ -715,7 +704,6 @@ fn test_adaptive_batch_sizing_with_history() {
         all_messages, mint_messages, continue_messages
     );
 
-    // Also check the updated state
     if let Ok(new_state) = DISTRIBUTION_STATE.load(&deps.storage) {
         println!(
             "New last_successful_batch_size: {:?}",
@@ -727,10 +715,7 @@ fn test_adaptive_batch_sizing_with_history() {
         );
     }
 
-    // The effective batch size should be 10
     let expected = 10;
-
-    // Check against committers actually removed from ledger
     let actually_processed = total_before - total_after;
     assert_eq!(
         actually_processed, expected,
@@ -741,7 +726,6 @@ fn test_adaptive_batch_sizing_with_history() {
 
 #[test]
 fn test_calculate_effective_batch_size() {
-    // Test with history
     let dist_state = DistributionState {
         is_distributing: true,
         total_to_distribute: Uint128::new(1_000_000),
@@ -756,10 +740,8 @@ fn test_calculate_effective_batch_size() {
 
     let batch_size = calculate_effective_batch_size(&dist_state);
 
-    // Should be min(20, 10) = 10
     assert_eq!(batch_size, 10, "Should use 90% of last successful");
 
-    // Test without history
     let dist_state_no_history = DistributionState {
         is_distributing: true,
         total_to_distribute: Uint128::new(1_000_000),
@@ -774,7 +756,6 @@ fn test_calculate_effective_batch_size() {
 
     let batch_size = calculate_effective_batch_size(&dist_state_no_history);
 
-    // Should be min(20, 10) = 10 (conservative for first run)
     assert_eq!(batch_size, 10, "Should be conservative on first run");
 }
 
@@ -783,7 +764,6 @@ fn test_batch_size_with_consecutive_failures() {
     let mut deps = mock_dependencies();
     setup_pool_storage(&mut deps);
 
-    // Add committers
     for i in 0..10 {
         COMMIT_LEDGER
             .save(
@@ -794,7 +774,6 @@ fn test_batch_size_with_consecutive_failures() {
             .unwrap();
     }
 
-    // Simulate state after multiple failures
     let dist_state = DistributionState {
         is_distributing: true,
         total_to_distribute: Uint128::new(1_000_000),
@@ -820,7 +799,7 @@ fn test_batch_size_with_consecutive_failures() {
     )
     .unwrap();
 
-    // Should be very conservative after failures
+    // very conservative after failures
     assert!(
         res.messages.len() <= 2,
         "Should use very small batch size after failures"
@@ -875,7 +854,7 @@ fn test_final_batch_completes_distribution() {
         "Distribution state should be removed after completion"
     );
 
-    // Should NOT have a ContinueDistribution message since we're done
+    // no ContinueDistribution message since we're done
     let has_continue_msg = res.messages.iter().any(|submsg| match &submsg.msg {
         CosmosMsg::Wasm(WasmMsg::Execute { msg, .. }) => {
             msg.to_string().contains("ContinueDistribution")

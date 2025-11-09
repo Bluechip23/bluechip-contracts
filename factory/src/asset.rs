@@ -56,7 +56,6 @@ impl TokenType {
     }
 
     pub fn equal(&self, asset: &TokenType) -> bool {
-       // This could be simplified using derive(PartialEq)
        match (self, asset) {
            (TokenType::CreatorToken { contract_addr: a }, TokenType::CreatorToken { contract_addr: b }) => a == b,
            (TokenType::Bluechip { denom: a }, TokenType::Bluechip { denom: b }) => a == b,

@@ -163,7 +163,6 @@ pub fn get_eligible_creator_pools(
             eligible.push(pool_address.to_string());
         }
     }
-
     Ok(eligible)
 }
 
