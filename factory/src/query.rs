@@ -28,15 +28,12 @@ pub fn query(deps: Deps, env: Env, msg: QueryMsg) -> StdResult<Binary> {
 }
 
 pub fn query_pool(deps: Deps, pool_address: String) -> StdResult<PoolStateResponseForFactory> {
-    // Validate the address
     let pool_addr = deps.api.addr_validate(&pool_address)?;
     
-    // Load from storage - you'll need a map by address
     let pool_details = POOLS_BY_CONTRACT_ADDRESS.load(deps.storage, pool_addr)?;
     Ok(pool_details)
 }
 
-// Add oracle query handler
 pub fn handle_internal_bluechip_oracle_query(deps: Deps, env: Env, msg: FactoryQueryMsg) -> StdResult<Binary> {
     match msg {
         FactoryQueryMsg::GetBluechipUsdPrice {} => {
@@ -101,7 +98,6 @@ pub fn query_balance(
 pub fn query_pyth_atom_usd_price(deps: Deps, env: Env) -> StdResult<Uint128> {
     let config = FACTORYINSTANTIATEINFO.load(deps.storage)?;
     
-    // Query Pyth for ATOM/USD price
     let query_msg = PythQueryMsg::PythConversionPriceFeed {
         id: config.pyth_atom_usd_price_feed_id.clone(),
     };
@@ -124,27 +120,19 @@ pub fn query_pyth_atom_usd_price(deps: Deps, env: Env) -> StdResult<Uint128> {
             price_age, MAX_PRICE_AGE_SECONDS_BEFORE_STALE
         )));
     }
-    
-    // Convert Pyth price to Uint128
-    // Pyth uses signed integers with an exponent
     if price_feed.price.price <= 0 {
         return Err(StdError::generic_err("Invalid negative or zero price"));
     }
     
     let price_u128 = price_feed.price.price as u128;
     let expo = price_feed.price.expo;
-    
-    // Normalize to 6 decimal places (micro-USD)
-    // If expo = -8, price has 8 decimals, we want 6
-    // If expo = -5, price has 5 decimals, we want 6
+
     let normalized_price = if expo == -6 {
         Uint128::from(price_u128)
     } else if expo < -6 {
-        // More decimals than needed, divide
         let divisor = 10u128.pow((expo.abs() - 6) as u32);
         Uint128::from(price_u128 / divisor)
     } else {
-        // Fewer decimals than needed, multiply
         let multiplier = 10u128.pow((6 - expo.abs()) as u32);
         Uint128::from(price_u128 * multiplier)
     };

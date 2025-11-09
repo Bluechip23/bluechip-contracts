@@ -27,13 +27,11 @@ fn test_deposit_liquidity_first_position() {
     let bluechip_amount = Uint128::new(1_000_000_000); // 1k bluechip
     let token_amount = Uint128::new(14_893_617_021); // Approximately correct ratio
     
-    // User sends bluechip tokens with the message
     let info = mock_info(user.as_str(), &[Coin {
         denom: "stake".to_string(),
         amount: bluechip_amount,
     }]);
     
-    // Call execute_deposit_liquidity directly
     let res = execute_deposit_liquidity(
         deps.as_mut(),
         env,
@@ -46,22 +44,18 @@ fn test_deposit_liquidity_first_position() {
         None, // transaction_deadline
     ).unwrap();
     
-    // Verify NFT mint message sent
     assert!(res.messages.iter().any(|msg| {
         matches!(&msg.msg, CosmosMsg::Wasm(WasmMsg::Execute { contract_addr, .. }) 
             if contract_addr == "nft_contract")
     }));
     
-    // Verify position created
     let position = LIQUIDITY_POSITIONS.load(&deps.storage, "2").unwrap(); // ID starts at 1, increments to 2
     assert_eq!(position.owner, user);
     assert!(position.liquidity > Uint128::zero());
     
-    // Verify pool state updated
     let pool_state = POOL_STATE.load(&deps.storage).unwrap();
     assert!(pool_state.total_liquidity > Uint128::new(91_104_335_791)); // Initial + new
     
-    // Verify next position ID incremented
     assert_eq!(NEXT_POSITION_ID.load(&deps.storage).unwrap(), 2);
 }
 
@@ -80,7 +74,6 @@ fn test_deposit_liquidity_with_slippage() {
         amount: bluechip_amount,
     }]);
     
-    // Set minimum amounts for slippage protection
     let err = execute_deposit_liquidity(
         deps.as_mut(),
         env,
@@ -104,10 +97,8 @@ fn test_add_to_existing_position() {
     let mut deps = mock_dependencies();
     setup_pool_post_threshold(&mut deps);
     
-    // Create initial position
     create_test_position(&mut deps, 1, "liquidity_provider", Uint128::new(1_000_000));
     
-    // Mock NFT ownership check - the user owns position NFT #1
     deps.querier.update_wasm(|query| {
         match query {
             WasmQuery::Smart { contract_addr, msg } => {
@@ -156,11 +147,9 @@ fn test_add_to_existing_position() {
         None, // transaction_deadline
     ).unwrap();
     
-    // Verify position liquidity increased
     let position = LIQUIDITY_POSITIONS.load(&deps.storage, "1").unwrap();
     assert!(position.liquidity > Uint128::new(1_000_000));
     
-    // Verify action
     assert_eq!(res.attributes.iter().find(|a| a.key == "action").unwrap().value, "add_to_position");
 }
 
@@ -231,7 +220,6 @@ fn test_collect_fees_with_accrued_fees() {
     // Create position with significant liquidity
     create_test_position(&mut deps, 1, "fee_collector", Uint128::new(10_000_000));
     
-    // Mock NFT ownership
     deps.querier.update_wasm(|query| {
         match query {
             WasmQuery::Smart { contract_addr, msg } => {
@@ -256,7 +244,6 @@ fn test_collect_fees_with_accrued_fees() {
         }
     });
     
-    // Simulate fee accrual
     let mut fee_state = POOL_FEE_STATE.load(&deps.storage).unwrap();
     fee_state.fee_growth_global_0 = Decimal::percent(1); // 1% fees
     fee_state.fee_growth_global_1 = Decimal::percent(2); // 2% fees
@@ -277,7 +264,6 @@ fn test_collect_fees_with_accrued_fees() {
     // Verify fee collection messages (bluechip and CW20)
     assert!(res.messages.len() >= 1); // At least one fee transfer
     
-    // Verify position fee growth updated
     let position = LIQUIDITY_POSITIONS.load(&deps.storage, "1").unwrap();
     assert_eq!(position.fee_growth_inside_0_last, fee_state.fee_growth_global_0);
     assert_eq!(position.fee_growth_inside_1_last, fee_state.fee_growth_global_1);
@@ -287,17 +273,15 @@ fn test_remove_all_liquidity() {
     let mut deps = mock_dependencies();
     setup_pool_post_threshold(&mut deps);
     
-    // Store initial liquidity for comparison
     let initial_liquidity = POOL_STATE.load(&deps.storage).unwrap().total_liquidity;
     
-    // Create position (this will increase total liquidity)
+    // Create position to increase liquidity
     create_test_position(&mut deps, 1, "liquidity_provider", Uint128::new(1_000_000));
     
     // Verify liquidity increased
     let after_add = POOL_STATE.load(&deps.storage).unwrap().total_liquidity;
     assert!(after_add > initial_liquidity);
     
-    // Mock NFT ownership
     deps.querier.update_wasm(|query| {
         match query {
             WasmQuery::Smart { contract_addr, msg } => {
@@ -335,10 +319,8 @@ fn test_remove_all_liquidity() {
         None, // min_amount1
     ).unwrap();
     
-    // Verify assets returned (bluechip + CW20 transfers)
     assert!(res.messages.len() >= 2);
     
-    // Verify position removed
     assert!(LIQUIDITY_POSITIONS.load(&deps.storage, "1").is_err());
     
     // Verify pool liquidity decreased back to initial amount
@@ -374,13 +356,11 @@ fn test_deposit_liquidity_imbalanced_amounts() {
         None,
     ).unwrap();
     
-    // Should have refund message for excess bluechip tokens
     let refund_msg = res.messages.iter().find(|msg| {
         matches!(&msg.msg, CosmosMsg::Bank(BankMsg::Send { .. }))
     });
     assert!(refund_msg.is_some());
     
-    // Check refund amount in attributes
     let refund_attr = res.attributes.iter().find(|a| a.key == "refunded_amount0").unwrap();
     assert!(Uint128::new(refund_attr.value.parse::<u128>().unwrap()) > Uint128::zero());
 }
@@ -390,7 +370,6 @@ fn test_remove_liquidity_with_slippage_protection() {
     let mut deps = mock_dependencies();
     setup_pool_post_threshold(&mut deps);
     
-    // Create position
     create_test_position(&mut deps, 1, "liquidity_provider", Uint128::new(1_000_000));
     deps.querier.update_wasm(|query| {
         match query {
@@ -416,7 +395,6 @@ fn test_remove_liquidity_with_slippage_protection() {
         }
     });
     
-    // Manipulate pool to cause slippage
     let mut pool_state = POOL_STATE.load(&deps.storage).unwrap();
     pool_state.reserve0 = Uint128::new(20_000_000_000); // Reduce reserves
     pool_state.reserve1 = Uint128::new(300_000_000_000);
@@ -487,11 +465,9 @@ fn test_remove_partial_liquidity_amount() {
     
     let res = execute(deps.as_mut(), env, info, msg).unwrap();
     
-    // Verify partial removal
     let position = LIQUIDITY_POSITIONS.load(&deps.storage, "1").unwrap();
     assert_eq!(position.liquidity, Uint128::new(700_000)); // 1M - 300k
     
-    // Verify proportional fee collection
     assert!(res.messages.len() >= 2); // Asset returns
 }
 
@@ -500,13 +476,10 @@ fn test_remove_partial_liquidity_by_percent() {
     let mut deps = mock_dependencies();
     setup_pool_post_threshold(&mut deps);
     
-    // Create position with 1M liquidity
     create_test_position(&mut deps, 1, "liquidity_provider", Uint128::new(1_000_000));
     
-    // Store initial pool state
     let initial_pool_state = POOL_STATE.load(&deps.storage).unwrap();
     
-    // Mock NFT ownership
     deps.querier.update_wasm(|query| {
         match query {
             WasmQuery::Smart { contract_addr, msg } => {
@@ -534,7 +507,6 @@ fn test_remove_partial_liquidity_by_percent() {
     let env = mock_env();
     let info = mock_info("liquidity_provider", &[]);
     
-    // Remove 25% of liquidity
     let msg = ExecuteMsg::RemovePartialLiquidityByPercent {
         position_id: "1".to_string(),
         percentage: 25,
@@ -552,23 +524,19 @@ fn test_remove_partial_liquidity_by_percent() {
     let position = LIQUIDITY_POSITIONS.load(&deps.storage, "1").unwrap();
     assert_eq!(position.liquidity, Uint128::new(750_000)); // 75% remaining
     
-    // Verify liquidity removed attribute
     assert_eq!(
         res.attributes.iter().find(|a| a.key == "liquidity_removed").unwrap().value, 
         "250000" // 25% of 1M
     );
     
-    // Verify pool total liquidity decreased by 25% of position
     let final_pool_state = POOL_STATE.load(&deps.storage).unwrap();
     assert_eq!(
         final_pool_state.total_liquidity,
         initial_pool_state.total_liquidity - Uint128::new(250_000)
     );
     
-    // Verify transfer messages were created (bluechip + CW20)
     assert!(res.messages.len() >= 2);
 }
-// ============= EDGE CASE TESTS =============
 
 #[test]
 fn test_zero_liquidity_fee_collection() {
@@ -580,7 +548,7 @@ fn test_zero_liquidity_fee_collection() {
     pool_state.total_liquidity = Uint128::zero();
     POOL_STATE.save(&mut deps.storage, &pool_state).unwrap();
     
-    // Try to update fee growth (should not panic)
+    // Try to update fee growth
     let env = mock_env();
     let info = mock_info("trader", &[Coin {
         denom: "stake".to_string(),
@@ -598,10 +566,8 @@ fn test_zero_liquidity_fee_collection() {
         transaction_deadline: None,
     };
     
-    // Should execute without updating fee growth
     execute(deps.as_mut(), env, info, msg).unwrap(); 
     
-    // Fee growth should remain zero
     let fee_state = POOL_FEE_STATE.load(&deps.storage).unwrap();
     assert_eq!(fee_state.fee_growth_global_0, Decimal::zero());
 }
@@ -611,18 +577,15 @@ fn test_price_accumulator_zero_reserves() {
     let mut deps = mock_dependencies();
     setup_pool_storage(&mut deps); // Pre-threshold, zero reserves
     
-    // Mark as post-threshold but keep zero reserves
     IS_THRESHOLD_HIT.save(&mut deps.storage, &true).unwrap();
     
     let mut env = mock_env();
     env.block.time = env.block.time.plus_seconds(1000);
     
-    // This should not panic with zero reserves
     let pool_state = POOL_STATE.load(&deps.storage).unwrap();
     assert_eq!(pool_state.reserve0, Uint128::zero());
     assert_eq!(pool_state.reserve1, Uint128::zero());
     
-    // Price accumulator should not update with zero reserves
     assert_eq!(pool_state.price0_cumulative_last, Uint128::zero());
     assert_eq!(pool_state.price1_cumulative_last, Uint128::zero());
 }
@@ -667,7 +630,6 @@ fn test_collect_fees_no_fees_accrued() {
     
     let res = execute(deps.as_mut(), env, info, msg).unwrap();
     
-    // Should succeed but no transfer messages
     assert_eq!(res.messages.len(), 0);
     assert_eq!(res.attributes.iter().find(|a| a.key == "action").unwrap().value, "collect_fees");
 }
@@ -722,7 +684,6 @@ fn test_invalid_percentage_removal() {
 
 // Sets up a pool in pre-threshold state with all necessary configuration
 pub fn setup_pool_storage(deps: &mut OwnedDeps<MockStorage, MockApi, MockQuerier>) {
-    // Set up PoolInfo
     let pool_info = PoolInfo {
         pool_id: 1u64,
         pool_info: PoolDetails {
@@ -743,7 +704,6 @@ pub fn setup_pool_storage(deps: &mut OwnedDeps<MockStorage, MockApi, MockQuerier
     };
     POOL_INFO.save(&mut deps.storage, &pool_info).unwrap();
 
-    // Set up PoolState - Pre-threshold (no liquidity yet)
     let pool_state = PoolState {
         pool_contract_address: Addr::unchecked("pool_contract"),
         nft_ownership_accepted: true,
@@ -756,7 +716,6 @@ pub fn setup_pool_storage(deps: &mut OwnedDeps<MockStorage, MockApi, MockQuerier
     };
     POOL_STATE.save(&mut deps.storage, &pool_state).unwrap();
 
-    // Set up PoolFeeState
     let pool_fee_state = PoolFeeState {
         fee_growth_global_0: Decimal::zero(),
         fee_growth_global_1: Decimal::zero(),
@@ -765,7 +724,6 @@ pub fn setup_pool_storage(deps: &mut OwnedDeps<MockStorage, MockApi, MockQuerier
     };
     POOL_FEE_STATE.save(&mut deps.storage, &pool_fee_state).unwrap();
 
-    // Set up PoolSpecs
     let pool_specs = PoolSpecs {
         lp_fee: Decimal::percent(3) / Uint128::new(10), // 0.3% fee (3/1000)
         min_commit_interval: 60, // 1 minute minimum between commits
@@ -773,7 +731,6 @@ pub fn setup_pool_storage(deps: &mut OwnedDeps<MockStorage, MockApi, MockQuerier
     };
     POOL_SPECS.save(&mut deps.storage, &pool_specs).unwrap();
 
-    // Set up CommitInfo
     let commit_config = CommitLimitInfo {
         commit_amount_for_threshold: Uint128::new(100_000_000), // 100 bluechip tokens
         commit_amount_for_threshold_usd: Uint128::new(25_000_000_000), // $25k with 6 decimals
@@ -782,7 +739,6 @@ pub fn setup_pool_storage(deps: &mut OwnedDeps<MockStorage, MockApi, MockQuerier
     };
     COMMIT_LIMIT_INFO.save(&mut deps.storage, &commit_config).unwrap();
 
-    // Set up ThresholdPayout
     let threshold_payout = ThresholdPayoutAmounts {
         creator_reward_amount: Uint128::new(325_000_000_000), // 325k tokens
         bluechip_reward_amount: Uint128::new(25_000_000_000), // 25k tokens
@@ -790,8 +746,6 @@ pub fn setup_pool_storage(deps: &mut OwnedDeps<MockStorage, MockApi, MockQuerier
         commit_return_amount: Uint128::new(500_000_000_000),   // 500k tokens
     };
     THRESHOLD_PAYOUT_AMOUNTS.save(&mut deps.storage, &threshold_payout).unwrap();
-
-    // Set up FeeInfo
     let commit_fee_info = CommitFeeInfo {
         bluechip_wallet_address: Addr::unchecked("bluechip_treasury"),
         creator_wallet_address: Addr::unchecked("creator_wallet"),
@@ -800,13 +754,11 @@ pub fn setup_pool_storage(deps: &mut OwnedDeps<MockStorage, MockApi, MockQuerier
     };
     COMMITFEEINFO.save(&mut deps.storage, &commit_fee_info).unwrap();
 
-    // Set up OracleInfo
     let oracle_info = OracleInfo {
         oracle_addr: Addr::unchecked("oracle_contract"),
     };
     ORACLE_INFO.save(&mut deps.storage, &oracle_info).unwrap();
 
-    // Initialize other state variables
     THRESHOLD_PROCESSING.save(&mut deps.storage, &false).unwrap();
     IS_THRESHOLD_HIT.save(&mut deps.storage, &false).unwrap();
     USD_RAISED_FROM_COMMIT.save(&mut deps.storage, &Uint128::zero()).unwrap();
@@ -814,7 +766,6 @@ pub fn setup_pool_storage(deps: &mut OwnedDeps<MockStorage, MockApi, MockQuerier
     NEXT_POSITION_ID.save(&mut deps.storage, &1u64).unwrap();
 }
 
-// Sets up a pool in post-threshold state with initial liquidity
 pub fn setup_pool_post_threshold(deps: &mut OwnedDeps<MockStorage, MockApi, MockQuerier>) {
     // First set up basic pool
     setup_pool_storage(deps);
@@ -823,8 +774,6 @@ pub fn setup_pool_post_threshold(deps: &mut OwnedDeps<MockStorage, MockApi, Mock
     IS_THRESHOLD_HIT.save(&mut deps.storage, &true).unwrap();
     USD_RAISED_FROM_COMMIT.save(&mut deps.storage, &Uint128::new(25_000_000_000)).unwrap(); // $25k reached
     
-    // Update pool state with initial liquidity
-    // Initial liquidity: 23.5k bluechip (25k - fees) and 350k creator tokens
     let pool_state = PoolState {
         pool_contract_address: Addr::unchecked("pool_contract"),
         nft_ownership_accepted: true,
@@ -840,11 +789,9 @@ pub fn setup_pool_post_threshold(deps: &mut OwnedDeps<MockStorage, MockApi, Mock
 
 #[test]
 fn test_fee_calculation_after_swap() {
-    // Tests that fees accumulate correctly after swaps occur
     let mut deps = mock_dependencies();
     setup_pool_post_threshold(&mut deps);
     
-    // Create liquidity position
     create_test_position(&mut deps, 1, "liquidity_provider", Uint128::new(10_000_000));
     
     deps.querier.update_wasm(|query| {
@@ -871,11 +818,9 @@ fn test_fee_calculation_after_swap() {
         }
     });
     
-    // Initial fee state
     let initial_fee_state = POOL_FEE_STATE.load(&deps.storage).unwrap();
     assert_eq!(initial_fee_state.fee_growth_global_0, Decimal::zero());
     
-    // Simulate a swap that generates fees (manually update fee state)
     let mut fee_state = POOL_FEE_STATE.load(&deps.storage).unwrap();
     fee_state.fee_growth_global_0 = Decimal::from_str("50").unwrap();
     fee_state.fee_growth_global_1 = Decimal::from_str("75").unwrap();
@@ -902,8 +847,6 @@ fn test_fee_calculation_after_swap() {
     
     println!("Fees collected: {}", fees_collected_0);
     assert_eq!(fees_collected_0, Uint128::new(500_000_000));
-    
-    // Verify position fee tracking was updated
     let position = LIQUIDITY_POSITIONS.load(&deps.storage, "1").unwrap();
     assert_eq!(position.fee_growth_inside_0_last, Decimal::from_str("50").unwrap());
     assert_eq!(position.fee_growth_inside_1_last, Decimal::from_str("75").unwrap());
@@ -911,19 +854,15 @@ fn test_fee_calculation_after_swap() {
 
 #[test]
 fn test_multiple_positions_independent_fee_tracking() {
-    // Ensures multiple positions track fees independently
     let mut deps = mock_dependencies();
     setup_pool_post_threshold(&mut deps);
     
-    // Create two positions at different times
     create_test_position(&mut deps, 1, "user1", Uint128::new(5_000_000));
     
-    // Simulate some fee accrual before second position
     let mut fee_state = POOL_FEE_STATE.load(&deps.storage).unwrap();
     fee_state.fee_growth_global_0 = Decimal::from_str("100").unwrap();
     POOL_FEE_STATE.save(&mut deps.storage, &fee_state).unwrap();
     
-    // Create second position after fees have accumulated
     create_test_position(&mut deps, 2, "user2", Uint128::new(5_000_000));
     
     // Manually set user2's position to have current fee growth as baseline
@@ -931,7 +870,6 @@ fn test_multiple_positions_independent_fee_tracking() {
     pos2.fee_growth_inside_0_last = Decimal::from_str("100").unwrap();
     LIQUIDITY_POSITIONS.save(&mut deps.storage, "2", &pos2).unwrap();
     
-    // More fees accumulate
     let mut fee_state = POOL_FEE_STATE.load(&deps.storage).unwrap();
     fee_state.fee_growth_global_0 = Decimal::from_str("200").unwrap();
     POOL_FEE_STATE.save(&mut deps.storage, &fee_state).unwrap();
@@ -940,7 +878,6 @@ fn test_multiple_positions_independent_fee_tracking() {
         match query {
             WasmQuery::Smart { contract_addr, msg } => {
                 if contract_addr == "nft_contract" {
-                    // Parse the message to determine which token is being queried
                     SystemResult::Ok(ContractResult::Ok(
                         to_json_binary(&cw721::OwnerOfResponse {
                             owner: "user1".to_string(), // Simplified - should check token_id
@@ -971,7 +908,6 @@ fn test_multiple_positions_independent_fee_tracking() {
     ).unwrap();
     
     // User2 collects fees - should get fees from 100 to 200 only
-    // (Need to update querier to return user2 as owner)
     deps.querier.update_wasm(|query| {
         match query {
             WasmQuery::Smart { contract_addr, msg } => {
@@ -1178,7 +1114,6 @@ fn test_position_ownership_transfer() {
         }
     });
     
-    // Original owner can no longer collect fees
     let info_orig = mock_info("original_owner", &[]);
     let err = execute_collect_fees(deps.as_mut(), env.clone(), info_orig, "1".to_string());
     assert!(err.is_err());
@@ -1197,7 +1132,6 @@ fn test_add_to_position_collects_fees_first() {
     
     create_test_position(&mut deps, 1, "liquidity_provider", Uint128::new(1_000_000));
     
-    // Accumulate fees
     let mut fee_state = POOL_FEE_STATE.load(&deps.storage).unwrap();
     fee_state.fee_growth_global_0 = Decimal::from_str("100").unwrap();
     fee_state.fee_growth_global_1 = Decimal::from_str("100").unwrap();
@@ -1521,7 +1455,6 @@ pub fn create_test_position(
     
     LIQUIDITY_POSITIONS.save(&mut deps.storage, &position_id.to_string(), &position).unwrap();
     
-    // Also update the pool's total liquidity
     POOL_STATE.update(&mut deps.storage, |mut state| -> Result<_, cosmwasm_std::StdError> {
         state.total_liquidity += liquidity;
         Ok(state)
@@ -1569,19 +1502,16 @@ pub fn create_test_position(
 
       #[test]
     fn test_linear_scaling_between_min_and_optimal() {
-        // Test 25% of optimal liquidity
         let liquidity_25_percent = Uint128::new(OPTIMAL_LIQUIDITY / 4);
         let multiplier_25 = calculate_fee_size_multiplier(liquidity_25_percent);
         let expected_25 = Decimal::from_str("0.325").unwrap(); // 0.1 + (0.9 * 0.25)
         assert_eq!(multiplier_25, expected_25);
 
-        // Test 50% of optimal liquidity
         let liquidity_50_percent = Uint128::new(OPTIMAL_LIQUIDITY / 2);
         let multiplier_50 = calculate_fee_size_multiplier(liquidity_50_percent);
         let expected_50 = Decimal::from_str("0.55").unwrap(); // 0.1 + (0.9 * 0.5)
         assert_eq!(multiplier_50, expected_50);
 
-        // Test 75% of optimal liquidity
         let liquidity_75_percent = Uint128::new(OPTIMAL_LIQUIDITY * 3 / 4);
         let multiplier_75 = calculate_fee_size_multiplier(liquidity_75_percent);
         let expected_75 = Decimal::from_str("0.775").unwrap(); // 0.1 + (0.9 * 0.75)
@@ -1590,7 +1520,6 @@ pub fn create_test_position(
 
     #[test]
     fn test_dust_positions_get_heavily_penalized() {
-        // Test tiny positions
         let dust_positions = vec![
             1u128,
             10u128,
@@ -1602,7 +1531,6 @@ pub fn create_test_position(
             let liquidity = Uint128::new(dust_amount);
             let multiplier = calculate_fee_size_multiplier(liquidity);
             
-            // Calculate expected multiplier
             let ratio = Decimal::from_ratio(dust_amount, OPTIMAL_LIQUIDITY);
             let min_mult = Decimal::from_str(MIN_MULTIPLIER).unwrap();
             let expected = min_mult + (Decimal::one() - min_mult) * ratio;
@@ -1614,7 +1542,6 @@ pub fn create_test_position(
                 dust_amount
             );
             
-            // Verify it's significantly less than 100%
             assert!(
                 multiplier < Decimal::from_str("0.2").unwrap(),
                 "Dust position {} should get less than 20% multiplier",
@@ -1625,7 +1552,6 @@ pub fn create_test_position(
 
     #[test]
     fn test_specific_multiplier_values() {
-        // Test specific values for documentation/reference
         struct TestCase {
             liquidity: u128,
             expected_multiplier: &'static str,
@@ -1685,7 +1611,6 @@ pub fn create_test_position(
             let multiplier = calculate_fee_size_multiplier(liquidity);
             let expected = Decimal::from_str(test.expected_multiplier).unwrap();
             
-            // Use approximate equality for floating point precision
             let diff = if multiplier > expected {
                 multiplier - expected
             } else {
@@ -1704,7 +1629,6 @@ pub fn create_test_position(
 
      #[test]
     fn test_multiplier_monotonically_increases() {
-        // Ensure multiplier always increases with liquidity up to optimal
         let mut prev_multiplier = calculate_fee_size_multiplier(Uint128::zero());
         
         for i in 1..=100 {

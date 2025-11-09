@@ -147,7 +147,6 @@ fn execute_create_creator_pool(
         retry_count: 0,
     };
     POOL_CREATION_STATES.save(deps.storage, pool_id, &creation_state)?;
-    // calculate mint messages after we've used `deps` for saves to avoid moving it earlier
     let sub_msg = vec![SubMsg::reply_on_success(msg, SET_TOKENS)];
 
     Ok(Response::new()
@@ -174,7 +173,6 @@ pub fn pool_creation_reply(deps: DepsMut, env: Env, msg: Reply) -> Result<Respon
     }
 }
 
-// In factory/execute.rs
 pub fn execute_upgrade_pools(
     deps: DepsMut,
     env: Env,
@@ -185,7 +183,6 @@ pub fn execute_upgrade_pools(
 ) -> Result<Response, ContractError> {
     assert_correct_factory_address(deps.as_ref(), info)?;
 
-    // Get pools to upgrade
     let pools_to_upgrade = if let Some(ids) = pool_ids {
         ids
     } else {
@@ -206,8 +203,7 @@ pub fn execute_upgrade_pools(
         },
     )?;
 
-    // Start upgrading (batch to avoid gas issues)
-    let batch_size = 10; // Upgrade 10 pools per tx
+    let batch_size = 10;
     let mut messages = vec![];
 
     for pool_id in pools_to_upgrade.iter().take(batch_size) {
@@ -267,7 +263,6 @@ pub fn execute_continue_pool_upgrade(
     env: Env,
     info: MessageInfo,
 ) -> Result<Response, ContractError> {
-    // Only the contract itself can call this
     if info.sender != env.contract.address {
         return Err(ContractError::Unauthorized {});
     }
@@ -306,7 +301,6 @@ pub fn execute_continue_pool_upgrade(
     // Save progress
     PENDING_POOL_UPGRADE.save(deps.storage, &upgrade)?;
 
-    // Continue if more remain
     if remaining_pools.len() > batch_size {
         messages.push(CosmosMsg::Wasm(WasmMsg::Execute {
             contract_addr: env.contract.address.to_string(),
@@ -314,7 +308,6 @@ pub fn execute_continue_pool_upgrade(
             funds: vec![],
         }));
     } else {
-        // This was the last batch
         PENDING_POOL_UPGRADE.remove(deps.storage);
     }
 
