@@ -41,7 +41,7 @@ fn create_default_instantiate_msg() -> FactoryInstantiate {
     }
 }
 
-fn setup_atom_pool(deps: &mut OwnedDeps<MockStorage, MockApi, WasmMockQuerier>) {
+pub fn setup_atom_pool(deps: &mut OwnedDeps<MockStorage, MockApi, WasmMockQuerier>) {
     let atom_pool_addr = Addr::unchecked(ATOM_BLUECHIP_POOL_CONTRACT_ADDRESS);
     let atom_pool_state = PoolStateResponseForFactory {
         pool_contract_address: atom_pool_addr.clone(),
@@ -699,72 +699,6 @@ fn test_config() {
     );
     assert_eq!(config.commit_fee_bluechip, Decimal::percent(10));
     assert_eq!(config.commit_fee_creator, Decimal::percent(10));
-}
-
-#[test]
-fn test_update_config() {
-    let mut deps = mock_dependencies(&[]);
-
-    // Set up ATOM pool
-    setup_atom_pool(&mut deps);
-
-    let msg = FactoryInstantiate {
-        cw721_nft_contract_id: 58,
-        factory_admin_address: Addr::unchecked("addr0000"),
-        commit_amount_for_threshold_bluechip: Uint128::zero(),
-        commit_threshold_limit_usd: Uint128::new(100),
-        pyth_contract_addr_for_conversions: "oracle0000".to_string(),
-        pyth_atom_usd_price_feed_id: "ORCL".to_string(),
-        cw20_token_contract_id: 10,
-        create_pool_wasm_contract_id: 11,
-        bluechip_wallet_address: Addr::unchecked("bluechip"),
-        commit_fee_bluechip: Decimal::from_ratio(10u128, 100u128),
-        commit_fee_creator: Decimal::from_ratio(10u128, 100u128),
-        max_bluechip_lock_per_pool: Uint128::new(10_000_000_000),
-        creator_excess_liquidity_lock_days: 7,
-    };
-
-    let env = mock_env();
-    let addr = Addr::unchecked("addr0000");
-    let info = mock_info(&addr.as_str(), &[]);
-
-    let _res = instantiate(deps.as_mut(), env.clone(), info.clone(), msg).unwrap();
-
-    // Try updating with non-admin
-    let unauthorized_info = mock_info("unauthorized", &[]);
-    let update_msg = ExecuteMsg::UpdateConfig {
-        config: FactoryInstantiate {
-            factory_admin_address: Addr::unchecked("addr0000"),
-            cw721_nft_contract_id: 58,
-            commit_amount_for_threshold_bluechip: Uint128::zero(),
-            commit_threshold_limit_usd: Uint128::new(100),
-            pyth_contract_addr_for_conversions: "oracle0000".to_string(),
-            pyth_atom_usd_price_feed_id: "ORCL".to_string(),
-            cw20_token_contract_id: 10,
-            create_pool_wasm_contract_id: 11,
-            bluechip_wallet_address: Addr::unchecked("bluechip"),
-            commit_fee_bluechip: Decimal::from_ratio(10u128, 100u128),
-            commit_fee_creator: Decimal::from_ratio(10u128, 100u128),
-            max_bluechip_lock_per_pool: Uint128::new(10_000_000_000),
-            creator_excess_liquidity_lock_days: 7,
-        },
-    };
-
-    let err = execute(
-        deps.as_mut(),
-        env.clone(),
-        unauthorized_info,
-        update_msg.clone(),
-    )
-    .unwrap_err();
-    assert_eq!(
-        err.to_string(),
-        "Generic error: Only the admin can execute this function. Admin: addr0000, Sender: unauthorized"
-    );
-
-    let res = execute(deps.as_mut(), env.clone(), info, update_msg).unwrap();
-    assert_eq!(1, res.attributes.len());
-    assert_eq!(("action", "update_config"), res.attributes[0]);
 }
 
 #[test]

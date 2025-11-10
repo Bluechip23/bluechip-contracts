@@ -8,7 +8,7 @@ use pool_factory_interfaces::PoolStateResponseForFactory;
 //there is TEMPdata to keep the creation process going, TEMPdata is eventually removed after sucessful pool creation
 pub const FACTORYINSTANTIATEINFO: Item<FactoryInstantiate> = Item::new("config");
 pub const TEMP_POOL_CREATION: Item<TempPoolCreation> = Item::new("temp_pool_creation");
-
+pub const PENDING_CONFIG: Item<PendingConfig> = Item::new("pending_config");
 pub const POOL_COUNTER: Item<u64> = Item::new("pool_counter");
 //setting the commit field inside the pool
 pub const SETCOMMIT: Map<&str, CommitInfo> = Map::new("commit_info");
@@ -60,6 +60,11 @@ pub struct FactoryInstantiate {
     pub max_bluechip_lock_per_pool: Uint128,
     //days until creator gains access to above max locked bluechip for their pool. 
     pub creator_excess_liquidity_lock_days: u64,
+}
+#[cw_serde]
+pub struct PendingConfig {
+    pub new_config: FactoryInstantiate,
+    pub effective_after: Timestamp,
 }
 //info about creator and pool for commit tracking
 #[cw_serde]

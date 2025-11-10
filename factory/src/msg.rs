@@ -30,9 +30,10 @@ pub struct CreatePoolReplyMsg {
 
 #[cw_serde]
 pub enum ExecuteMsg {
-    UpdateConfig {
+    ProposeConfigUpdate {
         config: FactoryInstantiate,
     },
+    UpdateConfig {},
     Create {
         pool_msg: CreatePool,
         token_info: CreatorTokenInfo,

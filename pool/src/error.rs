@@ -10,10 +10,9 @@ pub enum ContractError {
     Unauthorized {},
 
     #[error("")]
-    PositionLocked {
-        unlock_time: Timestamp,
-    },
-
+    PositionLocked { unlock_time: Timestamp },
+    #[error("The pool is paused due to low liquidity, please supply liquidity before swapping")]
+    PoolPausedLowLiquidity {},
     #[error("No distribution in progress")]
     NoDistributionInProgress {},
 

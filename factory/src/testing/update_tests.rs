@@ -1,16 +1,114 @@
 use cosmwasm_std::testing::{
-    mock_dependencies, mock_env, mock_info, MockApi, MockQuerier, MockStorage,
+    mock_dependencies, mock_env, mock_info, MockApi, MockQuerier, MockStorage, MOCK_CONTRACT_ADDR,
 };
 use cosmwasm_std::{
-    from_json, to_json_binary, Addr, CosmosMsg, Decimal, Empty, OwnedDeps, Uint128, WasmMsg,
+    from_json, to_json_binary, Addr, Coin, CosmosMsg, Decimal, Empty, OwnedDeps, Uint128, WasmMsg,
 };
 
 use crate::asset::TokenType;
 use crate::error::ContractError;
 use crate::execute::{execute, instantiate};
+use crate::mock_querier::WasmMockQuerier;
 use crate::msg::ExecuteMsg;
 use crate::pool_struct::{CommitFeeInfo, PoolConfigUpdate, PoolDetails};
-use crate::state::{FactoryInstantiate, PENDING_POOL_UPGRADE, POOLS_BY_ID, POOL_REGISTRY};
+use crate::state::{
+    FactoryInstantiate, PENDING_CONFIG, PENDING_POOL_UPGRADE, POOLS_BY_ID, POOL_REGISTRY,
+};
+use crate::testing::tests::setup_atom_pool;
+
+pub fn mock_dependencies_2(
+    contract_balance: &[Coin],
+) -> OwnedDeps<MockStorage, MockApi, WasmMockQuerier> {
+    let custom_querier: WasmMockQuerier =
+        WasmMockQuerier::new(MockQuerier::new(&[(MOCK_CONTRACT_ADDR, contract_balance)]));
+
+    OwnedDeps {
+        storage: MockStorage::default(),
+        api: MockApi::default(),
+        querier: custom_querier,
+        custom_query_type: Default::default(),
+    }
+}
+
+#[test]
+fn test_propose_and_execute_update_config() {
+    let mut deps = mock_dependencies_2(&[]);
+
+    setup_atom_pool(&mut deps);
+
+    let msg = FactoryInstantiate {
+        cw721_nft_contract_id: 58,
+        factory_admin_address: Addr::unchecked("addr0000"),
+        commit_amount_for_threshold_bluechip: Uint128::zero(),
+        commit_threshold_limit_usd: Uint128::new(100),
+        pyth_contract_addr_for_conversions: "oracle0000".to_string(),
+        pyth_atom_usd_price_feed_id: "ORCL".to_string(),
+        cw20_token_contract_id: 10,
+        create_pool_wasm_contract_id: 11,
+        bluechip_wallet_address: Addr::unchecked("bluechip"),
+        commit_fee_bluechip: Decimal::from_ratio(10u128, 100u128),
+        commit_fee_creator: Decimal::from_ratio(10u128, 100u128),
+        max_bluechip_lock_per_pool: Uint128::new(10_000_000_000),
+        creator_excess_liquidity_lock_days: 7,
+    };
+
+    let env = mock_env();
+    let info = mock_info("addr0000", &[]);
+
+    instantiate(deps.as_mut(), env.clone(), info.clone(), msg.clone()).unwrap();
+
+    let unauthorized_info = mock_info("unauthorized", &[]);
+    let new_config = FactoryInstantiate {
+        factory_admin_address: Addr::unchecked("addr0000"),
+        ..msg.clone()
+    };
+    let propose_msg = ExecuteMsg::ProposeConfigUpdate {
+        config: new_config.clone(),
+    };
+
+    let err = execute(
+        deps.as_mut(),
+        env.clone(),
+        unauthorized_info,
+        propose_msg.clone(),
+    )
+    .unwrap_err();
+    assert_eq!(
+        err.to_string(),
+        "Generic error: Only the admin can execute this function. Admin: addr0000, Sender: unauthorized"
+    );
+
+    let res = execute(deps.as_mut(), env.clone(), info.clone(), propose_msg).unwrap();
+    assert_eq!(res.attributes[0], ("action", "propose_config_update"));
+
+    // Check pending config exists
+    let pending = PENDING_CONFIG.load(&deps.storage).unwrap();
+    assert_eq!(pending.new_config.cw721_nft_contract_id, 58);
+    assert!(pending.effective_after.seconds() > env.block.time.seconds());
+
+    let early_update_msg = ExecuteMsg::UpdateConfig {};
+    let err = execute(
+        deps.as_mut(),
+        env.clone(),
+        info.clone(),
+        early_update_msg.clone(),
+    )
+    .unwrap_err();
+    assert!(
+        err.to_string().contains("not yet effective"),
+        "Unexpected error: {}",
+        err
+    );
+
+    let mut later_env = env.clone();
+    later_env.block.time = pending.effective_after.plus_seconds(1);
+
+    let res = execute(deps.as_mut(), later_env, info.clone(), early_update_msg).unwrap();
+    assert_eq!(res.attributes[0], ("action", "execute_update_config"));
+
+    // Pending config should now be cleared
+    assert!(PENDING_CONFIG.may_load(&deps.storage).unwrap().is_none());
+}
 
 #[test]
 fn test_pool_registry_population() {
@@ -41,7 +139,7 @@ fn test_upgrade_pools_with_registry() {
     let admin_info = mock_info("admin", &[]);
     let upgrade_msg = ExecuteMsg::UpgradePools {
         new_code_id: 200,
-        pool_ids: None, 
+        pool_ids: None,
         migrate_msg: to_json_binary(&Empty {}).unwrap(),
     };
 
@@ -100,12 +198,12 @@ fn test_update_specific_pool_from_registry() {
             commit_fee_creator: Decimal::percent(10), // Changed
         }),
         commit_limit_usd: Some(Uint128::new(30_000_000_000)),
-        pyth_contract_addr_for_conversions: None,            
-        pyth_atom_usd_price_feed_id: None,                 
+        pyth_contract_addr_for_conversions: None,
+        pyth_atom_usd_price_feed_id: None,
         commit_amount_for_threshold: Some(Uint128::new(30_000_000_000)), // Changed
-        threshold_payout: None,                             
-        cw20_token_contract_id: None,                
-        cw721_nft_contract_id: None,                    
+        threshold_payout: None,
+        cw20_token_contract_id: None,
+        cw721_nft_contract_id: None,
     };
 
     let update_msg = ExecuteMsg::UpdatePoolConfig {
@@ -165,15 +263,16 @@ fn test_migration_with_large_pool_count() {
 fn test_continue_upgrade_unauthorized() {
     let mut deps = mock_dependencies();
     setup_factory(&mut deps);
-    
+
     let info = mock_info("hacker", &[]);
     let err = execute(
         deps.as_mut(),
         mock_env(),
         info,
-        ExecuteMsg::ContinuePoolUpgrade {}
-    ).unwrap_err();
-    
+        ExecuteMsg::ContinuePoolUpgrade {},
+    )
+    .unwrap_err();
+
     assert!(matches!(err, ContractError::Unauthorized {}));
 }
 

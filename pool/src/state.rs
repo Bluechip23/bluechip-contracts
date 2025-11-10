@@ -58,9 +58,11 @@ pub const ORACLE_INFO: Item<OracleInfo> = Item::new("oracle_info");
 pub const POOL_FEE_STATE: Item<PoolFeeState> = Item::new("pool_fee_state");
 pub const POOLS: Map<&str, PoolState> = Map::new("pools");
 pub const CREATOR_EXCESS_POSITION: Item<CreatorExcessLiquidity> = Item::new("creator_excess");
+pub const POOL_PAUSED: Item<bool> = Item::new("pool_paused");
 pub const DEFAULT_ESTIMATED_GAS_PER_DISTRIBUTION: u64 = 50_000;
 pub const DEFAULT_MAX_GAS_PER_TX: u64 = 2_000_000;
 pub const MAX_DISTRIBUTIONS_PER_TX: u32 = 40;
+pub const MINIMUM_LIQUIDITY: Uint128 = Uint128::new(1000);
 
 #[cw_serde]
 pub struct DistributionState {

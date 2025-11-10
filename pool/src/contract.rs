@@ -19,9 +19,10 @@ use crate::response::MsgInstantiateContractResponse;
 use crate::state::{
     CommitLimitInfo, ExpectedFactory, OracleInfo, PoolDetails, PoolFeeState, PoolInfo, PoolSpecs,
     ThresholdPayoutAmounts, COMMITFEEINFO, COMMITSTATUS, COMMIT_LEDGER, COMMIT_LIMIT_INFO,
-    DISTRIBUTION_STATE, EXPECTED_FACTORY, IS_THRESHOLD_HIT,
-    NATIVE_RAISED_FROM_COMMIT, ORACLE_INFO, POOL_FEE_STATE, POOL_INFO, POOL_SPECS, POOL_STATE,
-    RATE_LIMIT_GUARD, THRESHOLD_PAYOUT_AMOUNTS, THRESHOLD_PROCESSING, USD_RAISED_FROM_COMMIT,
+    DISTRIBUTION_STATE, EXPECTED_FACTORY, IS_THRESHOLD_HIT, MINIMUM_LIQUIDITY,
+    NATIVE_RAISED_FROM_COMMIT, ORACLE_INFO, POOL_FEE_STATE, POOL_INFO, POOL_PAUSED, POOL_SPECS,
+    POOL_STATE, RATE_LIMIT_GUARD, THRESHOLD_PAYOUT_AMOUNTS,
+    THRESHOLD_PROCESSING, USD_RAISED_FROM_COMMIT,
 };
 use crate::state::{
     Commiting, PoolState, Position, COMMIT_INFO, LIQUIDITY_POSITIONS, NEXT_POSITION_ID,
@@ -541,6 +542,15 @@ pub fn execute_simple_swap(
         } else {
             return Err(ContractError::AssetMismatch {});
         };
+
+    let is_paused = POOL_PAUSED.may_load(deps.storage)?.unwrap_or(false);
+    if is_paused {
+        return Err(ContractError::PoolPausedLowLiquidity {});
+    }
+    if pool_state.reserve0 < MINIMUM_LIQUIDITY || pool_state.reserve1 < MINIMUM_LIQUIDITY {
+        POOL_PAUSED.save(deps.storage, &true)?;
+        return Err(ContractError::InsufficientReserves {});
+    }
     let (return_amt, spread_amt, commission_amt) =
         compute_swap(offer_pool, ask_pool, offer_asset.amount, pool_specs.lp_fee)?;
     assert_max_spread(
@@ -552,6 +562,10 @@ pub fn execute_simple_swap(
     )?;
     let offer_pool_post = offer_pool.checked_add(offer_asset.amount)?;
     let ask_pool_post = ask_pool.checked_sub(return_amt)?;
+
+    if ask_pool_post < MINIMUM_LIQUIDITY {
+        return Err(ContractError::InsufficientReserves {});
+    }
 
     if offer_pool_contract_addressx == 0 {
         pool_state.reserve0 = offer_pool_post;
