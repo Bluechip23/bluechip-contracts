@@ -6,7 +6,8 @@ use crate::liquidity_helpers::{
     verify_position_ownership,
 };
 use crate::state::{
-    PoolSpecs, POOL_FEE_STATE, POOL_INFO, POOL_SPECS, POOL_STATE, RATE_LIMIT_GUARD,
+    PoolSpecs, MINIMUM_LIQUIDITY, POOL_FEE_STATE, POOL_INFO, POOL_PAUSED, POOL_SPECS, POOL_STATE,
+    RATE_LIMIT_GUARD,
 };
 use crate::state::{Position, TokenMetadata, LIQUIDITY_POSITIONS, NEXT_POSITION_ID};
 use crate::swap_helper::update_price_accumulator;
@@ -153,6 +154,11 @@ pub fn execute_deposit_liquidity(
     update_price_accumulator(&mut pool_state, env.block.time.seconds())?;
     POOL_STATE.save(deps.storage, &pool_state)?;
 
+    let new_state = POOL_STATE.load(deps.storage)?;
+    if new_state.reserve0 >= MINIMUM_LIQUIDITY && new_state.reserve1 >= MINIMUM_LIQUIDITY {
+        POOL_PAUSED.save(deps.storage, &false)?;
+    }
+
     Ok(Response::new()
         .add_messages(messages)
         .add_attribute("action", "deposit_liquidity")
@@ -163,7 +169,15 @@ pub fn execute_deposit_liquidity(
         .add_attribute("actual_amount1", actual_amount1.to_string())
         .add_attribute("refunded_amount0", refund_amount.to_string())
         .add_attribute("offered_amount0", amount0.to_string())
-        .add_attribute("offered_amount1", amount1.to_string()))
+        .add_attribute("offered_amount1", amount1.to_string())
+        .add_attribute(
+            "pool_unpaused",
+            if new_state.reserve0 >= MINIMUM_LIQUIDITY && new_state.reserve1 >= MINIMUM_LIQUIDITY {
+                "true"
+            } else {
+                "false"
+            },
+        ))
 }
 
 pub fn execute_collect_fees(

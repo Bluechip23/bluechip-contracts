@@ -6,7 +6,7 @@ use crate::internal_bluechip_price_oracle::{bluechip_to_usd, get_bluechip_usd_pr
 use crate::pool_struct::PoolDetails;
 use crate::msg::FactoryInstantiateResponse;
 use crate::pyth_types::{PythQueryMsg, PythPriceFeedResponse};
-use crate::state::{FACTORYINSTANTIATEINFO, MAX_PRICE_AGE_SECONDS_BEFORE_STALE, POOLS_BY_CONTRACT_ADDRESS};
+use crate::state::{FACTORYINSTANTIATEINFO, MAX_PRICE_AGE_SECONDS_BEFORE_STALE, PENDING_CONFIG, POOLS_BY_CONTRACT_ADDRESS, PendingConfig};
 
 #[cw_serde]
 #[derive(QueryResponses)]
@@ -81,6 +81,10 @@ pub fn query_token_ticker(querier: &QuerierWrapper, contract_addr: Addr) -> StdR
     }))?;
 
     Ok(res.symbol)
+}
+
+pub fn query_pending_config(deps: Deps) -> StdResult<Option<PendingConfig>> {
+    PENDING_CONFIG.may_load(deps.storage)
 }
 
 pub fn query_balance(

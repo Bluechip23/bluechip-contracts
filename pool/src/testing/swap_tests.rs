@@ -1,10 +1,15 @@
-use crate::asset::{TokenInfo, TokenType};
+use crate::asset::{PoolPairType, TokenInfo, TokenType};
+use crate::contract::execute_simple_swap;
 use crate::error::ContractError;
 use crate::generic_helpers::calculate_effective_batch_size;
+use crate::liquidity::execute_deposit_liquidity;
 use crate::msg::ExecuteMsg;
 use crate::state::{
-    COMMIT_INFO, COMMIT_LEDGER, DEFAULT_ESTIMATED_GAS_PER_DISTRIBUTION, DEFAULT_MAX_GAS_PER_TX,
-    IS_THRESHOLD_HIT, POOL_FEE_STATE, POOL_STATE, RATE_LIMIT_GUARD, USD_RAISED_FROM_COMMIT,
+    CommitLimitInfo, OracleInfo, PoolDetails, PoolFeeState, PoolInfo, PoolSpecs, PoolState,
+    ThresholdPayoutAmounts, COMMIT_INFO, COMMIT_LEDGER, DEFAULT_ESTIMATED_GAS_PER_DISTRIBUTION,
+    DEFAULT_MAX_GAS_PER_TX, IS_THRESHOLD_HIT, NATIVE_RAISED_FROM_COMMIT, NEXT_POSITION_ID,
+    ORACLE_INFO, POOL_FEE_STATE, POOL_PAUSED, POOL_SPECS, POOL_STATE, RATE_LIMIT_GUARD,
+    USD_RAISED_FROM_COMMIT,
 };
 use crate::{
     contract::{execute, execute_swap_cw20, instantiate},
@@ -2546,4 +2551,457 @@ fn test_concurrent_commits_both_recorded() {
         pool_state.reserve0 > before.reserve0,
         "Pool reserve0 should have increased from Bob's bluechip swap"
     );
+}
+pub fn setup_pool_with_reserves(
+    deps: &mut OwnedDeps<MockStorage, MockApi, MockQuerier>,
+    reserve0: Uint128,
+    reserve1: Uint128,
+) {
+    let pool_info = PoolInfo {
+        pool_id: 1u64,
+        pool_info: PoolDetails {
+            asset_infos: [
+                TokenType::Bluechip {
+                    denom: "stake".to_string(), // Using "stake" as bluechip token
+                },
+                TokenType::CreatorToken {
+                    contract_addr: Addr::unchecked("token_contract"),
+                },
+            ],
+            contract_addr: Addr::unchecked("pool_contract"),
+            pool_type: PoolPairType::Xyk {},
+        },
+        factory_addr: Addr::unchecked("factory_contract"),
+        token_address: Addr::unchecked("token_contract"),
+        position_nft_address: Addr::unchecked("nft_contract"),
+    };
+    POOL_INFO.save(&mut deps.storage, &pool_info).unwrap();
+
+    let pool_state = PoolState {
+        pool_contract_address: Addr::unchecked("pool_contract"),
+        nft_ownership_accepted: true,
+        reserve0: reserve0, // No reserves pre-threshold
+        reserve1: reserve1,
+        total_liquidity: Uint128::zero(),
+        block_time_last: 0,
+        price0_cumulative_last: Uint128::zero(),
+        price1_cumulative_last: Uint128::zero(),
+    };
+    POOL_STATE.save(&mut deps.storage, &pool_state).unwrap();
+
+    let pool_fee_state = PoolFeeState {
+        fee_growth_global_0: Decimal::zero(),
+        fee_growth_global_1: Decimal::zero(),
+        total_fees_collected_0: Uint128::zero(),
+        total_fees_collected_1: Uint128::zero(),
+    };
+    POOL_FEE_STATE
+        .save(&mut deps.storage, &pool_fee_state)
+        .unwrap();
+
+    let pool_specs = PoolSpecs {
+        lp_fee: Decimal::percent(3) / Uint128::new(10), // 0.3% fee (3/1000)
+        min_commit_interval: 60,                        // 1 minute minimum between commits
+        usd_payment_tolerance_bps: 100,                 // 1% tolerance
+    };
+    POOL_SPECS.save(&mut deps.storage, &pool_specs).unwrap();
+
+    let commit_config = CommitLimitInfo {
+        commit_amount_for_threshold: Uint128::new(100_000_000), // 100 bluechip tokens
+        commit_amount_for_threshold_usd: Uint128::new(25_000_000_000), // $25k with 6 decimals
+        max_bluechip_lock_per_pool: Uint128::new(10_000_000_000),
+        creator_excess_liquidity_lock_days: 7,
+    };
+    COMMIT_LIMIT_INFO
+        .save(&mut deps.storage, &commit_config)
+        .unwrap();
+
+    let threshold_payout = ThresholdPayoutAmounts {
+        creator_reward_amount: Uint128::new(325_000_000_000), // 325k tokens
+        bluechip_reward_amount: Uint128::new(25_000_000_000), // 25k tokens
+        pool_seed_amount: Uint128::new(350_000_000_000),      // 350k tokens
+        commit_return_amount: Uint128::new(500_000_000_000),  // 500k tokens
+    };
+    THRESHOLD_PAYOUT_AMOUNTS
+        .save(&mut deps.storage, &threshold_payout)
+        .unwrap();
+    let commit_fee_info = CommitFeeInfo {
+        bluechip_wallet_address: Addr::unchecked("bluechip_treasury"),
+        creator_wallet_address: Addr::unchecked("creator_wallet"),
+        commit_fee_bluechip: Decimal::percent(1), // 1%
+        commit_fee_creator: Decimal::percent(5),  // 5%
+    };
+    COMMITFEEINFO
+        .save(&mut deps.storage, &commit_fee_info)
+        .unwrap();
+
+    let oracle_info = OracleInfo {
+        oracle_addr: Addr::unchecked("oracle_contract"),
+    };
+    ORACLE_INFO.save(&mut deps.storage, &oracle_info).unwrap();
+
+    THRESHOLD_PROCESSING
+        .save(&mut deps.storage, &false)
+        .unwrap();
+    IS_THRESHOLD_HIT.save(&mut deps.storage, &false).unwrap();
+    USD_RAISED_FROM_COMMIT
+        .save(&mut deps.storage, &Uint128::zero())
+        .unwrap();
+    NATIVE_RAISED_FROM_COMMIT
+        .save(&mut deps.storage, &Uint128::zero())
+        .unwrap();
+    NEXT_POSITION_ID.save(&mut deps.storage, &1u64).unwrap();
+}
+
+#[test]
+fn test_swap_fails_when_reserves_below_pause_threshold() {
+    let mut deps = mock_dependencies();
+
+    // Setup pool with reserves just below pause threshold
+    setup_pool_with_reserves(&mut deps, Uint128::new(9), Uint128::new(100_000));
+
+    let offer = TokenInfo {
+        info: TokenType::Bluechip {
+            denom: "stake".to_string(),
+        },
+        amount: Uint128::new(100),
+    };
+
+    let result = execute_simple_swap(
+        &mut deps.as_mut(),
+        mock_env(),
+        mock_info("user", &[]),
+        Addr::unchecked("user"),
+        offer,
+        None,
+        None,
+        None,
+    );
+
+    // Should fail and pause the pool
+    assert!(matches!(
+        result,
+        Err(ContractError::InsufficientReserves {})
+    ));
+
+    // Verify pool is now paused
+    let is_paused = POOL_PAUSED.load(&deps.storage).unwrap();
+    assert!(is_paused, "Pool should be paused after hitting threshold");
+}
+
+#[test]
+fn test_swap_fails_when_pool_already_paused() {
+    let mut deps = mock_dependencies();
+    setup_pool_with_reserves(&mut deps, Uint128::new(50_000), Uint128::new(50_000));
+
+    // Manually pause the pool
+    POOL_PAUSED.save(&mut deps.storage, &true).unwrap();
+
+    let offer = TokenInfo {
+        info: TokenType::Bluechip {
+            denom: "stake".to_string(),
+        },
+
+        amount: Uint128::new(100),
+    };
+
+    let result = execute_simple_swap(
+        &mut deps.as_mut(),
+        mock_env(),
+        mock_info("user", &[]),
+        Addr::unchecked("user"),
+        offer,
+        None,
+        None,
+        None,
+    );
+
+    assert!(matches!(
+        result,
+        Err(ContractError::PoolPausedLowLiquidity {})
+    ));
+}
+#[test]
+fn test_swap_prevented_if_would_deplete_below_minimum() {
+    let mut deps = mock_dependencies();
+
+    // Set reserves above SWAP_PAUSE_THRESHOLD (100) but where swap would deplete below MINIMUM_LIQUIDITY (1000)
+    setup_pool_with_reserves(
+        &mut deps, 
+        Uint128::new(10000),  // Well above SWAP_PAUSE_THRESHOLD
+        Uint128::new(1100)    // Just above MINIMUM_LIQUIDITY
+    );
+    
+    // Calculate swap that would deplete reserve1 below 1000
+    // k = 10000 * 1100 = 11,000,000
+    // If we add 2000 to reserve0: new reserve0 = 12000
+    // new reserve1 = 11,000,000 / 12000 = 916.67 (below MINIMUM_LIQUIDITY of 1000!)
+    
+    let swap_amount = Uint128::new(2000);
+    let info = mock_info(
+        "user",
+        &[Coin {
+            denom: "stake".to_string(),
+            amount: swap_amount,
+        }],
+    );
+    
+    let offer = TokenInfo {
+        info: TokenType::Bluechip {
+            denom: "stake".to_string(),
+        },
+        amount: swap_amount,
+    };
+
+    let result = execute_simple_swap(
+        &mut deps.as_mut(),
+        mock_env(),
+        info,
+        Addr::unchecked("user"),
+        offer,
+        None,
+        Some(Decimal::percent(50)), // Allow high spread
+        None,
+    );
+
+    // Should fail with InsufficientReserves (based on your actual code)
+    assert!(
+        matches!(
+            result,
+            Err(ContractError::InsufficientReserves {})
+        ),
+        "Expected InsufficientReserves error for post-swap depletion, got: {:?}",
+        result
+    );
+}
+
+#[test]
+fn test_swap_triggers_pause_at_threshold() {
+    let mut deps = mock_dependencies();
+
+    // Set one reserve below SWAP_PAUSE_THRESHOLD (100)
+    setup_pool_with_reserves(
+        &mut deps, 
+        Uint128::new(99),    // Below SWAP_PAUSE_THRESHOLD!
+        Uint128::new(10000)
+    );
+    
+    let swap_amount = Uint128::new(10);
+    let info = mock_info(
+        "user",
+        &[Coin {
+            denom: "stake".to_string(),
+            amount: swap_amount,
+        }],
+    );
+    
+    let offer = TokenInfo {
+        info: TokenType::Bluechip {
+            denom: "stake".to_string(),
+        },
+        amount: swap_amount,
+    };
+
+    let result = execute_simple_swap(
+        &mut deps.as_mut(),
+        mock_env(),
+        info,
+        Addr::unchecked("user"),
+        offer,
+        None,
+        Some(Decimal::percent(50)),
+        None,
+    );
+
+    // Should fail with InsufficientReserves at pre-swap check
+    assert!(
+        matches!(
+            result,
+            Err(ContractError::InsufficientReserves {})
+        ),
+        "Expected InsufficientReserves error at pre-swap check, got: {:?}",
+        result
+    );
+    
+    // Verify pool is paused
+    let is_paused = POOL_PAUSED.load(&deps.storage).unwrap();
+    assert!(is_paused, "Pool should be paused when reserves drop below threshold");
+}
+
+#[test]
+fn test_add_liquidity_unpauses_pool() {
+    let mut deps = mock_dependencies();
+
+    // Setup pool with low reserves and pause it
+    setup_pool_with_reserves(&mut deps, Uint128::new(5000), Uint128::new(5000));
+    POOL_PAUSED.save(&mut deps.storage, &true).unwrap();
+
+    let result = execute_deposit_liquidity(
+        deps.as_mut(),
+        mock_env(),
+        mock_info(
+            "provider",
+            &[
+                Coin::new(50_000, "stake"),
+                Coin::new(50_000, "token1_contract"),
+            ],
+        ),
+        Addr::unchecked("provider"),
+        Uint128::new(50_000),
+        Uint128::new(50_000),
+        None,
+        None,
+        None,
+    );
+    if result.is_err() {
+        println!("Liquidity deposit failed: {:?}", result);
+    }
+    assert!(result.is_ok());
+
+    // Check pool is unpaused
+    let is_paused = POOL_PAUSED.load(&deps.storage).unwrap();
+    assert!(
+        !is_paused,
+        "Pool should be uspaused after adding sufficient liquidity"
+    );
+
+    // Verify the response contains unpause attribute
+    let response = result.unwrap();
+    assert!(response
+        .attributes
+        .iter()
+        .any(|attr| attr.key == "pool_unpaused" && attr.value == "true"));
+}
+
+#[test]
+fn test_add_liquidity_doesnt_unpause_if_still_below_threshold() {
+    let mut deps = mock_dependencies();
+
+    setup_pool_with_reserves(&mut deps, Uint128::new(100), Uint128::new(100));
+    POOL_PAUSED.save(&mut deps.storage, &true).unwrap();
+
+    let result = execute_deposit_liquidity(
+        deps.as_mut(),
+        mock_env(),
+        mock_info(
+            "provider",
+            &[Coin::new(500, "stake"), Coin::new(500, "token1")],
+        ),
+        Addr::unchecked("provider"),
+        Uint128::new(500),
+        Uint128::new(500),
+        None,
+        None,
+        None,
+    );
+    assert!(result.is_ok());
+
+    let is_paused = POOL_PAUSED.load(&deps.storage).unwrap();
+    assert!(
+        is_paused,
+        "Pool should remain paused with insufficient liquidity"
+    );
+}
+
+#[test]
+fn test_both_reserves_checked() {
+    let mut deps = mock_dependencies();
+
+    // Test with low reserve0
+    setup_pool_with_reserves(&mut deps, Uint128::new(9999), Uint128::new(10));
+
+    let result1 = execute_simple_swap(
+        &mut deps.as_mut(),
+        mock_env(),
+        mock_info("user", &[]),
+        Addr::unchecked("user"),
+        TokenInfo {
+            info: TokenType::Bluechip {
+                denom: "stake".to_string(),
+            },
+
+            amount: Uint128::new(100),
+        },
+        None,
+        None,
+        None,
+    );
+
+    assert!(matches!(
+        result1,
+        Err(ContractError::InsufficientReserves {})
+    ));
+
+    // Test with low reserve1
+    setup_pool_with_reserves(&mut deps, Uint128::new(10), Uint128::new(9999));
+    POOL_PAUSED.remove(&mut deps.storage); // Reset pause state
+
+    let result2 = execute_simple_swap(
+        &mut deps.as_mut(),
+        mock_env(),
+        mock_info("user", &[]),
+        Addr::unchecked("user"),
+        TokenInfo {
+            info: TokenType::Bluechip {
+                denom: "stake".to_string(),
+            },
+
+            amount: Uint128::new(100),
+        },
+        None,
+        None,
+        None,
+    );
+
+    assert!(matches!(
+        result2,
+        Err(ContractError::InsufficientReserves {})
+    ));
+}
+
+#[test]
+fn test_pause_state_persistence() {
+    let mut deps = mock_dependencies();
+    setup_pool_with_reserves(&mut deps, Uint128::new(15), Uint128::new(15));
+
+    // First swap triggers pause
+    let _ = execute_simple_swap(
+        &mut deps.as_mut(),
+        mock_env(),
+        mock_info("user1", &[]),
+        Addr::unchecked("user1"),
+        TokenInfo {
+            info: TokenType::Bluechip {
+                denom: "stake".to_string(),
+            },
+
+            amount: Uint128::new(100),
+        },
+        None,
+        None,
+        None,
+    );
+
+    // Second user tries to swap - should fail due to pause
+    let result = execute_simple_swap(
+        &mut deps.as_mut(),
+        mock_env(),
+        mock_info("user2", &[]),
+        Addr::unchecked("user2"),
+        TokenInfo {
+            info: TokenType::Bluechip {
+                denom: "stake".to_string(),
+            },
+
+            amount: Uint128::new(100),
+        },
+        None,
+        None,
+        None,
+    );
+
+    assert!(matches!(
+        result,
+        Err(ContractError::PoolPausedLowLiquidity {})
+    ));
 }

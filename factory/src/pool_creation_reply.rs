@@ -96,7 +96,6 @@ pub fn mint_create_pool(deps: DepsMut, env: Env, msg: Reply) -> Result<Response,
                 ContractError::Std(StdError::generic_err("missing token address"))
             })?;
 
-            // Configure threshold payouts
             let threshold_payout = ThresholdPayoutAmounts {
                 creator_reward_amount: Uint128::new(325_000_000_000),
                 bluechip_reward_amount: Uint128::new(25_000_000_000),
@@ -104,7 +103,6 @@ pub fn mint_create_pool(deps: DepsMut, env: Env, msg: Reply) -> Result<Response,
                 commit_return_amount: Uint128::new(500_000_000_000),
             };
 
-            // Validate the payout amounts
             threshold_payout.validate(Uint128::new(1_200_000_000_000))?;
 
             let threshold_binary = to_json_binary(&threshold_payout)?;

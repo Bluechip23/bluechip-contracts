@@ -8,8 +8,9 @@ use crate::pool_create_cleanup::handle_cleanup_reply;
 use crate::pool_creation_reply::{finalize_pool, mint_create_pool, set_tokens};
 use crate::pool_struct::{CreatePool, PoolConfigUpdate, TempPoolCreation};
 use crate::state::{
-    CreationStatus, FactoryInstantiate, PoolCreationState, PoolUpgrade, FACTORYINSTANTIATEINFO,
-    PENDING_POOL_UPGRADE, POOL_COUNTER, POOL_CREATION_STATES, POOL_REGISTRY, TEMP_POOL_CREATION,
+    CreationStatus, FactoryInstantiate, PendingConfig, PoolCreationState, PoolUpgrade,
+    FACTORYINSTANTIATEINFO, PENDING_CONFIG, PENDING_POOL_UPGRADE, POOL_COUNTER,
+    POOL_CREATION_STATES, POOL_REGISTRY, TEMP_POOL_CREATION,
 };
 #[cfg(not(feature = "library"))]
 use cosmwasm_std::{
@@ -50,7 +51,10 @@ pub fn execute(
     msg: ExecuteMsg,
 ) -> Result<Response, ContractError> {
     match msg {
-        ExecuteMsg::UpdateConfig { config } => execute_update_config(deps, info, config),
+        ExecuteMsg::ProposeConfigUpdate {
+            config: factory_instantiate,
+        } => execute_propose_config_update(deps, env, info, factory_instantiate),
+        ExecuteMsg::UpdateConfig {} => execute_update_config(deps, env),
         ExecuteMsg::Create {
             pool_msg,
             token_info,
@@ -82,18 +86,50 @@ fn assert_correct_factory_address(deps: Deps, info: MessageInfo) -> StdResult<bo
     Ok(true)
 }
 
-fn execute_update_config(
+pub fn execute_update_config(
     deps: DepsMut,
+    env: Env,
+) -> Result<Response, ContractError> {
+    let pending = PENDING_CONFIG.load(deps.storage)?;
+
+    if env.block.time < pending.effective_after {
+        return Err(ContractError::TimelockNotExpired {
+            effective_after: pending.effective_after,
+        });
+    }
+    FACTORYINSTANTIATEINFO.save(deps.storage, &pending.new_config)?;
+    PENDING_CONFIG.remove(deps.storage);
+    Ok(Response::new().add_attribute("action", "execute_update_config"))
+}
+
+pub fn execute_propose_config_update(
+    deps: DepsMut,
+    env: Env,
     info: MessageInfo,
     config: FactoryInstantiate,
 ) -> Result<Response, ContractError> {
     assert_correct_factory_address(deps.as_ref(), info)?;
-    FACTORYINSTANTIATEINFO.save(deps.storage, &config)?;
-    Ok(Response::new().add_attribute("action", "update_config"))
+    let pending = PendingConfig {
+        new_config: config,
+        effective_after: env.block.time.plus_seconds(86400 * 2), // 48 hour delay
+    };
+    PENDING_CONFIG.save(deps.storage, &pending)?;
+    Ok(Response::new()
+        .add_attribute("action", "propose_config_update")
+        .add_attribute("effective_after", pending.effective_after.to_string()))
+}
+
+pub fn execute_cancel_config_update(
+    deps: DepsMut,
+    info: MessageInfo,
+) -> Result<Response, ContractError> {
+    assert_correct_factory_address(deps.as_ref(), info)?;
+    PENDING_CONFIG.remove(deps.storage);
+    Ok(Response::new().add_attribute("action", "cancel_config_update"))
 }
 
 fn execute_create_creator_pool(
-    mut deps: DepsMut, 
+    mut deps: DepsMut,
     env: Env,
     info: MessageInfo,
     pool_msg: CreatePool,
@@ -192,7 +228,6 @@ pub fn execute_upgrade_pools(
             .collect::<StdResult<Vec<_>>>()?
     };
 
-    // Store upgrade info
     PENDING_POOL_UPGRADE.save(
         deps.storage,
         &PoolUpgrade {
@@ -215,7 +250,6 @@ pub fn execute_upgrade_pools(
         }));
     }
 
-    // If more pools remain, trigger continuation
     if pools_to_upgrade.len() > batch_size {
         messages.push(CosmosMsg::Wasm(WasmMsg::Execute {
             contract_addr: env.contract.address.to_string(),
