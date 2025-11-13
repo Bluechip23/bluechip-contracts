@@ -13,8 +13,8 @@ pub enum ContractError {
     PositionLocked { unlock_time: Timestamp },
     #[error("The pool is paused due to low liquidity, please supply liquidity before swapping")]
     PoolPausedLowLiquidity {},
-    #[error("No distribution in progress")]
-    NoDistributionInProgress {},
+    #[error("No distribution or threshold locks and none are in progress")]
+    NothingToRecover {},
 
     #[error("The Factory address used is not permitted to create a pool")]
     InvalidFactory {},
@@ -133,6 +133,8 @@ pub enum ContractError {
         usd_amount: String,
         available: Vec<String>,
     },
+    #[error("The threshold lock is not stuck")]
+    NotStuckYet {},
 }
 
 impl From<OverflowError> for ContractError {

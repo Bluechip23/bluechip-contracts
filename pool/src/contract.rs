@@ -17,12 +17,7 @@ use crate::msg::{Cw20HookMsg, ExecuteMsg, MigrateMsg, PoolConfigUpdate, PoolInst
 use crate::query::query_check_commit;
 use crate::response::MsgInstantiateContractResponse;
 use crate::state::{
-    CommitLimitInfo, ExpectedFactory, OracleInfo, PoolDetails, PoolFeeState, PoolInfo, PoolSpecs,
-    ThresholdPayoutAmounts, COMMITFEEINFO, COMMITSTATUS, COMMIT_LEDGER, COMMIT_LIMIT_INFO,
-    DISTRIBUTION_STATE, EXPECTED_FACTORY, IS_THRESHOLD_HIT, MINIMUM_LIQUIDITY,
-    NATIVE_RAISED_FROM_COMMIT, ORACLE_INFO, POOL_FEE_STATE, POOL_INFO, POOL_PAUSED, POOL_SPECS,
-    POOL_STATE, RATE_LIMIT_GUARD, THRESHOLD_PAYOUT_AMOUNTS,
-    THRESHOLD_PROCESSING, USD_RAISED_FROM_COMMIT,
+    COMMIT_LEDGER, COMMIT_LIMIT_INFO, COMMITFEEINFO, COMMITSTATUS, CommitLimitInfo, DISTRIBUTION_STATE, EXPECTED_FACTORY, ExpectedFactory, IS_THRESHOLD_HIT, LAST_THRESHOLD_ATTEMPT, MINIMUM_LIQUIDITY, NATIVE_RAISED_FROM_COMMIT, ORACLE_INFO, OracleInfo, POOL_FEE_STATE, POOL_INFO, POOL_PAUSED, POOL_SPECS, POOL_STATE, PoolDetails, PoolFeeState, PoolInfo, PoolSpecs, RATE_LIMIT_GUARD, RecoveryType, THRESHOLD_PAYOUT_AMOUNTS, THRESHOLD_PROCESSING, ThresholdPayoutAmounts, USD_RAISED_FROM_COMMIT
 };
 use crate::state::{
     Commiting, PoolState, Position, COMMIT_INFO, LIQUIDITY_POSITIONS, NEXT_POSITION_ID,
@@ -31,9 +26,7 @@ use crate::swap_helper::{
     assert_max_spread, compute_swap, get_bluechip_value, get_usd_value, update_price_accumulator,
 };
 use cosmwasm_std::{
-    entry_point, from_json, to_json_binary, Addr, Binary, CosmosMsg, Decimal, DepsMut, Env,
-    Fraction, MessageInfo, Reply, Response, StdError, StdResult, SubMsgResult, Timestamp, Uint128,
-    WasmMsg,
+    Addr, Binary, CosmosMsg, Decimal, DepsMut, Env, Fraction, MessageInfo, Reply, Response, StdError, StdResult, Storage, SubMsgResult, Timestamp, Uint128, WasmMsg, entry_point, from_json, to_json_binary
 };
 use cw2::set_contract_version;
 use cw20::{Cw20ExecuteMsg, Cw20ReceiveMsg};
@@ -203,7 +196,10 @@ pub fn execute(
             }
 
             Ok(Response::new().add_attribute("action", "config_updated"))
-        }
+        },
+        ExecuteMsg::RecoverStuckStates { recovery_type } => {
+            execute_recover_stuck_states(deps, env, info, recovery_type)
+        },
         ExecuteMsg::Commit {
             asset,
             amount,
@@ -359,7 +355,83 @@ pub fn execute(
         ExecuteMsg::ClaimCreatorExcessLiquidity {} => execute_claim_creator_excess(deps, env, info),
     }
 }
+pub fn execute_recover_stuck_states(
+    deps: DepsMut,
+    env: Env,
+    info: MessageInfo,
+    recovery_type: RecoveryType,
+) -> Result<Response, ContractError> {
+    // Admin only check
+    let real_factory = EXPECTED_FACTORY.load(deps.storage)?;
+    if info.sender != real_factory.expected_factory_address {
+        return Err(ContractError::Unauthorized {});
+    }
 
+    let mut attributes = vec![("action", "recover_stuck_states".to_string())];
+    let mut recovered_items = vec![];
+
+    match recovery_type {
+        RecoveryType::StuckThreshold => {
+            recover_threshold(deps.storage, &env, &mut recovered_items)?;
+        }
+        RecoveryType::StuckDistribution => {
+            recover_distribution(deps.storage, &env, &mut recovered_items)?;
+        }
+        RecoveryType::Both => {
+            // Try to recover both, don't fail if one isn't stuck
+            let _ = recover_threshold(deps.storage, &env, &mut recovered_items);
+            let _ = recover_distribution(deps.storage, &env, &mut recovered_items);
+        }
+    }
+
+    if recovered_items.is_empty() {
+        return Err(ContractError::NothingToRecover {});
+    }
+
+    attributes.push(("recovered", recovered_items.join(",")));
+
+    Ok(Response::new().add_attributes(attributes))
+}
+
+// Helper functions to keep the logic clean
+fn recover_threshold(
+    storage: &mut dyn Storage,
+    env: &Env,
+    recovered: &mut Vec<String>,
+) -> StdResult<()> {
+    // Check if threshold is actually stuck
+    let last_threshold_time = LAST_THRESHOLD_ATTEMPT
+        .may_load(storage)?
+        .unwrap_or(Timestamp::from_seconds(0));
+
+    if env.block.time.seconds() >= last_threshold_time.seconds() + 3600 {
+        let was_stuck = THRESHOLD_PROCESSING.may_load(storage)?.unwrap_or(false);
+        if was_stuck {
+            THRESHOLD_PROCESSING.save(storage, &false)?;
+            recovered.push("threshold".to_string());
+        }
+    }
+    Ok(())
+}
+
+fn recover_distribution(
+    storage: &mut dyn Storage,
+    env: &Env,
+    recovered: &mut Vec<String>,
+) -> StdResult<()> {
+    if let Some(dist_state) = DISTRIBUTION_STATE.may_load(storage)? {
+        let time_since_update = env.block.time.seconds() - dist_state.last_updated.seconds();
+        // Check if stuck (no update for 1 hour or too many failures)
+        if time_since_update >= 3600 || dist_state.consecutive_failures >= 5 {
+            DISTRIBUTION_STATE.remove(storage);
+            recovered.push(format!(
+                "distribution_{}_remaining",
+                dist_state.distributions_remaining
+            ));
+        }
+    }
+    Ok(())
+}
 pub fn execute_swap_cw20(
     deps: DepsMut,
     env: Env,
@@ -773,12 +845,13 @@ pub fn execute_commit_logic(
             messages.push(creator_transfer);
             // load state of threshold of the pool
             let threshold_already_hit = IS_THRESHOLD_HIT.load(deps.storage)?;
-            //pre threshold logic begins....
+
             if !threshold_already_hit {
                 let current_usd_raised = USD_RAISED_FROM_COMMIT.load(deps.storage)?;
                 let new_total = current_usd_raised + usd_value;
                 // Check if this commit will cross or exceed the threshold
                 if new_total >= commit_config.commit_amount_for_threshold_usd {
+                    LAST_THRESHOLD_ATTEMPT.save(deps.storage, &env.block.time)?;
                     // Try to acquire the threshold processing lock to trigger crossing
                     let processing = THRESHOLD_PROCESSING
                         .may_load(deps.storage)?
@@ -1228,7 +1301,7 @@ pub fn execute_continue_distribution(
 
     let dist_state = DISTRIBUTION_STATE.load(deps.storage)?;
     if !dist_state.is_distributing {
-        return Err(ContractError::NoDistributionInProgress {});
+        return Err(ContractError::NothingToRecover {});
     }
 
     let pool_info = POOL_INFO.load(deps.storage)?;

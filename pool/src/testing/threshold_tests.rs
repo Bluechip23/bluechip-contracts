@@ -2,16 +2,15 @@ use crate::asset::{TokenInfo, TokenType};
 use crate::error::ContractError;
 use crate::msg::{CommitFeeInfo, ExecuteMsg};
 use crate::state::{
-    CommitLimitInfo, CreatorExcessLiquidity, TokenMetadata, COMMITFEEINFO, COMMIT_LEDGER,
-    COMMIT_LIMIT_INFO, CREATOR_EXCESS_POSITION, LIQUIDITY_POSITIONS, NEXT_POSITION_ID, POOL_STATE,
-    USD_RAISED_FROM_COMMIT,
+    COMMIT_INFO, COMMIT_LEDGER, COMMIT_LIMIT_INFO, COMMITFEEINFO, CREATOR_EXCESS_POSITION, CommitLimitInfo, CreatorExcessLiquidity, IS_THRESHOLD_HIT, LIQUIDITY_POSITIONS, NEXT_POSITION_ID, POOL_STATE, THRESHOLD_PROCESSING, TokenMetadata, USD_RAISED_FROM_COMMIT
 };
+use crate::testing::swap_tests::with_factory_oracle;
 use crate::{
     contract::execute,
     testing::liquidity_tests::{setup_pool_post_threshold, setup_pool_storage},
 };
-use cosmwasm_std::testing::{MockApi, MockQuerier, MockStorage};
-use cosmwasm_std::{coin, Binary, Decimal, Empty, OwnedDeps, SystemError, WasmQuery};
+use cosmwasm_std::testing::{MockApi, MockQuerier, MockStorage, mock_dependencies_with_balance};
+use cosmwasm_std::{BankMsg, Binary, Coin, Decimal, Empty, OwnedDeps, SystemError, WasmQuery, coin};
 use cosmwasm_std::{
     from_json,
     testing::{mock_dependencies, mock_env, mock_info},
@@ -304,4 +303,224 @@ fn test_no_excess_when_under_cap() {
 
     let pool_state = POOL_STATE.load(&deps.storage).unwrap();
     assert!(pool_state.reserve0 < Uint128::new(10_000_000_000_000));
+}
+#[test]
+fn test_commit_threshold_overshoot_split() {
+    let mut deps = mock_dependencies_with_balance(&[Coin {
+        denom: "stake".to_string(),
+        amount: Uint128::new(100_000_000_000),
+    }]);
+
+    setup_pool_storage(&mut deps);
+    THRESHOLD_PROCESSING
+        .save(&mut deps.storage, &false)
+        .unwrap();
+
+    USD_RAISED_FROM_COMMIT
+        .save(&mut deps.storage, &Uint128::new(24_999_000_000))
+        .unwrap(); // $24,999
+
+    let env = mock_env();
+
+    with_factory_oracle(&mut deps, Uint128::new(1_000_000));
+
+    let commit_amount = Uint128::new(5_000_000);
+
+    let info = mock_info(
+        "whale",
+        &[Coin {
+            denom: "stake".to_string(),
+            amount: commit_amount,
+        }],
+    );
+
+    let msg = ExecuteMsg::Commit {
+        asset: TokenInfo {
+            info: TokenType::Bluechip {
+                denom: "stake".to_string(),
+            },
+            amount: commit_amount,
+        },
+        amount: commit_amount,
+        transaction_deadline: None,
+        belief_price: None,
+        max_spread: None,
+    };
+
+    let res = execute(deps.as_mut(), env.clone(), info.clone(), msg).unwrap();
+    println!("\n=== Response Attributes ===");
+    for attr in &res.attributes {
+        println!("{}: {}", attr.key, attr.value);
+    }
+
+    println!("\n=== All Messages ({} total) ===", res.messages.len());
+    for (i, submsg) in res.messages.iter().enumerate() {
+        match &submsg.msg {
+            CosmosMsg::Bank(BankMsg::Send { to_address, amount }) => {
+                println!(
+                    "Message {}: Bank Send to {} amount {:?}",
+                    i, to_address, amount
+                );
+            }
+            CosmosMsg::Wasm(WasmMsg::Execute {
+                contract_addr, msg, ..
+            }) => {
+                println!(
+                    "Message {}: Wasm Execute to {} with msg: {}",
+                    i,
+                    contract_addr,
+                    String::from_utf8_lossy(msg.as_slice())
+                );
+            }
+            _ => println!("Message {}: Other type", i),
+        }
+    }
+
+    let has_transfer = res.messages.iter().any(|submsg| {
+        if let CosmosMsg::Wasm(WasmMsg::Execute { msg, .. }) = &submsg.msg {
+            let msg_str = String::from_utf8_lossy(msg.as_slice());
+            msg_str.contains("transfer")
+        } else {
+            false
+        }
+    });
+    let binding = "0".to_string();
+    let return_amt_str = res
+        .attributes
+        .iter()
+        .find(|a| a.key == "bluechip_excess_returned")
+        .map(|a| &a.value)
+        .unwrap_or(&binding);
+    println!("Return amount from attributes: {}", return_amt_str);
+    assert_eq!(IS_THRESHOLD_HIT.load(&deps.storage).unwrap(), true);
+    let pool_state = POOL_STATE.load(&deps.storage).unwrap();
+    println!("\n=== Pool State After ===");
+    println!("reserve0: {}", pool_state.reserve0);
+    println!("reserve1: {}", pool_state.reserve1);
+    assert_eq!(
+        USD_RAISED_FROM_COMMIT.load(&deps.storage).unwrap(),
+        Uint128::new(25_000_000_000)
+    );
+
+    assert!(COMMIT_LEDGER.load(&deps.storage, &info.sender).is_err());
+
+    let attrs = &res.attributes;
+    assert_eq!(
+        attrs.iter().find(|a| a.key == "phase").unwrap().value,
+        "threshold_crossing"
+    );
+    assert_eq!(
+        attrs
+            .iter()
+            .find(|a| a.key == "threshold_amount_usd")
+            .unwrap()
+            .value,
+        "1000000"
+    );
+    assert_eq!(
+        attrs
+            .iter()
+            .find(|a| a.key == "swap_amount_usd")
+            .unwrap()
+            .value,
+        "4000000"
+    );
+    let bluechip_excess = attrs
+        .iter()
+        .find(|a| a.key == "swap_amount_bluechip")
+        .unwrap()
+        .value
+        .clone();
+    let return_amt = attrs
+        .iter()
+        .find(|a| a.key == "bluechip_excess_returned")
+        .unwrap()
+        .value
+        .clone();
+
+    println!("\n=== Swap Details ===");
+    println!("Native excess to swap: {}", bluechip_excess);
+    println!("CW20 returned: {}", return_amt);
+    let sub = COMMIT_INFO.load(&deps.storage, &info.sender).unwrap();
+    assert_eq!(sub.total_paid_bluechip, commit_amount); // Full 5 tokens
+    assert_eq!(sub.total_paid_usd, Uint128::new(5_000_000)); // Full $5
+
+    if has_transfer {
+        println!("SUCCESS: CW20 transfer found!");
+    } else {
+        println!(
+            "ISSUE: No CW20 transfer found despite return_amt = {}",
+            return_amt_str
+        );
+    }
+}
+
+#[test]
+fn test_commit_exact_threshold() {
+    let mut deps = mock_dependencies_with_balance(&[Coin {
+        denom: "stake".to_string(),
+        amount: Uint128::new(100_000_000_000),
+    }]);
+
+    setup_pool_storage(&mut deps);
+    THRESHOLD_PROCESSING
+        .save(&mut deps.storage, &false)
+        .unwrap();
+    USD_RAISED_FROM_COMMIT
+        .save(&mut deps.storage, &Uint128::new(24_999_000_000))
+        .unwrap();
+
+    // add previous commits to simulate the 24,999
+    let previous_user = Addr::unchecked("previous_user");
+    COMMIT_LEDGER
+        .save(
+            &mut deps.storage,
+            &previous_user,
+            &Uint128::new(24_999_000_000),
+        )
+        .unwrap();
+
+    let env = mock_env();
+
+    with_factory_oracle(&mut deps, Uint128::new(1_000_000)); // $1 per bluechip
+
+    // Commit exactly $1
+    let commit_amount = Uint128::new(1_000_000);
+
+    let info = mock_info(
+        "user",
+        &[Coin {
+            denom: "stake".to_string(),
+            amount: commit_amount,
+        }],
+    );
+
+    let msg = ExecuteMsg::Commit {
+        asset: TokenInfo {
+            info: TokenType::Bluechip {
+                denom: "stake".to_string(),
+            },
+            amount: commit_amount,
+        },
+        amount: commit_amount,
+        transaction_deadline: None,
+        belief_price: None,
+        max_spread: None,
+    };
+
+    let res = execute(deps.as_mut(), env, info.clone(), msg).unwrap();
+
+    // Should be a normal funding phase commit that triggers threshold
+    assert_eq!(
+        res.attributes
+            .iter()
+            .find(|a| a.key == "phase")
+            .unwrap()
+            .value,
+        "threshold_hit_exact"
+    );
+
+    assert_eq!(IS_THRESHOLD_HIT.load(&deps.storage).unwrap(), true);
+    let total_usd = USD_RAISED_FROM_COMMIT.load(&deps.storage).unwrap();
+    assert_eq!(total_usd, Uint128::new(25_000_000_000)); // Should be exactly at $25k threshold
 }

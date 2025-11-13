@@ -59,6 +59,7 @@ pub const POOL_FEE_STATE: Item<PoolFeeState> = Item::new("pool_fee_state");
 pub const POOLS: Map<&str, PoolState> = Map::new("pools");
 pub const CREATOR_EXCESS_POSITION: Item<CreatorExcessLiquidity> = Item::new("creator_excess");
 pub const POOL_PAUSED: Item<bool> = Item::new("pool_paused");
+pub const LAST_THRESHOLD_ATTEMPT: Item<Timestamp> = Item::new("last_threshold_attempt");
 pub const DEFAULT_ESTIMATED_GAS_PER_DISTRIBUTION: u64 = 50_000;
 pub const DEFAULT_MAX_GAS_PER_TX: u64 = 2_000_000;
 pub const MAX_DISTRIBUTIONS_PER_TX: u32 = 40;
@@ -75,6 +76,14 @@ pub struct DistributionState {
     pub max_gas_per_tx: u64,
     pub last_successful_batch_size: Option<u32>,
     pub consecutive_failures: u32,
+    pub started_at: Timestamp,
+    pub last_updated: Timestamp, 
+}
+#[cw_serde]
+pub enum RecoveryType {
+    StuckThreshold,
+    StuckDistribution,
+    Both, // Check and clear both if needed
 }
 
 #[cw_serde]

@@ -40,7 +40,7 @@ fn mock_dependencies_with_balance(
         .update_balance(MOCK_CONTRACT_ADDR, balances.to_vec());
     deps
 }
-fn with_factory_oracle(
+pub fn with_factory_oracle(
     deps: &mut OwnedDeps<MockStorage, MockApi, MockQuerier>,
     bluechip_to_usd_rate: Uint128,
 ) {
@@ -462,8 +462,10 @@ fn test_continue_distribution_rejects_external_call() {
         distributions_remaining: 10,
         max_gas_per_tx: DEFAULT_MAX_GAS_PER_TX,
         estimated_gas_per_distribution: DEFAULT_ESTIMATED_GAS_PER_DISTRIBUTION,
-        last_successful_batch_size: None, // Already has this field - good!
-        consecutive_failures: 0,          // Add this if you implement failure tracking
+        last_successful_batch_size: None,
+        consecutive_failures: 0,
+        started_at: Timestamp::from_seconds(0),
+        last_updated: Timestamp::from_seconds(0),
     };
     DISTRIBUTION_STATE
         .save(&mut deps.storage, &dist_state)
@@ -494,7 +496,7 @@ fn test_continue_distribution_internal_self_call_succeeds() {
             )
             .unwrap();
     }
-
+    let env = mock_env();
     let dist_state = DistributionState {
         is_distributing: true,
         total_to_distribute: Uint128::new(1_000_000_000),
@@ -505,6 +507,8 @@ fn test_continue_distribution_internal_self_call_succeeds() {
         estimated_gas_per_distribution: DEFAULT_ESTIMATED_GAS_PER_DISTRIBUTION,
         last_successful_batch_size: Some(3), // Test with previous successful batch size
         consecutive_failures: 0,
+        started_at: env.block.time, // Use current time
+        last_updated: env.block.time,
     };
     DISTRIBUTION_STATE
         .save(&mut deps.storage, &dist_state)
@@ -542,7 +546,7 @@ fn test_continue_distribution_batches() {
             )
             .unwrap();
     }
-
+    let env = mock_env();
     let dist_state = DistributionState {
         is_distributing: true,
         total_to_distribute: Uint128::new(1_000_000),
@@ -553,6 +557,8 @@ fn test_continue_distribution_batches() {
         estimated_gas_per_distribution: 50,
         last_successful_batch_size: None,
         consecutive_failures: 0,
+        started_at: env.block.time,
+        last_updated: env.block.time,
     };
     DISTRIBUTION_STATE
         .save(&mut deps.storage, &dist_state)
@@ -653,7 +659,7 @@ fn test_adaptive_batch_sizing_with_history() {
             )
             .unwrap();
     }
-
+    let env = mock_env();
     let dist_state = DistributionState {
         is_distributing: true,
         total_to_distribute: Uint128::new(1_000_000),
@@ -664,6 +670,8 @@ fn test_adaptive_batch_sizing_with_history() {
         estimated_gas_per_distribution: 50,
         last_successful_batch_size: Some(12),
         consecutive_failures: 0,
+        started_at: env.block.time,
+        last_updated: env.block.time,
     };
     DISTRIBUTION_STATE
         .save(&mut deps.storage, &dist_state)
@@ -741,6 +749,8 @@ fn test_calculate_effective_batch_size() {
         estimated_gas_per_distribution: 50,
         last_successful_batch_size: Some(12),
         consecutive_failures: 0,
+        started_at: Timestamp::from_seconds(0),
+        last_updated: Timestamp::from_seconds(0),
     };
 
     let batch_size = calculate_effective_batch_size(&dist_state);
@@ -757,6 +767,8 @@ fn test_calculate_effective_batch_size() {
         estimated_gas_per_distribution: 50,
         last_successful_batch_size: None,
         consecutive_failures: 0,
+        started_at: Timestamp::from_seconds(0),
+        last_updated: Timestamp::from_seconds(0),
     };
 
     let batch_size = calculate_effective_batch_size(&dist_state_no_history);
@@ -778,7 +790,7 @@ fn test_batch_size_with_consecutive_failures() {
             )
             .unwrap();
     }
-
+    let env = mock_env();
     let dist_state = DistributionState {
         is_distributing: true,
         total_to_distribute: Uint128::new(1_000_000),
@@ -789,6 +801,8 @@ fn test_batch_size_with_consecutive_failures() {
         estimated_gas_per_distribution: 200, // High estimate due to failures
         last_successful_batch_size: Some(2), // Last success was small
         consecutive_failures: 2,             // Had 2 failures
+        started_at: env.block.time,          // Use current time
+        last_updated: env.block.time,
     };
     DISTRIBUTION_STATE
         .save(&mut deps.storage, &dist_state)
@@ -826,7 +840,7 @@ fn test_final_batch_completes_distribution() {
             )
             .unwrap();
     }
-
+    let env = mock_env();
     let dist_state = DistributionState {
         is_distributing: true,
         total_to_distribute: Uint128::new(1_000_000),
@@ -837,6 +851,8 @@ fn test_final_batch_completes_distribution() {
         estimated_gas_per_distribution: 50,
         last_successful_batch_size: Some(5),
         consecutive_failures: 0,
+        started_at: env.block.time, // Use current time
+        last_updated: env.block.time,
     };
     DISTRIBUTION_STATE
         .save(&mut deps.storage, &dist_state)
@@ -1081,226 +1097,7 @@ fn test_swap_with_max_spread() {
     }
 }
 
-#[test]
-fn test_commit_threshold_overshoot_split() {
-    let mut deps = mock_dependencies_with_balance(&[Coin {
-        denom: "stake".to_string(),
-        amount: Uint128::new(100_000_000_000),
-    }]);
 
-    setup_pool_storage(&mut deps);
-    THRESHOLD_PROCESSING
-        .save(&mut deps.storage, &false)
-        .unwrap();
-
-    USD_RAISED_FROM_COMMIT
-        .save(&mut deps.storage, &Uint128::new(24_999_000_000))
-        .unwrap(); // $24,999
-
-    let env = mock_env();
-
-    with_factory_oracle(&mut deps, Uint128::new(1_000_000));
-
-    let commit_amount = Uint128::new(5_000_000);
-
-    let info = mock_info(
-        "whale",
-        &[Coin {
-            denom: "stake".to_string(),
-            amount: commit_amount,
-        }],
-    );
-
-    let msg = ExecuteMsg::Commit {
-        asset: TokenInfo {
-            info: TokenType::Bluechip {
-                denom: "stake".to_string(),
-            },
-            amount: commit_amount,
-        },
-        amount: commit_amount,
-        transaction_deadline: None,
-        belief_price: None,
-        max_spread: None,
-    };
-
-    let res = execute(deps.as_mut(), env.clone(), info.clone(), msg).unwrap();
-    println!("\n=== Response Attributes ===");
-    for attr in &res.attributes {
-        println!("{}: {}", attr.key, attr.value);
-    }
-
-    println!("\n=== All Messages ({} total) ===", res.messages.len());
-    for (i, submsg) in res.messages.iter().enumerate() {
-        match &submsg.msg {
-            CosmosMsg::Bank(BankMsg::Send { to_address, amount }) => {
-                println!(
-                    "Message {}: Bank Send to {} amount {:?}",
-                    i, to_address, amount
-                );
-            }
-            CosmosMsg::Wasm(WasmMsg::Execute {
-                contract_addr, msg, ..
-            }) => {
-                println!(
-                    "Message {}: Wasm Execute to {} with msg: {}",
-                    i,
-                    contract_addr,
-                    String::from_utf8_lossy(msg.as_slice())
-                );
-            }
-            _ => println!("Message {}: Other type", i),
-        }
-    }
-
-    let has_transfer = res.messages.iter().any(|submsg| {
-        if let CosmosMsg::Wasm(WasmMsg::Execute { msg, .. }) = &submsg.msg {
-            let msg_str = String::from_utf8_lossy(msg.as_slice());
-            msg_str.contains("transfer")
-        } else {
-            false
-        }
-    });
-    let binding = "0".to_string();
-    let return_amt_str = res
-        .attributes
-        .iter()
-        .find(|a| a.key == "bluechip_excess_returned")
-        .map(|a| &a.value)
-        .unwrap_or(&binding);
-    println!("Return amount from attributes: {}", return_amt_str);
-    assert_eq!(IS_THRESHOLD_HIT.load(&deps.storage).unwrap(), true);
-    let pool_state = POOL_STATE.load(&deps.storage).unwrap();
-    println!("\n=== Pool State After ===");
-    println!("reserve0: {}", pool_state.reserve0);
-    println!("reserve1: {}", pool_state.reserve1);
-    assert_eq!(
-        USD_RAISED_FROM_COMMIT.load(&deps.storage).unwrap(),
-        Uint128::new(25_000_000_000)
-    );
-
-    assert!(COMMIT_LEDGER.load(&deps.storage, &info.sender).is_err());
-
-    let attrs = &res.attributes;
-    assert_eq!(
-        attrs.iter().find(|a| a.key == "phase").unwrap().value,
-        "threshold_crossing"
-    );
-    assert_eq!(
-        attrs
-            .iter()
-            .find(|a| a.key == "threshold_amount_usd")
-            .unwrap()
-            .value,
-        "1000000"
-    );
-    assert_eq!(
-        attrs
-            .iter()
-            .find(|a| a.key == "swap_amount_usd")
-            .unwrap()
-            .value,
-        "4000000"
-    );
-    let bluechip_excess = attrs
-        .iter()
-        .find(|a| a.key == "swap_amount_bluechip")
-        .unwrap()
-        .value
-        .clone();
-    let return_amt = attrs
-        .iter()
-        .find(|a| a.key == "bluechip_excess_returned")
-        .unwrap()
-        .value
-        .clone();
-
-    println!("\n=== Swap Details ===");
-    println!("Native excess to swap: {}", bluechip_excess);
-    println!("CW20 returned: {}", return_amt);
-    let sub = COMMIT_INFO.load(&deps.storage, &info.sender).unwrap();
-    assert_eq!(sub.total_paid_bluechip, commit_amount); // Full 5 tokens
-    assert_eq!(sub.total_paid_usd, Uint128::new(5_000_000)); // Full $5
-
-    if has_transfer {
-        println!("SUCCESS: CW20 transfer found!");
-    } else {
-        println!(
-            "ISSUE: No CW20 transfer found despite return_amt = {}",
-            return_amt_str
-        );
-    }
-}
-
-#[test]
-fn test_commit_exact_threshold() {
-    let mut deps = mock_dependencies_with_balance(&[Coin {
-        denom: "stake".to_string(),
-        amount: Uint128::new(100_000_000_000),
-    }]);
-
-    setup_pool_storage(&mut deps);
-    THRESHOLD_PROCESSING
-        .save(&mut deps.storage, &false)
-        .unwrap();
-    USD_RAISED_FROM_COMMIT
-        .save(&mut deps.storage, &Uint128::new(24_999_000_000))
-        .unwrap();
-
-    // add previous commits to simulate the 24,999
-    let previous_user = Addr::unchecked("previous_user");
-    COMMIT_LEDGER
-        .save(
-            &mut deps.storage,
-            &previous_user,
-            &Uint128::new(24_999_000_000),
-        )
-        .unwrap();
-
-    let env = mock_env();
-
-    with_factory_oracle(&mut deps, Uint128::new(1_000_000)); // $1 per bluechip
-
-    // Commit exactly $1
-    let commit_amount = Uint128::new(1_000_000);
-
-    let info = mock_info(
-        "user",
-        &[Coin {
-            denom: "stake".to_string(),
-            amount: commit_amount,
-        }],
-    );
-
-    let msg = ExecuteMsg::Commit {
-        asset: TokenInfo {
-            info: TokenType::Bluechip {
-                denom: "stake".to_string(),
-            },
-            amount: commit_amount,
-        },
-        amount: commit_amount,
-        transaction_deadline: None,
-        belief_price: None,
-        max_spread: None,
-    };
-
-    let res = execute(deps.as_mut(), env, info.clone(), msg).unwrap();
-
-    // Should be a normal funding phase commit that triggers threshold
-    assert_eq!(
-        res.attributes
-            .iter()
-            .find(|a| a.key == "phase")
-            .unwrap()
-            .value,
-        "threshold_hit_exact"
-    );
-
-    assert_eq!(IS_THRESHOLD_HIT.load(&deps.storage).unwrap(), true);
-    let total_usd = USD_RAISED_FROM_COMMIT.load(&deps.storage).unwrap();
-    assert_eq!(total_usd, Uint128::new(25_000_000_000)); // Should be exactly at $25k threshold
-}
 #[test]
 fn test_swap_cw20_via_hook() {
     let mut deps = mock_dependencies();
@@ -2727,16 +2524,16 @@ fn test_swap_prevented_if_would_deplete_below_minimum() {
 
     // Set reserves above SWAP_PAUSE_THRESHOLD (100) but where swap would deplete below MINIMUM_LIQUIDITY (1000)
     setup_pool_with_reserves(
-        &mut deps, 
-        Uint128::new(10000),  // Well above SWAP_PAUSE_THRESHOLD
-        Uint128::new(1100)    // Just above MINIMUM_LIQUIDITY
+        &mut deps,
+        Uint128::new(10000), // Well above SWAP_PAUSE_THRESHOLD
+        Uint128::new(1100),  // Just above MINIMUM_LIQUIDITY
     );
-    
+
     // Calculate swap that would deplete reserve1 below 1000
     // k = 10000 * 1100 = 11,000,000
     // If we add 2000 to reserve0: new reserve0 = 12000
     // new reserve1 = 11,000,000 / 12000 = 916.67 (below MINIMUM_LIQUIDITY of 1000!)
-    
+
     let swap_amount = Uint128::new(2000);
     let info = mock_info(
         "user",
@@ -2745,7 +2542,7 @@ fn test_swap_prevented_if_would_deplete_below_minimum() {
             amount: swap_amount,
         }],
     );
-    
+
     let offer = TokenInfo {
         info: TokenType::Bluechip {
             denom: "stake".to_string(),
@@ -2766,10 +2563,7 @@ fn test_swap_prevented_if_would_deplete_below_minimum() {
 
     // Should fail with InsufficientReserves (based on your actual code)
     assert!(
-        matches!(
-            result,
-            Err(ContractError::InsufficientReserves {})
-        ),
+        matches!(result, Err(ContractError::InsufficientReserves {})),
         "Expected InsufficientReserves error for post-swap depletion, got: {:?}",
         result
     );
@@ -2781,11 +2575,11 @@ fn test_swap_triggers_pause_at_threshold() {
 
     // Set one reserve below SWAP_PAUSE_THRESHOLD (100)
     setup_pool_with_reserves(
-        &mut deps, 
-        Uint128::new(99),    // Below SWAP_PAUSE_THRESHOLD!
-        Uint128::new(10000)
+        &mut deps,
+        Uint128::new(99), // Below SWAP_PAUSE_THRESHOLD!
+        Uint128::new(10000),
     );
-    
+
     let swap_amount = Uint128::new(10);
     let info = mock_info(
         "user",
@@ -2794,7 +2588,7 @@ fn test_swap_triggers_pause_at_threshold() {
             amount: swap_amount,
         }],
     );
-    
+
     let offer = TokenInfo {
         info: TokenType::Bluechip {
             denom: "stake".to_string(),
@@ -2815,17 +2609,17 @@ fn test_swap_triggers_pause_at_threshold() {
 
     // Should fail with InsufficientReserves at pre-swap check
     assert!(
-        matches!(
-            result,
-            Err(ContractError::InsufficientReserves {})
-        ),
+        matches!(result, Err(ContractError::InsufficientReserves {})),
         "Expected InsufficientReserves error at pre-swap check, got: {:?}",
         result
     );
-    
+
     // Verify pool is paused
     let is_paused = POOL_PAUSED.load(&deps.storage).unwrap();
-    assert!(is_paused, "Pool should be paused when reserves drop below threshold");
+    assert!(
+        is_paused,
+        "Pool should be paused when reserves drop below threshold"
+    );
 }
 
 #[test]

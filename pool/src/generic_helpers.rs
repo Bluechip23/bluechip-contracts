@@ -195,6 +195,7 @@ pub fn trigger_threshold_payout(
     };
 
     if total_committers == 0 {
+        // No committers to pay
     } else if total_committers <= batch_size as usize {
         let committers: Vec<(Addr, Uint128)> = COMMIT_LEDGER
             .range(storage, None, None, Order::Ascending)
@@ -216,6 +217,17 @@ pub fn trigger_threshold_payout(
         }
     } else {
         // Too many committers, need batched distribution
+
+        let test_batch: Vec<_> = COMMIT_LEDGER
+            .range(storage, None, None, Order::Ascending)
+            .take(1)
+            .collect::<StdResult<Vec<_>>>()
+            .map_err(|e| StdError::generic_err(format!("Failed to read committers: {}", e)))?;
+
+        if test_batch.is_empty() {
+            // No committers but count said there were - data inconsistency
+            return Err(StdError::generic_err("Committer count mismatch"));
+        }
         let dist_state = DistributionState {
             is_distributing: true,
             total_to_distribute: payout.commit_return_amount,
@@ -226,10 +238,29 @@ pub fn trigger_threshold_payout(
             max_gas_per_tx: DEFAULT_MAX_GAS_PER_TX,
             last_successful_batch_size: None,
             consecutive_failures: 0,
+            started_at: env.block.time,
+            last_updated: env.block.time,
         };
-        DISTRIBUTION_STATE.save(storage, &dist_state)?;
-        let batch_msgs = process_distribution_batch(storage, pool_info, env)?;
-        msgs.extend(batch_msgs);
+        let save_result = DISTRIBUTION_STATE.save(storage, &dist_state);
+        if save_result.is_err() {
+            // If we can't save state, don't try to process
+            return Err(StdError::generic_err(
+                "Failed to initialize distribution state",
+            ));
+        }
+
+        match process_distribution_batch(storage, pool_info, env) {
+            Ok(batch_msgs) => {
+                msgs.extend(batch_msgs);
+            }
+            Err(e) => {
+                DISTRIBUTION_STATE.remove(storage);
+                return Err(StdError::generic_err(format!(
+                    "Distribution initialization failed: {}. Threshold crossed but distributions pending manual recovery.", 
+                    e
+                )));
+            }
+        }
     }
 
     let total_fee_rate = fee_info.commit_fee_bluechip + fee_info.commit_fee_creator;
@@ -291,8 +322,19 @@ pub fn process_distribution_batch(
     env: &Env,
 ) -> StdResult<Vec<CosmosMsg>> {
     let mut msgs = Vec::new();
-    let dist_state = DISTRIBUTION_STATE.load(storage)?;
-
+    let mut dist_state = match DISTRIBUTION_STATE.may_load(storage)? {
+        Some(state) => state,
+        None => return Ok(vec![]), // No distribution in progress
+    };
+    let time_since_update = env.block.time.seconds() - dist_state.last_updated.seconds();
+    if time_since_update > 7200 {
+        // 2 hours timeout
+        dist_state.consecutive_failures = 99; // Mark as failed
+        DISTRIBUTION_STATE.save(storage, &dist_state)?;
+        return Err(StdError::generic_err(
+            "Distribution timeout - requires manual recovery",
+        ));
+    }
     // Determine starting point
     let start_after = dist_state
         .last_processed_key
@@ -300,62 +342,132 @@ pub fn process_distribution_batch(
         .map(|addr| Bound::exclusive(addr));
 
     let effective_batch_size = calculate_effective_batch_size(&dist_state);
-    // Process batch
-    let batch: Vec<_> = COMMIT_LEDGER
-        .range(storage, start_after, None, Order::Ascending)
-        .take(effective_batch_size as usize)
-        .collect::<StdResult<Vec<_>>>()?;
-
-    let actual_batch_size = batch.len() as u32;
+    // Track what we actually process
+    let mut processed_count = 0u32;
     let mut last_processed = None;
+    let batch_result = (|| -> StdResult<Vec<(Addr, Uint128)>> {
+        COMMIT_LEDGER
+            .range(storage, start_after, None, Order::Ascending)
+            .take(effective_batch_size as usize)
+            .collect::<StdResult<Vec<_>>>()
+    })();
 
-    for (payer, usd_paid) in batch {
-        let reward = calculate_committer_reward(
-            usd_paid,
-            dist_state.total_to_distribute,
-            dist_state.total_committed_usd,
-        )?;
+    match batch_result {
+        Ok(batch) => {
+            // Process each committer
+            for (payer, usd_paid) in batch.iter() {
+                // Calculate reward with error handling
+                let reward_result = calculate_committer_reward(
+                    *usd_paid,
+                    dist_state.total_to_distribute,
+                    dist_state.total_committed_usd,
+                );
 
-        if !reward.is_zero() {
-            msgs.push(mint_tokens(&pool_info.token_address, &payer, reward)?);
+                match reward_result {
+                    Ok(reward) => {
+                        if !reward.is_zero() {
+                            // Try to create mint message
+                            match mint_tokens(&pool_info.token_address, payer, reward) {
+                                Ok(msg) => msgs.push(msg),
+                                Err(e) => {
+                                    continue;
+                                }
+                            }
+                        }
+                        COMMIT_LEDGER.remove(storage, payer);
+                        last_processed = Some(payer.clone());
+                        processed_count += 1;
+                    }
+                    Err(_) => {
+                        continue;
+                    }
+                }
+            }
+            // Update state based on what we actually processed
+            let new_remaining = dist_state
+                .distributions_remaining
+                .saturating_sub(processed_count);
+
+            if new_remaining == 0 {
+                // All done - remove state
+                DISTRIBUTION_STATE.remove(storage);
+            } else if processed_count > 0 {
+                // Made progress - update state
+                let updated_state = DistributionState {
+                    is_distributing: true,
+                    total_to_distribute: dist_state.total_to_distribute,
+                    total_committed_usd: dist_state.total_committed_usd,
+                    last_processed_key: last_processed,
+                    distributions_remaining: new_remaining,
+                    estimated_gas_per_distribution: dist_state.estimated_gas_per_distribution,
+                    max_gas_per_tx: dist_state.max_gas_per_tx,
+                    last_successful_batch_size: Some(processed_count),
+                    consecutive_failures: 0, // Reset failures on success
+                    started_at: dist_state.started_at,
+                    last_updated: env.block.time, // Update timestamp
+                };
+                DISTRIBUTION_STATE.save(storage, &updated_state)?;
+
+                // Trigger continuation
+                msgs.push(CosmosMsg::Wasm(WasmMsg::Execute {
+                    contract_addr: env.contract.address.to_string(),
+                    msg: to_json_binary(&ExecuteMsg::ContinueDistribution {})?,
+                    funds: vec![],
+                }));
+            } else {
+                // No progress made - increment failure counter
+                dist_state.consecutive_failures += 1;
+
+                // Check if we should give up
+                if dist_state.consecutive_failures >= 5 {
+                    // Too many failures, mark for manual recovery
+                    dist_state.is_distributing = false; // Pause distribution
+                    DISTRIBUTION_STATE.save(storage, &dist_state)?;
+
+                    return Err(StdError::generic_err(
+                        "Distribution failed too many times - manual recovery needed",
+                    ));
+                } else {
+                    // Save with incremented failure count
+                    dist_state.last_updated = env.block.time;
+                    DISTRIBUTION_STATE.save(storage, &dist_state)?;
+
+                    // Still try to continue (maybe next batch will work)
+                    msgs.push(CosmosMsg::Wasm(WasmMsg::Execute {
+                        contract_addr: env.contract.address.to_string(),
+                        msg: to_json_binary(&ExecuteMsg::ContinueDistribution {})?,
+                        funds: vec![],
+                    }));
+                }
+            }
         }
+        Err(e) => {
+            // Failed to even read the batch
+            dist_state.consecutive_failures += 1;
 
-        COMMIT_LEDGER.remove(storage, &payer);
-        last_processed = Some(payer);
-    }
+            if dist_state.consecutive_failures >= 5 {
+                // Give up after too many failures
+                dist_state.is_distributing = false;
+                DISTRIBUTION_STATE.save(storage, &dist_state)?;
 
-    let new_remaining = dist_state
-        .distributions_remaining
-        .saturating_sub(actual_batch_size);
+                return Err(StdError::generic_err(format!(
+                    "Distribution batch read failed: {}. Manual recovery needed after {} failures",
+                    e, dist_state.consecutive_failures
+                )));
+            } else {
+                // Save failure state but try to continue
+                DISTRIBUTION_STATE.save(storage, &dist_state)?;
 
-    if new_remaining == 0 {
-        // All done
-        DISTRIBUTION_STATE.remove(storage);
-    } else {
-        let updated_state = DistributionState {
-            is_distributing: true,
-            total_to_distribute: dist_state.total_to_distribute,
-            total_committed_usd: dist_state.total_committed_usd,
-            last_processed_key: last_processed,
-            distributions_remaining: new_remaining,
-            estimated_gas_per_distribution: dist_state.estimated_gas_per_distribution,
-            max_gas_per_tx: dist_state.max_gas_per_tx,
-            last_successful_batch_size: Some(actual_batch_size),
-            consecutive_failures: 0,
-        };
-        DISTRIBUTION_STATE.save(storage, &updated_state)?;
-
-        // Trigger continuation
-        msgs.push(CosmosMsg::Wasm(WasmMsg::Execute {
-            contract_addr: env.contract.address.to_string(),
-            msg: to_json_binary(&ExecuteMsg::ContinueDistribution {})?,
-            funds: vec![],
-        }));
-        println!("Debug: msgs.len() = {}, new_remaining = {}", msgs.len(), new_remaining);
+                // Return error but don't completely fail
+                return Err(StdError::generic_err(format!(
+                    "Batch processing failed (attempt {}): {}",
+                    dist_state.consecutive_failures, e
+                )));
+            }
+        }
     }
 
     Ok(msgs)
-    
 }
 
 pub fn calculate_effective_batch_size(dist_state: &DistributionState) -> u32 {
@@ -365,7 +477,7 @@ pub fn calculate_effective_batch_size(dist_state: &DistributionState) -> u32 {
     } else {
         (dist_state.max_gas_per_tx / dist_state.estimated_gas_per_distribution) as u32
     };
-    
+
     // If record of successful batch size, use it as reference
     if let Some(last_successful) = dist_state.last_successful_batch_size {
         // Use 90% of last successful to be safe
