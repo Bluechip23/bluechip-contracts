@@ -1,5 +1,5 @@
 use crate::asset::{PoolDetails, TokenInfo, TokenType};
-use crate::state::Commiting;
+use crate::state::{Commiting, RecoveryType};
 use cosmwasm_schema::{cw_serde, QueryResponses};
 use cosmwasm_std::{Addr, Binary, Decimal, Timestamp, Uint128};
 use cw20::Cw20ReceiveMsg;
@@ -16,6 +16,9 @@ pub enum ExecuteMsg {
     },
     UpdateConfigFromFactory {
         update: PoolConfigUpdate,
+    },
+    RecoverStuckStates {
+        recovery_type: RecoveryType,
     },
     ContinueDistribution {},
     Commit {

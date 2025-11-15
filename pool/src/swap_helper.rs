@@ -141,12 +141,6 @@ pub fn compute_offer_amount(
    let ask_amount_before_commission = (Decimal256::from_ratio(ask_amount, 1u8) 
     / one_minus_commission).numerator() / Decimal256::one().denominator();
     
-    // Use constant product formula: k = offer_pool * ask_pool
-    // After swap: k = (offer_pool + offer_amount) * (ask_pool - ask_amount_before_commission)
-    // Therefore: offer_pool * ask_pool = (offer_pool + offer_amount) * (ask_pool - ask_amount_before_commission)
-    // Solving for offer_amount:
-    // offer_amount = (offer_pool * ask_pool) / (ask_pool - ask_amount_before_commission) - offer_pool
-    
     let cp: Uint256 = offer_pool * ask_pool;
     let new_ask_pool = ask_pool.checked_sub(ask_amount_before_commission)
         .map_err(|_| StdError::generic_err("Insufficient liquidity in pool"))?;
