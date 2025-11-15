@@ -8,6 +8,7 @@ use cosmwasm_std::{
 use crate::asset::TokenType;
 use crate::error::ContractError;
 use crate::execute::{execute, instantiate};
+use crate::internal_bluechip_price_oracle::ATOM_BLUECHIP_POOL_CONTRACT_ADDRESS;
 use crate::mock_querier::WasmMockQuerier;
 use crate::msg::ExecuteMsg;
 use crate::pool_struct::{CommitFeeInfo, PoolConfigUpdate, PoolDetails};
@@ -50,6 +51,7 @@ fn test_propose_and_execute_update_config() {
         commit_fee_creator: Decimal::from_ratio(10u128, 100u128),
         max_bluechip_lock_per_pool: Uint128::new(10_000_000_000),
         creator_excess_liquidity_lock_days: 7,
+        atom_bluechip_anchor_pool_address: Addr::unchecked(ATOM_BLUECHIP_POOL_CONTRACT_ADDRESS),
     };
 
     let env = mock_env();
@@ -291,6 +293,7 @@ fn setup_factory(deps: &mut OwnedDeps<MockStorage, MockApi, MockQuerier>) {
         commit_fee_creator: Decimal::percent(5),
         max_bluechip_lock_per_pool: Uint128::new(10_000_000_000),
         creator_excess_liquidity_lock_days: 7,
+        atom_bluechip_anchor_pool_address: Addr::unchecked(ATOM_BLUECHIP_POOL_CONTRACT_ADDRESS),
     };
 
     instantiate(deps.as_mut(), mock_env(), mock_info("deployer", &[]), msg).unwrap();

@@ -60,6 +60,7 @@ pub struct FactoryInstantiate {
     pub max_bluechip_lock_per_pool: Uint128,
     //days until creator gains access to above max locked bluechip for their pool. 
     pub creator_excess_liquidity_lock_days: u64,
+    pub atom_bluechip_anchor_pool_address: Addr,
 }
 #[cw_serde]
 pub struct PendingConfig {
