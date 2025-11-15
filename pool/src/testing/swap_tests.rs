@@ -134,7 +134,7 @@ pub fn with_factory_oracle(
 #[test]
 fn test_commit_pre_threshold_basic() {
     let mut deps = mock_dependencies_with_balance(&[Coin {
-        denom: "stake".to_string(),
+        denom: "bluechip".to_string(),
         amount: Uint128::new(1_000_000_000),
     }]);
     setup_pool_storage(&mut deps);
@@ -146,7 +146,7 @@ fn test_commit_pre_threshold_basic() {
     let info = mock_info(
         "user1",
         &[Coin {
-            denom: "stake".to_string(),
+            denom: "bluechip".to_string(),
             amount: commit_amount,
         }],
     );
@@ -154,7 +154,7 @@ fn test_commit_pre_threshold_basic() {
     let msg = ExecuteMsg::Commit {
         asset: TokenInfo {
             info: TokenType::Bluechip {
-                denom: "stake".to_string(),
+                denom: "bluechip".to_string(),
             },
             amount: commit_amount,
         },
@@ -185,7 +185,7 @@ fn test_commit_pre_threshold_basic() {
 #[test]
 fn test_race_condition_commits_crossing_threshold() {
     let mut deps = mock_dependencies_with_balance(&[Coin {
-        denom: "stake".to_string(),
+        denom: "bluechip".to_string(),
         amount: Uint128::new(20_000_000_000),
     }]);
 
@@ -206,14 +206,14 @@ fn test_race_condition_commits_crossing_threshold() {
     let info1 = mock_info(
         "alice",
         &[Coin {
-            denom: "stake".to_string(),
+            denom: "bluechip".to_string(),
             amount: commit_amount,
         }],
     );
     let msg1 = ExecuteMsg::Commit {
         asset: TokenInfo {
             info: TokenType::Bluechip {
-                denom: "stake".to_string(),
+                denom: "bluechip".to_string(),
             },
             amount: commit_amount,
         },
@@ -247,14 +247,14 @@ fn test_race_condition_commits_crossing_threshold() {
     let info2 = mock_info(
         "bob",
         &[Coin {
-            denom: "stake".to_string(),
+            denom: "bluechip".to_string(),
             amount: commit_amount,
         }],
     );
     let msg2 = ExecuteMsg::Commit {
         asset: TokenInfo {
             info: TokenType::Bluechip {
-                denom: "stake".to_string(),
+                denom: "bluechip".to_string(),
             },
             amount: commit_amount,
         },
@@ -294,7 +294,7 @@ fn test_race_condition_commits_crossing_threshold() {
 #[test]
 fn test_commit_crosses_threshold() {
     let mut deps = mock_dependencies_with_balance(&[Coin {
-        denom: "stake".to_string(),
+        denom: "bluechip".to_string(),
         amount: Uint128::new(10_000_000_000), // 10k tokens
     }]);
 
@@ -315,7 +315,7 @@ fn test_commit_crosses_threshold() {
     let info = mock_info(
         "whale",
         &[Coin {
-            denom: "stake".to_string(),
+            denom: "bluechip".to_string(),
             amount: commit_amount,
         }],
     );
@@ -323,7 +323,7 @@ fn test_commit_crosses_threshold() {
     let msg = ExecuteMsg::Commit {
         asset: TokenInfo {
             info: TokenType::Bluechip {
-                denom: "stake".to_string(),
+                denom: "bluechip".to_string(),
             },
             amount: commit_amount,
         },
@@ -363,7 +363,7 @@ fn test_commit_crosses_threshold() {
 #[test]
 fn test_commit_post_threshold_swap() {
     let mut deps = mock_dependencies_with_balance(&[Coin {
-        denom: "stake".to_string(),
+        denom: "bluechip".to_string(),
         amount: Uint128::new(1_000_000_000), // Give contract 1000 tokens
     }]);
     setup_pool_post_threshold(&mut deps);
@@ -376,7 +376,7 @@ fn test_commit_post_threshold_swap() {
     let info = mock_info(
         "commiter",
         &[Coin {
-            denom: "stake".to_string(),
+            denom: "bluechip".to_string(),
             amount: commit_amount,
         }],
     );
@@ -384,7 +384,7 @@ fn test_commit_post_threshold_swap() {
     let msg = ExecuteMsg::Commit {
         asset: TokenInfo {
             info: TokenType::Bluechip {
-                denom: "stake".to_string(),
+                denom: "bluechip".to_string(),
             },
             amount: commit_amount,
         },
@@ -899,7 +899,7 @@ fn test_commit_reentrancy_protection() {
     let info = mock_info(
         "user",
         &[Coin {
-            denom: "stake".to_string(),
+            denom: "bluechip".to_string(),
             amount: Uint128::new(1_000_000),
         }],
     );
@@ -907,7 +907,7 @@ fn test_commit_reentrancy_protection() {
     let msg = ExecuteMsg::Commit {
         asset: TokenInfo {
             info: TokenType::Bluechip {
-                denom: "stake".to_string(),
+                denom: "bluechip".to_string(),
             },
             amount: Uint128::new(1_000_000),
         },
@@ -927,7 +927,7 @@ fn test_commit_reentrancy_protection() {
 #[test]
 fn test_commit_rate_limiting() {
     let mut deps = mock_dependencies_with_balance(&[Coin {
-        denom: "stake".to_string(),
+        denom: "bluechip".to_string(),
         amount: Uint128::new(1_000_000_000), // Give contract 1000 tokens
     }]);
     setup_pool_storage(&mut deps);
@@ -938,7 +938,7 @@ fn test_commit_rate_limiting() {
     let info = mock_info(
         user.as_str(),
         &[Coin {
-            denom: "stake".to_string(),
+            denom: "bluechip".to_string(),
             amount: Uint128::new(1_000_000),
         }],
     );
@@ -948,7 +948,7 @@ fn test_commit_rate_limiting() {
     let msg = ExecuteMsg::Commit {
         asset: TokenInfo {
             info: TokenType::Bluechip {
-                denom: "stake".to_string(),
+                denom: "bluechip".to_string(),
             },
             amount: Uint128::new(1_000_000),
         },
@@ -974,7 +974,7 @@ fn test_commit_rate_limiting() {
 #[test]
 fn test_commit_with_deadline() {
     let mut deps = mock_dependencies_with_balance(&[Coin {
-        denom: "stake".to_string(),
+        denom: "bluechip".to_string(),
         amount: Uint128::new(1_000_000_000),
     }]);
     setup_pool_storage(&mut deps);
@@ -985,7 +985,7 @@ fn test_commit_with_deadline() {
     let info = mock_info(
         "user",
         &[Coin {
-            denom: "stake".to_string(),
+            denom: "bluechip".to_string(),
             amount: Uint128::new(1_000_000),
         }],
     );
@@ -993,7 +993,7 @@ fn test_commit_with_deadline() {
     let msg = ExecuteMsg::Commit {
         asset: TokenInfo {
             info: TokenType::Bluechip {
-                denom: "stake".to_string(),
+                denom: "bluechip".to_string(),
             },
             amount: Uint128::new(1_000_000),
         },
@@ -1013,7 +1013,7 @@ fn test_commit_with_deadline() {
 #[test]
 fn test_simple_swap_bluechip_to_cw20() {
     let mut deps = mock_dependencies_with_balance(&[Coin {
-        denom: "stake".to_string(),
+        denom: "bluechip".to_string(),
         amount: Uint128::new(1_000_000_000),
     }]);
     setup_pool_post_threshold(&mut deps);
@@ -1024,7 +1024,7 @@ fn test_simple_swap_bluechip_to_cw20() {
     let info = mock_info(
         "trader",
         &[Coin {
-            denom: "stake".to_string(),
+            denom: "bluechip".to_string(),
             amount: swap_amount,
         }],
     );
@@ -1032,7 +1032,7 @@ fn test_simple_swap_bluechip_to_cw20() {
     let msg = ExecuteMsg::SimpleSwap {
         offer_asset: TokenInfo {
             info: TokenType::Bluechip {
-                denom: "stake".to_string(),
+                denom: "bluechip".to_string(),
             },
             amount: swap_amount,
         },
@@ -1072,7 +1072,7 @@ fn test_swap_with_max_spread() {
     let info = mock_info(
         "trader",
         &[Coin {
-            denom: "stake".to_string(),
+            denom: "bluechip".to_string(),
             amount: swap_amount,
         }],
     );
@@ -1080,7 +1080,7 @@ fn test_swap_with_max_spread() {
     let msg = ExecuteMsg::SimpleSwap {
         offer_asset: TokenInfo {
             info: TokenType::Bluechip {
-                denom: "stake".to_string(),
+                denom: "bluechip".to_string(),
             },
             amount: swap_amount,
         },
@@ -1213,7 +1213,7 @@ fn test_swap_price_accumulator_update() {
     let info = mock_info(
         "trader",
         &[Coin {
-            denom: "stake".to_string(),
+            denom: "bluechip".to_string(),
             amount: Uint128::new(1_000_000),
         }],
     );
@@ -1221,7 +1221,7 @@ fn test_swap_price_accumulator_update() {
     let msg = ExecuteMsg::SimpleSwap {
         offer_asset: TokenInfo {
             info: TokenType::Bluechip {
-                denom: "stake".to_string(),
+                denom: "bluechip".to_string(),
             },
             amount: Uint128::new(1_000_000),
         },
@@ -1280,7 +1280,7 @@ fn test_factory_impersonation_prevented() {
 #[test]
 fn test_commit_with_changing_oracle_prices() {
     let mut deps = mock_dependencies_with_balance(&[Coin {
-        denom: "stake".to_string(),
+        denom: "bluechip".to_string(),
         amount: Uint128::new(10_000_000_000),
     }]);
     setup_pool_storage(&mut deps);
@@ -1291,7 +1291,7 @@ fn test_commit_with_changing_oracle_prices() {
     let info1 = mock_info(
         "user1",
         &[Coin {
-            denom: "stake".to_string(),
+            denom: "bluechip".to_string(),
             amount: Uint128::new(5_000_000),
         }],
     );
@@ -1299,7 +1299,7 @@ fn test_commit_with_changing_oracle_prices() {
     let msg1 = ExecuteMsg::Commit {
         asset: TokenInfo {
             info: TokenType::Bluechip {
-                denom: "stake".to_string(),
+                denom: "bluechip".to_string(),
             },
             amount: Uint128::new(5_000_000),
         },
@@ -1319,7 +1319,7 @@ fn test_commit_with_changing_oracle_prices() {
     let info2 = mock_info(
         "user2",
         &[Coin {
-            denom: "stake".to_string(),
+            denom: "bluechip".to_string(),
             amount: Uint128::new(5_000_000),
         }],
     );
@@ -1327,7 +1327,7 @@ fn test_commit_with_changing_oracle_prices() {
     let msg2 = ExecuteMsg::Commit {
         asset: TokenInfo {
             info: TokenType::Bluechip {
-                denom: "stake".to_string(),
+                denom: "bluechip".to_string(),
             },
             amount: Uint128::new(5_000_000),
         },
@@ -1351,7 +1351,7 @@ fn test_commit_with_changing_oracle_prices() {
 #[test]
 fn test_threshold_crossing_depends_on_oracle_price() {
     let mut deps1 = mock_dependencies_with_balance(&[Coin {
-        denom: "stake".to_string(),
+        denom: "bluechip".to_string(),
         amount: Uint128::new(100_000_000_000),
     }]);
     setup_pool_storage(&mut deps1);
@@ -1368,7 +1368,7 @@ fn test_threshold_crossing_depends_on_oracle_price() {
     let info1 = mock_info(
         "whale",
         &[Coin {
-            denom: "stake".to_string(),
+            denom: "bluechip".to_string(),
             amount: Uint128::new(100_000_000), // 100 tokens
         }],
     );
@@ -1376,7 +1376,7 @@ fn test_threshold_crossing_depends_on_oracle_price() {
     let msg1 = ExecuteMsg::Commit {
         asset: TokenInfo {
             info: TokenType::Bluechip {
-                denom: "stake".to_string(),
+                denom: "bluechip".to_string(),
             },
             amount: Uint128::new(100_000_000),
         },
@@ -1389,7 +1389,7 @@ fn test_threshold_crossing_depends_on_oracle_price() {
     execute(deps1.as_mut(), env.clone(), info1, msg1).unwrap();
     assert_eq!(IS_THRESHOLD_HIT.load(&deps1.storage).unwrap(), true);
     let mut deps2 = mock_dependencies_with_balance(&[Coin {
-        denom: "stake".to_string(),
+        denom: "bluechip".to_string(),
         amount: Uint128::new(100_000_000_000),
     }]);
     setup_pool_storage(&mut deps2);
@@ -1406,7 +1406,7 @@ fn test_threshold_crossing_depends_on_oracle_price() {
     let info2 = mock_info(
         "whale",
         &[Coin {
-            denom: "stake".to_string(),
+            denom: "bluechip".to_string(),
             amount: Uint128::new(100_000_000),
         }],
     );
@@ -1414,7 +1414,7 @@ fn test_threshold_crossing_depends_on_oracle_price() {
     let msg2 = ExecuteMsg::Commit {
         asset: TokenInfo {
             info: TokenType::Bluechip {
-                denom: "stake".to_string(),
+                denom: "bluechip".to_string(),
             },
             amount: Uint128::new(100_000_000),
         },
@@ -1475,7 +1475,7 @@ fn test_oracle_conversion_precision_various_prices() {
 
     for test in test_cases {
         let mut deps = mock_dependencies_with_balance(&[Coin {
-            denom: "stake".to_string(),
+            denom: "bluechip".to_string(),
             amount: test.token_amount,
         }]);
         setup_pool_storage(&mut deps);
@@ -1486,7 +1486,7 @@ fn test_oracle_conversion_precision_various_prices() {
         let info = mock_info(
             "user",
             &[Coin {
-                denom: "stake".to_string(),
+                denom: "bluechip".to_string(),
                 amount: test.token_amount,
             }],
         );
@@ -1494,7 +1494,7 @@ fn test_oracle_conversion_precision_various_prices() {
         let msg = ExecuteMsg::Commit {
             asset: TokenInfo {
                 info: TokenType::Bluechip {
-                    denom: "stake".to_string(),
+                    denom: "bluechip".to_string(),
                 },
                 amount: test.token_amount,
             },
@@ -1523,7 +1523,7 @@ fn test_oracle_conversion_precision_various_prices() {
 #[test]
 fn test_extreme_oracle_prices() {
     let mut deps_low = mock_dependencies_with_balance(&[Coin {
-        denom: "stake".to_string(),
+        denom: "bluechip".to_string(),
         amount: Uint128::new(1_000_000_000_000), // 1M tokens
     }]);
     setup_pool_storage(&mut deps_low);
@@ -1534,7 +1534,7 @@ fn test_extreme_oracle_prices() {
     let info_low = mock_info(
         "user",
         &[Coin {
-            denom: "stake".to_string(),
+            denom: "bluechip".to_string(),
             amount: Uint128::new(1_000_000_000),
         }],
     );
@@ -1542,7 +1542,7 @@ fn test_extreme_oracle_prices() {
     let msg_low = ExecuteMsg::Commit {
         asset: TokenInfo {
             info: TokenType::Bluechip {
-                denom: "stake".to_string(),
+                denom: "bluechip".to_string(),
             },
             amount: Uint128::new(1_000_000_000),
         },
@@ -1559,7 +1559,7 @@ fn test_extreme_oracle_prices() {
     assert_eq!(usd_low, Uint128::new(1_000_000));
 
     let mut deps_high = mock_dependencies_with_balance(&[Coin {
-        denom: "stake".to_string(),
+        denom: "bluechip".to_string(),
         amount: Uint128::new(1_000_000),
     }]);
     setup_pool_storage(&mut deps_high);
@@ -1569,7 +1569,7 @@ fn test_extreme_oracle_prices() {
     let info_high = mock_info(
         "user",
         &[Coin {
-            denom: "stake".to_string(),
+            denom: "bluechip".to_string(),
             amount: Uint128::new(1_000_000), // 1 token
         }],
     );
@@ -1577,7 +1577,7 @@ fn test_extreme_oracle_prices() {
     let msg_high = ExecuteMsg::Commit {
         asset: TokenInfo {
             info: TokenType::Bluechip {
-                denom: "stake".to_string(),
+                denom: "bluechip".to_string(),
             },
             amount: Uint128::new(1_000_000),
         },
@@ -1597,7 +1597,7 @@ fn test_extreme_oracle_prices() {
 #[test]
 fn test_usd_tracking_consistency_across_commits() {
     let mut deps = mock_dependencies_with_balance(&[Coin {
-        denom: "stake".to_string(),
+        denom: "bluechip".to_string(),
         amount: Uint128::new(100_000_000_000),
     }]);
     setup_pool_storage(&mut deps);
@@ -1619,7 +1619,7 @@ fn test_usd_tracking_consistency_across_commits() {
         let info = mock_info(
             user,
             &[Coin {
-                denom: "stake".to_string(),
+                denom: "bluechip".to_string(),
                 amount: Uint128::new(amount),
             }],
         );
@@ -1627,7 +1627,7 @@ fn test_usd_tracking_consistency_across_commits() {
         let msg = ExecuteMsg::Commit {
             asset: TokenInfo {
                 info: TokenType::Bluechip {
-                    denom: "stake".to_string(),
+                    denom: "bluechip".to_string(),
                 },
                 amount: Uint128::new(amount),
             },
@@ -1664,7 +1664,7 @@ fn test_usd_tracking_consistency_across_commits() {
 #[test]
 fn test_commit_with_zero_oracle_price() {
     let mut deps = mock_dependencies_with_balance(&[Coin {
-        denom: "stake".to_string(),
+        denom: "bluechip".to_string(),
         amount: Uint128::new(1_000_000),
     }]);
     setup_pool_storage(&mut deps);
@@ -1675,7 +1675,7 @@ fn test_commit_with_zero_oracle_price() {
     let info = mock_info(
         "user",
         &[Coin {
-            denom: "stake".to_string(),
+            denom: "bluechip".to_string(),
             amount: Uint128::new(1_000_000),
         }],
     );
@@ -1683,7 +1683,7 @@ fn test_commit_with_zero_oracle_price() {
     let msg = ExecuteMsg::Commit {
         asset: TokenInfo {
             info: TokenType::Bluechip {
-                denom: "stake".to_string(),
+                denom: "bluechip".to_string(),
             },
             amount: Uint128::new(1_000_000),
         },
@@ -1705,7 +1705,7 @@ fn test_commit_with_zero_oracle_price() {
 #[test]
 fn test_usd_calculation_overflow() {
     let mut deps = mock_dependencies_with_balance(&[Coin {
-        denom: "stake".to_string(),
+        denom: "bluechip".to_string(),
         amount: Uint128::new(u128::MAX / 1000),
     }]);
     setup_pool_storage(&mut deps);
@@ -1716,7 +1716,7 @@ fn test_usd_calculation_overflow() {
     let info = mock_info(
         "whale",
         &[Coin {
-            denom: "stake".to_string(),
+            denom: "bluechip".to_string(),
             amount: Uint128::new(u128::MAX / 1000),
         }],
     );
@@ -1724,7 +1724,7 @@ fn test_usd_calculation_overflow() {
     let msg = ExecuteMsg::Commit {
         asset: TokenInfo {
             info: TokenType::Bluechip {
-                denom: "stake".to_string(),
+                denom: "bluechip".to_string(),
             },
             amount: Uint128::new(u128::MAX / 1000),
         },
@@ -1754,7 +1754,7 @@ fn test_usd_calculation_overflow() {
 #[test]
 fn test_rounding_error_accumulation() {
     let mut deps = mock_dependencies_with_balance(&[Coin {
-        denom: "stake".to_string(),
+        denom: "bluechip".to_string(),
         amount: Uint128::new(100_000_000_000),
     }]);
     setup_pool_storage(&mut deps);
@@ -1776,7 +1776,7 @@ fn test_rounding_error_accumulation() {
         let info = mock_info(
             &user,
             &[Coin {
-                denom: "stake".to_string(),
+                denom: "bluechip".to_string(),
                 amount,
             }],
         );
@@ -1784,7 +1784,7 @@ fn test_rounding_error_accumulation() {
         let msg = ExecuteMsg::Commit {
             asset: TokenInfo {
                 info: TokenType::Bluechip {
-                    denom: "stake".to_string(),
+                    denom: "bluechip".to_string(),
                 },
                 amount,
             },
@@ -1819,7 +1819,7 @@ fn test_rounding_error_accumulation() {
 #[test]
 fn test_swap_with_belief_price_protection() {
     let mut deps = mock_dependencies_with_balance(&[Coin {
-        denom: "stake".to_string(),
+        denom: "bluechip".to_string(),
         amount: Uint128::new(1_000_000_000),
     }]);
     setup_pool_post_threshold(&mut deps);
@@ -1832,7 +1832,7 @@ fn test_swap_with_belief_price_protection() {
     let info = mock_info(
         "trader",
         &[Coin {
-            denom: "stake".to_string(),
+            denom: "bluechip".to_string(),
             amount: swap_amount,
         }],
     );
@@ -1840,7 +1840,7 @@ fn test_swap_with_belief_price_protection() {
     let msg = ExecuteMsg::SimpleSwap {
         offer_asset: TokenInfo {
             info: TokenType::Bluechip {
-                denom: "stake".to_string(),
+                denom: "bluechip".to_string(),
             },
             amount: swap_amount,
         },
@@ -1866,7 +1866,7 @@ fn test_swap_with_belief_price_protection() {
 #[test]
 fn test_swap_belief_price_rejects_bad_price_corrected() {
     let mut deps = mock_dependencies_with_balance(&[Coin {
-        denom: "stake".to_string(),
+        denom: "bluechip".to_string(),
         amount: Uint128::new(10_000_000_000),
     }]);
     setup_pool_post_threshold(&mut deps);
@@ -1879,7 +1879,7 @@ fn test_swap_belief_price_rejects_bad_price_corrected() {
     let info = mock_info(
         "trader",
         &[Coin {
-            denom: "stake".to_string(),
+            denom: "bluechip".to_string(),
             amount: swap_amount,
         }],
     );
@@ -1887,7 +1887,7 @@ fn test_swap_belief_price_rejects_bad_price_corrected() {
     let msg = ExecuteMsg::SimpleSwap {
         offer_asset: TokenInfo {
             info: TokenType::Bluechip {
-                denom: "stake".to_string(),
+                denom: "bluechip".to_string(),
             },
             amount: swap_amount,
         },
@@ -1913,7 +1913,7 @@ fn test_belief_price_with_zero_price() {
     let info = mock_info(
         "trader",
         &[Coin {
-            denom: "stake".to_string(),
+            denom: "bluechip".to_string(),
             amount: Uint128::new(1_000_000),
         }],
     );
@@ -1921,7 +1921,7 @@ fn test_belief_price_with_zero_price() {
     let msg = ExecuteMsg::SimpleSwap {
         offer_asset: TokenInfo {
             info: TokenType::Bluechip {
-                denom: "stake".to_string(),
+                denom: "bluechip".to_string(),
             },
             amount: Uint128::new(1_000_000),
         },
@@ -2136,7 +2136,7 @@ fn test_cw20_swap_with_belief_price() {
 #[test]
 fn test_race_condition_not_manually_set() {
     let mut deps = mock_dependencies_with_balance(&[Coin {
-        denom: "stake".to_string(),
+        denom: "bluechip".to_string(),
         amount: Uint128::new(20_000_000_000),
     }]);
 
@@ -2155,7 +2155,7 @@ fn test_race_condition_not_manually_set() {
     let alice_info = mock_info(
         "alice",
         &[Coin {
-            denom: "stake".to_string(),
+            denom: "bluechip".to_string(),
             amount: Uint128::new(200_000_000),
         }],
     );
@@ -2163,7 +2163,7 @@ fn test_race_condition_not_manually_set() {
     let alice_msg = ExecuteMsg::Commit {
         asset: TokenInfo {
             info: TokenType::Bluechip {
-                denom: "stake".to_string(),
+                denom: "bluechip".to_string(),
             },
             amount: Uint128::new(200_000_000),
         },
@@ -2190,7 +2190,7 @@ fn test_race_condition_not_manually_set() {
     let bob_info = mock_info(
         "bob",
         &[Coin {
-            denom: "stake".to_string(),
+            denom: "bluechip".to_string(),
             amount: Uint128::new(200_000_000),
         }],
     );
@@ -2203,7 +2203,7 @@ fn test_race_condition_not_manually_set() {
     let bob_msg = ExecuteMsg::Commit {
         asset: TokenInfo {
             info: TokenType::Bluechip {
-                denom: "stake".to_string(),
+                denom: "bluechip".to_string(),
             },
             amount: Uint128::new(200_000_000),
         },
@@ -2234,7 +2234,7 @@ fn test_race_condition_not_manually_set() {
 #[test]
 fn test_concurrent_commits_both_recorded() {
     let mut deps = mock_dependencies_with_balance(&[Coin {
-        denom: "stake".to_string(),
+        denom: "bluechip".to_string(),
         amount: Uint128::new(20_000_000_000),
     }]);
 
@@ -2268,7 +2268,7 @@ fn test_concurrent_commits_both_recorded() {
     let alice_info = mock_info(
         "alice",
         &[Coin {
-            denom: "stake".to_string(),
+            denom: "bluechip".to_string(),
             amount: Uint128::new(200_000_000),
         }],
     );
@@ -2276,7 +2276,7 @@ fn test_concurrent_commits_both_recorded() {
     let alice_msg = ExecuteMsg::Commit {
         asset: TokenInfo {
             info: TokenType::Bluechip {
-                denom: "stake".to_string(),
+                denom: "bluechip".to_string(),
             },
             amount: Uint128::new(200_000_000),
         },
@@ -2299,7 +2299,7 @@ fn test_concurrent_commits_both_recorded() {
     let bob_info = mock_info(
         "bob",
         &[Coin {
-            denom: "stake".to_string(),
+            denom: "bluechip".to_string(),
             amount: bob_amount,
         }],
     );
@@ -2313,7 +2313,7 @@ fn test_concurrent_commits_both_recorded() {
     let bob_msg = ExecuteMsg::Commit {
         asset: TokenInfo {
             info: TokenType::Bluechip {
-                denom: "stake".to_string(),
+                denom: "bluechip".to_string(),
             },
             amount: bob_amount,
         },
@@ -2359,7 +2359,7 @@ pub fn setup_pool_with_reserves(
         pool_info: PoolDetails {
             asset_infos: [
                 TokenType::Bluechip {
-                    denom: "stake".to_string(), // Using "stake" as bluechip token
+                    denom: "bluechip".to_string(), 
                 },
                 TokenType::CreatorToken {
                     contract_addr: Addr::unchecked("token_contract"),
@@ -2459,7 +2459,7 @@ fn test_swap_fails_when_reserves_below_pause_threshold() {
 
     let offer = TokenInfo {
         info: TokenType::Bluechip {
-            denom: "stake".to_string(),
+            denom: "bluechip".to_string(),
         },
         amount: Uint128::new(100),
     };
@@ -2496,7 +2496,7 @@ fn test_swap_fails_when_pool_already_paused() {
 
     let offer = TokenInfo {
         info: TokenType::Bluechip {
-            denom: "stake".to_string(),
+            denom: "bluechip".to_string(),
         },
 
         amount: Uint128::new(100),
@@ -2538,14 +2538,14 @@ fn test_swap_prevented_if_would_deplete_below_minimum() {
     let info = mock_info(
         "user",
         &[Coin {
-            denom: "stake".to_string(),
+            denom: "bluechip".to_string(),
             amount: swap_amount,
         }],
     );
 
     let offer = TokenInfo {
         info: TokenType::Bluechip {
-            denom: "stake".to_string(),
+            denom: "bluechip".to_string(),
         },
         amount: swap_amount,
     };
@@ -2584,14 +2584,14 @@ fn test_swap_triggers_pause_at_threshold() {
     let info = mock_info(
         "user",
         &[Coin {
-            denom: "stake".to_string(),
+            denom: "bluechip".to_string(),
             amount: swap_amount,
         }],
     );
 
     let offer = TokenInfo {
         info: TokenType::Bluechip {
-            denom: "stake".to_string(),
+            denom: "bluechip".to_string(),
         },
         amount: swap_amount,
     };
@@ -2636,7 +2636,7 @@ fn test_add_liquidity_unpauses_pool() {
         mock_info(
             "provider",
             &[
-                Coin::new(50_000, "stake"),
+                Coin::new(50_000, "bluechip"),
                 Coin::new(50_000, "token1_contract"),
             ],
         ),
@@ -2679,7 +2679,7 @@ fn test_add_liquidity_doesnt_unpause_if_still_below_threshold() {
         mock_env(),
         mock_info(
             "provider",
-            &[Coin::new(500, "stake"), Coin::new(500, "token1")],
+            &[Coin::new(500, "bluechip"), Coin::new(500, "token1")],
         ),
         Addr::unchecked("provider"),
         Uint128::new(500),
@@ -2711,7 +2711,7 @@ fn test_both_reserves_checked() {
         Addr::unchecked("user"),
         TokenInfo {
             info: TokenType::Bluechip {
-                denom: "stake".to_string(),
+                denom: "bluechip".to_string(),
             },
 
             amount: Uint128::new(100),
@@ -2737,7 +2737,7 @@ fn test_both_reserves_checked() {
         Addr::unchecked("user"),
         TokenInfo {
             info: TokenType::Bluechip {
-                denom: "stake".to_string(),
+                denom: "bluechip".to_string(),
             },
 
             amount: Uint128::new(100),
@@ -2766,7 +2766,7 @@ fn test_pause_state_persistence() {
         Addr::unchecked("user1"),
         TokenInfo {
             info: TokenType::Bluechip {
-                denom: "stake".to_string(),
+                denom: "bluechip".to_string(),
             },
 
             amount: Uint128::new(100),
@@ -2784,7 +2784,7 @@ fn test_pause_state_persistence() {
         Addr::unchecked("user2"),
         TokenInfo {
             info: TokenType::Bluechip {
-                denom: "stake".to_string(),
+                denom: "bluechip".to_string(),
             },
 
             amount: Uint128::new(100),

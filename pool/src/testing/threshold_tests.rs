@@ -76,12 +76,12 @@ fn test_threshold_with_excess_creates_position() {
         }),
     });
     let env = mock_env();
-    let info = mock_info("final_committer", &[coin(100_000_000_000_000, "stake")]);
+    let info = mock_info("final_committer", &[coin(100_000_000_000_000, "bluechip")]);
 
     let msg = ExecuteMsg::Commit {
         asset: TokenInfo {
             info: TokenType::Bluechip {
-                denom: "stake".to_string(),
+                denom: "bluechip".to_string(),
             },
             amount: Uint128::new(100_000_000_000_000),
         },
@@ -279,12 +279,12 @@ fn test_no_excess_when_under_cap() {
     });
 
     let env = mock_env();
-    let info = mock_info("final_committer", &[coin(100_000_000, "stake")]);
+    let info = mock_info("final_committer", &[coin(100_000_000, "bluechip")]);
 
     let msg = ExecuteMsg::Commit {
         asset: TokenInfo {
             info: TokenType::Bluechip {
-                denom: "stake".to_string(),
+                denom: "bluechip".to_string(),
             },
             amount: Uint128::new(100_000_000),
         },
@@ -316,7 +316,7 @@ fn check_correct_factory(deps: &mut OwnedDeps<MockStorage, MockApi, MockQuerier>
 #[test]
 fn test_commit_threshold_overshoot_split() {
     let mut deps = mock_dependencies_with_balance(&[Coin {
-        denom: "stake".to_string(),
+        denom: "bluechip".to_string(),
         amount: Uint128::new(100_000_000_000),
     }]);
 
@@ -338,7 +338,7 @@ fn test_commit_threshold_overshoot_split() {
     let info = mock_info(
         "whale",
         &[Coin {
-            denom: "stake".to_string(),
+            denom: "bluechip".to_string(),
             amount: commit_amount,
         }],
     );
@@ -346,7 +346,7 @@ fn test_commit_threshold_overshoot_split() {
     let msg = ExecuteMsg::Commit {
         asset: TokenInfo {
             info: TokenType::Bluechip {
-                denom: "stake".to_string(),
+                denom: "bluechip".to_string(),
             },
             amount: commit_amount,
         },
@@ -479,7 +479,7 @@ fn test_commit_threshold_overshoot_split() {
 #[test]
 fn test_commit_exact_threshold() {
     let mut deps = mock_dependencies_with_balance(&[Coin {
-        denom: "stake".to_string(),
+        denom: "bluechip".to_string(),
         amount: Uint128::new(100_000_000_000),
     }]);
 
@@ -509,7 +509,7 @@ fn test_commit_exact_threshold() {
     let info = mock_info(
         "user",
         &[Coin {
-            denom: "stake".to_string(),
+            denom: "bluechip".to_string(),
             amount: commit_amount,
         }],
     );
@@ -517,7 +517,7 @@ fn test_commit_exact_threshold() {
     let msg = ExecuteMsg::Commit {
         asset: TokenInfo {
             info: TokenType::Bluechip {
-                denom: "stake".to_string(),
+                denom: "bluechip".to_string(),
             },
             amount: commit_amount,
         },
@@ -590,7 +590,7 @@ fn test_recover_stuck_threshold() {
 #[test]
 fn test_concurrent_threshold_crossing_attempts() {
     let mut deps = mock_dependencies_with_balance(&[Coin {
-        denom: "stake".to_string(),
+        denom: "bluechip".to_string(),
         amount: Uint128::new(100_000_000_000),
     }]);
     
@@ -609,14 +609,14 @@ fn test_concurrent_threshold_crossing_attempts() {
     
     // Second user tries to commit while first is processing
     let info2 = mock_info("user2", &[Coin {
-        denom: "stake".to_string(),
+        denom: "bluechip".to_string(),
         amount: Uint128::new(2_000_000),
     }]);
     
     let msg = ExecuteMsg::Commit {
         asset: TokenInfo {
             info: TokenType::Bluechip {
-                denom: "stake".to_string(),
+                denom: "bluechip".to_string(),
             },
             amount: Uint128::new(2_000_000),
         },

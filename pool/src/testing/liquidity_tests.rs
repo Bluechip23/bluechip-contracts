@@ -28,7 +28,7 @@ fn test_deposit_liquidity_first_position() {
     let token_amount = Uint128::new(14_893_617_021); // Approximately correct ratio
     
     let info = mock_info(user.as_str(), &[Coin {
-        denom: "stake".to_string(),
+        denom: "bluechip".to_string(),
         amount: bluechip_amount,
     }]);
     
@@ -70,7 +70,7 @@ fn test_deposit_liquidity_with_slippage() {
     let token_amount = Uint128::new(10_000_000_000); // Incorrect ratio
     
     let info = mock_info(user.as_str(), &[Coin {
-        denom: "stake".to_string(),
+        denom: "bluechip".to_string(),
         amount: bluechip_amount,
     }]);
     
@@ -130,7 +130,7 @@ fn test_add_to_existing_position() {
     let token_amount = Uint128::new(7_500_000_000); // Approximately correct ratio
     
     let info = mock_info(user.as_str(), &[Coin {
-        denom: "stake".to_string(),
+        denom: "bluechip".to_string(),
         amount: bluechip_amount,
     }]);
     
@@ -189,7 +189,7 @@ fn test_add_to_position_not_owner() {
     let env = mock_env();
     let user = Addr::unchecked("liquidity_provider");
     let info = mock_info(user.as_str(), &[Coin {
-        denom: "stake".to_string(),
+        denom: "bluechip".to_string(),
         amount: Uint128::new(1_000_000),
     }]);
     
@@ -340,7 +340,7 @@ fn test_deposit_liquidity_imbalanced_amounts() {
     let token_amount = Uint128::new(1_000_000_000); // Only 1k tokens (should need ~149k)
     
     let info = mock_info(user.as_str(), &[Coin {
-        denom: "stake".to_string(),
+        denom: "bluechip".to_string(),
         amount: bluechip_amount,
     }]);
     
@@ -551,13 +551,13 @@ fn test_zero_liquidity_fee_collection() {
     // Try to update fee growth
     let env = mock_env();
     let info = mock_info("trader", &[Coin {
-        denom: "stake".to_string(),
+        denom: "bluechip".to_string(),
         amount: Uint128::new(1_000_000),
     }]);
     
     let msg = ExecuteMsg::SimpleSwap {
         offer_asset: TokenInfo {
-            info: TokenType::Bluechip { denom: "stake".to_string() },
+            info: TokenType::Bluechip { denom: "bluechip".to_string() },
             amount: Uint128::new(1_000_000),
         },
         belief_price: None,
@@ -689,7 +689,7 @@ pub fn setup_pool_storage(deps: &mut OwnedDeps<MockStorage, MockApi, MockQuerier
         pool_info: PoolDetails {
             asset_infos: [
                 TokenType::Bluechip {
-                    denom: "stake".to_string(), // Using "stake" as bluechip token
+                    denom: "bluechip".to_string(),
                 },
                 TokenType::CreatorToken{
                     contract_addr: Addr::unchecked("token_contract"),
@@ -1164,7 +1164,7 @@ fn test_add_to_position_collects_fees_first() {
     let env = mock_env();
     let user = Addr::unchecked("liquidity_provider");
     let info = mock_info(user.as_str(), &[Coin {
-        denom: "stake".to_string(),
+        denom: "bluechip".to_string(),
         amount: Uint128::new(500_000_000),
     }]);
     
@@ -1343,7 +1343,7 @@ fn test_refund_calculation_accuracy() {
     let sent_token = Uint128::new(1_000_000_000); // 1k
     
     let info = mock_info(user.as_str(), &[Coin {
-        denom: "stake".to_string(),
+        denom: "bluechip".to_string(),
         amount: sent_bluechip,
     }]);
     

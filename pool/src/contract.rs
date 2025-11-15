@@ -774,7 +774,7 @@ pub fn execute_commit_logic(
     }
 
     match &asset.info {
-        TokenType::Bluechip { denom } if denom == "stake" => {
+        TokenType::Bluechip { denom } if denom == "bluechip" => {
             // Verify funds were actually sent
             let sent = info
                 .funds
