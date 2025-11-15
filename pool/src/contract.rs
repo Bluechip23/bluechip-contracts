@@ -317,6 +317,7 @@ pub fn execute(
             transaction_deadline,
             min_amount0,
             min_amount1,
+            max_ratio_deviation_bps,
         } => execute_remove_partial_liquidity(
             deps,
             env,
@@ -326,6 +327,7 @@ pub fn execute(
             transaction_deadline,
             min_amount0,
             min_amount1,
+            max_ratio_deviation_bps
         ),
         //removes all liquidity for a position - (i have 100 liquidity and I remove 100) - collects all fees.
         ExecuteMsg::RemoveAllLiquidity {
@@ -333,6 +335,7 @@ pub fn execute(
             transaction_deadline,
             min_amount1,
             min_amount0,
+            max_ratio_deviation_bps,
         } => execute_remove_all_liquidity(
             deps,
             env,
@@ -341,6 +344,7 @@ pub fn execute(
             transaction_deadline,
             min_amount0,
             min_amount1,
+            max_ratio_deviation_bps
         ),
         //removes liquidity based on a specific percent (I have 100 liquidity I want to remove 18% = remove 18.) - will collect fees in proportion of removal to rebalance accounting
         ExecuteMsg::RemovePartialLiquidityByPercent {
@@ -349,6 +353,7 @@ pub fn execute(
             transaction_deadline,
             min_amount0,
             min_amount1,
+            max_ratio_deviation_bps,
         } => execute_remove_partial_liquidity_by_percent(
             deps,
             env,
@@ -358,6 +363,7 @@ pub fn execute(
             transaction_deadline,
             min_amount0,
             min_amount1,
+            max_ratio_deviation_bps
         ),
         ExecuteMsg::ClaimCreatorExcessLiquidity {} => execute_claim_creator_excess(deps, env, info),
     }

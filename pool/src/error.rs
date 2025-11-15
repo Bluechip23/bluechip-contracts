@@ -1,4 +1,4 @@
-use cosmwasm_std::{OverflowError, StdError, Timestamp, Uint128};
+use cosmwasm_std::{Decimal, OverflowError, StdError, Timestamp, Uint128};
 use thiserror::Error;
 
 #[derive(Error, Debug, PartialEq)]
@@ -8,7 +8,13 @@ pub enum ContractError {
 
     #[error("Unauthorized")]
     Unauthorized {},
-
+    #[error("")]
+    RatioDeviationExceeded { 
+    expected_ratio: Decimal,
+    actual_ratio: Decimal,
+    max_deviation_bps: u16,
+    actual_deviation_bps: u16
+    },
     #[error("")]
     PositionLocked { unlock_time: Timestamp },
     #[error("The pool is paused due to low liquidity, please supply liquidity before swapping")]

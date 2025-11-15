@@ -52,6 +52,7 @@ pub enum ExecuteMsg {
         transaction_deadline: Option<Timestamp>, // Specific amount of liquidity to remove
         min_amount0: Option<Uint128>,
         min_amount1: Option<Uint128>,
+        max_ratio_deviation_bps: Option<u16>,
     },
     RemovePartialLiquidityByPercent {
         position_id: String,
@@ -59,12 +60,14 @@ pub enum ExecuteMsg {
         transaction_deadline: Option<Timestamp>,
         min_amount0: Option<Uint128>,
         min_amount1: Option<Uint128>,
+        max_ratio_deviation_bps: Option<u16>,
     },
     RemoveAllLiquidity {
         position_id: String,
         transaction_deadline: Option<Timestamp>,
         min_amount0: Option<Uint128>,
         min_amount1: Option<Uint128>,
+        max_ratio_deviation_bps: Option<u16>,
     },
     ClaimCreatorExcessLiquidity {},
 }
