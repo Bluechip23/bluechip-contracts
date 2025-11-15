@@ -177,7 +177,7 @@ fn test_update_specific_pool_from_registry() {
         pool_id,
         pool_token_info: [
             TokenType::Bluechip {
-                denom: "stake".to_string(),
+                denom: "bluechip".to_string(),
             },
             TokenType::CreatorToken {
                 contract_addr: Addr::unchecked("token"),
