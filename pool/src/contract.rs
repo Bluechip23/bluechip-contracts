@@ -17,7 +17,12 @@ use crate::msg::{Cw20HookMsg, ExecuteMsg, MigrateMsg, PoolConfigUpdate, PoolInst
 use crate::query::query_check_commit;
 use crate::response::MsgInstantiateContractResponse;
 use crate::state::{
-    COMMIT_LEDGER, COMMIT_LIMIT_INFO, COMMITFEEINFO, COMMITSTATUS, CommitLimitInfo, DISTRIBUTION_STATE, EXPECTED_FACTORY, ExpectedFactory, IS_THRESHOLD_HIT, LAST_THRESHOLD_ATTEMPT, MINIMUM_LIQUIDITY, NATIVE_RAISED_FROM_COMMIT, ORACLE_INFO, OracleInfo, POOL_FEE_STATE, POOL_INFO, POOL_PAUSED, POOL_SPECS, POOL_STATE, PoolDetails, PoolFeeState, PoolInfo, PoolSpecs, RATE_LIMIT_GUARD, RecoveryType, THRESHOLD_PAYOUT_AMOUNTS, THRESHOLD_PROCESSING, ThresholdPayoutAmounts, USD_RAISED_FROM_COMMIT
+    CommitLimitInfo, ExpectedFactory, OracleInfo, PoolDetails, PoolFeeState, PoolInfo, PoolSpecs,
+    RecoveryType, ThresholdPayoutAmounts, COMMITFEEINFO, COMMITSTATUS, COMMIT_LEDGER,
+    COMMIT_LIMIT_INFO, DISTRIBUTION_STATE, EXPECTED_FACTORY, IS_THRESHOLD_HIT,
+    LAST_THRESHOLD_ATTEMPT, MINIMUM_LIQUIDITY, NATIVE_RAISED_FROM_COMMIT, ORACLE_INFO,
+    POOL_FEE_STATE, POOL_INFO, POOL_PAUSED, POOL_SPECS, POOL_STATE, RATE_LIMIT_GUARD,
+    THRESHOLD_PAYOUT_AMOUNTS, THRESHOLD_PROCESSING, USD_RAISED_FROM_COMMIT,
 };
 use crate::state::{
     Commiting, PoolState, Position, COMMIT_INFO, LIQUIDITY_POSITIONS, NEXT_POSITION_ID,
@@ -26,7 +31,9 @@ use crate::swap_helper::{
     assert_max_spread, compute_swap, get_bluechip_value, get_usd_value, update_price_accumulator,
 };
 use cosmwasm_std::{
-    Addr, Binary, CosmosMsg, Decimal, DepsMut, Env, Fraction, MessageInfo, Reply, Response, StdError, StdResult, Storage, SubMsgResult, Timestamp, Uint128, WasmMsg, entry_point, from_json, to_json_binary
+    entry_point, from_json, to_json_binary, Addr, Binary, CosmosMsg, Decimal, DepsMut, Env,
+    Fraction, MessageInfo, Reply, Response, StdError, StdResult, Storage, SubMsgResult, Timestamp,
+    Uint128, WasmMsg,
 };
 use cw2::set_contract_version;
 use cw20::{Cw20ExecuteMsg, Cw20ReceiveMsg};
@@ -196,10 +203,10 @@ pub fn execute(
             }
 
             Ok(Response::new().add_attribute("action", "config_updated"))
-        },
+        }
         ExecuteMsg::RecoverStuckStates { recovery_type } => {
             execute_recover_stuck_states(deps, env, info, recovery_type)
-        },
+        }
         ExecuteMsg::Commit {
             asset,
             amount,
@@ -818,6 +825,25 @@ pub fn execute_commit_logic(
                         e
                     )))
                 })?;
+
+            let total_fees = commit_fee_bluechip_amt
+                .checked_add(commit_fee_creator_amt)
+                .map_err(|_| {
+                    ContractError::Std(StdError::generic_err("Fee calculation overflow"))
+                })?;
+
+            if total_fees >= amount {
+                return Err(ContractError::InvalidFee {});
+            }
+
+            // Also validate there's something left after fees
+            let amount_after_fees = amount
+                .checked_sub(total_fees)
+                .map_err(|_| ContractError::Std(StdError::generic_err("Fee exceeds amount")))?;
+
+            if amount_after_fees.is_zero() {
+                return Err(ContractError::InvalidFee {});
+            }
             // Create fee transfer messages
             let bluechip_transfer = get_bank_transfer_to_msg(
                 &fee_info.bluechip_wallet_address,

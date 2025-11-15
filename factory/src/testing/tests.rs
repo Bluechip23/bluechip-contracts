@@ -38,6 +38,7 @@ fn create_default_instantiate_msg() -> FactoryInstantiate {
         commit_fee_creator: Decimal::percent(5),
         max_bluechip_lock_per_pool: Uint128::new(1),
         creator_excess_liquidity_lock_days: 7,
+        atom_bluechip_anchor_pool_address: Addr::unchecked(ATOM_BLUECHIP_POOL_CONTRACT_ADDRESS),
     }
 }
 
@@ -79,6 +80,7 @@ fn proper_initialization() {
         commit_fee_creator: Decimal::percent(10),
         max_bluechip_lock_per_pool: Uint128::new(10_000_000_000),
         creator_excess_liquidity_lock_days: 7,
+        atom_bluechip_anchor_pool_address: Addr::unchecked(ATOM_BLUECHIP_POOL_CONTRACT_ADDRESS),
     };
 
     let env = mock_env();
@@ -225,6 +227,7 @@ fn create_pair() {
         commit_fee_creator: Decimal::percent(5),
         max_bluechip_lock_per_pool: Uint128::new(10_000_000_000),
         creator_excess_liquidity_lock_days: 7,
+        atom_bluechip_anchor_pool_address: Addr::unchecked(ATOM_BLUECHIP_POOL_CONTRACT_ADDRESS),
     };
 
     let env = mock_env();
@@ -307,6 +310,7 @@ fn test_create_pair_with_custom_params() {
         commit_fee_creator: Decimal::percent(5),
         max_bluechip_lock_per_pool: Uint128::new(10_000_000_000),
         creator_excess_liquidity_lock_days: 7,
+        atom_bluechip_anchor_pool_address: Addr::unchecked(ATOM_BLUECHIP_POOL_CONTRACT_ADDRESS),
     };
 
     let env = mock_env();
@@ -525,6 +529,7 @@ fn test_complete_pool_creation_flow() {
         commit_fee_creator: Decimal::percent(5),
         max_bluechip_lock_per_pool: Uint128::new(10_000_000_000),
         creator_excess_liquidity_lock_days: 7,
+        atom_bluechip_anchor_pool_address: Addr::unchecked(ATOM_BLUECHIP_POOL_CONTRACT_ADDRESS),
     };
 
     let env = mock_env();
@@ -688,6 +693,7 @@ fn test_config() {
         commit_fee_creator: Decimal::percent(10),
         max_bluechip_lock_per_pool: Uint128::new(10_000_000_000),
         creator_excess_liquidity_lock_days: 7,
+        atom_bluechip_anchor_pool_address: Addr::unchecked(ATOM_BLUECHIP_POOL_CONTRACT_ADDRESS),
     };
 
     assert_eq!(config.factory_admin_address, Addr::unchecked("admin1..."));
@@ -722,6 +728,7 @@ fn test_reply_handling() {
         commit_fee_creator: Decimal::from_ratio(10u128, 100u128),
         max_bluechip_lock_per_pool: Uint128::new(10_000_000_000),
         creator_excess_liquidity_lock_days: 7,
+        atom_bluechip_anchor_pool_address: Addr::unchecked(ATOM_BLUECHIP_POOL_CONTRACT_ADDRESS),
     };
 
     let env = mock_env();
@@ -1520,6 +1527,7 @@ fn test_query_pyth_atom_usd_price_success() {
         commit_fee_creator: Decimal::percent(10),
         max_bluechip_lock_per_pool: Uint128::new(10_000_000_000),
         creator_excess_liquidity_lock_days: 7,
+        atom_bluechip_anchor_pool_address: Addr::unchecked(ATOM_BLUECHIP_POOL_CONTRACT_ADDRESS),
     };
     FACTORYINSTANTIATEINFO
         .save(deps.as_mut().storage, &config)
@@ -1560,6 +1568,7 @@ fn test_query_pyth_atom_usd_price_default() {
         commit_fee_creator: Decimal::percent(10),
         max_bluechip_lock_per_pool: Uint128::new(10_000_000_000),
         creator_excess_liquidity_lock_days: 7,
+        atom_bluechip_anchor_pool_address: Addr::unchecked(ATOM_BLUECHIP_POOL_CONTRACT_ADDRESS),
     };
     FACTORYINSTANTIATEINFO
         .save(deps.as_mut().storage, &config)
@@ -1590,6 +1599,7 @@ fn test_query_pyth_extreme_atom_prices() {
         commit_fee_creator: Decimal::percent(10),
         max_bluechip_lock_per_pool: Uint128::new(10_000_000_000),
         creator_excess_liquidity_lock_days: 7,
+        atom_bluechip_anchor_pool_address: Addr::unchecked(ATOM_BLUECHIP_POOL_CONTRACT_ADDRESS),
     };
     FACTORYINSTANTIATEINFO
         .save(deps.as_mut().storage, &config)
@@ -1639,6 +1649,7 @@ fn test_get_bluechip_usd_price_with_pyth() {
         commit_fee_creator: Decimal::percent(10),
         max_bluechip_lock_per_pool: Uint128::new(10_000_000_000),
         creator_excess_liquidity_lock_days: 7,
+        atom_bluechip_anchor_pool_address: Addr::unchecked(ATOM_BLUECHIP_POOL_CONTRACT_ADDRESS),
     };
     FACTORYINSTANTIATEINFO
         .save(deps.as_mut().storage, &config)
@@ -1683,6 +1694,7 @@ fn test_bluechip_usd_price_with_different_atom_prices() {
         commit_fee_creator: Decimal::percent(10),
         max_bluechip_lock_per_pool: Uint128::new(10_000_000_000),
         creator_excess_liquidity_lock_days: 7,
+        atom_bluechip_anchor_pool_address: Addr::unchecked(ATOM_BLUECHIP_POOL_CONTRACT_ADDRESS),
     };
     FACTORYINSTANTIATEINFO
         .save(deps.as_mut().storage, &config)
@@ -1731,6 +1743,7 @@ fn test_conversion_functions_with_pyth() {
         commit_fee_creator: Decimal::percent(10),
         max_bluechip_lock_per_pool: Uint128::new(10_000_000_000),
         creator_excess_liquidity_lock_days: 7,
+        atom_bluechip_anchor_pool_address: Addr::unchecked(ATOM_BLUECHIP_POOL_CONTRACT_ADDRESS),
     };
     FACTORYINSTANTIATEINFO
         .save(deps.as_mut().storage, &config)
@@ -1806,6 +1819,7 @@ fn test_bluechip_minting_on_pool_creation() {
         commit_fee_creator: Decimal::percent(5),
         max_bluechip_lock_per_pool: Uint128::new(10_000_000_000),
         creator_excess_liquidity_lock_days: 7,
+        atom_bluechip_anchor_pool_address: Addr::unchecked(ATOM_BLUECHIP_POOL_CONTRACT_ADDRESS),
     };
     
     let env = mock_env();
@@ -1896,6 +1910,7 @@ fn test_no_mint_when_amount_is_zero() {
         commit_fee_creator: Decimal::percent(5),
         max_bluechip_lock_per_pool: Uint128::new(10_000_000_000),
         creator_excess_liquidity_lock_days: 7,
+        atom_bluechip_anchor_pool_address: Addr::unchecked(ATOM_BLUECHIP_POOL_CONTRACT_ADDRESS),
     };
     
     let env = mock_env();

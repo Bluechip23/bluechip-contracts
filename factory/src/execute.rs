@@ -53,8 +53,8 @@ pub fn execute(
     match msg {
         ExecuteMsg::ProposeConfigUpdate {
             config: factory_instantiate,
-        } => execute_propose_config_update(deps, env, info, factory_instantiate),
-        ExecuteMsg::UpdateConfig {} => execute_update_config(deps, env),
+        } => execute_propose_factory_config_update(deps, env, info, factory_instantiate),
+        ExecuteMsg::UpdateConfig {} => execute_update_factory_config(deps, env),
         ExecuteMsg::Create {
             pool_msg,
             token_info,
@@ -74,7 +74,7 @@ pub fn execute(
     }
 }
 
-fn assert_correct_factory_address(deps: Deps, info: MessageInfo) -> StdResult<bool> {
+pub fn assert_correct_factory_address(deps: Deps, info: MessageInfo) -> StdResult<bool> {
     let config = FACTORYINSTANTIATEINFO.load(deps.storage)?;
 
     if info.sender != config.factory_admin_address {
@@ -86,7 +86,7 @@ fn assert_correct_factory_address(deps: Deps, info: MessageInfo) -> StdResult<bo
     Ok(true)
 }
 
-pub fn execute_update_config(
+pub fn execute_update_factory_config(
     deps: DepsMut,
     env: Env,
 ) -> Result<Response, ContractError> {
@@ -102,7 +102,7 @@ pub fn execute_update_config(
     Ok(Response::new().add_attribute("action", "execute_update_config"))
 }
 
-pub fn execute_propose_config_update(
+pub fn execute_propose_factory_config_update(
     deps: DepsMut,
     env: Env,
     info: MessageInfo,
@@ -119,7 +119,7 @@ pub fn execute_propose_config_update(
         .add_attribute("effective_after", pending.effective_after.to_string()))
 }
 
-pub fn execute_cancel_config_update(
+pub fn execute_cancel_factory_config_update(
     deps: DepsMut,
     info: MessageInfo,
 ) -> Result<Response, ContractError> {
