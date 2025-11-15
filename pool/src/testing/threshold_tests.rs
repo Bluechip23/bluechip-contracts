@@ -2,15 +2,17 @@ use crate::asset::{TokenInfo, TokenType};
 use crate::error::ContractError;
 use crate::msg::{CommitFeeInfo, ExecuteMsg};
 use crate::state::{
-    COMMIT_INFO, COMMIT_LEDGER, COMMIT_LIMIT_INFO, COMMITFEEINFO, CREATOR_EXCESS_POSITION, CommitLimitInfo, CreatorExcessLiquidity, IS_THRESHOLD_HIT, LIQUIDITY_POSITIONS, NEXT_POSITION_ID, POOL_STATE, THRESHOLD_PROCESSING, TokenMetadata, USD_RAISED_FROM_COMMIT
+    COMMIT_INFO, COMMIT_LEDGER, COMMIT_LIMIT_INFO, COMMITFEEINFO, CREATOR_EXCESS_POSITION, CommitLimitInfo, CreatorExcessLiquidity, DISTRIBUTION_STATE, DistributionState, EXPECTED_FACTORY, ExpectedFactory, IS_THRESHOLD_HIT, LAST_THRESHOLD_ATTEMPT, LIQUIDITY_POSITIONS, NEXT_POSITION_ID, POOL_STATE, RecoveryType, THRESHOLD_PROCESSING, TokenMetadata, USD_RAISED_FROM_COMMIT
 };
 use crate::testing::swap_tests::with_factory_oracle;
 use crate::{
     contract::execute,
     testing::liquidity_tests::{setup_pool_post_threshold, setup_pool_storage},
 };
-use cosmwasm_std::testing::{MockApi, MockQuerier, MockStorage, mock_dependencies_with_balance};
-use cosmwasm_std::{BankMsg, Binary, Coin, Decimal, Empty, OwnedDeps, SystemError, WasmQuery, coin};
+use cosmwasm_std::testing::{mock_dependencies_with_balance, MockApi, MockQuerier, MockStorage};
+use cosmwasm_std::{
+    BankMsg, Binary, Coin, Decimal, Empty, OwnedDeps, SystemError, Timestamp, WasmQuery, coin
+};
 use cosmwasm_std::{
     from_json,
     testing::{mock_dependencies, mock_env, mock_info},
@@ -25,8 +27,8 @@ pub fn setup_pool_with_excess_config(deps: &mut OwnedDeps<MockStorage, MockApi, 
     let commit_config = CommitLimitInfo {
         commit_amount_for_threshold: Uint128::new(25_000_000_000),
         commit_amount_for_threshold_usd: Uint128::new(25_000_000_000),
-        max_bluechip_lock_per_pool: Uint128::new(100_000), 
-        creator_excess_liquidity_lock_days: 14,                 
+        max_bluechip_lock_per_pool: Uint128::new(100_000),
+        creator_excess_liquidity_lock_days: 14,
     };
 
     COMMIT_LIMIT_INFO
@@ -59,21 +61,19 @@ fn test_threshold_with_excess_creates_position() {
         )
         .unwrap();
 
-    deps.querier.update_wasm(|query| {
-        match query {
-            WasmQuery::Smart { .. } => {
-                let response = ConversionResponse {
-                    amount: Uint128::new(1_000_000_000), 
-                    rate_used: Uint128::new(1_000_000_000), 
-                    timestamp: 1234567890u64,
-                };
-                SystemResult::Ok(ContractResult::Ok(to_json_binary(&response).unwrap()))
-            }
-            _ => SystemResult::Err(SystemError::InvalidRequest {
-                error: "Unknown query".to_string(),
-                request: Binary::default(),
-            }),
+    deps.querier.update_wasm(|query| match query {
+        WasmQuery::Smart { .. } => {
+            let response = ConversionResponse {
+                amount: Uint128::new(1_000_000_000),
+                rate_used: Uint128::new(1_000_000_000),
+                timestamp: 1234567890u64,
+            };
+            SystemResult::Ok(ContractResult::Ok(to_json_binary(&response).unwrap()))
         }
+        _ => SystemResult::Err(SystemError::InvalidRequest {
+            error: "Unknown query".to_string(),
+            request: Binary::default(),
+        }),
     });
     let env = mock_env();
     let info = mock_info("final_committer", &[coin(100_000_000_000_000, "stake")]);
@@ -117,7 +117,7 @@ fn test_threshold_with_excess_creates_position() {
 
     let pool_state = POOL_STATE.load(&deps.storage).unwrap();
 
-    assert!(pool_state.reserve0 > Uint128::new(100_000_000_000)); 
+    assert!(pool_state.reserve0 > Uint128::new(100_000_000_000));
 }
 
 #[test]
@@ -166,7 +166,7 @@ fn test_claim_excess_after_unlock_succeeds() {
 
     let env = mock_env();
 
-    let unlock_time = env.block.time.minus_seconds(100); 
+    let unlock_time = env.block.time.minus_seconds(100);
 
     CREATOR_EXCESS_POSITION
         .save(
@@ -263,21 +263,19 @@ fn test_no_excess_when_under_cap() {
         )
         .unwrap();
 
-    deps.querier.update_wasm(move |query| {
-        match query {
-            WasmQuery::Smart { msg, .. } => {
-                let response = ConversionResponse {
-                    amount: Uint128::new(1_000_000),
-                    rate_used: Uint128::new(1_000_000),
-                    timestamp: 1234567890u64,
-                };
-                SystemResult::Ok(ContractResult::Ok(to_json_binary(&response).unwrap()))
-            }
-            _ => SystemResult::Err(SystemError::InvalidRequest {
-                error: "Unknown query".to_string(),
-                request: Binary::default(),
-            }),
+    deps.querier.update_wasm(move |query| match query {
+        WasmQuery::Smart { msg, .. } => {
+            let response = ConversionResponse {
+                amount: Uint128::new(1_000_000),
+                rate_used: Uint128::new(1_000_000),
+                timestamp: 1234567890u64,
+            };
+            SystemResult::Ok(ContractResult::Ok(to_json_binary(&response).unwrap()))
         }
+        _ => SystemResult::Err(SystemError::InvalidRequest {
+            error: "Unknown query".to_string(),
+            request: Binary::default(),
+        }),
     });
 
     let env = mock_env();
@@ -303,6 +301,17 @@ fn test_no_excess_when_under_cap() {
 
     let pool_state = POOL_STATE.load(&deps.storage).unwrap();
     assert!(pool_state.reserve0 < Uint128::new(10_000_000_000_000));
+}
+
+fn check_correct_factory(deps: &mut OwnedDeps<MockStorage, MockApi, MockQuerier>) {
+    EXPECTED_FACTORY
+        .save(
+            &mut deps.storage,
+            &ExpectedFactory {
+                expected_factory_address: Addr::unchecked("factory_address"),
+            },
+        )
+        .unwrap();
 }
 #[test]
 fn test_commit_threshold_overshoot_split() {
@@ -348,6 +357,18 @@ fn test_commit_threshold_overshoot_split() {
     };
 
     let res = execute(deps.as_mut(), env.clone(), info.clone(), msg).unwrap();
+
+    let last_attempt = LAST_THRESHOLD_ATTEMPT.load(&deps.storage).unwrap();
+    assert_eq!(
+        last_attempt, env.block.time,
+        "LAST_THRESHOLD_ATTEMPT should be set to current time"
+    );
+    assert_eq!(
+        THRESHOLD_PROCESSING.load(&deps.storage).unwrap(),
+        false,
+        "THRESHOLD_PROCESSING should be cleared after successful threshold crossing"
+    );
+
     println!("\n=== Response Attributes ===");
     for attr in &res.attributes {
         println!("{}: {}", attr.key, attr.value);
@@ -442,8 +463,8 @@ fn test_commit_threshold_overshoot_split() {
     println!("Native excess to swap: {}", bluechip_excess);
     println!("CW20 returned: {}", return_amt);
     let sub = COMMIT_INFO.load(&deps.storage, &info.sender).unwrap();
-    assert_eq!(sub.total_paid_bluechip, commit_amount); // Full 5 tokens
-    assert_eq!(sub.total_paid_usd, Uint128::new(5_000_000)); // Full $5
+    assert_eq!(sub.total_paid_bluechip, commit_amount);
+    assert_eq!(sub.total_paid_usd, Uint128::new(5_000_000));
 
     if has_transfer {
         println!("SUCCESS: CW20 transfer found!");
@@ -470,7 +491,6 @@ fn test_commit_exact_threshold() {
         .save(&mut deps.storage, &Uint128::new(24_999_000_000))
         .unwrap();
 
-    // add previous commits to simulate the 24,999
     let previous_user = Addr::unchecked("previous_user");
     COMMIT_LEDGER
         .save(
@@ -484,7 +504,6 @@ fn test_commit_exact_threshold() {
 
     with_factory_oracle(&mut deps, Uint128::new(1_000_000)); // $1 per bluechip
 
-    // Commit exactly $1
     let commit_amount = Uint128::new(1_000_000);
 
     let info = mock_info(
@@ -508,9 +527,20 @@ fn test_commit_exact_threshold() {
         max_spread: None,
     };
 
-    let res = execute(deps.as_mut(), env, info.clone(), msg).unwrap();
+    let res = execute(deps.as_mut(), env.clone(), info.clone(), msg).unwrap();
 
-    // Should be a normal funding phase commit that triggers threshold
+    let last_attempt = LAST_THRESHOLD_ATTEMPT.load(&deps.storage).unwrap();
+    assert_eq!(
+        last_attempt, env.block.time,
+        "LAST_THRESHOLD_ATTEMPT should be set to current time"
+    );
+
+    assert_eq!(
+        THRESHOLD_PROCESSING.load(&deps.storage).unwrap(),
+        false,
+        "THRESHOLD_PROCESSING should be cleared after threshold hit"
+    );
+
     assert_eq!(
         res.attributes
             .iter()
@@ -523,4 +553,163 @@ fn test_commit_exact_threshold() {
     assert_eq!(IS_THRESHOLD_HIT.load(&deps.storage).unwrap(), true);
     let total_usd = USD_RAISED_FROM_COMMIT.load(&deps.storage).unwrap();
     assert_eq!(total_usd, Uint128::new(25_000_000_000)); // Should be exactly at $25k threshold
+}
+
+#[test]
+fn test_recover_stuck_threshold() {
+    let mut deps = mock_dependencies();
+    setup_pool_storage(&mut deps);
+    check_correct_factory(&mut deps);
+    let mut env = mock_env();
+    LAST_THRESHOLD_ATTEMPT
+        .save(&mut deps.storage, &env.block.time)
+        .unwrap();
+    THRESHOLD_PROCESSING.save(&mut deps.storage, &true).unwrap();
+    env.block.time = env.block.time.plus_seconds(1800); // 30 minutes later
+
+    let info = mock_info("factory_address", &[]);
+    let msg = ExecuteMsg::RecoverStuckStates {
+        recovery_type: RecoveryType::StuckThreshold,
+    };
+    let res = execute(deps.as_mut(), env.clone(), info.clone(), msg.clone());
+    assert!(res.is_err());
+    // Try recovery after timeout - should succeed
+    env.block.time = env.block.time.plus_seconds(1801);
+
+    let res = execute(deps.as_mut(), env, info, msg).unwrap();
+
+    assert_eq!(
+        THRESHOLD_PROCESSING.load(&deps.storage).unwrap(),
+        false,
+        "THRESHOLD_PROCESSING should be cleared"
+    );
+
+    assert!(res.attributes.iter().any(|a| a.value.contains("threshold")));
+}
+
+#[test]
+fn test_concurrent_threshold_crossing_attempts() {
+    let mut deps = mock_dependencies_with_balance(&[Coin {
+        denom: "stake".to_string(),
+        amount: Uint128::new(100_000_000_000),
+    }]);
+    
+    setup_pool_storage(&mut deps);
+    check_correct_factory(&mut deps);
+    USD_RAISED_FROM_COMMIT
+        .save(&mut deps.storage, &Uint128::new(24_999_000_000))
+        .unwrap();
+    
+    let env = mock_env();
+    with_factory_oracle(&mut deps, Uint128::new(1_000_000));
+    
+    // First user triggers threshold crossing
+    THRESHOLD_PROCESSING.save(&mut deps.storage, &true).unwrap();
+    LAST_THRESHOLD_ATTEMPT.save(&mut deps.storage, &env.block.time).unwrap();
+    
+    // Second user tries to commit while first is processing
+    let info2 = mock_info("user2", &[Coin {
+        denom: "stake".to_string(),
+        amount: Uint128::new(2_000_000),
+    }]);
+    
+    let msg = ExecuteMsg::Commit {
+        asset: TokenInfo {
+            info: TokenType::Bluechip {
+                denom: "stake".to_string(),
+            },
+            amount: Uint128::new(2_000_000),
+        },
+        amount: Uint128::new(2_000_000),
+        transaction_deadline: None,
+        belief_price: None,
+        max_spread: None,
+    };
+    
+    let res = execute(deps.as_mut(), env.clone(), info2, msg);
+    
+    // Should succeed but process as pre-threshold commit
+    assert!(res.is_ok());
+    let res = res.unwrap();
+    
+    // Should NOT have threshold_crossing phase since someone else is processing
+    assert!(res.attributes.iter()
+        .find(|a| a.key == "phase")
+        .map_or(true, |a| a.value != "threshold_crossing"));
+}
+
+#[test]
+fn test_distribution_timeout_triggers_error() {
+    let mut deps = mock_dependencies();
+    setup_pool_storage(&mut deps);
+    check_correct_factory(&mut deps);
+    // Add committers
+    for i in 0..5 {
+        COMMIT_LEDGER
+            .save(
+                &mut deps.storage,
+                &Addr::unchecked(format!("user{}", i)),
+                &Uint128::new(100),
+            )
+            .unwrap();
+    }
+    
+    let old_time = Timestamp::from_seconds(1000);
+    
+    // Create old distribution state
+    let dist_state = DistributionState {
+        is_distributing: true,
+        total_to_distribute: Uint128::new(1_000_000),
+        total_committed_usd: Uint128::new(1_000_000),
+        last_processed_key: None,
+        distributions_remaining: 5,
+        max_gas_per_tx: 1000,
+        estimated_gas_per_distribution: 50,
+        last_successful_batch_size: None,
+        consecutive_failures: 0,
+        started_at: old_time,
+        last_updated: old_time, // Very old
+    };
+    DISTRIBUTION_STATE.save(&mut deps.storage, &dist_state).unwrap();
+    
+    let mut env = mock_env();
+    env.block.time = old_time.plus_seconds(7201); // Over 2 hours later
+    
+    let info = mock_info(env.contract.address.as_str(), &[]);
+    let res = execute(
+        deps.as_mut(),
+        env,
+        info,
+        ExecuteMsg::ContinueDistribution {},
+    );
+    
+    // Should fail with timeout
+    assert!(res.is_err());
+    assert!(res.unwrap_err().to_string().contains("timeout"));
+    
+    // State should be marked as failed
+    let updated = DISTRIBUTION_STATE.load(&deps.storage).unwrap();
+    assert_eq!(updated.consecutive_failures, 99);
+}
+
+#[test]
+fn test_unauthorized_recovery_attempt() {
+    let mut deps = mock_dependencies();
+    setup_pool_storage(&mut deps);
+    check_correct_factory(&mut deps);
+    let env = mock_env();
+    
+    // Set stuck state
+    THRESHOLD_PROCESSING.save(&mut deps.storage, &true).unwrap();
+    
+    // Non-admin tries to recover
+    let info = mock_info("random_user", &[]);
+    let msg = ExecuteMsg::RecoverStuckStates {
+        recovery_type: RecoveryType::StuckThreshold,
+    };
+    
+    let res = execute(deps.as_mut(), env, info, msg);
+    
+    assert!(res.is_err());
+    assert!(matches!(res.unwrap_err(), ContractError::Unauthorized {}));
 }
