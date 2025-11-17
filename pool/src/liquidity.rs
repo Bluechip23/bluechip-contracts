@@ -12,8 +12,8 @@ use crate::state::{
 use crate::state::{Position, TokenMetadata, LIQUIDITY_POSITIONS, NEXT_POSITION_ID};
 use crate::swap_helper::update_price_accumulator;
 use cosmwasm_std::{
-    to_json_binary, Addr, BankMsg, Coin, CosmosMsg, DepsMut, Empty, Env, MessageInfo, Response,
-    Timestamp, Uint128, WasmMsg,
+    to_json_binary, Addr, BankMsg, Coin, CosmosMsg, Decimal, DepsMut, Empty, Env, MessageInfo,
+    Response, StdError, Timestamp, Uint128, WasmMsg,
 };
 use cw721_base::ExecuteMsg as CW721BaseExecuteMsg;
 
@@ -416,6 +416,7 @@ pub fn remove_all_liquidity(
     position_id: String,
     min_amount0: Option<Uint128>,
     min_amount1: Option<Uint128>,
+    max_ratio_deviation_bps: Option<u16>,
 ) -> Result<Response, ContractError> {
     let pool_fee_state = POOL_FEE_STATE.load(deps.storage)?;
     let pool_info = POOL_INFO.load(deps.storage)?;
@@ -455,6 +456,48 @@ pub fn remove_all_liquidity(
                 actual: user_share_1,
                 token: "cw20".to_string(),
             });
+        }
+    }
+    if let Some(max_deviation_bps) = max_ratio_deviation_bps {
+        if let (Some(min0), Some(min1)) = (min_amount0, min_amount1) {
+            if !min0.is_zero()
+                && !min1.is_zero()
+                && !user_share_0.is_zero()
+                && !user_share_1.is_zero()
+            {
+                let expected_ratio = Decimal::from_ratio(min0, min1);
+                let actual_ratio = Decimal::from_ratio(user_share_0, user_share_1);
+                let deviation_bps = if actual_ratio > expected_ratio {
+                    let diff = actual_ratio
+                        .checked_sub(expected_ratio)
+                        .map_err(|_| StdError::generic_err("Ratio calculation overflow"))?;
+                    (diff
+                        .checked_mul(Decimal::from_ratio(10000u128, 1u128))
+                        .map_err(|_| StdError::generic_err("Deviation calculation overflow"))?
+                        / expected_ratio)
+                        .to_uint_floor()
+                        .u128() as u16
+                } else {
+                    let diff = expected_ratio
+                        .checked_sub(actual_ratio)
+                        .map_err(|_| StdError::generic_err("Ratio calculation overflow"))?;
+                    (diff
+                        .checked_mul(Decimal::from_ratio(10000u128, 1u128))
+                        .map_err(|_| StdError::generic_err("Deviation calculation overflow"))?
+                        / actual_ratio)
+                        .to_uint_floor()
+                        .u128() as u16
+                };
+
+                if deviation_bps > max_deviation_bps {
+                    return Err(ContractError::RatioDeviationExceeded {
+                        expected_ratio,
+                        actual_ratio,
+                        max_deviation_bps,
+                        actual_deviation_bps: deviation_bps,
+                    });
+                }
+            }
         }
     }
     //calculate the fees owed to the position and prepare for collection
@@ -548,6 +591,7 @@ pub fn remove_partial_liquidity(
     transaction_deadline: Option<Timestamp>,
     min_amount0: Option<Uint128>,
     min_amount1: Option<Uint128>,
+    max_ratio_deviation_bps: Option<u16>,
     // Specific amount of liquidity to remove
 ) -> Result<Response, ContractError> {
     enforce_transaction_deadline(env.block.time, transaction_deadline)?;
@@ -577,6 +621,7 @@ pub fn remove_partial_liquidity(
             transaction_deadline,
             min_amount0,
             min_amount1,
+            max_ratio_deviation_bps,
         );
     }
     //cant take out what you dont have.
@@ -632,7 +677,55 @@ pub fn remove_partial_liquidity(
             });
         }
     }
+    if let Some(max_deviation_bps) = max_ratio_deviation_bps {
+        // Only check if both minimums were provided (user cares about ratio)
+        if let (Some(min0), Some(min1)) = (min_amount0, min_amount1) {
+            // Avoid division by zero and only check meaningful ratios
+            if !min0.is_zero()
+                && !min1.is_zero()
+                && !withdrawal_amount_0.is_zero()
+                && !withdrawal_amount_1.is_zero()
+            {
+                // Calculate expected ratio from minimum amounts
+                let expected_ratio = Decimal::from_ratio(min0, min1);
 
+                // Calculate actual ratio from withdrawal amounts (principal only, not including fees)
+                let actual_ratio = Decimal::from_ratio(withdrawal_amount_0, withdrawal_amount_1);
+
+                // Calculate deviation in basis points
+                let deviation_bps = if actual_ratio > expected_ratio {
+                    let diff = actual_ratio
+                        .checked_sub(expected_ratio)
+                        .map_err(|_| StdError::generic_err("Ratio calculation overflow"))?;
+                    (diff
+                        .checked_mul(Decimal::from_ratio(10000u128, 1u128))
+                        .map_err(|_| StdError::generic_err("Deviation calculation overflow"))?
+                        / expected_ratio)
+                        .to_uint_floor()
+                        .u128() as u16
+                } else {
+                    let diff = expected_ratio
+                        .checked_sub(actual_ratio)
+                        .map_err(|_| StdError::generic_err("Ratio calculation overflow"))?;
+                    (diff
+                        .checked_mul(Decimal::from_ratio(10000u128, 1u128))
+                        .map_err(|_| StdError::generic_err("Deviation calculation overflow"))?
+                        / actual_ratio)
+                        .to_uint_floor()
+                        .u128() as u16
+                };
+
+                if deviation_bps > max_deviation_bps {
+                    return Err(ContractError::RatioDeviationExceeded {
+                        expected_ratio,
+                        actual_ratio,
+                        max_deviation_bps,
+                        actual_deviation_bps: deviation_bps,
+                    });
+                }
+            }
+        }
+    }
     //add amounts to transfer back to user
     let total_amount_0 = withdrawal_amount_0 + fees_owed_0;
     let total_amount_1 = withdrawal_amount_1 + fees_owed_1;
@@ -740,6 +833,7 @@ pub fn execute_remove_all_liquidity(
     transaction_deadline: Option<Timestamp>,
     min_amount0: Option<Uint128>,
     min_amount1: Option<Uint128>,
+    max_ratio_deviation_bps: Option<u16>,
 ) -> Result<Response, ContractError> {
     enforce_transaction_deadline(env.block.time, transaction_deadline)?;
     let pool_specs: PoolSpecs = POOL_SPECS.load(deps.storage)?;
@@ -756,6 +850,7 @@ pub fn execute_remove_all_liquidity(
         position_id,
         min_amount0,
         min_amount1,
+        max_ratio_deviation_bps,
     );
     result
 }
@@ -769,6 +864,7 @@ pub fn execute_remove_partial_liquidity(
     transaction_deadline: Option<Timestamp>,
     min_amount0: Option<Uint128>,
     min_amount1: Option<Uint128>,
+    max_ratio_deviation_bps: Option<u16>,
 ) -> Result<Response, ContractError> {
     enforce_transaction_deadline(env.block.time, transaction_deadline)?;
     let pool_specs: PoolSpecs = POOL_SPECS.load(deps.storage)?;
@@ -787,6 +883,7 @@ pub fn execute_remove_partial_liquidity(
         transaction_deadline,
         min_amount0,
         min_amount1,
+        max_ratio_deviation_bps,
     );
 
     result
@@ -803,6 +900,7 @@ pub fn execute_remove_partial_liquidity_by_percent(
     transaction_deadline: Option<Timestamp>,
     min_amount0: Option<Uint128>,
     min_amount1: Option<Uint128>,
+    max_ratio_deviation_bps: Option<u16>,
 ) -> Result<Response, ContractError> {
     // cant remove zero
     if percentage == 0 {
@@ -819,6 +917,7 @@ pub fn execute_remove_partial_liquidity_by_percent(
             transaction_deadline,
             min_amount0,
             min_amount1,
+            max_ratio_deviation_bps,
         );
     }
 
@@ -842,5 +941,6 @@ pub fn execute_remove_partial_liquidity_by_percent(
         transaction_deadline,
         min_amount0,
         min_amount1,
+        max_ratio_deviation_bps,
     )
 }

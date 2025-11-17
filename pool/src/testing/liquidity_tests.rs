@@ -317,6 +317,8 @@ fn test_remove_all_liquidity() {
         None, // transaction_deadline
         None, // min_amount0
         None, // min_amount1
+        Some(200)
+        
     ).unwrap();
     
     assert!(res.messages.len() >= 2);
@@ -408,7 +410,7 @@ fn test_remove_liquidity_with_slippage_protection() {
         transaction_deadline: None,
         min_amount0: Some(Uint128::new(1_000_000_000)), // Expect high amount
         min_amount1: Some(Uint128::new(15_000_000_000)),
-
+        max_ratio_deviation_bps: None,
     };
     
     let err = execute(deps.as_mut(), env, info, msg).unwrap_err();
@@ -461,6 +463,7 @@ fn test_remove_partial_liquidity_amount() {
         transaction_deadline: None,
         min_amount0: None,
         min_amount1: None,
+        max_ratio_deviation_bps: None,
     };
     
     let res = execute(deps.as_mut(), env, info, msg).unwrap();
@@ -513,6 +516,7 @@ fn test_remove_partial_liquidity_by_percent() {
         transaction_deadline: None,
         min_amount0: None,
         min_amount1: None, // 25%
+        max_ratio_deviation_bps: None,
     };
     
     let res = execute(deps.as_mut(), env, info, msg).unwrap();
@@ -673,6 +677,7 @@ fn test_invalid_percentage_removal() {
         transaction_deadline: None,
         min_amount0: None,
         min_amount1: None, // Invalid
+        max_ratio_deviation_bps: None,
     };
     
     let err = execute(deps.as_mut(), env, info, msg).unwrap_err();
@@ -990,6 +995,7 @@ fn test_remove_more_than_position_has() {
         transaction_deadline: None,
         min_amount0: None,
         min_amount1: None,
+        max_ratio_deviation_bps: None,
     };
     
     let err = execute(deps.as_mut(), env, info, msg).unwrap_err();
@@ -1040,6 +1046,7 @@ fn test_remove_zero_liquidity() {
         transaction_deadline: None,
         min_amount0: None,
         min_amount1: None,
+        max_ratio_deviation_bps: None,
     };
     
     let err = execute(deps.as_mut(), env, info, msg).unwrap_err();
@@ -1242,6 +1249,7 @@ fn test_transaction_deadline_enforcement() {
         transaction_deadline: Some(past_deadline),
         min_amount0: None,
         min_amount1: None,
+        max_ratio_deviation_bps: None,
     };
     
     let err = execute(deps.as_mut(), env.clone(), info.clone(), msg).unwrap_err();
@@ -1259,6 +1267,7 @@ fn test_transaction_deadline_enforcement() {
         transaction_deadline: Some(future_deadline),
         min_amount0: None,
         min_amount1: None,
+        max_ratio_deviation_bps: None,
     };
     
     let res = execute(deps.as_mut(), env, info, msg2);
@@ -1430,6 +1439,7 @@ fn test_pool_total_liquidity_consistency() {
         None,
         None,
         None,
+        Some(200)
     ).unwrap();
     
     let after_removal = POOL_STATE.load(&deps.storage).unwrap().total_liquidity;
