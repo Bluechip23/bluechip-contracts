@@ -1349,8 +1349,8 @@ fn test_oracle_aggregates_multiple_pool_prices() {
     let oracle = INTERNAL_ORACLE.load(&deps.storage).unwrap();
 
     assert!(
-        oracle.selected_pools.len() > 1,
-        "Should aggregate from multiple pools - found: {:?}",
+        oracle.selected_pools.len() == 1,
+        "Should only select ATOM pool - found: {:?}",
         oracle.selected_pools
     );
 
@@ -1660,6 +1660,24 @@ fn test_get_bluechip_usd_price_with_pyth() {
         .save(deps.as_mut().storage, &Uint128::new(10_000_000))
         .unwrap();
 
+    // Initialize oracle with TWAP price of 10 (10 Bluechip per ATOM)
+    // This matches the implied ratio in the test (ATOM=$10, Bluechip=$1)
+    let oracle = BlueChipPriceInternalOracle {
+        atom_pool_contract_address: Addr::unchecked(ATOM_BLUECHIP_POOL_CONTRACT_ADDRESS),
+        selected_pools: vec![ATOM_BLUECHIP_POOL_CONTRACT_ADDRESS.to_string()],
+        bluechip_price_cache: PriceCache {
+            last_price: Uint128::new(10_000_000), // 10.0 ratio
+            last_update: 1000,
+            twap_observations: vec![],
+        },
+        update_interval: 300,
+        rotation_interval: 3600,
+        last_rotation: 0,
+    };
+    INTERNAL_ORACLE
+        .save(deps.as_mut().storage, &oracle)
+        .unwrap();
+
     let env = mock_env();
     let result = get_bluechip_usd_price(deps.as_ref(), env);
 
@@ -1698,6 +1716,23 @@ fn test_bluechip_usd_price_with_different_atom_prices() {
     };
     FACTORYINSTANTIATEINFO
         .save(deps.as_mut().storage, &config)
+        .unwrap();
+
+    // Initialize oracle with TWAP price of 10 (10 Bluechip per ATOM)
+    let oracle = BlueChipPriceInternalOracle {
+        atom_pool_contract_address: Addr::unchecked(ATOM_BLUECHIP_POOL_CONTRACT_ADDRESS),
+        selected_pools: vec![ATOM_BLUECHIP_POOL_CONTRACT_ADDRESS.to_string()],
+        bluechip_price_cache: PriceCache {
+            last_price: Uint128::new(10_000_000), // 10.0 ratio
+            last_update: 1000,
+            twap_observations: vec![],
+        },
+        update_interval: 300,
+        rotation_interval: 3600,
+        last_rotation: 0,
+    };
+    INTERNAL_ORACLE
+        .save(deps.as_mut().storage, &oracle)
         .unwrap();
 
     let env = mock_env();

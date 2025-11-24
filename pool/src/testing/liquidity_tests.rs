@@ -268,20 +268,17 @@ fn test_collect_fees_with_accrued_fees() {
     assert_eq!(position.fee_growth_inside_0_last, fee_state.fee_growth_global_0);
     assert_eq!(position.fee_growth_inside_1_last, fee_state.fee_growth_global_1);
 }
+
 #[test]
 fn test_remove_all_liquidity() {
     let mut deps = mock_dependencies();
     setup_pool_post_threshold(&mut deps);
-    
     let initial_liquidity = POOL_STATE.load(&deps.storage).unwrap().total_liquidity;
-    
     // Create position to increase liquidity
     create_test_position(&mut deps, 1, "liquidity_provider", Uint128::new(1_000_000));
-    
     // Verify liquidity increased
     let after_add = POOL_STATE.load(&deps.storage).unwrap().total_liquidity;
     assert!(after_add > initial_liquidity);
-    
     deps.querier.update_wasm(|query| {
         match query {
             WasmQuery::Smart { contract_addr, msg } => {
@@ -308,7 +305,6 @@ fn test_remove_all_liquidity() {
     
     let env = mock_env();
     let info = mock_info("liquidity_provider", &[]);
-    
     let res = execute_remove_all_liquidity(
         deps.as_mut(),
         env,
@@ -320,11 +316,8 @@ fn test_remove_all_liquidity() {
         Some(200)
         
     ).unwrap();
-    
     assert!(res.messages.len() >= 2);
-    
     assert!(LIQUIDITY_POSITIONS.load(&deps.storage, "1").is_err());
-    
     // Verify pool liquidity decreased back to initial amount
     let final_liquidity = POOL_STATE.load(&deps.storage).unwrap().total_liquidity;
     assert_eq!(final_liquidity, initial_liquidity);

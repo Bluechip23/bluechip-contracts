@@ -43,11 +43,14 @@ pub struct PriceObservation {
 }
 
 pub fn select_random_pools_with_atom(
-    deps: Deps,
-    env: Env,
-    num_pools: usize,
+    _deps: Deps,
+    _env: Env,
+    _num_pools: usize,
 ) -> StdResult<Vec<String>> {
     let atom_pool_contract_contract_address = ATOM_BLUECHIP_POOL_CONTRACT_ADDRESS.to_string();
+    
+    /* 
+    // Will be re-enabled when external prices for creator tokens are available.
     let eligible_pools = get_eligible_creator_pools(deps, &atom_pool_contract_contract_address)?;
     let random_pools_needed = num_pools.saturating_sub(1);
 
@@ -88,6 +91,9 @@ pub fn select_random_pools_with_atom(
     }
 
     Ok(selected)
+    */
+    
+    Ok(vec![atom_pool_contract_contract_address])
 }
 
 pub fn initialize_internal_bluechip_oracle(
@@ -358,8 +364,33 @@ pub fn query_pyth_atom_usd_price(deps: Deps, env: Env) -> StdResult<Uint128> {
         return Err(StdError::generic_err("ATOM price is stale"));
     }
 
-    let price = response.price_feed.price.price as u128;
-    Ok(Uint128::from(price / 100)) 
+    // Validate price is positive
+    if response.price_feed.price.price <= 0 {
+        return Err(StdError::generic_err("Invalid negative or zero price"));
+    }
+
+    let price_u128 = response.price_feed.price.price as u128;
+    let expo = response.price_feed.price.expo;
+
+    // Validate expo is within reasonable range for price feeds
+    if expo > -4 || expo < -12 {
+        return Err(StdError::generic_err(format!(
+            "Unexpected Pyth expo: {}. Expected between -12 and -4", expo
+        )));
+    }
+
+    // Normalize to 6 decimals (system standard)
+    let normalized_price = if expo == -6 {
+        Uint128::from(price_u128)
+    } else if expo < -6 {
+        let divisor = 10u128.pow((expo.abs() - 6) as u32);
+        Uint128::from(price_u128 / divisor)
+    } else {
+        let multiplier = 10u128.pow((6 - expo.abs()) as u32);
+        Uint128::from(price_u128 * multiplier)
+    };
+
+    Ok(normalized_price)
     }
     #[cfg(test)]
     {
@@ -372,27 +403,25 @@ pub fn query_pyth_atom_usd_price(deps: Deps, env: Env) -> StdResult<Uint128> {
 
 pub fn get_bluechip_usd_price(deps: Deps, env: Env) -> StdResult<Uint128> {
     let atom_usd_price = query_pyth_atom_usd_price(deps, env)?;
-    let atom_pool_addr = Addr::unchecked(ATOM_BLUECHIP_POOL_CONTRACT_ADDRESS);
-    let atom_pool = POOLS_BY_CONTRACT_ADDRESS.load(deps.storage, atom_pool_addr)?;
     
-    if atom_pool.reserve1.is_zero() {
-        return Err(StdError::generic_err("ATOM pool has zero ATOM reserves"));
+    // Load the internal oracle to get the TWAP of Bluechip/ATOM
+    let oracle = INTERNAL_ORACLE.load(deps.storage).map_err(|_| {
+        StdError::generic_err("Internal oracle not initialized")
+    })?;
+    
+    let bluechip_per_atom_twap = oracle.bluechip_price_cache.last_price;
+    
+    if bluechip_per_atom_twap.is_zero() {
+        return Err(StdError::generic_err("TWAP price is zero - oracle may need update"));
     }
     
-    let bluechip_per_atom = atom_pool.reserve0
-        .checked_mul(Uint128::from(PRICE_PRECISION))
-        .map_err(|e| StdError::generic_err(format!("Overflow calculating bluechip per ATOM: {}", e)))?
-        .checked_div(atom_pool.reserve1)
-        .map_err(|e| StdError::generic_err(format!("Division error calculating bluechip per ATOM: {}", e)))?;
-    
-    if bluechip_per_atom.is_zero() {
-        return Err(StdError::generic_err("Invalid bluechip per ATOM ratio"));
-    }
-    
+    // Calculate USD price using TWAP
+    // bluechip_usd_price = atom_usd_price / bluechip_per_atom_twap
+    // Units: (USD/ATOM) / (Bluechip/ATOM) = USD/Bluechip
     let bluechip_usd_price = atom_usd_price
         .checked_mul(Uint128::from(PRICE_PRECISION))
         .map_err(|e| StdError::generic_err(format!("Overflow calculating bluechip USD price: {}", e)))?
-        .checked_div(bluechip_per_atom)
+        .checked_div(bluechip_per_atom_twap)
         .map_err(|e| StdError::generic_err(format!("Division error calculating bluechip USD price: {}", e)))?;
     
     if bluechip_usd_price.is_zero() {

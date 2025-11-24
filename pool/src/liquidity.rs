@@ -188,7 +188,7 @@ pub fn execute_collect_fees(
 ) -> Result<Response, ContractError> {
     let pool_fee_state = POOL_FEE_STATE.load(deps.storage)?;
     let pool_info = POOL_INFO.load(deps.storage)?;
-    let pool_state = POOL_STATE.load(deps.storage)?;
+    let mut pool_state = POOL_STATE.load(deps.storage)?;
     verify_position_ownership(
         deps.as_ref(),
         &pool_info.position_nft_address,
@@ -213,6 +213,10 @@ pub fn execute_collect_fees(
     liquidity_position.fee_growth_inside_0_last = pool_fee_state.fee_growth_global_0;
     liquidity_position.fee_growth_inside_1_last = pool_fee_state.fee_growth_global_1;
     liquidity_position.last_fee_collection = env.block.time.seconds();
+
+    update_price_accumulator(&mut pool_state, env.block.time.seconds())?;
+    pool_state.reserve0 = pool_state.reserve0.checked_sub(fees_owed_0)?;
+    pool_state.reserve1 = pool_state.reserve1.checked_sub(fees_owed_1)?;
 
     LIQUIDITY_POSITIONS.save(deps.storage, &position_id, &liquidity_position)?;
     POOL_STATE.save(deps.storage, &pool_state)?;
@@ -361,11 +365,15 @@ pub fn add_to_position(
 
     pool_state.total_liquidity += additional_liquidity;
 
+    update_price_accumulator(&mut pool_state, env.block.time.seconds())?;
+    // subtract fees
+    pool_state.reserve0 = pool_state.reserve0.checked_sub(fees_owed_0)?;
+    pool_state.reserve1 = pool_state.reserve1.checked_sub(fees_owed_1)?;
+
     // add actual deposit amounts
     pool_state.reserve0 = pool_state.reserve0.checked_add(actual_amount0)?;
     pool_state.reserve1 = pool_state.reserve1.checked_add(actual_amount1)?;
 
-    update_price_accumulator(&mut pool_state, env.block.time.seconds())?;
     POOL_STATE.save(deps.storage, &pool_state)?;
     LIQUIDITY_POSITIONS.save(deps.storage, &position_id, &liquidity_position)?;
     let mut response = Response::new()
@@ -535,9 +543,14 @@ pub fn remove_all_liquidity(
     //update pool fees, collect fees, and reserve prices
     liquidity_position.fee_growth_inside_0_last = pool_fee_state.fee_growth_global_0;
     liquidity_position.fee_growth_inside_1_last = pool_fee_state.fee_growth_global_1;
+    
+    update_price_accumulator(&mut pool_state, env.block.time.seconds())?;
     pool_state.reserve0 = pool_state.reserve0.checked_sub(user_share_0)?;
     pool_state.reserve1 = pool_state.reserve1.checked_sub(user_share_1)?;
-    update_price_accumulator(&mut pool_state, env.block.time.seconds())?;
+    // subtract fees
+    pool_state.reserve0 = pool_state.reserve0.checked_sub(fees_owed_0)?;
+    pool_state.reserve1 = pool_state.reserve1.checked_sub(fees_owed_1)?;
+    
     POOL_STATE.save(deps.storage, &pool_state)?;
     LIQUIDITY_POSITIONS.remove(deps.storage, &position_id);
 
@@ -730,12 +743,17 @@ pub fn remove_partial_liquidity(
     let total_amount_0 = withdrawal_amount_0 + fees_owed_0;
     let total_amount_1 = withdrawal_amount_1 + fees_owed_1;
     //update state
+    //update state
+    update_price_accumulator(&mut pool_state, env.block.time.seconds())?;
     pool_state.reserve0 = pool_state.reserve0.checked_sub(withdrawal_amount_0)?;
     pool_state.reserve1 = pool_state.reserve1.checked_sub(withdrawal_amount_1)?;
+    // subtract fees
+    pool_state.reserve0 = pool_state.reserve0.checked_sub(fees_owed_0)?;
+    pool_state.reserve1 = pool_state.reserve1.checked_sub(fees_owed_1)?;
+
     pool_state.total_liquidity = pool_state
         .total_liquidity
         .checked_sub(liquidity_to_remove)?;
-    update_price_accumulator(&mut pool_state, env.block.time.seconds())?;
     POOL_STATE.save(deps.storage, &pool_state)?;
 
     liquidity_position.last_fee_collection = env.block.time.seconds();
