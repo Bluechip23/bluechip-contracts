@@ -713,3 +713,68 @@ fn test_unauthorized_recovery_attempt() {
     assert!(res.is_err());
     assert!(matches!(res.unwrap_err(), ContractError::Unauthorized {}));
 }
+#[test]
+fn test_accumulated_bluechips_respected() {
+    let mut deps = mock_dependencies();
+    setup_pool_with_excess_config(&mut deps);
+
+    // Set initial state: 4,000 raised, but with LOW price (/bin/bash.50)
+    // So we should have collected 48,000 bluechips already
+    USD_RAISED_FROM_COMMIT
+        .save(&mut deps.storage, &Uint128::new(24_000_000_000))
+        .unwrap();
+    
+    // CRITICAL: We must manually set the NATIVE_RAISED_FROM_COMMIT to reflect the low price history
+    // 48,000 bluechips for 4,000 USD
+    crate::state::NATIVE_RAISED_FROM_COMMIT
+        .save(&mut deps.storage, &Uint128::new(48_000_000_000))
+        .unwrap();
+
+    // Mock oracle price at /bin/bash.50 (500,000 micros)
+    deps.querier.update_wasm(|query| match query {
+        WasmQuery::Smart { .. } => {
+            let response = ConversionResponse {
+                amount: Uint128::new(2_000_000_000), // 000 = 2000 bluechips
+                rate_used: Uint128::new(500_000), // /bin/bash.50
+                timestamp: 1234567890u64,
+            };
+            SystemResult::Ok(ContractResult::Ok(to_json_binary(&response).unwrap()))
+        }
+        _ => SystemResult::Err(SystemError::InvalidRequest {
+            error: "Unknown query".to_string(),
+            request: Binary::default(),
+        }),
+    });
+
+    let env = mock_env();
+    // Commit remaining ,000 (requires 2,000 bluechips at /bin/bash.50)
+    let info = mock_info("final_committer", &[coin(2_000_000_000, "bluechip")]);
+
+    let msg = ExecuteMsg::Commit {
+        asset: TokenInfo {
+            info: TokenType::Bluechip {
+                denom: "bluechip".to_string(),
+            },
+            amount: Uint128::new(2_000_000_000),
+        },
+        amount: Uint128::new(2_000_000_000),
+        transaction_deadline: None,
+        belief_price: None,
+        max_spread: None,
+    };
+
+    execute(deps.as_mut(), env.clone(), info, msg).unwrap();
+
+    // Total bluechips should be 48,000 + 2,000 = 50,000
+    // Threshold config is 25,000 USD (which is 25,000 bluechips at .00 standard rate)
+    // Max bluechip lock is 100,000 (from setup_pool_with_excess_config)
+    
+    let pool_state = POOL_STATE.load(&deps.storage).unwrap();
+    
+    // The pool should have the FULL 50,000 bluechips (minus fees)
+    // Fees are 6% (1% + 5%)
+    // 50,000 * 0.94 = 47,000
+    
+    println!("Reserve0: {}", pool_state.reserve0);
+    assert!(pool_state.reserve0 > Uint128::new(40_000_000_000), "Pool should have accumulated extra bluechips from low price");
+}

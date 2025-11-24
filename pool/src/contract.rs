@@ -935,6 +935,8 @@ pub fn execute_commit_logic(
                         // Set USD raised to exactly the threshold
                         USD_RAISED_FROM_COMMIT
                             .save(deps.storage, &commit_config.commit_amount_for_threshold_usd)?;
+                        
+                        NATIVE_RAISED_FROM_COMMIT.update::<_, ContractError>(deps.storage, |r| Ok(r + bluechip_to_threshold))?;
                         //mark threshold as hit
                         IS_THRESHOLD_HIT.save(deps.storage, &true)?;
                         // Trigger threshold payouts
@@ -1085,7 +1087,9 @@ pub fn execute_commit_logic(
                         } else {
                             new_total
                         };
+
                         USD_RAISED_FROM_COMMIT.save(deps.storage, &final_usd)?;
+                        NATIVE_RAISED_FROM_COMMIT.update::<_, ContractError>(deps.storage, |r| Ok(r + asset.amount))?;
                         // Mark threshold as hit
                         IS_THRESHOLD_HIT.save(deps.storage, &true)?;
                         // Trigger threshold payouts
@@ -1175,8 +1179,9 @@ fn process_pre_threshold_commit(
     })?;
     // Update total USD raised
     let usd_total =
-        USD_RAISED_FROM_COMMIT.update::<_, ContractError>(deps.storage, |r| Ok(r + usd_value))?;
+    USD_RAISED_FROM_COMMIT.update::<_, ContractError>(deps.storage, |r| Ok(r + usd_value))?;
     COMMITSTATUS.save(deps.storage, &usd_total)?;
+    NATIVE_RAISED_FROM_COMMIT.update::<_, ContractError>(deps.storage, |r| Ok(r + asset.amount))?;
 
     COMMIT_INFO.update(
         deps.storage,

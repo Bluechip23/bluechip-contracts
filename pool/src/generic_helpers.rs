@@ -175,7 +175,7 @@ pub fn trigger_threshold_payout(
     msgs.push(mint_tokens(
         &pool_info.token_address,
         &env.contract.address,
-        payout.pool_seed_amount + commit_config.commit_amount_for_threshold,
+        payout.pool_seed_amount,
     )?);
 
     let total_committers = COMMIT_LEDGER
@@ -264,8 +264,8 @@ pub fn trigger_threshold_payout(
     }
 
     let total_fee_rate = fee_info.commit_fee_bluechip + fee_info.commit_fee_creator;
-    let pools_bluechip_seed =
-        commit_config.commit_amount_for_threshold * (Decimal::one() - total_fee_rate);
+    let total_bluechip_raised = crate::state::NATIVE_RAISED_FROM_COMMIT.load(storage)?;
+    let pools_bluechip_seed = total_bluechip_raised * (Decimal::one() - total_fee_rate);
 
     if pools_bluechip_seed > commit_config.max_bluechip_lock_per_pool {
         let excess_bluechip = pools_bluechip_seed - commit_config.max_bluechip_lock_per_pool;
