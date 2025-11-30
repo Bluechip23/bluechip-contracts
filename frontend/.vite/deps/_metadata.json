@@ -1,0 +1,70 @@
+{
+  "hash": "e58c56ed",
+  "configHash": "c8f290ce",
+  "lockfileHash": "cc515270",
+  "browserHash": "259feed0",
+  "optimized": {
+    "react": {
+      "src": "../../node_modules/react/index.js",
+      "file": "react.js",
+      "fileHash": "c41032fb",
+      "needsInterop": true
+    },
+    "react-dom/client": {
+      "src": "../../node_modules/react-dom/client.js",
+      "file": "react-dom_client.js",
+      "fileHash": "bd8823df",
+      "needsInterop": true
+    },
+    "@mui/material": {
+      "src": "../../node_modules/@mui/material/esm/index.js",
+      "file": "@mui_material.js",
+      "fileHash": "bd79eded",
+      "needsInterop": false
+    },
+    "@cosmjs/stargate": {
+      "src": "../../node_modules/@cosmjs/stargate/build/index.js",
+      "file": "@cosmjs_stargate.js",
+      "fileHash": "f8d3707b",
+      "needsInterop": true
+    },
+    "@cosmjs/cosmwasm-stargate": {
+      "src": "../../node_modules/@cosmjs/cosmwasm-stargate/build/index.js",
+      "file": "@cosmjs_cosmwasm-stargate.js",
+      "fileHash": "89bf2ae8",
+      "needsInterop": true
+    },
+    "@mui/icons-material/AccountBalanceWallet": {
+      "src": "../../node_modules/@mui/icons-material/esm/AccountBalanceWallet.js",
+      "file": "@mui_icons-material_AccountBalanceWallet.js",
+      "fileHash": "ced7907f",
+      "needsInterop": false
+    },
+    "recharts": {
+      "src": "../../node_modules/recharts/es6/index.js",
+      "file": "recharts.js",
+      "fileHash": "ea756cc7",
+      "needsInterop": false
+    }
+  },
+  "chunks": {
+    "chunk-USLIDOQD": {
+      "file": "chunk-USLIDOQD.js"
+    },
+    "chunk-APMGPMVC": {
+      "file": "chunk-APMGPMVC.js"
+    },
+    "chunk-3V3MBVXO": {
+      "file": "chunk-3V3MBVXO.js"
+    },
+    "chunk-5MFRZINX": {
+      "file": "chunk-5MFRZINX.js"
+    },
+    "chunk-N7PDAELF": {
+      "file": "chunk-N7PDAELF.js"
+    },
+    "chunk-EWTE5DHJ": {
+      "file": "chunk-EWTE5DHJ.js"
+    }
+  }
+}
