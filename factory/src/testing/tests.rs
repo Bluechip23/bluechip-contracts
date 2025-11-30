@@ -30,10 +30,10 @@ fn create_default_instantiate_msg() -> FactoryInstantiate {
         commit_amount_for_threshold_bluechip: Uint128::zero(),
         commit_threshold_limit_usd: Uint128::new(25_000_000_000),
         pyth_contract_addr_for_conversions: "oracle0000".to_string(),
-        pyth_atom_usd_price_feed_id: "BLUECHIP".to_string(),
+        pyth_atom_usd_price_feed_id: "stake".to_string(),
         cw20_token_contract_id: 10,
         create_pool_wasm_contract_id: 11,
-        bluechip_wallet_address: Addr::unchecked("bluechip"),
+        bluechip_wallet_address: Addr::unchecked("stake"),
         commit_fee_bluechip: Decimal::percent(1),
         commit_fee_creator: Decimal::percent(5),
         max_bluechip_lock_per_pool: Uint128::new(1),
@@ -75,7 +75,7 @@ fn proper_initialization() {
         pyth_atom_usd_price_feed_id: "ORCL".to_string(),
         cw20_token_contract_id: 10,
         create_pool_wasm_contract_id: 11,
-        bluechip_wallet_address: Addr::unchecked("bluechip"),
+        bluechip_wallet_address: Addr::unchecked("stake"),
         commit_fee_bluechip: Decimal::percent(10),
         commit_fee_creator: Decimal::percent(10),
         max_bluechip_lock_per_pool: Uint128::new(10_000_000_000),
@@ -222,7 +222,7 @@ fn create_pair() {
         pyth_atom_usd_price_feed_id: "BLUECHIP".to_string(),
         cw20_token_contract_id: 10,
         create_pool_wasm_contract_id: 11,
-        bluechip_wallet_address: Addr::unchecked("bluechip"),
+        bluechip_wallet_address: Addr::unchecked("stake"),
         commit_fee_bluechip: Decimal::percent(1),
         commit_fee_creator: Decimal::percent(5),
         max_bluechip_lock_per_pool: Uint128::new(10_000_000_000),
@@ -238,7 +238,7 @@ fn create_pair() {
 
     let pool_token_info = [
         TokenType::Bluechip {
-            denom: "bluechip".to_string(),
+            denom: "stake".to_string(),
         },
         TokenType::CreatorToken {
             contract_addr: Addr::unchecked("WILL_BE_CREATED_BY_FACTORY"),
@@ -260,7 +260,7 @@ fn create_pair() {
                 factory_to_create_pool_addr: Addr::unchecked("factory"),
                 threshold_payout: None,
                 commit_fee_info: CommitFeeInfo {
-                    bluechip_wallet_address: Addr::unchecked("bluechip"),
+                    bluechip_wallet_address: Addr::unchecked("stake"),
                     creator_wallet_address: Addr::unchecked("creator"),
                     commit_fee_bluechip: Decimal::percent(1),
                     commit_fee_creator: Decimal::percent(5),
@@ -305,7 +305,7 @@ fn test_create_pair_with_custom_params() {
         pyth_atom_usd_price_feed_id: "BLUECHIP".to_string(),
         cw20_token_contract_id: 10,
         create_pool_wasm_contract_id: 11,
-        bluechip_wallet_address: Addr::unchecked("bluechip"),
+        bluechip_wallet_address: Addr::unchecked("stake"),
         commit_fee_bluechip: Decimal::percent(1),
         commit_fee_creator: Decimal::percent(5),
         max_bluechip_lock_per_pool: Uint128::new(10_000_000_000),
@@ -323,7 +323,7 @@ fn test_create_pair_with_custom_params() {
         pool_msg: CreatePool {
             pool_token_info: [
                 TokenType::Bluechip {
-                    denom: "bluechip".to_string(),
+                    denom: "stake".to_string(),
                 },
                 TokenType::CreatorToken {
                     contract_addr: Addr::unchecked("WILL_BE_CREATED_BY_FACTORY"),
@@ -333,7 +333,7 @@ fn test_create_pair_with_custom_params() {
             factory_to_create_pool_addr: Addr::unchecked("factory"),
             threshold_payout: Some(custom_params),
             commit_fee_info: CommitFeeInfo {
-                bluechip_wallet_address: Addr::unchecked("bluechip"),
+                bluechip_wallet_address: Addr::unchecked("stake"),
                 creator_wallet_address: Addr::unchecked(ADMIN),
                 commit_fee_bluechip: Decimal::percent(1),
                 commit_fee_creator: Decimal::percent(5),
@@ -369,7 +369,7 @@ fn create_pool_msg(name: &str) -> ExecuteMsg {
         pool_msg: CreatePool {
             pool_token_info: [
                 TokenType::Bluechip {
-                    denom: "bluechip".to_string(),
+                    denom: "stake".to_string(),
                 },
                 TokenType::CreatorToken {
                     contract_addr: Addr::unchecked("WILL_BE_CREATED_BY_FACTORY"),
@@ -379,7 +379,7 @@ fn create_pool_msg(name: &str) -> ExecuteMsg {
             factory_to_create_pool_addr: Addr::unchecked("factory"),
             threshold_payout: None,
             commit_fee_info: CommitFeeInfo {
-                bluechip_wallet_address: Addr::unchecked("bluechip"),
+                bluechip_wallet_address: Addr::unchecked("stake"),
                 creator_wallet_address: Addr::unchecked("creator"),
                 commit_fee_bluechip: Decimal::percent(1),
                 commit_fee_creator: Decimal::percent(5),
@@ -418,7 +418,7 @@ fn simulate_complete_reply_chain(
 #[test]
 fn test_asset_info() {
     let bluechip_info = TokenType::Bluechip {
-        denom: "bluechip".to_string(),
+        denom: "stake".to_string(),
     };
     assert!(bluechip_info.is_bluechip_token());
 
@@ -428,7 +428,7 @@ fn test_asset_info() {
     assert!(!token_info.is_bluechip_token());
 
     assert!(bluechip_info.equal(&TokenType::Bluechip {
-        denom: "bluechip".to_string(),
+        denom: "stake".to_string(),
     }));
     assert!(!bluechip_info.equal(&token_info));
 }
@@ -524,7 +524,7 @@ fn test_complete_pool_creation_flow() {
         pyth_atom_usd_price_feed_id: "BLUECHIP".to_string(),
         cw20_token_contract_id: 10,
         create_pool_wasm_contract_id: 11,
-        bluechip_wallet_address: Addr::unchecked("bluechip"),
+        bluechip_wallet_address: Addr::unchecked("stake"),
         commit_fee_bluechip: Decimal::percent(1),
         commit_fee_creator: Decimal::percent(5),
         max_bluechip_lock_per_pool: Uint128::new(10_000_000_000),
@@ -540,7 +540,7 @@ fn test_complete_pool_creation_flow() {
     let pool_msg = CreatePool {
         pool_token_info: [
             TokenType::Bluechip {
-                denom: "bluechip".to_string(),
+                denom: "stake".to_string(),
             },
             TokenType::CreatorToken {
                 contract_addr: Addr::unchecked("WILL_BE_CREATED_BY_FACTORY"),
@@ -550,7 +550,7 @@ fn test_complete_pool_creation_flow() {
         cw20_token_contract_id: 10,
         threshold_payout: None,
         commit_fee_info: CommitFeeInfo {
-            bluechip_wallet_address: Addr::unchecked("bluechip"),
+            bluechip_wallet_address: Addr::unchecked("stake"),
             creator_wallet_address: Addr::unchecked("addr0000"),
             commit_fee_bluechip: Decimal::from_ratio(10u128, 100u128),
             commit_fee_creator: Decimal::from_ratio(10u128, 100u128),
@@ -661,7 +661,7 @@ fn test_complete_pool_creation_flow() {
 fn test_asset() {
     let bluechip_asset = TokenInfo {
         info: TokenType::Bluechip {
-            denom: "bluechip".to_string(),
+            denom: "stake".to_string(),
         },
         amount: Uint128::new(100),
     };
@@ -723,7 +723,7 @@ fn test_reply_handling() {
         pyth_atom_usd_price_feed_id: "ORCL".to_string(),
         cw20_token_contract_id: 10,
         create_pool_wasm_contract_id: 11,
-        bluechip_wallet_address: Addr::unchecked("bluechip"),
+        bluechip_wallet_address: Addr::unchecked("stake"),
         commit_fee_bluechip: Decimal::from_ratio(10u128, 100u128),
         commit_fee_creator: Decimal::from_ratio(10u128, 100u128),
         max_bluechip_lock_per_pool: Uint128::new(10_000_000_000),
@@ -743,7 +743,7 @@ fn test_reply_handling() {
     let pool_msg = CreatePool {
         pool_token_info: [
             TokenType::Bluechip {
-                denom: "bluechip".to_string(),
+                denom: "stake".to_string(),
             },
             TokenType::CreatorToken {
                 contract_addr: Addr::unchecked("WILL_BE_CREATED_BY_FACTORY"), // Use placeholder
@@ -753,7 +753,7 @@ fn test_reply_handling() {
         cw20_token_contract_id: 10,
         threshold_payout: None,
         commit_fee_info: CommitFeeInfo {
-            bluechip_wallet_address: Addr::unchecked("bluechip"),
+            bluechip_wallet_address: Addr::unchecked("stake"),
             creator_wallet_address: Addr::unchecked("addr0000"),
             commit_fee_bluechip: Decimal::from_ratio(10u128, 100u128),
             commit_fee_creator: Decimal::from_ratio(10u128, 100u128),
@@ -1294,7 +1294,7 @@ fn test_oracle_aggregates_multiple_pool_prices() {
             pool_id,
             pool_token_info: [
                 TokenType::Bluechip {
-                    denom: "bluechip".to_string(),
+                    denom: "stake".to_string(),
                 },
                 TokenType::CreatorToken {
                     contract_addr: Addr::unchecked("creator_token"),
@@ -1522,7 +1522,7 @@ fn test_query_pyth_atom_usd_price_success() {
         pyth_atom_usd_price_feed_id: "ATOM_USD".to_string(),
         cw20_token_contract_id: 10,
         create_pool_wasm_contract_id: 11,
-        bluechip_wallet_address: Addr::unchecked("bluechip"),
+        bluechip_wallet_address: Addr::unchecked("stake"),
         commit_fee_bluechip: Decimal::percent(10),
         commit_fee_creator: Decimal::percent(10),
         max_bluechip_lock_per_pool: Uint128::new(10_000_000_000),
@@ -1563,7 +1563,7 @@ fn test_query_pyth_atom_usd_price_default() {
         pyth_atom_usd_price_feed_id: "ATOM_USD".to_string(),
         cw20_token_contract_id: 10,
         create_pool_wasm_contract_id: 11,
-        bluechip_wallet_address: Addr::unchecked("bluechip"),
+        bluechip_wallet_address: Addr::unchecked("stake"),
         commit_fee_bluechip: Decimal::percent(10),
         commit_fee_creator: Decimal::percent(10),
         max_bluechip_lock_per_pool: Uint128::new(10_000_000_000),
@@ -1594,7 +1594,7 @@ fn test_query_pyth_extreme_atom_prices() {
         pyth_atom_usd_price_feed_id: "ATOM_USD".to_string(),
         cw20_token_contract_id: 10,
         create_pool_wasm_contract_id: 11,
-        bluechip_wallet_address: Addr::unchecked("bluechip"),
+        bluechip_wallet_address: Addr::unchecked("stake"),
         commit_fee_bluechip: Decimal::percent(10),
         commit_fee_creator: Decimal::percent(10),
         max_bluechip_lock_per_pool: Uint128::new(10_000_000_000),
@@ -1644,7 +1644,7 @@ fn test_get_bluechip_usd_price_with_pyth() {
         pyth_atom_usd_price_feed_id: "ATOM_USD".to_string(),
         cw20_token_contract_id: 10,
         create_pool_wasm_contract_id: 11,
-        bluechip_wallet_address: Addr::unchecked("bluechip"),
+        bluechip_wallet_address: Addr::unchecked("stake"),
         commit_fee_bluechip: Decimal::percent(10),
         commit_fee_creator: Decimal::percent(10),
         max_bluechip_lock_per_pool: Uint128::new(10_000_000_000),
@@ -1707,7 +1707,7 @@ fn test_bluechip_usd_price_with_different_atom_prices() {
         pyth_atom_usd_price_feed_id: "ATOM_USD".to_string(),
         cw20_token_contract_id: 10,
         create_pool_wasm_contract_id: 11,
-        bluechip_wallet_address: Addr::unchecked("bluechip"),
+        bluechip_wallet_address: Addr::unchecked("stake"),
         commit_fee_bluechip: Decimal::percent(10),
         commit_fee_creator: Decimal::percent(10),
         max_bluechip_lock_per_pool: Uint128::new(10_000_000_000),
@@ -1773,7 +1773,7 @@ fn test_conversion_functions_with_pyth() {
         pyth_atom_usd_price_feed_id: "ATOM_USD".to_string(),
         cw20_token_contract_id: 10,
         create_pool_wasm_contract_id: 11,
-        bluechip_wallet_address: Addr::unchecked("bluechip"),
+        bluechip_wallet_address: Addr::unchecked("stake"),
         commit_fee_bluechip: Decimal::percent(10),
         commit_fee_creator: Decimal::percent(10),
         max_bluechip_lock_per_pool: Uint128::new(10_000_000_000),
@@ -1885,7 +1885,7 @@ fn test_bluechip_minting_on_pool_creation() {
     if let CosmosMsg::Bank(BankMsg::Send { to_address, amount }) = &mint_msg.unwrap().msg {
         assert_eq!(to_address, "bluechip_wallet");
         assert_eq!(amount.len(), 1);
-        assert_eq!(amount[0].denom, "bluechip");
+        assert_eq!(amount[0].denom, "stake");
         // First pool (x=1, s=0) should mint close to 500 tokens
         assert!(amount[0].amount > Uint128::new(499_000_000));
         assert!(amount[0].amount <= Uint128::new(500_000_000));
@@ -1978,7 +1978,7 @@ fn create_test_pool_msg() -> CreatePool {
     CreatePool {
         pool_token_info: [
             TokenType::Bluechip {
-                denom: "bluechip".to_string(),
+                denom: "stake".to_string(),
             },
             TokenType::CreatorToken {
                 contract_addr: Addr::unchecked("WILL_BE_CREATED_BY_FACTORY"),
@@ -1988,7 +1988,7 @@ fn create_test_pool_msg() -> CreatePool {
         cw20_token_contract_id: 10,
         threshold_payout: None,
         commit_fee_info: CommitFeeInfo {
-            bluechip_wallet_address: Addr::unchecked("bluechip"),
+            bluechip_wallet_address: Addr::unchecked("stake"),
             creator_wallet_address: Addr::unchecked(ADMIN),
             commit_fee_bluechip: Decimal::percent(1),
             commit_fee_creator: Decimal::percent(5),

@@ -5,9 +5,16 @@ use crate::error::ContractError;
 use crate::generic_helpers::decimal2decimal256;
 
 use crate::state::{PoolState, POOL_INFO};
+use cosmwasm_schema::cw_serde;
 use cosmwasm_std::{Decimal, Decimal256, Deps, Fraction, StdError, StdResult, Uint128, Uint256};
 use pool_factory_interfaces::{ConversionResponse, FactoryQueryMsg};
 use std::str::FromStr;
+
+// Wrapper for factory queries to match the factory's QueryMsg structure
+#[cw_serde]
+enum FactoryQueryWrapper {
+    InternalBlueChipOracleQuery(FactoryQueryMsg),
+}
 
 // calculates swap amounts using constant product formula (x * y = k)
 pub fn compute_swap(
@@ -102,9 +109,11 @@ pub fn get_usd_value(deps: Deps, bluechip_amount: Uint128) -> StdResult<Uint128>
 
     let response: ConversionResponse = deps.querier.query_wasm_smart(
         factory_address.factory_addr,
-        &FactoryQueryMsg::ConvertBluechipToUsd {
-            amount: bluechip_amount,
-        },
+        &FactoryQueryWrapper::InternalBlueChipOracleQuery(
+            FactoryQueryMsg::ConvertBluechipToUsd {
+                amount: bluechip_amount,
+            }
+        ),
     )?;
 
     Ok(response.amount)
@@ -115,7 +124,9 @@ pub fn get_bluechip_value(deps: Deps, usd_amount: Uint128) -> StdResult<Uint128>
 
     let response: ConversionResponse = deps.querier.query_wasm_smart(
         factory_address.factory_addr,
-        &FactoryQueryMsg::ConvertUsdToBluechip { amount: usd_amount },
+        &FactoryQueryWrapper::InternalBlueChipOracleQuery(
+            FactoryQueryMsg::ConvertUsdToBluechip { amount: usd_amount }
+        ),
     )?;
 
     Ok(response.amount)

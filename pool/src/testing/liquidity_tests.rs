@@ -28,7 +28,7 @@ fn test_deposit_liquidity_first_position() {
     let token_amount = Uint128::new(14_893_617_021); // Approximately correct ratio
     
     let info = mock_info(user.as_str(), &[Coin {
-        denom: "bluechip".to_string(),
+        denom: "stake".to_string(),
         amount: bluechip_amount,
     }]);
     
@@ -70,7 +70,7 @@ fn test_deposit_liquidity_with_slippage() {
     let token_amount = Uint128::new(10_000_000_000); // Incorrect ratio
     
     let info = mock_info(user.as_str(), &[Coin {
-        denom: "bluechip".to_string(),
+        denom: "stake".to_string(),
         amount: bluechip_amount,
     }]);
     
@@ -130,7 +130,7 @@ fn test_add_to_existing_position() {
     let token_amount = Uint128::new(7_500_000_000); // Approximately correct ratio
     
     let info = mock_info(user.as_str(), &[Coin {
-        denom: "bluechip".to_string(),
+        denom: "stake".to_string(),
         amount: bluechip_amount,
     }]);
     
@@ -189,7 +189,7 @@ fn test_add_to_position_not_owner() {
     let env = mock_env();
     let user = Addr::unchecked("liquidity_provider");
     let info = mock_info(user.as_str(), &[Coin {
-        denom: "bluechip".to_string(),
+        denom: "stake".to_string(),
         amount: Uint128::new(1_000_000),
     }]);
     
@@ -335,7 +335,7 @@ fn test_deposit_liquidity_imbalanced_amounts() {
     let token_amount = Uint128::new(1_000_000_000); // Only 1k tokens (should need ~149k)
     
     let info = mock_info(user.as_str(), &[Coin {
-        denom: "bluechip".to_string(),
+        denom: "stake".to_string(),
         amount: bluechip_amount,
     }]);
     
@@ -548,13 +548,13 @@ fn test_zero_liquidity_fee_collection() {
     // Try to update fee growth
     let env = mock_env();
     let info = mock_info("trader", &[Coin {
-        denom: "bluechip".to_string(),
+        denom: "stake".to_string(),
         amount: Uint128::new(1_000_000),
     }]);
     
     let msg = ExecuteMsg::SimpleSwap {
         offer_asset: TokenInfo {
-            info: TokenType::Bluechip { denom: "bluechip".to_string() },
+            info: TokenType::Bluechip { denom: "stake".to_string() },
             amount: Uint128::new(1_000_000),
         },
         belief_price: None,
@@ -687,7 +687,7 @@ pub fn setup_pool_storage(deps: &mut OwnedDeps<MockStorage, MockApi, MockQuerier
         pool_info: PoolDetails {
             asset_infos: [
                 TokenType::Bluechip {
-                    denom: "bluechip".to_string(),
+                    denom: "stake".to_string(),
                 },
                 TokenType::CreatorToken{
                     contract_addr: Addr::unchecked("token_contract"),
@@ -1164,7 +1164,7 @@ fn test_add_to_position_collects_fees_first() {
     let env = mock_env();
     let user = Addr::unchecked("liquidity_provider");
     let info = mock_info(user.as_str(), &[Coin {
-        denom: "bluechip".to_string(),
+        denom: "stake".to_string(),
         amount: Uint128::new(500_000_000),
     }]);
     
@@ -1345,7 +1345,7 @@ fn test_refund_calculation_accuracy() {
     let sent_token = Uint128::new(1_000_000_000); // 1k
     
     let info = mock_info(user.as_str(), &[Coin {
-        denom: "bluechip".to_string(),
+        denom: "stake".to_string(),
         amount: sent_bluechip,
     }]);
     
@@ -1716,5 +1716,102 @@ pub fn create_test_position(
             }
         }
     }
+
+use cosmwasm_std::from_json;
+use cw721::Cw721QueryMsg;
+
+#[test]
+fn test_fee_distribution_proportional() {
+    let mut deps = mock_dependencies();
+    setup_pool_post_threshold(&mut deps);
+
+    // Initial pool state: 23.5k bluechip, 350k token
+    // Create 3 LPs with different shares
+    // LP1: 10%
+    // LP2: 20%
+    // LP3: 70% (of the new liquidity added, not total pool which includes seed)
+    
+    // First, let's mock the NFT contract responses for all of them
+    deps.querier.update_wasm(|query| {
+        match query {
+            WasmQuery::Smart { contract_addr, msg } => {
+                if contract_addr == "nft_contract" {
+                    // Try to decode it to Cw721QueryMsg
+                    if let Ok(Cw721QueryMsg::OwnerOf { token_id, .. }) = from_json::<Cw721QueryMsg>(msg) {
+                        let owner = match token_id.as_str() {
+                            "2" => "lp1",
+                            "3" => "lp2",
+                            _ => "any_user",
+                        };
+                        return SystemResult::Ok(ContractResult::Ok(
+                            to_json_binary(&cw721::OwnerOfResponse {
+                                owner: owner.to_string(),
+                                approvals: vec![],
+                            }).unwrap()
+                        ));
+                    }
+                    
+                    // Fallback
+                    SystemResult::Ok(ContractResult::Ok(
+                        to_json_binary(&cw721::OwnerOfResponse {
+                            owner: "any_user".to_string(),
+                            approvals: vec![],
+                        }).unwrap()
+                    ))
+                } else {
+                    SystemResult::Err(SystemError::InvalidRequest {
+                        error: "Unknown contract".to_string(),
+                        request: msg.clone(),
+                    })
+                }
+            }
+            _ => SystemResult::Err(SystemError::InvalidRequest {
+                error: "Unknown query type".to_string(),
+                request: Binary::default(),
+            }),
+        }
+    });
+
+    let lp1 = Addr::unchecked("lp1");
+    let lp2 = Addr::unchecked("lp2");
+    
+    // LP1 deposits 1000 bluechip + proportional token
+    let info1 = mock_info("lp1", &[Coin { denom: "stake".to_string(), amount: Uint128::new(1000) }]);
+    execute_deposit_liquidity(deps.as_mut(), mock_env(), info1, lp1.clone(), Uint128::new(1000), Uint128::new(15000), None, None, None).unwrap();
+    
+    // LP2 deposits 2000 bluechip + proportional token (2x LP1)
+    let info2 = mock_info("lp2", &[Coin { denom: "stake".to_string(), amount: Uint128::new(2000) }]);
+    execute_deposit_liquidity(deps.as_mut(), mock_env(), info2, lp2.clone(), Uint128::new(2000), Uint128::new(30000), None, None, None).unwrap();
+
+    // Now generate some fees
+    // Swap 1000 bluechip into the pool
+    // Fee is 0.3% = 3 bluechip
+    let mut pool_fee_state = POOL_FEE_STATE.load(&deps.storage).unwrap();
+    pool_fee_state.fee_growth_global_0 = pool_fee_state.fee_growth_global_0 + Decimal::from_ratio(3000u128, 1_000_000u128); // Arbitrary growth
+    pool_fee_state.total_fees_collected_0 += Uint128::new(3000);
+    POOL_FEE_STATE.save(&mut deps.storage, &pool_fee_state).unwrap();
+
+    // Collect fees for LP1
+    // LP1 has position ID "2" (1 is seed, 2 is LP1, 3 is LP2)
+    let res1 = execute_collect_fees(deps.as_mut(), mock_env(), mock_info("lp1", &[]), "2".to_string()).unwrap();
+    
+    // Collect fees for LP2
+    let res2 = execute_collect_fees(deps.as_mut(), mock_env(), mock_info("lp2", &[]), "3".to_string()).unwrap();
+
+    let fee1 = res1.attributes.iter().find(|a| a.key == "fees_0").unwrap().value.parse::<u128>().unwrap();
+    let fee2 = res2.attributes.iter().find(|a| a.key == "fees_0").unwrap().value.parse::<u128>().unwrap();
+
+    // LP2 should have roughly 2x fees of LP1
+    // Note: Exact calculation depends on total liquidity including seed, but the ratio between LP1 and LP2 added liquidity is exact.
+    // Since they entered at same time (effectively, before fee growth), their share of *subsequent* fees should be proportional to their liquidity.
+    
+    // Let's verify LP2 > LP1
+    assert!(fee2 > fee1);
+    
+    // And roughly 2x (allow small rounding diffs)
+    let ratio = fee2 as f64 / fee1 as f64;
+    assert!(ratio > 1.9 && ratio < 2.1, "Fee ratio {} should be close to 2.0", ratio);
+}
+
 
     

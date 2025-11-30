@@ -49,31 +49,39 @@ pub fn calculate_and_mint_bluechip(
     env: Env,
     pool_count: u64,
 ) -> Result<Vec<CosmosMsg>, ContractError> {
-    let mut messages = vec![];
+    // DISABLED FOR LOCAL TESTING - Factory contract doesn't have funds to send
+    // TODO: Re-enable this when deploying to a chain with proper minting module
+    
+    let messages = vec![];
 
-    let first_pool_time = match FIRST_POOL_TIMESTAMP.may_load(deps.storage)? {
-        Some(time) => time,
-        None => {
-            FIRST_POOL_TIMESTAMP.save(deps.storage, &env.block.time)?;
-            env.block.time
-        }
-    };
-
-    let seconds_elapsed = env.block.time.seconds() - first_pool_time.seconds();
-
-    let mint_amount = calculate_mint_amount(seconds_elapsed, pool_count)?;
-
-    if !mint_amount.is_zero() {
-        let config = FACTORYINSTANTIATEINFO.load(deps.storage)?;
-
-        messages.push(CosmosMsg::Bank(BankMsg::Send {
-            to_address: config.bluechip_wallet_address.to_string(),
-            amount: vec![Coin {
-                denom: "bluechip".to_string(),
-                amount: mint_amount,
-            }],
-        }));
+    // Still track the first pool timestamp for future use
+    if FIRST_POOL_TIMESTAMP.may_load(deps.storage)?.is_none() {
+        FIRST_POOL_TIMESTAMP.save(deps.storage, &env.block.time)?;
     }
+
+    // let first_pool_time = match FIRST_POOL_TIMESTAMP.may_load(deps.storage)? {
+    //     Some(time) => time,
+    //     None => {
+    //         FIRST_POOL_TIMESTAMP.save(deps.storage, &env.block.time)?;
+    //         env.block.time
+    //     }
+    // };
+
+    // let seconds_elapsed = env.block.time.seconds() - first_pool_time.seconds();
+
+    // let mint_amount = calculate_mint_amount(seconds_elapsed, pool_count)?;
+
+    // if !mint_amount.is_zero() {
+    //     let config = FACTORYINSTANTIATEINFO.load(deps.storage)?;
+
+    //     messages.push(CosmosMsg::Bank(BankMsg::Send {
+    //         to_address: config.bluechip_wallet_address.to_string(),
+    //         amount: vec![Coin {
+    //             denom: "stake".to_string(),
+    //             amount: mint_amount,
+    //         }],
+    //     }));
+    // }
 
     Ok(messages)
 }

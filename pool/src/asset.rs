@@ -17,7 +17,7 @@ use cw20::{
 
 use cw_utils::must_pay;
 
-pub const UBLUECHIP_DENOM: &str = "bluechip";
+pub const UBLUECHIP_DENOM: &str = "stake";
 
 #[cw_serde]
 pub struct TokenInfo {

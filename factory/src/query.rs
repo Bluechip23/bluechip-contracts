@@ -1,11 +1,11 @@
 use cosmwasm_schema::{cw_serde, QueryResponses};
-use cosmwasm_std::{to_json_binary, Addr, BalanceResponse, BankQuery, Binary, Deps, Env, QuerierWrapper, QueryRequest, StdError, StdResult, Uint128, WasmQuery};
+use cosmwasm_std::{entry_point, to_json_binary, Addr, BalanceResponse, BankQuery, Binary, Deps, Env, QuerierWrapper, QueryRequest, StdError, StdResult, Uint128, WasmQuery};
 use cw20::{Cw20QueryMsg, TokenInfoResponse, BalanceResponse as Cw20BalanceResponse};
 use pool_factory_interfaces::{FactoryQueryMsg, PoolStateResponseForFactory};
 use crate::internal_bluechip_price_oracle::{bluechip_to_usd, get_bluechip_usd_price, usd_to_bluechip};
 use crate::pool_struct::PoolDetails;
 use crate::msg::FactoryInstantiateResponse;
-use crate::pyth_types::{PythQueryMsg, PythPriceFeedResponse};
+use crate::pyth_types::{PythQueryMsg, PriceFeedResponse};
 use crate::state::{FACTORYINSTANTIATEINFO, MAX_PRICE_AGE_SECONDS_BEFORE_STALE, PENDING_CONFIG, POOLS_BY_CONTRACT_ADDRESS, PendingConfig};
 
 #[cw_serde]
@@ -19,6 +19,7 @@ pub enum QueryMsg {
     InternalBlueChipOracleQuery (FactoryQueryMsg),
 }
 
+#[cfg_attr(not(feature = "library"), entry_point)]
 pub fn query(deps: Deps, env: Env, msg: QueryMsg) -> StdResult<Binary> {
     match msg {
         QueryMsg::Factory {} => to_json_binary(&query_active_factory(deps)?),
@@ -111,12 +112,20 @@ pub fn query_pyth_atom_usd_price(deps: Deps, env: Env) -> StdResult<Uint128> {
         msg: to_json_binary(&query_msg)?,
     });
     
-    let response: PythPriceFeedResponse = deps.querier.query(&query)?;
-    let price_feed = response.price_feed;
+    let response: PriceFeedResponse = deps.querier.query(&query)?;
+    
+    // Extract price data from either standard Pyth response or Mock Oracle response
+    let price_data = if let Some(feed) = response.price_feed {
+        feed.price
+    } else if let Some(price) = response.price {
+        price
+    } else {
+        return Err(StdError::generic_err("Invalid oracle response: missing price data"));
+    };
     
     // Check if price is fresh enough
     let current_time = env.block.time.seconds() as i64;
-    let price_age = current_time - price_feed.price.publish_time;
+    let price_age = current_time - price_data.publish_time;
     
     if price_age > MAX_PRICE_AGE_SECONDS_BEFORE_STALE as i64 {
         return Err(StdError::generic_err(format!(
@@ -124,12 +133,12 @@ pub fn query_pyth_atom_usd_price(deps: Deps, env: Env) -> StdResult<Uint128> {
             price_age, MAX_PRICE_AGE_SECONDS_BEFORE_STALE
         )));
     }
-    if price_feed.price.price <= 0 {
+    if price_data.price <= 0 {
         return Err(StdError::generic_err("Invalid negative or zero price"));
     }
     
-    let price_u128 = price_feed.price.price as u128;
-    let expo = price_feed.price.expo;
+    let price_u128 = price_data.price as u128;
+    let expo = price_data.expo;
 
     let normalized_price = if expo == -6 {
         Uint128::from(price_u128)

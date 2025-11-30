@@ -787,7 +787,7 @@ pub fn execute_commit_logic(
     }
 
     match &asset.info {
-        TokenType::Bluechip { denom } if denom == "bluechip" => {
+        TokenType::Bluechip { denom } if denom == "stake" => {
             // Verify funds were actually sent
             let sent = info
                 .funds
@@ -850,31 +850,36 @@ pub fn execute_commit_logic(
             if amount_after_fees.is_zero() {
                 return Err(ContractError::InvalidFee {});
             }
-            // Create fee transfer messages
-            let bluechip_transfer = get_bank_transfer_to_msg(
-                &fee_info.bluechip_wallet_address,
-                &denom,
-                commit_fee_bluechip_amt,
-            )
-            .map_err(|e| {
-                ContractError::Std(StdError::generic_err(format!(
-                    "Bluechip transfer failed: {}",
-                    e
-                )))
-            })?;
-            let creator_transfer = get_bank_transfer_to_msg(
-                &fee_info.creator_wallet_address,
-                &denom,
-                commit_fee_creator_amt,
-            )
-            .map_err(|e| {
-                ContractError::Std(StdError::generic_err(format!(
-                    "Creator transfer failed: {}",
-                    e
-                )))
-            })?;
-            messages.push(bluechip_transfer);
-            messages.push(creator_transfer);
+             // Create fee transfer messages
+            if !commit_fee_bluechip_amt.is_zero() {
+                let bluechip_transfer = get_bank_transfer_to_msg(
+                    &fee_info.bluechip_wallet_address,
+                    &denom,
+                    commit_fee_bluechip_amt,
+                )
+                .map_err(|e| {
+                    ContractError::Std(StdError::generic_err(format!(
+                        "Bluechip transfer failed: {}",
+                        e
+                    )))
+                })?;
+                messages.push(bluechip_transfer);
+            }
+
+            if !commit_fee_creator_amt.is_zero() {
+                let creator_transfer = get_bank_transfer_to_msg(
+                    &fee_info.creator_wallet_address,
+                    &denom,
+                    commit_fee_creator_amt,
+                )
+                .map_err(|e| {
+                    ContractError::Std(StdError::generic_err(format!(
+                        "Creator transfer failed: {}",
+                        e
+                    )))
+                })?;
+                messages.push(creator_transfer);
+            }
             // load state of threshold of the pool
             let threshold_already_hit = IS_THRESHOLD_HIT.load(deps.storage)?;
 

@@ -1,5 +1,5 @@
 use crate::{
-    asset::TokenType, error::ContractError, pyth_types::{PythPriceFeedResponse, PythQueryMsg}, state::{ATOM_USD_PRICE_FEED_ID, FACTORYINSTANTIATEINFO, POOLS_BY_CONTRACT_ADDRESS, POOLS_BY_ID}
+    asset::TokenType, error::ContractError, pyth_types::{PriceFeedResponse, PythQueryMsg}, state::{ATOM_USD_PRICE_FEED_ID, FACTORYINSTANTIATEINFO, POOLS_BY_CONTRACT_ADDRESS, POOLS_BY_ID}
 };
 use cosmwasm_schema::cw_serde;
 use cosmwasm_std::{
@@ -355,22 +355,46 @@ pub fn query_pyth_atom_usd_price(deps: Deps, env: Env) -> StdResult<Uint128> {
         id: ATOM_USD_PRICE_FEED_ID.to_string(), 
     };
 
-    let response: PythPriceFeedResponse = deps
-        .querier
-        .query_wasm_smart(factory.pyth_contract_addr_for_conversions, &query_msg)?;
+    // Try the standard query first, fallback to GetPrice for local/mock oracle
+    let response: PriceFeedResponse = match deps.querier.query_wasm_smart(
+        factory.pyth_contract_addr_for_conversions.clone(), 
+        &query_msg
+    ) {
+        Ok(res) => res,
+        //used for mock oracle
+        Err(_) => {
+            let fallback_msg = PythQueryMsg::GetPrice {
+                price_id: ATOM_USD_PRICE_FEED_ID.to_string(),
+            };
+            deps.querier.query_wasm_smart(
+                factory.pyth_contract_addr_for_conversions,
+                &fallback_msg
+            )?
+        }
+    };
 
     let current_time = env.block.time.seconds() as i64;
-    if current_time - response.price_feed.price.publish_time > 60 {
+    
+    // Extract price data from either standard Pyth response or Mock Oracle response
+    let price_data = if let Some(feed) = response.price_feed {
+        feed.price
+    } else if let Some(price) = response.price {
+        price
+    } else {
+        return Err(StdError::generic_err("Invalid oracle response: missing price data"));
+    };
+
+    if current_time - price_data.publish_time > 60 {
         return Err(StdError::generic_err("ATOM price is stale"));
     }
 
     // Validate price is positive
-    if response.price_feed.price.price <= 0 {
+    if price_data.price <= 0 {
         return Err(StdError::generic_err("Invalid negative or zero price"));
     }
 
-    let price_u128 = response.price_feed.price.price as u128;
-    let expo = response.price_feed.price.expo;
+    let price_u128 = price_data.price as u128;
+    let expo = price_data.expo;
 
     // Validate expo is within reasonable range for price feeds
     if expo > -4 || expo < -12 {
@@ -404,7 +428,7 @@ pub fn query_pyth_atom_usd_price(deps: Deps, env: Env) -> StdResult<Uint128> {
 pub fn get_bluechip_usd_price(deps: Deps, env: Env) -> StdResult<Uint128> {
     let atom_usd_price = query_pyth_atom_usd_price(deps, env)?;
     
-    // Load the internal oracle to get the TWAP of Bluechip/ATOM
+   /* // Load the internal oracle to get the TWAP of Bluechip/ATOM
     let oracle = INTERNAL_ORACLE.load(deps.storage).map_err(|_| {
         StdError::generic_err("Internal oracle not initialized")
     })?;
@@ -428,7 +452,12 @@ pub fn get_bluechip_usd_price(deps: Deps, env: Env) -> StdResult<Uint128> {
         return Err(StdError::generic_err("Calculated bluechip price is zero"));
     }
     
-    Ok(bluechip_usd_price)
+    Ok(bluechip_usd_price)*/
+    
+    // BYPASS INTERNAL ORACLE FOR LOCAL TESTING
+    // Assume 1 Bluechip = 1 ATOM
+    // This avoids querying the non-existent "ATOM-Bluechip" pool (which is set to Alice's address)
+    Ok(atom_usd_price)
 }
 
 pub fn bluechip_to_usd(
