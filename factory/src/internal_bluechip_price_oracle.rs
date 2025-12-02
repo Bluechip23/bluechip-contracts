@@ -428,7 +428,7 @@ pub fn query_pyth_atom_usd_price(deps: Deps, env: Env) -> StdResult<Uint128> {
 pub fn get_bluechip_usd_price(deps: Deps, env: Env) -> StdResult<Uint128> {
     let atom_usd_price = query_pyth_atom_usd_price(deps, env)?;
     
-   /* // Load the internal oracle to get the TWAP of Bluechip/ATOM
+    // Load the internal oracle to get the TWAP of Bluechip/ATOM
     let oracle = INTERNAL_ORACLE.load(deps.storage).map_err(|_| {
         StdError::generic_err("Internal oracle not initialized")
     })?;
@@ -440,8 +440,6 @@ pub fn get_bluechip_usd_price(deps: Deps, env: Env) -> StdResult<Uint128> {
     }
     
     // Calculate USD price using TWAP
-    // bluechip_usd_price = atom_usd_price / bluechip_per_atom_twap
-    // Units: (USD/ATOM) / (Bluechip/ATOM) = USD/Bluechip
     let bluechip_usd_price = atom_usd_price
         .checked_mul(Uint128::from(PRICE_PRECISION))
         .map_err(|e| StdError::generic_err(format!("Overflow calculating bluechip USD price: {}", e)))?
@@ -452,12 +450,7 @@ pub fn get_bluechip_usd_price(deps: Deps, env: Env) -> StdResult<Uint128> {
         return Err(StdError::generic_err("Calculated bluechip price is zero"));
     }
     
-    Ok(bluechip_usd_price)*/
-    
-    // BYPASS INTERNAL ORACLE FOR LOCAL TESTING
-    // Assume 1 Bluechip = 1 ATOM
-    // This avoids querying the non-existent "ATOM-Bluechip" pool (which is set to Alice's address)
-    Ok(atom_usd_price)
+    Ok(bluechip_usd_price)
 }
 
 pub fn bluechip_to_usd(

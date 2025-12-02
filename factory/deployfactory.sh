@@ -31,7 +31,7 @@ ADMIN_ADDRESS=""
 COMMIT_LIMIT_USD="25000"
 #you can make this up for local testing of factory only. If testing pool functions, save and deploy mock oracle
 ORACLE_ADDR="cosmos1hrpna9v7vs3stzyd4z3xf00676kf78zpe2u5ksvljswn2vnjp3ysawcmtt" 
-ORACLE_SYMBOL="stake"
+ORACLE_SYMBOL="bluechip"
 #must match what your code id for the cw20 above
 TOKEN_ID=1 
 #must match what your code id fort the cw20 above

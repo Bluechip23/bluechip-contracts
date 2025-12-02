@@ -96,7 +96,7 @@ const WalletConnect = ({ setClient, setAddress, setBalance }) => {
         const chainId = "bluechipChain";
         const rpcEndpoint = "http://localhost:26657";
         const restEndpoint = "http://localhost:1317";
-        const denom = "stake";
+        const denom = "bluechip";
         const prefix = "cosmos";
 
         try {

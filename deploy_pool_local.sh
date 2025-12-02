@@ -118,7 +118,7 @@ POOL_INIT='{
   "pool_token_info": [
     {
       "bluechip": {
-        "denom": "stake"
+        "denom": "bluechip"
       }
     },
     {

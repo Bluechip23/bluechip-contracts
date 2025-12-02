@@ -148,7 +148,7 @@ CREATE_POOL_MSG=$(cat <<EOF
   "create": {
     "pool_msg": {
       "pool_token_info": [
-        { "bluechip": { "denom": "stake" } },
+        { "bluechip": { "denom": "bluechip" } },
         { "creator_token": { "contract_addr": "WILL_BE_CREATED_BY_FACTORY" } }
       ],
       "cw20_token_contract_id": 1,

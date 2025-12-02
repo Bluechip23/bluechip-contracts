@@ -163,7 +163,7 @@ POOL_INIT=$(cat <<EOF
   "pool_token_info": [
     {
       "bluechip": {
-        "denom": "stake"
+        "denom": "bluechip"
       }
     },
     {
