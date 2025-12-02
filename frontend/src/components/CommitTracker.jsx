@@ -21,7 +21,10 @@ const CommitTracker = ({ client, address, contractAddress }) => {
         try {
             // Fetch all commits (pagination might be needed for large datasets, fetching simple list for now)
             const response = await client.queryContractSmart(contractAddress, {
-                pool_commits: { limit: 100 }
+                pool_commits: {
+                    pool_contract_address: contractAddress,
+                    limit: 100
+                }
             });
 
             if (response && response.commiters) {
@@ -33,25 +36,14 @@ const CommitTracker = ({ client, address, contractAddress }) => {
                 let cumulative = 0;
                 let bluechipTotal = 0;
                 const data = sortedCommits.map((commit, index) => {
-                    // Assuming last_payment_usd is the value of the transaction in USD
-                    // Note: contract returns Uint128, need to handle decimals if applicable. 
-                    // Assuming standard 6 decimals for USD representation or raw integer? 
-                    // Based on pool/src/msg.rs, it returns Uint128. Let's assume it's raw units for now, 
-                    // but usually USD is 6 decimals.
-                    // If commit_threshold_limit_usd is 25000 * 10^6, then we need to divide.
-                    // Let's assume the contract handles the scale or we display raw for now.
-                    // Checking `pool/src/msg.rs` -> `commit_threshold_limit_usd: Uint128`.
-                    // Let's assume 1 unit = $1 for simplicity in this UI unless we see huge numbers.
-                    // Actually, usually it's 6 decimals. Let's try to parse as float / 1000000 if values are huge.
-                    // For safety, let's just sum them up first.
-
-                    const value = parseInt(commit.last_payment_usd);
-                    const bluechipValue = parseInt(commit.last_payment_bluechip);
+                    // Use total_paid_usd and total_paid_bluechip for cumulative amounts
+                    const value = parseInt(commit.total_paid_usd);
+                    const bluechipValue = parseInt(commit.total_paid_bluechip);
                     cumulative += value;
                     bluechipTotal += bluechipValue;
 
                     return {
-                        name: `Tx ${index + 1}`,
+                        name: ``,
                         value: value,
                         total: cumulative,
                         timestamp: new Date(parseInt(commit.last_commited) / 1000000).toLocaleString() // ns to ms
@@ -96,8 +88,12 @@ const CommitTracker = ({ client, address, contractAddress }) => {
                     <ResponsiveContainer width="100%" height="100%">
                         <LineChart data={graphData} margin={{ top: 5, right: 20, bottom: 20, left: 20 }}>
                             <CartesianGrid stroke="#ccc" strokeDasharray="5 5" />
-                            <XAxis dataKey="name" label={{ value: 'Count to 25,000', position: 'insideBottom', offset: -10 }} />
-                            <YAxis domain={[0, Math.max(THRESHOLD, displayTotal * 1.1)]} label={{ value: 'Subscription Amount', angle: -90, }} />
+                            <XAxis dataKey="name" label={{ value: `Users Committed: ${commits.length}`, offset: -10 }} />
+                            <YAxis
+                                domain={[0, Math.max(THRESHOLD, displayTotal * 1.1)]}
+                                label={{ value: 'Subscription Amount', angle: -90, position: 'left', dy: -60, offset: -10 }}
+                                tick={{ fontSize: 10 }}
+                            />
                             <Tooltip
                                 contentStyle={{ backgroundColor: '#333', border: 'none', color: '#fff' }}
                                 labelStyle={{ color: '#aaa' }}

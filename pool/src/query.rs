@@ -411,6 +411,7 @@ pub fn query_pool_commiters(
             last_payment_usd: commiting.last_payment_usd,
             last_commited: commiting.last_commited,
             total_paid_usd: commiting.total_paid_usd,
+            total_paid_bluechip: commiting.total_paid_bluechip,
         });
 
         count += 1;

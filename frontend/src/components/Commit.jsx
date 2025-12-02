@@ -1,5 +1,6 @@
 import React, { useState } from 'react';
-import { Card, CardContent, Typography, TextField, Button, Box, Alert, Tabs, Tab } from '@mui/material';
+import { Card, CardContent, Typography, TextField, Button, Box, Alert, Tabs, Tab, IconButton, Tooltip } from '@mui/material';
+import ContentCopyIcon from '@mui/icons-material/ContentCopy';
 import CommitTracker from './CommitTracker';
 
 const Commit = ({ client, address }) => {
@@ -9,6 +10,8 @@ const Commit = ({ client, address }) => {
     const [maxSpread, setMaxSpread] = useState('0.005'); // Default 0.5%
     const [deadline, setDeadline] = useState('20'); // Default 20 minutes
     const [status, setStatus] = useState('');
+    const [txHash, setTxHash] = useState('');
+    const [copySuccess, setCopySuccess] = useState(false);
 
     const handleSubscribe = async () => {
         if (!client || !address || !targetContractAddress) {
@@ -17,6 +20,8 @@ const Commit = ({ client, address }) => {
         }
         try {
             setStatus('Subscribing...');
+            setTxHash(''); // Clear previous transaction hash
+            setCopySuccess(false);
 
             // Convert amount to micro-units (ustake)
             const amountVal = parseFloat(amount);
@@ -69,11 +74,19 @@ const Commit = ({ client, address }) => {
                 funds
             );
             console.log("Transaction Hash:", result.transactionHash);
-            setStatus(`Success! Tx Hash: ${result.transactionHash}`);
+            setTxHash(result.transactionHash);
+            setStatus('Success! Transaction confirmed.');
         } catch (err) {
             console.error('Full error:', err);
             setStatus('Error: ' + err.message);
+            setTxHash('');
         }
+    };
+
+    const handleCopyTxHash = () => {
+        navigator.clipboard.writeText(txHash);
+        setCopySuccess(true);
+        setTimeout(() => setCopySuccess(false), 2000);
     };
 
     return (
@@ -121,7 +134,61 @@ const Commit = ({ client, address }) => {
                         <Button variant="contained" color="primary" onClick={handleSubscribe}>
                             Subscribe
                         </Button>
-                        {status && <Alert severity={status.includes('Success') ? 'success' : 'info'}>{status}</Alert>}
+                        {status && <Alert severity={status.includes('Success') ? 'success' : status.includes('Error') ? 'error' : 'info'}>{status}</Alert>}
+
+                        {txHash && (
+                            <Box sx={{
+                                p: 2,
+                                bgcolor: 'success.light',
+                                borderRadius: 1,
+                                border: '1px solid',
+                                borderColor: 'success.main'
+                            }}>
+                                <Typography variant="subtitle2" sx={{ mb: 1, fontWeight: 'bold' }}>
+                                    Transaction Hash:
+                                </Typography>
+                                <Box sx={{ display: 'flex', alignItems: 'center', gap: 1 }}>
+                                    <Typography
+                                        variant="body2"
+                                        sx={{
+                                            fontFamily: 'monospace',
+                                            wordBreak: 'break-all',
+                                            flex: 1,
+                                            fontSize: '0.85rem'
+                                        }}
+                                    >
+                                        {txHash}
+                                    </Typography>
+                                    <Tooltip title={copySuccess ? "Copied!" : "Copy to clipboard"}>
+                                        <IconButton
+                                            size="small"
+                                            onClick={handleCopyTxHash}
+                                            color={copySuccess ? "success" : "primary"}
+                                        >
+                                            <ContentCopyIcon fontSize="small" />
+                                        </IconButton>
+                                    </Tooltip>
+                                </Box>
+                                <Typography
+                                    variant="caption"
+                                    component="a"
+                                    href={`https://www.mintscan.io/cosmwasm-testnet/tx/${txHash}`}
+                                    target="_blank"
+                                    rel="noopener noreferrer"
+                                    sx={{
+                                        display: 'block',
+                                        mt: 1,
+                                        color: 'primary.dark',
+                                        textDecoration: 'underline',
+                                        '&:hover': {
+                                            color: 'primary.main'
+                                        }
+                                    }}
+                                >
+                                    View on Mintscan →
+                                </Typography>
+                            </Box>
+                        )}
                     </Box>
                 )}
 
