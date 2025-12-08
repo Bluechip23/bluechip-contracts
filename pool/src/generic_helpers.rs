@@ -32,13 +32,15 @@ pub fn update_pool_fee_growth(
     let fee_growth = Decimal::from_ratio(commission_amt, pool_state.total_liquidity);
 
     if offer_contract_addressx == 0 {
-        // Token0 offered, fees collected in token0
-        pool_fee_state.fee_growth_global_0 += fee_growth;
-        pool_fee_state.total_fees_collected_0 += commission_amt;
-    } else {
-        // Token1 offered, fees collected in token1
+        // Token0 offered → Token1 is ask → fees in token1
         pool_fee_state.fee_growth_global_1 += fee_growth;
         pool_fee_state.total_fees_collected_1 += commission_amt;
+        pool_fee_state.fee_reserve_1 = pool_fee_state.fee_reserve_1.checked_add(commission_amt)?;
+    } else {
+        // Token1 offered → Token0 is ask → fees in token0
+        pool_fee_state.fee_growth_global_0 += fee_growth;
+        pool_fee_state.total_fees_collected_0 += commission_amt;
+        pool_fee_state.fee_reserve_0 = pool_fee_state.fee_reserve_0.checked_add(commission_amt)?;
     }
 
     Ok(())

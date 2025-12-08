@@ -6,7 +6,7 @@ use cosmwasm_std::{testing::{mock_dependencies, mock_env, mock_info, MockApi, Mo
 
 use cw721::OwnerOfResponse;
 
-use crate::{asset::PoolPairType, contract::{execute,}, liquidity::{execute_add_to_position, execute_collect_fees, execute_deposit_liquidity, execute_remove_all_liquidity}, liquidity_helpers::{calculate_fee_size_multiplier, MIN_MULTIPLIER}, msg::{CommitFeeInfo}, state::{CommitLimitInfo, OracleInfo, PoolFeeState, PoolInfo, PoolSpecs, PoolState, ThresholdPayoutAmounts, COMMITFEEINFO, COMMITSTATUS, COMMIT_LIMIT_INFO, LIQUIDITY_POSITIONS, NATIVE_RAISED_FROM_COMMIT, ORACLE_INFO, POOL_INFO, POOL_SPECS, THRESHOLD_PAYOUT_AMOUNTS, THRESHOLD_PROCESSING
+    use crate::{asset::PoolPairType, contract::{execute,}, liquidity::{execute_add_to_position, execute_collect_fees, execute_deposit_liquidity, execute_remove_all_liquidity}, liquidity_helpers::{calculate_fee_size_multiplier, MIN_MULTIPLIER}, msg::{CommitFeeInfo}, state::{CommitLimitInfo, OracleInfo, PoolFeeState, PoolInfo, PoolSpecs, PoolState, ThresholdPayoutAmounts, COMMITFEEINFO, COMMIT_LIMIT_INFO, LIQUIDITY_POSITIONS, NATIVE_RAISED_FROM_COMMIT, ORACLE_INFO, POOL_INFO, POOL_SPECS, THRESHOLD_PAYOUT_AMOUNTS, THRESHOLD_PROCESSING
     }};
 use crate::msg::ExecuteMsg;
 use crate::state::{
@@ -719,6 +719,8 @@ pub fn setup_pool_storage(deps: &mut OwnedDeps<MockStorage, MockApi, MockQuerier
         fee_growth_global_1: Decimal::zero(),
         total_fees_collected_0: Uint128::zero(),
         total_fees_collected_1: Uint128::zero(),
+        fee_reserve_0: Uint128::zero(),
+        fee_reserve_1: Uint128::zero(),
     };
     POOL_FEE_STATE.save(&mut deps.storage, &pool_fee_state).unwrap();
 
@@ -767,7 +769,6 @@ pub fn setup_pool_storage(deps: &mut OwnedDeps<MockStorage, MockApi, MockQuerier
 pub fn setup_pool_post_threshold(deps: &mut OwnedDeps<MockStorage, MockApi, MockQuerier>) {
     // First set up basic pool
     setup_pool_storage(deps);
-    COMMITSTATUS.save(&mut deps.storage, &Uint128::new(25_000_000_000)).unwrap();
     // Mark threshold as hit
     IS_THRESHOLD_HIT.save(&mut deps.storage, &true).unwrap();
     USD_RAISED_FROM_COMMIT.save(&mut deps.storage, &Uint128::new(25_000_000_000)).unwrap(); // $25k reached
@@ -822,8 +823,11 @@ fn test_fee_calculation_after_swap() {
     let mut fee_state = POOL_FEE_STATE.load(&deps.storage).unwrap();
     fee_state.fee_growth_global_0 = Decimal::from_str("50").unwrap();
     fee_state.fee_growth_global_1 = Decimal::from_str("75").unwrap();
+    fee_state.fee_growth_global_1 = Decimal::from_str("75").unwrap();
     fee_state.total_fees_collected_0 = Uint128::new(500_000);
     fee_state.total_fees_collected_1 = Uint128::new(750_000);
+    fee_state.fee_reserve_0 = Uint128::new(1_000_000_000_000);
+    fee_state.fee_reserve_1 = Uint128::new(1_000_000_000_000);
     POOL_FEE_STATE.save(&mut deps.storage, &fee_state).unwrap();
     
     let env = mock_env();
@@ -859,6 +863,8 @@ fn test_multiple_positions_independent_fee_tracking() {
     
     let mut fee_state = POOL_FEE_STATE.load(&deps.storage).unwrap();
     fee_state.fee_growth_global_0 = Decimal::from_str("100").unwrap();
+    fee_state.fee_reserve_0 = Uint128::new(1_000_000_000_000); // Sufficient reserves
+    fee_state.fee_reserve_1 = Uint128::new(1_000_000_000_000);
     POOL_FEE_STATE.save(&mut deps.storage, &fee_state).unwrap();
     
     create_test_position(&mut deps, 2, "user2", Uint128::new(5_000_000));
@@ -870,6 +876,7 @@ fn test_multiple_positions_independent_fee_tracking() {
     
     let mut fee_state = POOL_FEE_STATE.load(&deps.storage).unwrap();
     fee_state.fee_growth_global_0 = Decimal::from_str("200").unwrap();
+    fee_state.fee_reserve_0 = Uint128::new(1_000_000_000_000); // Sufficient reserves
     POOL_FEE_STATE.save(&mut deps.storage, &fee_state).unwrap();
     
     deps.querier.update_wasm(|query| {
@@ -1814,4 +1821,64 @@ fn test_fee_distribution_proportional() {
 }
 
 
+
     
+#[test]
+fn test_deposit_underpayment_overflow() {
+    let mut deps = mock_dependencies();
+    setup_pool_post_threshold(&mut deps);
+    
+    let env = mock_env();
+    let user = Addr::unchecked("liquidity_provider");
+    
+    // Pool state to mimic production conditions (ratio 1:35M)
+    // We assume setup_pool_post_threshold sets up some basic liquidity.
+    // We will update the state to the ratio that causes issues.
+    {
+        let mut pool_state = POOL_STATE.load(deps.as_ref().storage).unwrap();
+        pool_state.reserve0 = Uint128::new(10020);
+        pool_state.reserve1 = Uint128::new(350000700698);
+        pool_state.total_liquidity = Uint128::new(59101);
+        POOL_STATE.save(deps.as_mut().storage, &pool_state).unwrap();
+    }
+    
+    // Attempt: high tokens (9.9B), low stake (10).
+    // ratio = 350000700698 / 10020 = 34,930,209 tokens/stake.
+    // Need: 9.9B / 34.9M ~ 285 stake.
+    // actual_amount0 = 285. paid = 10.
+    
+    let bluechip_amount = Uint128::new(10); 
+    let token_amount = Uint128::new(9_984_614_792); 
+    
+    let info = mock_info(user.as_str(), &[Coin {
+        denom: "stake".to_string(),
+        amount: bluechip_amount,
+    }]);
+    
+    let res = execute_deposit_liquidity(
+        deps.as_mut(),
+        env,
+        info,
+        user.clone(),
+        bluechip_amount,
+        token_amount,
+        None, 
+        None, 
+        None,
+    );
+    
+    match res {
+        Err(ContractError::InvalidNativeAmount { expected, actual }) => {
+            println!("Got expected error: InvalidNativeAmount expected={}, actual={}", expected, actual);
+            // This confirms logic is correct
+        },
+        Err(e) => {
+            panic!("Unexpected error: {:?}", e);
+        },
+        Ok(r) => {
+             // If this passes, it means actual_amount0 was calculated <= 10.
+             // This would explain why it passes.
+             panic!("Should have failed, but succeeded with: {:?}", r);
+        }
+    }
+}

@@ -32,7 +32,10 @@ const Fees = ({ client, address }) => {
                 address,
                 targetContractAddress,
                 msg,
-                "auto",
+                {
+                    amount: [],
+                    gas: "400000"
+                },
                 "Collect Fees"
             );
             setStatus(`Success! Tx Hash: ${result.transactionHash}`);

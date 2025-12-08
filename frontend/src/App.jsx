@@ -5,6 +5,7 @@ import Swap from './components/Swap';
 import Liquidity from './components/Liquidity';
 import Fees from './components/Fees';
 import Commit from './components/Commit';
+import CreatePool from './components/CreatePool';
 
 function App() {
   const [client, setClient] = useState(null);
@@ -32,6 +33,12 @@ function App() {
       </Box>
 
       <Grid container spacing={4}>
+        <Grid size={{ xs: 6 }}>
+          <CreatePool
+            client={client}
+            address={address}
+          />
+        </Grid>
         <Grid size={{ xs: 4 }}>
           <Swap
             client={client}

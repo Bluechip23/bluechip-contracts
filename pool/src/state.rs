@@ -19,9 +19,8 @@ pub const COMMIT_INFO: Map<&Addr, Commiting> = Map::new("sub_info");
 //5 minutes, oracle will expire due to stale prices
 pub const MAX_ORACLE_AGE: u64 = 3000000;
 //fee infor for commit transactions
+//fee infor for commit transactions
 pub const COMMITFEEINFO: Item<CommitFeeInfo> = Item::new("fee_info");
-//whether or the pool has crossed the threshold or not
-pub const COMMITSTATUS: Item<Uint128> = Item::new("commit_status");
 //amount of bluechips raised for the pool
 pub const NATIVE_RAISED_FROM_COMMIT: Item<Uint128> = Item::new("bluechip_raised");
 //set to prohibit spam transactions from a single wallet
@@ -72,12 +71,12 @@ pub struct DistributionState {
     pub total_committed_usd: Uint128,
     pub last_processed_key: Option<Addr>,
     pub distributions_remaining: u32,
-    pub estimated_gas_per_distribution: u64, 
+    pub estimated_gas_per_distribution: u64,
     pub max_gas_per_tx: u64,
     pub last_successful_batch_size: Option<u32>,
     pub consecutive_failures: u32,
     pub started_at: Timestamp,
-    pub last_updated: Timestamp, 
+    pub last_updated: Timestamp,
 }
 #[cw_serde]
 pub enum RecoveryType {
@@ -126,6 +125,8 @@ pub struct PoolFeeState {
     pub total_fees_collected_0: Uint128,
     //total amount fo fees collected from pool for asset 1
     pub total_fees_collected_1: Uint128,
+    pub fee_reserve_0: Uint128,
+    pub fee_reserve_1: Uint128,
 }
 
 #[cw_serde]

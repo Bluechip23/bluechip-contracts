@@ -86,10 +86,7 @@ pub fn assert_correct_factory_address(deps: Deps, info: MessageInfo) -> StdResul
     Ok(true)
 }
 
-pub fn execute_update_factory_config(
-    deps: DepsMut,
-    env: Env,
-) -> Result<Response, ContractError> {
+pub fn execute_update_factory_config(deps: DepsMut, env: Env) -> Result<Response, ContractError> {
     let pending = PENDING_CONFIG.load(deps.storage)?;
 
     if env.block.time < pending.effective_after {
@@ -135,7 +132,6 @@ fn execute_create_creator_pool(
     pool_msg: CreatePool,
     token_info: CreatorTokenInfo,
 ) -> Result<Response, ContractError> {
-    assert_correct_factory_address(deps.as_ref(), info.clone())?;
     let factory_cw20 = FACTORYINSTANTIATEINFO.load(deps.storage)?;
     let sender = info.sender.clone();
     let pool_counter = POOL_COUNTER.load(deps.storage).unwrap_or(0);

@@ -471,11 +471,11 @@ pub fn bluechip_to_usd(
     if cached_price.is_zero() {
         return Err(StdError::generic_err("Invalid zero price"));
     }
-    
+
     let usd_amount = bluechip_amount
-        .checked_mul(Uint128::from(PRICE_PRECISION))
+        .checked_mul(cached_price)
         .map_err(|e| StdError::generic_err(format!("Overflow in bluechip to USD conversion: {}", e)))?
-        .checked_div(cached_price)
+        .checked_div(Uint128::from(PRICE_PRECISION))
         .map_err(|e| StdError::generic_err(format!("Division error in bluechip to USD conversion: {}", e)))?;
     
     Ok(ConversionResponse {
@@ -484,7 +484,6 @@ pub fn bluechip_to_usd(
         timestamp: oracle.bluechip_price_cache.last_update,
     })
 }
-
 pub fn usd_to_bluechip(
     deps: Deps,
     usd_amount: Uint128,

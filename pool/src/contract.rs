@@ -18,11 +18,11 @@ use crate::query::query_check_commit;
 use crate::response::MsgInstantiateContractResponse;
 use crate::state::{
     CommitLimitInfo, ExpectedFactory, OracleInfo, PoolDetails, PoolFeeState, PoolInfo, PoolSpecs,
-    RecoveryType, ThresholdPayoutAmounts, COMMITFEEINFO, COMMITSTATUS, COMMIT_LEDGER,
-    COMMIT_LIMIT_INFO, DISTRIBUTION_STATE, EXPECTED_FACTORY, IS_THRESHOLD_HIT,
-    LAST_THRESHOLD_ATTEMPT, MINIMUM_LIQUIDITY, NATIVE_RAISED_FROM_COMMIT, ORACLE_INFO,
-    POOL_FEE_STATE, POOL_INFO, POOL_PAUSED, POOL_SPECS, POOL_STATE, RATE_LIMIT_GUARD,
-    THRESHOLD_PAYOUT_AMOUNTS, THRESHOLD_PROCESSING, USD_RAISED_FROM_COMMIT,
+    RecoveryType, ThresholdPayoutAmounts, COMMITFEEINFO, COMMIT_LEDGER, COMMIT_LIMIT_INFO,
+    DISTRIBUTION_STATE, EXPECTED_FACTORY, IS_THRESHOLD_HIT, LAST_THRESHOLD_ATTEMPT,
+    MINIMUM_LIQUIDITY, NATIVE_RAISED_FROM_COMMIT, ORACLE_INFO, POOL_FEE_STATE, POOL_INFO,
+    POOL_PAUSED, POOL_SPECS, POOL_STATE, RATE_LIMIT_GUARD, THRESHOLD_PAYOUT_AMOUNTS,
+    THRESHOLD_PROCESSING, USD_RAISED_FROM_COMMIT,
 };
 use crate::state::{
     Commiting, PoolState, Position, COMMIT_INFO, LIQUIDITY_POSITIONS, NEXT_POSITION_ID,
@@ -157,11 +157,12 @@ pub fn instantiate(
         fee_growth_global_1: Decimal::zero(),
         total_fees_collected_0: Uint128::zero(),
         total_fees_collected_1: Uint128::zero(),
+        fee_reserve_0: Uint128::zero(),
+        fee_reserve_1: Uint128::zero(),
     };
 
     USD_RAISED_FROM_COMMIT.save(deps.storage, &Uint128::zero())?;
     COMMITFEEINFO.save(deps.storage, &msg.commit_fee_info)?;
-    COMMITSTATUS.save(deps.storage, &Uint128::zero())?;
     NATIVE_RAISED_FROM_COMMIT.save(deps.storage, &Uint128::zero())?;
     IS_THRESHOLD_HIT.save(deps.storage, &false)?;
     NEXT_POSITION_ID.save(deps.storage, &0u64)?;
@@ -327,7 +328,7 @@ pub fn execute(
             transaction_deadline,
             min_amount0,
             min_amount1,
-            max_ratio_deviation_bps
+            max_ratio_deviation_bps,
         ),
         //removes all liquidity for a position - (i have 100 liquidity and I remove 100) - collects all fees.
         ExecuteMsg::RemoveAllLiquidity {
@@ -344,7 +345,7 @@ pub fn execute(
             transaction_deadline,
             min_amount0,
             min_amount1,
-            max_ratio_deviation_bps
+            max_ratio_deviation_bps,
         ),
         //removes liquidity based on a specific percent (I have 100 liquidity I want to remove 18% = remove 18.) - will collect fees in proportion of removal to rebalance accounting
         ExecuteMsg::RemovePartialLiquidityByPercent {
@@ -363,7 +364,7 @@ pub fn execute(
             transaction_deadline,
             min_amount0,
             min_amount1,
-            max_ratio_deviation_bps
+            max_ratio_deviation_bps,
         ),
         ExecuteMsg::ClaimCreatorExcessLiquidity {} => execute_claim_creator_excess(deps, env, info),
     }
@@ -646,7 +647,7 @@ pub fn execute_simple_swap(
         spread_amt,
     )?;
     let offer_pool_post = offer_pool.checked_add(offer_asset.amount)?;
-    let ask_pool_post = ask_pool.checked_sub(return_amt)?;
+    let ask_pool_post = ask_pool.checked_sub(return_amt.checked_add(commission_amt)?)?;
 
     if ask_pool_post < MINIMUM_LIQUIDITY {
         return Err(ContractError::InsufficientReserves {});
@@ -850,7 +851,7 @@ pub fn execute_commit_logic(
             if amount_after_fees.is_zero() {
                 return Err(ContractError::InvalidFee {});
             }
-             // Create fee transfer messages
+            // Create fee transfer messages
             if !commit_fee_bluechip_amt.is_zero() {
                 let bluechip_transfer = get_bank_transfer_to_msg(
                     &fee_info.bluechip_wallet_address,
@@ -940,8 +941,11 @@ pub fn execute_commit_logic(
                         // Set USD raised to exactly the threshold
                         USD_RAISED_FROM_COMMIT
                             .save(deps.storage, &commit_config.commit_amount_for_threshold_usd)?;
-                        
-                        NATIVE_RAISED_FROM_COMMIT.update::<_, ContractError>(deps.storage, |r| Ok(r + bluechip_to_threshold))?;
+
+                        NATIVE_RAISED_FROM_COMMIT
+                            .update::<_, ContractError>(deps.storage, |r| {
+                                Ok(r + bluechip_to_threshold)
+                            })?;
                         //mark threshold as hit
                         IS_THRESHOLD_HIT.save(deps.storage, &true)?;
                         // Trigger threshold payouts
@@ -1094,7 +1098,8 @@ pub fn execute_commit_logic(
                         };
 
                         USD_RAISED_FROM_COMMIT.save(deps.storage, &final_usd)?;
-                        NATIVE_RAISED_FROM_COMMIT.update::<_, ContractError>(deps.storage, |r| Ok(r + asset.amount))?;
+                        NATIVE_RAISED_FROM_COMMIT
+                            .update::<_, ContractError>(deps.storage, |r| Ok(r + asset.amount))?;
                         // Mark threshold as hit
                         IS_THRESHOLD_HIT.save(deps.storage, &true)?;
                         // Trigger threshold payouts
@@ -1184,8 +1189,7 @@ fn process_pre_threshold_commit(
     })?;
     // Update total USD raised
     let usd_total =
-    USD_RAISED_FROM_COMMIT.update::<_, ContractError>(deps.storage, |r| Ok(r + usd_value))?;
-    COMMITSTATUS.save(deps.storage, &usd_total)?;
+        USD_RAISED_FROM_COMMIT.update::<_, ContractError>(deps.storage, |r| Ok(r + usd_value))?;
     NATIVE_RAISED_FROM_COMMIT.update::<_, ContractError>(deps.storage, |r| Ok(r + asset.amount))?;
 
     COMMIT_INFO.update(

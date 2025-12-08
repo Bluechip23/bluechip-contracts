@@ -68,8 +68,8 @@ pub enum ContractError {
     #[error("invalid amount of tokens")]
     InvalidAmount {},
 
-    #[error("invalid bluechip amount")]
-    InvalidNativeAmount {},
+    #[error("Invalid bluechip amount: expected {expected}, actual {actual}")]
+    InvalidNativeAmount { expected: Uint128, actual: Uint128 },
 
     #[error("Oracle price is invalid (zero or negative)")]
     InvalidOraclePrice {},

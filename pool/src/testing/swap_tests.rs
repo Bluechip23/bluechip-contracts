@@ -403,8 +403,8 @@ fn test_commit_post_threshold_swap() {
     assert!(pool_state.reserve1 < Uint128::new(350_000_000_000)); // Decreased from swap
 
     let fee_state = POOL_FEE_STATE.load(&deps.storage).unwrap();
-    assert!(fee_state.fee_growth_global_0 > Decimal::zero());
-    assert!(fee_state.total_fees_collected_0 > Uint128::zero());
+    assert!(fee_state.fee_growth_global_1 > Decimal::zero());
+    assert!(fee_state.total_fees_collected_1 > Uint128::zero());
 }
 
 #[test]
@@ -1058,7 +1058,7 @@ fn test_simple_swap_bluechip_to_cw20() {
     assert!(pool_state.reserve1 < Uint128::new(350_000_000_000)); // CW20 decreased
 
     let fee_state = POOL_FEE_STATE.load(&deps.storage).unwrap();
-    assert!(fee_state.fee_growth_global_0 > Decimal::zero());
+    assert!(fee_state.fee_growth_global_1 > Decimal::zero());
 }
 
 #[test]
@@ -1096,7 +1096,6 @@ fn test_swap_with_max_spread() {
         _ => panic!("Expected MaxSpreadAssertion error"),
     }
 }
-
 
 #[test]
 fn test_swap_cw20_via_hook() {
@@ -2359,7 +2358,7 @@ pub fn setup_pool_with_reserves(
         pool_info: PoolDetails {
             asset_infos: [
                 TokenType::Bluechip {
-                    denom: "stake".to_string(), 
+                    denom: "stake".to_string(),
                 },
                 TokenType::CreatorToken {
                     contract_addr: Addr::unchecked("token_contract"),
@@ -2391,6 +2390,8 @@ pub fn setup_pool_with_reserves(
         fee_growth_global_1: Decimal::zero(),
         total_fees_collected_0: Uint128::zero(),
         total_fees_collected_1: Uint128::zero(),
+        fee_reserve_0: Uint128::zero(),
+        fee_reserve_1: Uint128::zero(),
     };
     POOL_FEE_STATE
         .save(&mut deps.storage, &pool_fee_state)
@@ -2812,19 +2813,24 @@ fn test_swap_lopsided_pool_after_threshold() {
     POOL_STATE.save(&mut deps.storage, &pool_state).unwrap();
 
     let env = mock_env();
-    
+
     // Try to swap a significant amount of bluechip (relative to reserve)
     // 500 bluechip (50% of reserve!)
     let swap_amount = Uint128::new(500_000_000);
-    
-    let info = mock_info("trader", &[Coin {
-        denom: "stake".to_string(),
-        amount: swap_amount,
-    }]);
+
+    let info = mock_info(
+        "trader",
+        &[Coin {
+            denom: "stake".to_string(),
+            amount: swap_amount,
+        }],
+    );
 
     let msg = ExecuteMsg::SimpleSwap {
         offer_asset: TokenInfo {
-            info: TokenType::Bluechip { denom: "stake".to_string() },
+            info: TokenType::Bluechip {
+                denom: "stake".to_string(),
+            },
             amount: swap_amount,
         },
         belief_price: None,
@@ -2837,7 +2843,8 @@ fn test_swap_lopsided_pool_after_threshold() {
     let res = execute(deps.as_mut(), env, info, msg).unwrap();
 
     // Check price impact
-    let return_amount = res.attributes
+    let return_amount = res
+        .attributes
         .iter()
         .find(|a| a.key == "return_amount")
         .unwrap()
@@ -2847,7 +2854,7 @@ fn test_swap_lopsided_pool_after_threshold() {
 
     // Just verify it didn't panic and returned *something* less than linear expectation
     assert!(return_amount > 0);
-    
+
     // Verify pool state updated
     let new_pool_state = POOL_STATE.load(&deps.storage).unwrap();
     assert_eq!(new_pool_state.reserve0, Uint128::new(1_500_000_000));
@@ -2860,37 +2867,42 @@ fn test_swap_slippage_lopsided() {
 
     // Skew pool
     let mut pool_state = POOL_STATE.load(&deps.storage).unwrap();
-    pool_state.reserve0 = Uint128::new(1_000_000_000); 
+    pool_state.reserve0 = Uint128::new(1_000_000_000);
     pool_state.reserve1 = Uint128::new(100_000_000_000);
     POOL_STATE.save(&mut deps.storage, &pool_state).unwrap();
 
     let env = mock_env();
     let swap_amount = Uint128::new(500_000_000); // 50% of reserve
-    
-    let info = mock_info("trader", &[Coin {
-        denom: "stake".to_string(),
-        amount: swap_amount,
-    }]);
+
+    let info = mock_info(
+        "trader",
+        &[Coin {
+            denom: "stake".to_string(),
+            amount: swap_amount,
+        }],
+    );
 
     // Expect 100 tokens per bluechip roughly (100k/1k)
     // So 500 bluechip should get ~50k tokens ideally
     // belief_price is Price of Ask (Token) in Offer (Bluechip).
     // Price = 1000 / 100000 = 0.01 Bluechip per Token.
-    
+
     let msg = ExecuteMsg::SimpleSwap {
         offer_asset: TokenInfo {
-            info: TokenType::Bluechip { denom: "stake".to_string() },
+            info: TokenType::Bluechip {
+                denom: "stake".to_string(),
+            },
             amount: swap_amount,
         },
         belief_price: Some(Decimal::percent(1)), // 0.01
-        max_spread: Some(Decimal::percent(1)), // 1% tolerance
+        max_spread: Some(Decimal::percent(1)),   // 1% tolerance
         to: None,
         transaction_deadline: None,
     };
 
     let err = execute(deps.as_mut(), env, info, msg).unwrap_err();
     match err {
-        ContractError::MaxSpreadAssertion { .. } => {},
+        ContractError::MaxSpreadAssertion { .. } => {}
         _ => panic!("Expected MaxSpreadAssertion error due to high slippage in lopsided pool"),
     }
 }

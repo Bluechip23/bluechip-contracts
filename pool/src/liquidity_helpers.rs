@@ -75,7 +75,6 @@ pub fn integer_sqrt(value: Uint128) -> Uint128 {
     x
 }
 
-//calculate optimal deposit amounts
 pub fn calc_liquidity_for_deposit(
     deps: Deps,
     amount0: Uint128,
@@ -84,22 +83,46 @@ pub fn calc_liquidity_for_deposit(
     let pool_state = POOL_STATE.load(deps.storage)?;
     let current_reserve0 = pool_state.reserve0;
     let current_reserve1 = pool_state.reserve1;
+    let total_liquidity = pool_state.total_liquidity;
 
-    //ensure reserves exists
-    if current_reserve0.is_zero() || current_reserve1.is_zero() {
-        // specific error to know WHICH is the culprit of being zero
-        if current_reserve0.is_zero() {
+    // Case 1: First deposit OR post-threshold with unowned seed liquidity (total_liquidity == 0)
+    if current_reserve0.is_zero() || current_reserve1.is_zero() || total_liquidity.is_zero() {
+        if amount0.is_zero() || amount1.is_zero() {
             return Err(ContractError::Std(StdError::generic_err(
-                "Reserve0 is zero",
+                "Initial deposit requires both assets",
             )));
         }
-        if current_reserve1.is_zero() {
-            return Err(ContractError::Std(StdError::generic_err(
-                "Reserve1 is zero",
-            )));
+
+        // If reserves exist (post-threshold), maintain the existing ratio
+        let (final_amount0, final_amount1) = if !current_reserve0.is_zero() && !current_reserve1.is_zero() {
+            let optimal_amount1 = (amount0 * current_reserve1) / current_reserve0;
+            let optimal_amount0 = (amount1 * current_reserve0) / current_reserve1;
+
+            if optimal_amount1 <= amount1 {
+                (amount0, optimal_amount1)
+            } else {
+                (optimal_amount0, amount1)
+            }
+        } else {
+            // True first deposit with no reserves - use amounts as provided
+            (amount0, amount1)
+        };
+
+        if final_amount0.is_zero() || final_amount1.is_zero() {
+            return Err(ContractError::InsufficientLiquidity {});
         }
+
+        let product = final_amount0.checked_mul(final_amount1)?;
+        let liquidity = integer_sqrt(product).max(Uint128::new(1));
+
+        if liquidity.is_zero() {
+            return Err(ContractError::InsufficientLiquidityMinted {});
+        }
+
+        return Ok((liquidity, final_amount0, final_amount1));
     }
-    // Add specific error to know WHICH is the culprit of being zero
+
+    // Case 2: Normal deposits when total_liquidity > 0
     if amount0.is_zero() || amount1.is_zero() {
         if amount0.is_zero() {
             return Err(ContractError::Std(StdError::generic_err("amount0 is zero")));
@@ -109,14 +132,13 @@ pub fn calc_liquidity_for_deposit(
         }
     }
 
+    // Calculate optimal amounts to maintain pool ratio
     let optimal_amount1_for_amount0 = (amount0 * current_reserve1) / current_reserve0;
     let optimal_amount0_for_amount1 = (amount1 * current_reserve0) / current_reserve1;
 
     let (final_amount0, final_amount1) = if optimal_amount1_for_amount0 <= amount1 {
-        //not enough amount1, use all of amount0
         (amount0, optimal_amount1_for_amount0)
     } else {
-        // not enough amount1, use all their amount1 and scale down amount0
         (optimal_amount0_for_amount1, amount1)
     };
 
@@ -124,9 +146,10 @@ pub fn calc_liquidity_for_deposit(
         return Err(ContractError::InsufficientLiquidity {});
     }
 
-    let product = final_amount0.checked_mul(final_amount1)?;
-    //geometric mean
-    let liquidity = integer_sqrt(product).max(Uint128::new(1));
+    // Standard AMM formula: liquidity proportional to contribution
+    let liquidity_from_amount0 = (final_amount0 * total_liquidity) / current_reserve0;
+    let liquidity_from_amount1 = (final_amount1 * total_liquidity) / current_reserve1;
+    let liquidity = liquidity_from_amount0.min(liquidity_from_amount1);
 
     if liquidity.is_zero() {
         return Err(ContractError::InsufficientLiquidityMinted {});
@@ -134,7 +157,6 @@ pub fn calc_liquidity_for_deposit(
 
     Ok((liquidity, final_amount0, final_amount1))
 }
-
 //check to make sure liquidity positions cant be tampered with by non owners
 pub fn verify_position_ownership(
     deps: Deps,

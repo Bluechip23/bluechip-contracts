@@ -14,6 +14,47 @@ const Liquidity = ({ client, address }) => {
     const [removePercent, setRemovePercent] = useState('');
     const [targetContractAddress, setTargetContractAddress] = useState('');
     const [status, setStatus] = useState('');
+    const [poolReserves, setPoolReserves] = useState({ reserve0: '0', reserve1: '0' });
+
+    // Fetch pool reserves when contract address changes
+    React.useEffect(() => {
+        if (!client || !targetContractAddress) return;
+        const fetchReserves = async () => {
+            try {
+                const state = await client.queryContractSmart(targetContractAddress, { pool_state: {} });
+                setPoolReserves({ reserve0: state.reserve0, reserve1: state.reserve1 });
+            } catch (e) {
+                console.error("Failed to fetch reserves", e);
+            }
+        };
+        fetchReserves();
+    }, [client, targetContractAddress]);
+
+    // Auto-calculate Amount 1 when Amount 0 changes
+    const handleAmount0Change = (val) => {
+        setAmount0(val);
+        if (poolReserves.reserve0 !== '0' && poolReserves.reserve1 !== '0' && val) {
+            const amount0Val = parseFloat(val);
+            if (!isNaN(amount0Val)) {
+                const ratio = parseFloat(poolReserves.reserve1) / parseFloat(poolReserves.reserve0);
+                const estimatedAmount1 = (amount0Val * ratio).toFixed(6);
+                setAmount1(estimatedAmount1);
+            }
+        }
+    };
+
+    // Auto-calculate Amount 0 when Amount 1 changes
+    const handleAmount1Change = (val) => {
+        setAmount1(val);
+        if (poolReserves.reserve0 !== '0' && poolReserves.reserve1 !== '0' && val) {
+            const amount1Val = parseFloat(val);
+            if (!isNaN(amount1Val)) {
+                const ratio = parseFloat(poolReserves.reserve0) / parseFloat(poolReserves.reserve1);
+                const estimatedAmount0 = (amount1Val * ratio).toFixed(6);
+                setAmount0(estimatedAmount0);
+            }
+        }
+    };
 
     const handleDeposit = async () => {
         if (!client || !address || !targetContractAddress) {
@@ -30,8 +71,51 @@ const Liquidity = ({ client, address }) => {
                 setStatus('Error: Please enter valid positive amounts');
                 return;
             }
-            const amount0Micro = Math.floor(amount0Val * 1_000_000).toString();
-            const amount1Micro = Math.floor(amount1Val * 1_000_000).toString();
+            const amount0Micro = Math.ceil(amount0Val * 1_000_000).toString();
+            const amount1Micro = Math.ceil(amount1Val * 1_000_000).toString();
+
+            // 1. Get Token Address from Pool
+            setStatus('Fetching pool info...');
+            const pairInfo = await client.queryContractSmart(targetContractAddress, { pair: {} });
+            let tokenAddress = null;
+            // Iterate through asset_infos to find the CreatorToken
+            for (const asset of pairInfo.asset_infos) {
+                if (asset.creator_token) {
+                    tokenAddress = asset.creator_token.contract_addr;
+                    break;
+                }
+            }
+
+            if (!tokenAddress) {
+                setStatus('Error: Could not find Creator Token address in pool');
+                return;
+            }
+
+            // 2. Check Allowance
+            setStatus('Checking allowance...');
+            const allowanceInfo = await client.queryContractSmart(tokenAddress, {
+                allowance: { owner: address, spender: targetContractAddress }
+            });
+            const currentAllowance = parseInt(allowanceInfo.allowance);
+
+            if (currentAllowance < parseInt(amount1Micro)) {
+                setStatus('Approving tokens...');
+                const approveMsg = {
+                    increase_allowance: {
+                        spender: targetContractAddress,
+                        amount: amount1Micro
+                    }
+                };
+                await client.execute(
+                    address,
+                    tokenAddress,
+                    approveMsg,
+                    { amount: [], gas: "200000" },
+                    "Approve Pool",
+                    []
+                );
+                setStatus('Approval successful! Proceeding to deposit...');
+            }
 
             // Calculate min amounts based on slippage (optional)
             const slipFactor = slippage && parseFloat(slippage) > 0
@@ -60,11 +144,11 @@ const Liquidity = ({ client, address }) => {
                 targetContractAddress,
                 msg,
                 {
-                    amount: [],
+                    amount: [], // Fee amount (can be empty or auto-calculated usually)
                     gas: "500000" // Explicit gas limit
                 },
                 "Deposit Liquidity",
-                []
+                [{ denom: 'stake', amount: amount0Micro }] // Funds to transfer
             );
             console.log("Transaction Hash:", result.transactionHash);
             setStatus(`Success! Tx Hash: ${result.transactionHash}`);
@@ -111,7 +195,8 @@ const Liquidity = ({ client, address }) => {
                     setStatus('Error: Please enter a valid positive amount to remove');
                     return;
                 }
-                const removeMicro = Math.floor(removeVal * 1_000_000).toString();
+                // Liquidity units are whole numbers, not micro-denominated
+                const removeMicro = Math.floor(removeVal).toString();
 
                 msg = {
                     remove_partial_liquidity: {
@@ -182,6 +267,49 @@ const Liquidity = ({ client, address }) => {
             const amount0Micro = Math.floor(amount0Val * 1_000_000).toString();
             const amount1Micro = Math.floor(amount1Val * 1_000_000).toString();
 
+            // 1. Get Token Address from Pool
+            setStatus('Fetching pool info...');
+            const pairInfo = await client.queryContractSmart(targetContractAddress, { pair: {} });
+            let tokenAddress = null;
+            // Iterate through asset_infos to find the CreatorToken
+            for (const asset of pairInfo.asset_infos) {
+                if (asset.creator_token) {
+                    tokenAddress = asset.creator_token.contract_addr;
+                    break;
+                }
+            }
+
+            if (!tokenAddress) {
+                setStatus('Error: Could not find Creator Token address in pool');
+                return;
+            }
+
+            // 2. Check Allowance
+            setStatus('Checking allowance...');
+            const allowanceInfo = await client.queryContractSmart(tokenAddress, {
+                allowance: { owner: address, spender: targetContractAddress }
+            });
+            const currentAllowance = parseInt(allowanceInfo.allowance);
+
+            if (currentAllowance < parseInt(amount1Micro)) {
+                setStatus('Approving tokens...');
+                const approveMsg = {
+                    increase_allowance: {
+                        spender: targetContractAddress,
+                        amount: amount1Micro
+                    }
+                };
+                await client.execute(
+                    address,
+                    tokenAddress,
+                    approveMsg,
+                    { amount: [], gas: "200000" },
+                    "Approve Pool",
+                    []
+                );
+                setStatus('Approval successful! Proceeding to add to position...');
+            }
+
             // Calculate min amounts based on slippage (optional)
             const slipFactor = slippage && parseFloat(slippage) > 0
                 ? 1 - (parseFloat(slippage) / 100)
@@ -214,7 +342,7 @@ const Liquidity = ({ client, address }) => {
                     gas: "500000" // Explicit gas limit
                 },
                 "Add to Position",
-                []
+                [{ denom: 'stake', amount: amount0Micro }]
             );
             console.log("Transaction Hash:", result.transactionHash);
             setStatus(`Success! Tx Hash: ${result.transactionHash}`);
@@ -248,16 +376,18 @@ const Liquidity = ({ client, address }) => {
                 {tab === 0 && (
                     <Box sx={{ display: 'flex', flexDirection: 'column', gap: 2 }}>
                         <TextField
-                            label="Amount 0"
+                            label="Amount 0 (Stake)"
                             value={amount0}
-                            onChange={(e) => setAmount0(e.target.value)}
+                            onChange={(e) => handleAmount0Change(e.target.value)}
                             type="number"
+                            helperText="Auto-calculated based on pool ratio"
                         />
                         <TextField
-                            label="Amount 1"
+                            label="Amount 1 (CW20)"
                             value={amount1}
-                            onChange={(e) => setAmount1(e.target.value)}
+                            onChange={(e) => handleAmount1Change(e.target.value)}
                             type="number"
+                            helperText="Auto-calculated based on pool ratio"
                         />
                         <TextField
                             label="Slippage Tolerance (%)"
@@ -273,7 +403,6 @@ const Liquidity = ({ client, address }) => {
                             type="number"
                             helperText="Transaction deadline in minutes"
                         />
-                        <Alert severity="info">Note: Ensure you have approved CW20 tokens or attached native funds (not fully supported in this simple UI yet).</Alert>
                         <Button variant="contained" onClick={handleDeposit}>
                             Provide Liquidity
                         </Button>
@@ -290,14 +419,16 @@ const Liquidity = ({ client, address }) => {
                         <TextField
                             label="Amount 0"
                             value={amount0}
-                            onChange={(e) => setAmount0(e.target.value)}
+                            onChange={(e) => handleAmount0Change(e.target.value)}
                             type="number"
+                            helperText="Auto-calculated based on pool ratio"
                         />
                         <TextField
                             label="Amount 1"
                             value={amount1}
-                            onChange={(e) => setAmount1(e.target.value)}
+                            onChange={(e) => handleAmount1Change(e.target.value)}
                             type="number"
+                            helperText="Auto-calculated based on pool ratio"
                         />
                         <TextField
                             label="Slippage Tolerance (%)"
