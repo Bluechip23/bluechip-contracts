@@ -50,7 +50,10 @@ const CommitModal: React.FC<TokenModalProps> = ({
             }
 
             const amountInMicroUnits = toMicroUnits(amount, DEFAULT_CHAIN_CONFIG.coinDecimals);
-
+            const thresholdStatus = await client.queryContractSmart(token.poolAddress, {
+                is_fully_commited: {}
+            });
+            const isThresholdCrossed = thresholdStatus === 'fully_committed';
             const commitMsg: {
                 asset: {
                     info: { bluechip: { denom: string } };
@@ -72,7 +75,7 @@ const CommitModal: React.FC<TokenModalProps> = ({
                 commitMsg.transaction_deadline = deadlineInNs.toString();
             }
 
-            if (maxSpread && parseFloat(maxSpread) > 0) {
+            if (isThresholdCrossed && maxSpread && parseFloat(maxSpread) > 0) {
                 commitMsg.max_spread = maxSpread;
             }
 

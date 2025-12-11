@@ -35,7 +35,10 @@ const Commit = ({ client, address }: CommitProps) => {
                 return;
             }
             const amountInMicroUnits = Math.floor(amountVal * 1_000_000).toString();
-
+            const thresholdStatus = await client.queryContractSmart(targetContractAddress, {
+                is_fully_commited: {}
+            });
+            const isThresholdCrossed = thresholdStatus === 'fully_committed';
             const commitMsg: {
                 asset: {
                     info: {
@@ -61,7 +64,7 @@ const Commit = ({ client, address }: CommitProps) => {
                 commitMsg.transaction_deadline = deadlineInNs.toString();
             }
 
-            if (maxSpread && parseFloat(maxSpread) > 0) {
+            if (isThresholdCrossed && maxSpread && parseFloat(maxSpread) > 0) {
                 commitMsg.max_spread = maxSpread;
             }
 
@@ -80,7 +83,7 @@ const Commit = ({ client, address }: CommitProps) => {
                 msg,
                 {
                     amount: [],
-                    gas: "500000" // Explicit gas limit
+                    gas: "600000" // Explicit gas limit
                 },
                 "Commit",
                 funds
