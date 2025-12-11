@@ -1,8 +1,14 @@
 import React, { useState } from 'react';
 import { Card, CardContent, Typography, TextField, Button, Box, Alert, Tabs, Tab } from '@mui/material';
 import { coins } from '@cosmjs/stargate';
+import { SigningCosmWasmClient } from '@cosmjs/cosmwasm-stargate';
 
-const Liquidity = ({ client, address }) => {
+interface LiquidityProps {
+    client: SigningCosmWasmClient | null;
+    address: string;
+}
+
+const Liquidity: React.FC<LiquidityProps> = ({ client, address }) => {
     const [tab, setTab] = useState(0);
     const [amount0, setAmount0] = useState('');
     const [amount1, setAmount1] = useState('');
@@ -31,7 +37,7 @@ const Liquidity = ({ client, address }) => {
     }, [client, targetContractAddress]);
 
     // Auto-calculate Amount 1 when Amount 0 changes
-    const handleAmount0Change = (val) => {
+    const handleAmount0Change = (val: string) => {
         setAmount0(val);
         if (poolReserves.reserve0 !== '0' && poolReserves.reserve1 !== '0' && val) {
             const amount0Val = parseFloat(val);
@@ -44,7 +50,7 @@ const Liquidity = ({ client, address }) => {
     };
 
     // Auto-calculate Amount 0 when Amount 1 changes
-    const handleAmount1Change = (val) => {
+    const handleAmount1Change = (val: string) => {
         setAmount1(val);
         if (poolReserves.reserve0 !== '0' && poolReserves.reserve1 !== '0' && val) {
             const amount1Val = parseFloat(val);
@@ -154,7 +160,7 @@ const Liquidity = ({ client, address }) => {
             setStatus(`Success! Tx Hash: ${result.transactionHash}`);
         } catch (err) {
             console.error(err);
-            setStatus('Error: ' + err.message);
+            setStatus('Error: ' + (err as Error).message);
         }
     };
 
@@ -235,7 +241,7 @@ const Liquidity = ({ client, address }) => {
             setStatus(`Success! Tx Hash: ${result.transactionHash}`);
         } catch (err) {
             console.error(err);
-            setStatus('Error: ' + err.message);
+            setStatus('Error: ' + (err as Error).message);
         }
     };
 
@@ -348,7 +354,7 @@ const Liquidity = ({ client, address }) => {
             setStatus(`Success! Tx Hash: ${result.transactionHash}`);
         } catch (err) {
             console.error(err);
-            setStatus('Error: ' + err.message);
+            setStatus('Error: ' + (err as Error).message);
         }
     };
 

@@ -137,7 +137,7 @@ sleep 6
 FACTORY_ADDR=$(bluechipChaind query wasm list-contract-by-code $FACTORY_CODE_ID --output json | jq -r '.contracts[0]')
 echo "✅ Factory: $FACTORY_ADDR"
 
-# Step 7: Instantiate pool with factory address
+# Step 7: Instantiate pool with factory address (threshold NOT crossed)
 echo ""
 echo "🏊 Instantiating pool with factory..."
 THRESHOLD_PAYOUT='{"creator_reward_amount":"325000000000","bluechip_reward_amount":"25000000000","pool_seed_amount":"350000000000","commit_return_amount":"500000000000"}'

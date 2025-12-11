@@ -1,7 +1,12 @@
 import React from 'react';
 import { TextField, Box, Typography } from '@mui/material';
 
-const ContractConfig = ({ contractAddress, setContractAddress }) => {
+interface ContractConfigProps {
+    contractAddress: string;
+    setContractAddress: (address: string) => void;
+}
+
+const ContractConfig = ({ contractAddress, setContractAddress }: ContractConfigProps) => {
     return (
         <Box sx={{ mb: 3 }}>
             <Typography variant="h6" gutterBottom>

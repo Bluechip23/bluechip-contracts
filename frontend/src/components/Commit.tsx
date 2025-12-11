@@ -2,8 +2,14 @@ import React, { useState } from 'react';
 import { Card, CardContent, Typography, TextField, Button, Box, Alert, Tabs, Tab, IconButton, Tooltip } from '@mui/material';
 import ContentCopyIcon from '@mui/icons-material/ContentCopy';
 import CommitTracker from './CommitTracker';
+import { SigningCosmWasmClient } from '@cosmjs/cosmwasm-stargate';
 
-const Commit = ({ client, address }) => {
+interface CommitProps {
+    client: SigningCosmWasmClient | null;
+    address: string;
+}
+
+const Commit = ({ client, address }: CommitProps) => {
     const [tab, setTab] = useState(0);
     const [targetContractAddress, setTargetContractAddress] = useState('');
     const [amount, setAmount] = useState('');
@@ -20,10 +26,9 @@ const Commit = ({ client, address }) => {
         }
         try {
             setStatus('Subscribing...');
-            setTxHash(''); // Clear previous transaction hash
+            setTxHash('');
             setCopySuccess(false);
 
-            // Convert amount to micro-units (ustake)
             const amountVal = parseFloat(amount);
             if (isNaN(amountVal) || amountVal <= 0) {
                 setStatus('Error: Please enter a valid positive amount');
@@ -31,8 +36,17 @@ const Commit = ({ client, address }) => {
             }
             const amountInMicroUnits = Math.floor(amountVal * 1_000_000).toString();
 
-            // Build the commit message - only include optional fields if they have values
-            const commitMsg = {
+            const commitMsg: {
+                asset: {
+                    info: {
+                        bluechip: { denom: string }
+                    },
+                    amount: string
+                },
+                amount: string,
+                transaction_deadline?: string,
+                max_spread?: string
+            } = {
                 asset: {
                     info: {
                         bluechip: { denom: 'stake' }
@@ -42,7 +56,6 @@ const Commit = ({ client, address }) => {
                 amount: amountInMicroUnits
             };
 
-            // Only add optional fields if they have actual values
             if (deadline && parseFloat(deadline) > 0) {
                 const deadlineInNs = (Date.now() + (parseFloat(deadline) * 60 * 1000)) * 1000000;
                 commitMsg.transaction_deadline = deadlineInNs.toString();
@@ -61,7 +74,6 @@ const Commit = ({ client, address }) => {
             console.log('Sending commit message:', JSON.stringify(msg, null, 2));
             console.log('With funds:', funds);
 
-            // Use explicit gas limit instead of "auto" for better reliability
             const result = await client.execute(
                 address,
                 targetContractAddress,
@@ -78,7 +90,7 @@ const Commit = ({ client, address }) => {
             setStatus('Success! Transaction confirmed.');
         } catch (err) {
             console.error('Full error:', err);
-            setStatus('Error: ' + err.message);
+            setStatus('Error: ' + (err as Error).message);
             setTxHash('');
         }
     };
@@ -169,24 +181,6 @@ const Commit = ({ client, address }) => {
                                         </IconButton>
                                     </Tooltip>
                                 </Box>
-                                <Typography
-                                    variant="caption"
-                                    component="a"
-                                    href={`https://www.mintscan.io/cosmwasm-testnet/tx/${txHash}`}
-                                    target="_blank"
-                                    rel="noopener noreferrer"
-                                    sx={{
-                                        display: 'block',
-                                        mt: 1,
-                                        color: 'primary.dark',
-                                        textDecoration: 'underline',
-                                        '&:hover': {
-                                            color: 'primary.main'
-                                        }
-                                    }}
-                                >
-                                    View on Mintscan →
-                                </Typography>
                             </Box>
                         )}
                     </Box>

@@ -1,7 +1,13 @@
 import React, { useState } from 'react';
 import { Card, CardContent, Typography, TextField, Button, Box, Alert } from '@mui/material';
+import { SigningCosmWasmClient } from '@cosmjs/cosmwasm-stargate';
 
-const Fees = ({ client, address }) => {
+interface FeesProps {
+    client: SigningCosmWasmClient | null;
+    address: string;
+}
+
+const Fees = ({ client, address }: FeesProps) => {
     const [positionId, setPositionId] = useState('');
     const [targetContractAddress, setTargetContractAddress] = useState('');
     const [status, setStatus] = useState('');
@@ -41,7 +47,7 @@ const Fees = ({ client, address }) => {
             setStatus(`Success! Tx Hash: ${result.transactionHash}`);
         } catch (err) {
             console.error(err);
-            setStatus('Error: ' + err.message);
+            setStatus('Error: ' + (err as Error).message);
         }
     };
 

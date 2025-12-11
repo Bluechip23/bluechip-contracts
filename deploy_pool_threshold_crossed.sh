@@ -1,3 +1,18 @@
+#if initializing the chain for the first time, you will need to store and instantiate the cw20_base 
+#and cw721_base contracts before running this script. You can do that with the following commands:
+
+#bluechipChaind tx wasm store artifacts/cw20_base.wasm --from alice --chain-id bluechipChain --gas 5000000 --keyring-backend test -y
+#bluechipChaind tx wasm store artifacts/cw721_base.wasm --from alice --chain-id bluechipChain --gas 5000000 --keyring-backend test -y
+#bluechipChaind tx wasm instantiate 1 '{}' --from alice --label "cw20_base" --admin $ALICE_ADDR --chain-id bluechipChain --gas auto --gas-adjustment 1.3 --keyring-backend test -y
+#bluechipChaind tx wasm instantiate 2 '{}' --from alice --label "cw721_base" --admin $ALICE_ADDR --chain-id bluechipChain --gas auto --gas-adjustment 1.3 --keyring-backend test -y
+
+#if simply recreating pools and factory and code adjustments, run the below script.
+
+#before running any liquidity providing functions or swaps with CW20 tokens, be sure to create swaps 
+#stake token so you accumulate the cw20 token. You will need a balance to make the functions work
+#to get the cw20 tokens address for a specific pool, run this function:
+#TOKEN_ADDR=$(bluechipChaind query wasm contract-state smart $POOL_ADDR '{"pair":{}}' --output json | jq -r '.data.asset_infos[] | select(.creator_token != null) | .creator_token.contract_addr')
+
 #!/bin/bash
 set -e
 

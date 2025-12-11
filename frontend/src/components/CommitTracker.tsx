@@ -1,12 +1,32 @@
 import React, { useState, useEffect } from 'react';
 import { Card, CardContent, Typography, Box, LinearProgress } from '@mui/material';
 import { LineChart, Line, XAxis, YAxis, CartesianGrid, Tooltip, ResponsiveContainer, ReferenceLine } from 'recharts';
+import { SigningCosmWasmClient } from '@cosmjs/cosmwasm-stargate';
 
-const CommitTracker = ({ client, address, contractAddress }) => {
-    const [commits, setCommits] = useState([]);
+interface CommitTrackerProps {
+    client: SigningCosmWasmClient | null;
+    address: string;
+    contractAddress: string;
+}
+
+interface CommitData {
+    last_commited: string;
+    total_paid_usd: string;
+    total_paid_bluechip: string;
+}
+
+interface GraphDataPoint {
+    name: string;
+    value: number;
+    total: number;
+    timestamp: string;
+}
+
+const CommitTracker: React.FC<CommitTrackerProps> = ({ client, address, contractAddress }) => {
+    const [commits, setCommits] = useState<CommitData[]>([]);
     const [totalRaised, setTotalRaised] = useState(0);
     const [totalBluechips, setTotalBluechips] = useState(0);
-    const [graphData, setGraphData] = useState([]);
+    const [graphData, setGraphData] = useState<GraphDataPoint[]>([]);
     const [loading, setLoading] = useState(false);
     const THRESHOLD = 25000; // $25,000 threshold
 
@@ -17,9 +37,10 @@ const CommitTracker = ({ client, address, contractAddress }) => {
     }, [client, contractAddress]);
 
     const fetchCommits = async () => {
+        if (!client) return;
+
         setLoading(true);
         try {
-            // Fetch all commits (pagination might be needed for large datasets, fetching simple list for now)
             const response = await client.queryContractSmart(contractAddress, {
                 pool_commits: {
                     pool_contract_address: contractAddress,
@@ -28,7 +49,6 @@ const CommitTracker = ({ client, address, contractAddress }) => {
             });
 
             if (response && response.commiters) {
-                // Sort by timestamp (oldest first) to calculate cumulative progress
                 const sortedCommits = [...response.commiters].sort((a, b) => {
                     return parseInt(a.last_commited) - parseInt(b.last_commited);
                 });
@@ -36,7 +56,6 @@ const CommitTracker = ({ client, address, contractAddress }) => {
                 let cumulative = 0;
                 let bluechipTotal = 0;
                 const data = sortedCommits.map((commit, index) => {
-                    // Use total_paid_usd and total_paid_bluechip for cumulative amounts
                     const value = parseInt(commit.total_paid_usd);
                     const bluechipValue = parseInt(commit.total_paid_bluechip);
                     cumulative += value;
@@ -46,7 +65,7 @@ const CommitTracker = ({ client, address, contractAddress }) => {
                         name: ``,
                         value: value,
                         total: cumulative,
-                        timestamp: new Date(parseInt(commit.last_commited) / 1000000).toLocaleString() // ns to ms
+                        timestamp: new Date(parseInt(commit.last_commited) / 1000000).toLocaleString()
                     };
                 });
 
@@ -62,7 +81,6 @@ const CommitTracker = ({ client, address, contractAddress }) => {
         }
     };
 
-    // Calculate percentage for progress bar
     const displayTotal = totalRaised > 1000000 ? totalRaised / 1000000 : totalRaised;
     const progress = Math.min((displayTotal / THRESHOLD) * 100, 100);
 

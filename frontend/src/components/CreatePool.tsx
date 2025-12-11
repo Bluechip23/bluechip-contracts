@@ -1,12 +1,16 @@
 import React, { useState } from 'react';
 import { Card, CardContent, Typography, TextField, Button, Box, Alert, IconButton, Tooltip } from '@mui/material';
 import ContentCopyIcon from '@mui/icons-material/ContentCopy';
+import { SigningCosmWasmClient } from '@cosmjs/cosmwasm-stargate';
 
-// Factory contract address - configured during deployment
-// TODO: Replace with actual factory address after deployment
+// Factory contract address - configured during deployment. Will need to make dynamic
 const FACTORY_ADDRESS = 'cosmos1yvgh8xeju5dyr0zxlkvq09htvhjj20fncp5g58np4u25g8rkpgjst8ghg8';
+interface CreatePoolProps {
+    client: SigningCosmWasmClient | null;
+    address: string;
+}
 
-const CreatePool = ({ client, address }) => {
+const CreatePool = ({ client, address }: CreatePoolProps) => {
     const [tokenName, setTokenName] = useState('');
     const [tokenSymbol, setTokenSymbol] = useState('');
     const [status, setStatus] = useState('');
@@ -110,7 +114,7 @@ const CreatePool = ({ client, address }) => {
             setTokenSymbol('');
         } catch (err) {
             console.error('Full error:', err);
-            setStatus('Error: ' + err.message);
+            setStatus('Error: ' + (err as Error).message);
             setTxHash('');
         }
     };

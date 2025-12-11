@@ -1,8 +1,15 @@
 import React, { useState, useEffect } from 'react';
 import { Card, CardContent, Typography, TextField, Button, Box, Alert } from '@mui/material';
 import { coins } from '@cosmjs/stargate';
+import { SigningCosmWasmClient } from '@cosmjs/cosmwasm-stargate';
 
-const Swap = ({ client, address, contractAddress }) => {
+interface SwapProps {
+    client: SigningCosmWasmClient | null;
+    address: string;
+    contractAddress: string;
+}
+
+const Swap = ({ client, address, contractAddress }: SwapProps) => {
     const [offerAsset, setOfferAsset] = useState('');
     const [amount, setAmount] = useState('');
     const [maxSpread, setMaxSpread] = useState('0.005'); // Default 0.5%
@@ -114,7 +121,7 @@ const Swap = ({ client, address, contractAddress }) => {
             }
         } catch (err) {
             console.error(err);
-            setStatus('Error: ' + err.message);
+            setStatus('Error: ' + (err as Error).message);
         }
     };
 
