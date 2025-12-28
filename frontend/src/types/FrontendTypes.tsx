@@ -2,15 +2,11 @@
 
 import { SigningCosmWasmClient } from '@cosmjs/cosmwasm-stargate';
 
-// ============================================
-// Token Types
-// ============================================
 
 export type TokenType =
     | { creator_token: { contract_addr: string } }
     | { bluechip: { denom: string } };
 
-// Base token info (from CW20 token_info query)
 export interface TokenInfo {
     name: string;
     symbol: string;
@@ -18,7 +14,6 @@ export interface TokenInfo {
     total_supply: string;
 }
 
-// Token as displayed in Discover page (may not have balance)
 export interface DiscoverToken {
     tokenAddress: string;
     poolAddress: string;
@@ -51,10 +46,6 @@ export const hasBalance = (token: ModalToken): token is PortfolioToken => {
     return 'balance' in token && token.balance !== undefined;
 };
 
-// ============================================
-// Pool Types
-// ============================================
-
 export interface PoolDetails {
     asset_infos: [TokenType, TokenType];
     contract_addr: string;
@@ -76,9 +67,6 @@ export interface AllPoolsResponse {
     pools: [string, PoolStateResponse][];
 }
 
-// ============================================
-// Commit/Threshold Types
-// ============================================
 
 export type CommitStatus =
     | { fully_committed: Record<string, never> }
@@ -88,9 +76,6 @@ export const isThresholdReached = (status: CommitStatus): boolean => {
     return 'fully_committed' in status;
 };
 
-// ============================================
-// Liquidity Position Types
-// ============================================
 
 export interface LiquidityPosition {
     positionId: string;

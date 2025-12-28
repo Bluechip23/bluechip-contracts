@@ -2,7 +2,11 @@ use crate::asset::{TokenInfo, TokenType};
 use crate::error::ContractError;
 use crate::msg::{CommitFeeInfo, ExecuteMsg};
 use crate::state::{
-    COMMIT_INFO, COMMIT_LEDGER, COMMIT_LIMIT_INFO, COMMITFEEINFO, CREATOR_EXCESS_POSITION, CommitLimitInfo, CreatorExcessLiquidity, DISTRIBUTION_STATE, DistributionState, EXPECTED_FACTORY, ExpectedFactory, IS_THRESHOLD_HIT, LAST_THRESHOLD_ATTEMPT, LIQUIDITY_POSITIONS, NEXT_POSITION_ID, POOL_STATE, RecoveryType, THRESHOLD_PROCESSING, TokenMetadata, USD_RAISED_FROM_COMMIT
+    CommitLimitInfo, CreatorExcessLiquidity, DistributionState, ExpectedFactory, RecoveryType,
+    TokenMetadata, COMMITFEEINFO, COMMIT_INFO, COMMIT_LEDGER, COMMIT_LIMIT_INFO,
+    CREATOR_EXCESS_POSITION, DISTRIBUTION_STATE, EXPECTED_FACTORY, IS_THRESHOLD_HIT,
+    LAST_THRESHOLD_ATTEMPT, LIQUIDITY_POSITIONS, NEXT_POSITION_ID, POOL_STATE,
+    THRESHOLD_PROCESSING, USD_RAISED_FROM_COMMIT,
 };
 use crate::testing::swap_tests::with_factory_oracle;
 use crate::{
@@ -11,14 +15,14 @@ use crate::{
 };
 use cosmwasm_std::testing::{mock_dependencies_with_balance, MockApi, MockQuerier, MockStorage};
 use cosmwasm_std::{
-    BankMsg, Binary, Coin, Decimal, Empty, OwnedDeps, SystemError, Timestamp, WasmQuery, coin
+    coin, BankMsg, Binary, Coin, Decimal, OwnedDeps, SystemError, Timestamp, WasmQuery,
 };
 use cosmwasm_std::{
     from_json,
     testing::{mock_dependencies, mock_env, mock_info},
     to_json_binary, Addr, ContractResult, CosmosMsg, SystemResult, Uint128, WasmMsg,
 };
-use cw721_base::ExecuteMsg as CW721BaseExecuteMsg;
+use pool_factory_interfaces::cw721_msgs::Cw721ExecuteMsg;
 use pool_factory_interfaces::ConversionResponse;
 
 pub fn setup_pool_with_excess_config(deps: &mut OwnedDeps<MockStorage, MockApi, MockQuerier>) {
@@ -190,9 +194,9 @@ fn test_claim_excess_after_unlock_succeeds() {
     assert_eq!(res.messages.len(), 1);
     match &res.messages[0].msg {
         CosmosMsg::Wasm(WasmMsg::Execute { msg, .. }) => {
-            let mint_msg: CW721BaseExecuteMsg<TokenMetadata, Empty> = from_json(msg).unwrap();
+            let mint_msg: Cw721ExecuteMsg<TokenMetadata> = from_json(msg).unwrap();
             match mint_msg {
-                CW721BaseExecuteMsg::Mint { owner, .. } => {
+                Cw721ExecuteMsg::Mint { owner, .. } => {
                     assert_eq!(owner, "creator");
                 }
                 _ => panic!("Expected Mint message"),
@@ -593,26 +597,39 @@ fn test_concurrent_threshold_crossing_attempts() {
         denom: "stake".to_string(),
         amount: Uint128::new(100_000_000_000),
     }]);
-    
+
     setup_pool_storage(&mut deps);
     check_correct_factory(&mut deps);
     USD_RAISED_FROM_COMMIT
         .save(&mut deps.storage, &Uint128::new(24_999_000_000))
         .unwrap();
-    
+
     let env = mock_env();
     with_factory_oracle(&mut deps, Uint128::new(1_000_000));
-    
+
     // First user triggers threshold crossing
     THRESHOLD_PROCESSING.save(&mut deps.storage, &true).unwrap();
-    LAST_THRESHOLD_ATTEMPT.save(&mut deps.storage, &env.block.time).unwrap();
-    
+    LAST_THRESHOLD_ATTEMPT
+        .save(&mut deps.storage, &env.block.time)
+        .unwrap();
+
     // Second user tries to commit while first is processing
+<<<<<<< HEAD
     let info2 = mock_info("user2", &[Coin {
         denom: "stake".to_string(),
         amount: Uint128::new(2_000_000),
     }]);
     
+=======
+    let info2 = mock_info(
+        "user2",
+        &[Coin {
+            denom: "bluechip".to_string(),
+            amount: Uint128::new(2_000_000),
+        }],
+    );
+
+>>>>>>> 7c3b659 (removed cw721_base adn cw20_base for contract optimization)
     let msg = ExecuteMsg::Commit {
         asset: TokenInfo {
             info: TokenType::Bluechip {
@@ -625,15 +642,17 @@ fn test_concurrent_threshold_crossing_attempts() {
         belief_price: None,
         max_spread: None,
     };
-    
+
     let res = execute(deps.as_mut(), env.clone(), info2, msg);
-    
+
     // Should succeed but process as pre-threshold commit
     assert!(res.is_ok());
     let res = res.unwrap();
-    
+
     // Should NOT have threshold_crossing phase since someone else is processing
-    assert!(res.attributes.iter()
+    assert!(res
+        .attributes
+        .iter()
         .find(|a| a.key == "phase")
         .map_or(true, |a| a.value != "threshold_crossing"));
 }
@@ -653,9 +672,9 @@ fn test_distribution_timeout_triggers_error() {
             )
             .unwrap();
     }
-    
+
     let old_time = Timestamp::from_seconds(1000);
-    
+
     // Create old distribution state
     let dist_state = DistributionState {
         is_distributing: true,
@@ -670,11 +689,13 @@ fn test_distribution_timeout_triggers_error() {
         started_at: old_time,
         last_updated: old_time, // Very old
     };
-    DISTRIBUTION_STATE.save(&mut deps.storage, &dist_state).unwrap();
-    
+    DISTRIBUTION_STATE
+        .save(&mut deps.storage, &dist_state)
+        .unwrap();
+
     let mut env = mock_env();
     env.block.time = old_time.plus_seconds(7201); // Over 2 hours later
-    
+
     let info = mock_info(env.contract.address.as_str(), &[]);
     let res = execute(
         deps.as_mut(),
@@ -682,11 +703,11 @@ fn test_distribution_timeout_triggers_error() {
         info,
         ExecuteMsg::ContinueDistribution {},
     );
-    
+
     // Should fail with timeout
     assert!(res.is_err());
     assert!(res.unwrap_err().to_string().contains("timeout"));
-    
+
     // State should be marked as failed
     let updated = DISTRIBUTION_STATE.load(&deps.storage).unwrap();
     assert_eq!(updated.consecutive_failures, 99);
@@ -698,18 +719,18 @@ fn test_unauthorized_recovery_attempt() {
     setup_pool_storage(&mut deps);
     check_correct_factory(&mut deps);
     let env = mock_env();
-    
+
     // Set stuck state
     THRESHOLD_PROCESSING.save(&mut deps.storage, &true).unwrap();
-    
+
     // Non-admin tries to recover
     let info = mock_info("random_user", &[]);
     let msg = ExecuteMsg::RecoverStuckStates {
         recovery_type: RecoveryType::StuckThreshold,
     };
-    
+
     let res = execute(deps.as_mut(), env, info, msg);
-    
+
     assert!(res.is_err());
     assert!(matches!(res.unwrap_err(), ContractError::Unauthorized {}));
 }
@@ -723,7 +744,7 @@ fn test_accumulated_bluechips_respected() {
     USD_RAISED_FROM_COMMIT
         .save(&mut deps.storage, &Uint128::new(24_000_000_000))
         .unwrap();
-    
+
     // CRITICAL: We must manually set the NATIVE_RAISED_FROM_COMMIT to reflect the low price history
     // 48,000 bluechips for 4,000 USD
     crate::state::NATIVE_RAISED_FROM_COMMIT
@@ -735,7 +756,7 @@ fn test_accumulated_bluechips_respected() {
         WasmQuery::Smart { .. } => {
             let response = ConversionResponse {
                 amount: Uint128::new(2_000_000_000), // 000 = 2000 bluechips
-                rate_used: Uint128::new(500_000), // /bin/bash.50
+                rate_used: Uint128::new(500_000),    // /bin/bash.50
                 timestamp: 1234567890u64,
             };
             SystemResult::Ok(ContractResult::Ok(to_json_binary(&response).unwrap()))
@@ -768,15 +789,18 @@ fn test_accumulated_bluechips_respected() {
     // Total bluechips should be 48,000 + 2,000 = 50,000
     // Threshold config is 25,000 USD (which is 25,000 bluechips at .00 standard rate)
     // Max bluechip lock is 100,000 (from setup_pool_with_excess_config)
-    
+
     let pool_state = POOL_STATE.load(&deps.storage).unwrap();
-    
+
     // The pool should have the FULL 50,000 bluechips (minus fees)
     // Fees are 6% (1% + 5%)
     // 50,000 * 0.94 = 47,000
-    
+
     println!("Reserve0: {}", pool_state.reserve0);
-    assert!(pool_state.reserve0 > Uint128::new(40_000_000_000), "Pool should have accumulated extra bluechips from low price");
+    assert!(
+        pool_state.reserve0 > Uint128::new(40_000_000_000),
+        "Pool should have accumulated extra bluechips from low price"
+    );
 }
 
 #[test]
@@ -785,77 +809,110 @@ fn test_concurrent_threshold_crossing_race_condition() {
         denom: "stake".to_string(),
         amount: Uint128::new(100_000_000_000),
     }]);
-    
+
     setup_pool_storage(&mut deps);
     check_correct_factory(&mut deps);
-    
+
     // Setup pool just below threshold
     USD_RAISED_FROM_COMMIT
         .save(&mut deps.storage, &Uint128::new(24_999_000_000))
         .unwrap();
-    
+
     let env = mock_env();
     with_factory_oracle(&mut deps, Uint128::new(1_000_000));
-    
+
     // User 1 commits enough to cross
+<<<<<<< HEAD
     let info1 = mock_info("user1", &[Coin { denom: "stake".to_string(), amount: Uint128::new(2_000_000) }]);
     let msg1 = ExecuteMsg::Commit {
         asset: TokenInfo { info: TokenType::Bluechip { denom: "stake".to_string() }, amount: Uint128::new(2_000_000) },
+=======
+    let info1 = mock_info(
+        "user1",
+        &[Coin {
+            denom: "bluechip".to_string(),
+            amount: Uint128::new(2_000_000),
+        }],
+    );
+    let msg1 = ExecuteMsg::Commit {
+        asset: TokenInfo {
+            info: TokenType::Bluechip {
+                denom: "bluechip".to_string(),
+            },
+            amount: Uint128::new(2_000_000),
+        },
+>>>>>>> 7c3b659 (removed cw721_base adn cw20_base for contract optimization)
         amount: Uint128::new(2_000_000),
         transaction_deadline: None,
         belief_price: None,
         max_spread: None,
     };
-    
+
     // User 2 commits enough to cross (simulating same block execution)
+<<<<<<< HEAD
     let info2 = mock_info("user2", &[Coin { denom: "stake".to_string(), amount: Uint128::new(2_000_000) }]);
+=======
+    let info2 = mock_info(
+        "user2",
+        &[Coin {
+            denom: "bluechip".to_string(),
+            amount: Uint128::new(2_000_000),
+        }],
+    );
+>>>>>>> 7c3b659 (removed cw721_base adn cw20_base for contract optimization)
     let msg2 = msg1.clone();
-    
+
     // Execute User 1 - Should trigger threshold
     let res1 = execute(deps.as_mut(), env.clone(), info1, msg1).unwrap();
-    
+
     // Verify User 1 triggered threshold
-    assert!(res1.attributes.iter().any(|a| a.key == "phase" && a.value == "threshold_crossing"));
+    assert!(res1
+        .attributes
+        .iter()
+        .any(|a| a.key == "phase" && a.value == "threshold_crossing"));
     assert_eq!(IS_THRESHOLD_HIT.load(&deps.storage).unwrap(), true);
-    
+
     // Execute User 2 - Should NOT trigger threshold again, but should be processed as post-threshold commit/swap
     // Note: In real chain, this would happen sequentially. If User 1 finishes, IS_THRESHOLD_HIT is true.
     // So User 2 should see IS_THRESHOLD_HIT = true and process as swap (or fail if pool paused/transitioning).
     // The contract logic for Commit checks IS_THRESHOLD_HIT. If true, it might fail or process differently.
     // Let's see what Commit does when threshold is hit.
     // Looking at contract.rs: Commit -> execute_commit_logic -> ...
-    // If threshold hit, it usually returns error or processes differently? 
+    // If threshold hit, it usually returns error or processes differently?
     // Actually, Commit is only for pre-threshold. If threshold is hit, Commit might fail or redirect?
-    // Let's check contract.rs... 
-    // Ah, I can't check contract.rs right now easily without scrolling. 
+    // Let's check contract.rs...
+    // Ah, I can't check contract.rs right now easily without scrolling.
     // But typically Commit is for pre-threshold. Post-threshold should use Swap.
     // However, if the UI sends Commit, and it lands after threshold, the contract should probably handle it gracefully or reject.
     // Let's assume it rejects or handles it. The test will verify *what* it does.
-    
+
     // But wait, if User 1 sets THRESHOLD_PROCESSING = true (which it does during the crossing if it's async/multi-stage, but here it seems synchronous in one tx?),
     // In `test_commit_threshold_overshoot_split`, THRESHOLD_PROCESSING is cleared at the end.
     // So User 2 sees IS_THRESHOLD_HIT = true.
-    
+
     let res2 = execute(deps.as_mut(), env.clone(), info2, msg2);
-    
+
     // If Commit is called after threshold is hit, what happens?
     // Based on `execute_commit_logic` in `contract.rs` (from memory/previous reads), it checks `query_check_commit`.
     // If `query_check_commit` returns true (threshold met), `Commit` might be disabled?
     // Let's verify if it returns an error or processes as swap.
-    
+
     match res2 {
         Ok(res) => {
             // If it succeeds, it implies it might have been processed.
             // But `Commit` message is usually strictly for pre-threshold.
             // If it succeeds, we want to ensure it didn't trigger threshold AGAIN.
-            assert!(!res.attributes.iter().any(|a| a.key == "phase" && a.value == "threshold_crossing"));
-        },
+            assert!(!res
+                .attributes
+                .iter()
+                .any(|a| a.key == "phase" && a.value == "threshold_crossing"));
+        }
         Err(e) => {
-             // Other errors might be acceptable depending on implementation
-             println!("User 2 failed with: {:?}", e);
+            // Other errors might be acceptable depending on implementation
+            println!("User 2 failed with: {:?}", e);
         }
     }
-    
+
     // Verify payouts
     // User 1 should have got some refund/swap tokens
     // User 2 (if failed) got nothing (tx reverted). If succeeded, got tokens.

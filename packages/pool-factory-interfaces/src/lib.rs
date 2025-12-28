@@ -1,6 +1,8 @@
 use cosmwasm_schema::{cw_serde, QueryResponses};
 use cosmwasm_std::{Addr, Uint128};
 
+pub mod cw721_msgs;
+
 #[cw_serde]
 pub enum PoolQueryMsg {
     GetPoolState { pool_contract_address: String },

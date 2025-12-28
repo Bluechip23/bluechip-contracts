@@ -9,7 +9,7 @@ use cosmwasm_std::{
     to_json_binary, Addr, CosmosMsg, Decimal, Deps, DepsMut, Env, MessageInfo, Response, StdError,
     StdResult, Uint128, WasmMsg,
 };
-use cw721_base::ExecuteMsg as CW721BaseExecuteMsg;
+use pool_factory_interfaces::cw721_msgs::Cw721ExecuteMsg;
 pub const OPTIMAL_LIQUIDITY: Uint128 = Uint128::new(1_000_000);
 // 10% fees for tiny positions
 pub const MIN_MULTIPLIER: &str = "0.1";
@@ -212,14 +212,12 @@ pub fn execute_claim_creator_excess(
     // Use your existing NFT minting pattern
     let mint_liquidity_nft = WasmMsg::Execute {
         contract_addr: pool_info.position_nft_address.to_string(),
-        msg: to_json_binary(
-            &CW721BaseExecuteMsg::<TokenMetadata, cosmwasm_std::Empty>::Mint {
-                token_id: position_id.clone(),
-                owner: excess_position.creator.to_string(),
-                token_uri: None,
-                extension: metadata,
-            },
-        )?,
+        msg: to_json_binary(&Cw721ExecuteMsg::<TokenMetadata>::Mint {
+            token_id: position_id.clone(),
+            owner: excess_position.creator.to_string(),
+            token_uri: None,
+            extension: metadata,
+        })?,
         funds: vec![],
     };
 
