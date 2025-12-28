@@ -16,7 +16,7 @@ use crate::{
 use cosmwasm_std::{
     to_json_binary, DepsMut, Env, Reply, Response, StdError, SubMsg, SubMsgResult, Uint128, WasmMsg,
 };
-use cw721_base::msg::InstantiateMsg as Cw721InstantiateMsg;
+use pool_factory_interfaces::cw721_msgs::Cw721InstantiateMsg;
 
 // pool_creation_reply.rs
 
@@ -130,13 +130,14 @@ pub fn mint_create_pool(deps: DepsMut, env: Env, msg: Reply) -> Result<Response,
                         commit_fee_bluechip: factory_config.commit_fee_bluechip,
                         commit_fee_creator: factory_config.commit_fee_creator,
                     },
-                    commit_amount_for_threshold: factory_config.commit_amount_for_threshold_bluechip,
+                    commit_amount_for_threshold: factory_config
+                        .commit_amount_for_threshold_bluechip,
                     commit_threshold_limit_usd: factory_config.commit_threshold_limit_usd,
                     token_address,
                     position_nft_address: nft_address.clone(),
                     max_bluechip_lock_per_pool: factory_config.max_bluechip_lock_per_pool,
-                    creator_excess_liquidity_lock_days: factory_config.creator_excess_liquidity_lock_days,
-
+                    creator_excess_liquidity_lock_days: factory_config
+                        .creator_excess_liquidity_lock_days,
                 })?,
                 funds: vec![],
                 admin: Some(env.contract.address.to_string()),

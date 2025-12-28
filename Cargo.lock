@@ -914,15 +914,12 @@ version = "1.0.0"
 dependencies = [
  "cosmwasm-schema",
  "cosmwasm-std 1.5.11",
- "cosmwasm-storage",
  "cw-multi-test",
  "cw-storage-plus 1.2.0",
  "cw-utils 1.0.3",
  "cw2 1.1.2",
  "cw20",
- "cw20-base",
  "cw721 0.18.0",
- "cw721-base 0.18.0",
  "integer-sqrt",
  "pool-factory-interfaces",
  "protobuf",
@@ -1220,15 +1217,12 @@ version = "1.0.0"
 dependencies = [
  "cosmwasm-schema",
  "cosmwasm-std 1.5.11",
- "cosmwasm-storage",
  "cw-multi-test",
  "cw-storage-plus 1.2.0",
  "cw-utils 1.0.3",
  "cw2 1.1.2",
  "cw20",
- "cw20-base",
  "cw721 0.18.0",
- "cw721-base 0.18.0",
  "easy-addr",
  "integer-sqrt",
  "pool-factory-interfaces",
@@ -1244,6 +1238,7 @@ version = "1.0.0"
 dependencies = [
  "cosmwasm-schema",
  "cosmwasm-std 1.5.11",
+ "cw721 0.18.0",
  "serde",
 ]
 

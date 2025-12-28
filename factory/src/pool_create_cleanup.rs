@@ -1,9 +1,9 @@
 use cosmwasm_std::{
-    to_json_binary, Addr, CosmosMsg, DepsMut, Empty, Env, Reply, Response, StdResult, Storage,
-    SubMsg, SubMsgResponse, SubMsgResult, WasmMsg,
+    to_json_binary, Addr, CosmosMsg, DepsMut, Env, Reply, Response, StdResult, Storage, SubMsg,
+    SubMsgResponse, SubMsgResult, WasmMsg,
 };
 use cw20::Cw20ExecuteMsg;
-use cw721_base::Action;
+use pool_factory_interfaces::cw721_msgs::{Action, Cw721ExecuteMsg};
 
 use crate::error::ContractError;
 use crate::execute::{BURN_ADDRESS, CLEANUP_NFT_REPLY_ID, CLEANUP_TOKEN_REPLY_ID};
@@ -30,7 +30,7 @@ pub fn create_cleanup_messages(
     if let Some(nft_addr) = &creation_state.mint_new_position_nft_address {
         let disable_nft_msg = WasmMsg::Execute {
             contract_addr: nft_addr.to_string(),
-            msg: to_json_binary(&cw721_base::ExecuteMsg::<Empty, Empty>::UpdateOwnership(
+            msg: to_json_binary(&Cw721ExecuteMsg::<()>::UpdateOwnership(
                 Action::TransferOwnership {
                     new_owner: BURN_ADDRESS.to_string(),
                     expiry: None,
@@ -107,7 +107,7 @@ pub fn give_pool_ownership_cw20_and_nft(
         .into(),
         WasmMsg::Execute {
             contract_addr: nft_addr.to_string(),
-            msg: to_json_binary(&cw721_base::ExecuteMsg::<Empty, Empty>::UpdateOwnership(
+            msg: to_json_binary(&Cw721ExecuteMsg::<()>::UpdateOwnership(
                 Action::TransferOwnership {
                     new_owner: pool_addr.to_string(),
                     expiry: None,

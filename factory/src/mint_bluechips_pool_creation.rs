@@ -73,5 +73,7 @@ pub fn calculate_and_mint_bluechip(
                 amount: mint_amount,
             }],
         }));
+    }
+
     Ok(messages)
 }

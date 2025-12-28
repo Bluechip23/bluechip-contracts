@@ -12,10 +12,10 @@ use crate::state::{
 use crate::state::{Position, TokenMetadata, LIQUIDITY_POSITIONS, NEXT_POSITION_ID};
 use crate::swap_helper::update_price_accumulator;
 use cosmwasm_std::{
-    to_json_binary, Addr, BankMsg, Coin, CosmosMsg, Decimal, DepsMut, Empty, Env, MessageInfo,
-    Response, StdError, Timestamp, Uint128, WasmMsg,
+    to_json_binary, Addr, BankMsg, Coin, CosmosMsg, Decimal, DepsMut, Env, MessageInfo, Response,
+    StdError, Timestamp, Uint128, WasmMsg,
 };
-use cw721_base::ExecuteMsg as CW721BaseExecuteMsg;
+use pool_factory_interfaces::cw721_msgs::{Action, Cw721ExecuteMsg};
 
 use std::vec;
 
@@ -76,8 +76,8 @@ pub fn execute_deposit_liquidity(
     if !pool_state.nft_ownership_accepted {
         let accept_msg = WasmMsg::Execute {
             contract_addr: pool_info.position_nft_address.to_string(),
-            msg: to_json_binary(&cw721_base::ExecuteMsg::<Empty, Empty>::UpdateOwnership(
-                cw721_base::Action::AcceptOwnership {},
+            msg: to_json_binary(&Cw721ExecuteMsg::<()>::UpdateOwnership(
+                Action::AcceptOwnership,
             ))?,
             funds: vec![],
         };
@@ -124,14 +124,12 @@ pub fn execute_deposit_liquidity(
     //mint nft position
     let mint_liquidity_nft = WasmMsg::Execute {
         contract_addr: pool_info.position_nft_address.to_string(),
-        msg: to_json_binary(
-            &CW721BaseExecuteMsg::<TokenMetadata, cosmwasm_std::Empty>::Mint {
-                token_id: position_id.clone(),
-                owner: user.to_string(),
-                token_uri: None,
-                extension: metadata,
-            },
-        )?,
+        msg: to_json_binary(&Cw721ExecuteMsg::<TokenMetadata>::Mint {
+            token_id: position_id.clone(),
+            owner: user.to_string(),
+            token_uri: None,
+            extension: metadata,
+        })?,
         funds: vec![],
     };
     messages.push(CosmosMsg::Wasm(mint_liquidity_nft));
@@ -543,14 +541,14 @@ pub fn remove_all_liquidity(
     //update pool fees, collect fees, and reserve prices
     liquidity_position.fee_growth_inside_0_last = pool_fee_state.fee_growth_global_0;
     liquidity_position.fee_growth_inside_1_last = pool_fee_state.fee_growth_global_1;
-    
+
     update_price_accumulator(&mut pool_state, env.block.time.seconds())?;
     pool_state.reserve0 = pool_state.reserve0.checked_sub(user_share_0)?;
     pool_state.reserve1 = pool_state.reserve1.checked_sub(user_share_1)?;
     // subtract fees
     pool_state.reserve0 = pool_state.reserve0.checked_sub(fees_owed_0)?;
     pool_state.reserve1 = pool_state.reserve1.checked_sub(fees_owed_1)?;
-    
+
     POOL_STATE.save(deps.storage, &pool_state)?;
     LIQUIDITY_POSITIONS.remove(deps.storage, &position_id);
 
