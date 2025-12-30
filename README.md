@@ -480,11 +480,6 @@ cargo test
 
 ---
 
-## License
-
-[Add your license here]
-
----
 
 ## Links
 
