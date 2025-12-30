@@ -1,5 +1,4 @@
 # bluechip-contracts
-# Bluechip Contracts
 
 A decentralized subscription and creator economy protocol built on Cosmos SDK using CosmWasm smart contracts.
 
