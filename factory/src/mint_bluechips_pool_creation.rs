@@ -49,8 +49,9 @@ pub fn calculate_and_mint_bluechip(
     env: Env,
     pool_count: u64,
 ) -> Result<Vec<CosmosMsg>, ContractError> {
-    let mut messages = vec![];
+    let messages = vec![];
 
+    // Still track the first pool timestamp for future use
     let first_pool_time = match FIRST_POOL_TIMESTAMP.may_load(deps.storage)? {
         Some(time) => time,
         None => {
@@ -59,20 +60,26 @@ pub fn calculate_and_mint_bluechip(
         }
     };
 
+    // Check Mock/Direct Mode - Skip minting if enabled
+    let config = FACTORYINSTANTIATEINFO.load(deps.storage)?;
+    if config.atom_bluechip_anchor_pool_address == config.factory_admin_address {
+        return Ok(messages);
+    }
+
     let seconds_elapsed = env.block.time.seconds() - first_pool_time.seconds();
 
     let mint_amount = calculate_mint_amount(seconds_elapsed, pool_count)?;
 
     if !mint_amount.is_zero() {
-        let config = FACTORYINSTANTIATEINFO.load(deps.storage)?;
-
-        messages.push(CosmosMsg::Bank(BankMsg::Send {
+        let mut msgs = Vec::new();
+        msgs.push(CosmosMsg::Bank(BankMsg::Send {
             to_address: config.bluechip_wallet_address.to_string(),
             amount: vec![Coin {
-                denom: "bluechip".to_string(),
+                denom: "stake".to_string(),
                 amount: mint_amount,
             }],
         }));
+        return Ok(msgs);
     }
 
     Ok(messages)

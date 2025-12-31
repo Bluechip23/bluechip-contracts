@@ -10,6 +10,17 @@ use cw20::{BalanceResponse, Cw20QueryMsg, TokenInfoResponse};
 use std::collections::HashMap;
 
 use crate::msg::{CommitFeeInfo, FeeInfoResponse, PoolResponse, QueryMsg};
+use cosmwasm_schema::cw_serde;
+
+#[cw_serde]
+pub enum MockFactoryQuery {
+    InternalBlueChipOracleQuery(MockOracleQuery),
+}
+
+#[cw_serde]
+pub enum MockOracleQuery {
+    ConvertBluechipToUsd { amount: Uint128 },
+}
 
 // mock_dependencies is a drop-in replacement for cosmwasm_std::testing::mock_dependencies.
 // This uses the BETFI CustomQuerier.
@@ -103,13 +114,22 @@ impl WasmMockQuerier {
                 if contract_addr == "factory" {
                     if let Ok(QueryMsg::FeeInfo {}) = from_json(&msg) {
                         let fee_info = CommitFeeInfo {
-                            bluechip_wallet_address: Addr::unchecked("bluechip"),
+                            bluechip_wallet_address: Addr::unchecked("stake"),
                             creator_wallet_address: Addr::unchecked("creator"),
                             commit_fee_bluechip: Decimal::percent(10),
                             commit_fee_creator: Decimal::percent(10),
                         };
                         let resp = FeeInfoResponse { fee_info };
                         let bin = to_json_binary(&resp).unwrap();
+                        return SystemResult::Ok(cosmwasm_std::ContractResult::Ok(bin));
+                    }
+                    // Handle InternalBlueChipOracleQuery
+                    if let Ok(MockFactoryQuery::InternalBlueChipOracleQuery(
+                        MockOracleQuery::ConvertBluechipToUsd { amount },
+                    )) = from_json(&msg)
+                    {
+                        // Mock 1:1 price for simplicity in tests
+                        let bin = to_json_binary(&amount).unwrap();
                         return SystemResult::Ok(cosmwasm_std::ContractResult::Ok(bin));
                     }
                     panic!(

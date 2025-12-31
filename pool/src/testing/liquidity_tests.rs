@@ -6,7 +6,7 @@ use cosmwasm_std::{testing::{mock_dependencies, mock_env, mock_info, MockApi, Mo
 
 use cw721::OwnerOfResponse;
 
-use crate::{asset::PoolPairType, contract::{execute,}, liquidity::{execute_add_to_position, execute_collect_fees, execute_deposit_liquidity, execute_remove_all_liquidity}, liquidity_helpers::{calculate_fee_size_multiplier, MIN_MULTIPLIER}, msg::{CommitFeeInfo}, state::{CommitLimitInfo, OracleInfo, PoolFeeState, PoolInfo, PoolSpecs, PoolState, ThresholdPayoutAmounts, COMMITFEEINFO, COMMITSTATUS, COMMIT_LIMIT_INFO, LIQUIDITY_POSITIONS, NATIVE_RAISED_FROM_COMMIT, ORACLE_INFO, POOL_INFO, POOL_SPECS, THRESHOLD_PAYOUT_AMOUNTS, THRESHOLD_PROCESSING
+    use crate::{asset::PoolPairType, contract::{execute,}, liquidity::{execute_add_to_position, execute_collect_fees, execute_deposit_liquidity, execute_remove_all_liquidity}, liquidity_helpers::{calculate_fee_size_multiplier, MIN_MULTIPLIER}, msg::{CommitFeeInfo}, state::{CommitLimitInfo, OracleInfo, PoolFeeState, PoolInfo, PoolSpecs, PoolState, ThresholdPayoutAmounts, COMMITFEEINFO, COMMIT_LIMIT_INFO, LIQUIDITY_POSITIONS, NATIVE_RAISED_FROM_COMMIT, ORACLE_INFO, POOL_INFO, POOL_SPECS, THRESHOLD_PAYOUT_AMOUNTS, THRESHOLD_PROCESSING
     }};
 use crate::msg::ExecuteMsg;
 use crate::state::{
@@ -28,7 +28,7 @@ fn test_deposit_liquidity_first_position() {
     let token_amount = Uint128::new(14_893_617_021); // Approximately correct ratio
     
     let info = mock_info(user.as_str(), &[Coin {
-        denom: "bluechip".to_string(),
+        denom: "stake".to_string(),
         amount: bluechip_amount,
     }]);
     
@@ -70,7 +70,7 @@ fn test_deposit_liquidity_with_slippage() {
     let token_amount = Uint128::new(10_000_000_000); // Incorrect ratio
     
     let info = mock_info(user.as_str(), &[Coin {
-        denom: "bluechip".to_string(),
+        denom: "stake".to_string(),
         amount: bluechip_amount,
     }]);
     
@@ -130,7 +130,7 @@ fn test_add_to_existing_position() {
     let token_amount = Uint128::new(7_500_000_000); // Approximately correct ratio
     
     let info = mock_info(user.as_str(), &[Coin {
-        denom: "bluechip".to_string(),
+        denom: "stake".to_string(),
         amount: bluechip_amount,
     }]);
     
@@ -189,7 +189,7 @@ fn test_add_to_position_not_owner() {
     let env = mock_env();
     let user = Addr::unchecked("liquidity_provider");
     let info = mock_info(user.as_str(), &[Coin {
-        denom: "bluechip".to_string(),
+        denom: "stake".to_string(),
         amount: Uint128::new(1_000_000),
     }]);
     
@@ -249,6 +249,8 @@ fn test_collect_fees_with_accrued_fees() {
     fee_state.fee_growth_global_1 = Decimal::percent(2); // 2% fees
     fee_state.total_fees_collected_0 = Uint128::new(100_000);
     fee_state.total_fees_collected_1 = Uint128::new(200_000);
+    fee_state.fee_reserve_0 = Uint128::new(100_000);
+    fee_state.fee_reserve_1 = Uint128::new(200_000);
     POOL_FEE_STATE.save(&mut deps.storage, &fee_state).unwrap();
     
     let env = mock_env();
@@ -335,7 +337,7 @@ fn test_deposit_liquidity_imbalanced_amounts() {
     let token_amount = Uint128::new(1_000_000_000); // Only 1k tokens (should need ~149k)
     
     let info = mock_info(user.as_str(), &[Coin {
-        denom: "bluechip".to_string(),
+        denom: "stake".to_string(),
         amount: bluechip_amount,
     }]);
     
@@ -548,13 +550,13 @@ fn test_zero_liquidity_fee_collection() {
     // Try to update fee growth
     let env = mock_env();
     let info = mock_info("trader", &[Coin {
-        denom: "bluechip".to_string(),
+        denom: "stake".to_string(),
         amount: Uint128::new(1_000_000),
     }]);
     
     let msg = ExecuteMsg::SimpleSwap {
         offer_asset: TokenInfo {
-            info: TokenType::Bluechip { denom: "bluechip".to_string() },
+            info: TokenType::Bluechip { denom: "stake".to_string() },
             amount: Uint128::new(1_000_000),
         },
         belief_price: None,
@@ -687,7 +689,7 @@ pub fn setup_pool_storage(deps: &mut OwnedDeps<MockStorage, MockApi, MockQuerier
         pool_info: PoolDetails {
             asset_infos: [
                 TokenType::Bluechip {
-                    denom: "bluechip".to_string(),
+                    denom: "stake".to_string(),
                 },
                 TokenType::CreatorToken{
                     contract_addr: Addr::unchecked("token_contract"),
@@ -719,6 +721,8 @@ pub fn setup_pool_storage(deps: &mut OwnedDeps<MockStorage, MockApi, MockQuerier
         fee_growth_global_1: Decimal::zero(),
         total_fees_collected_0: Uint128::zero(),
         total_fees_collected_1: Uint128::zero(),
+        fee_reserve_0: Uint128::zero(),
+        fee_reserve_1: Uint128::zero(),
     };
     POOL_FEE_STATE.save(&mut deps.storage, &pool_fee_state).unwrap();
 
@@ -767,7 +771,6 @@ pub fn setup_pool_storage(deps: &mut OwnedDeps<MockStorage, MockApi, MockQuerier
 pub fn setup_pool_post_threshold(deps: &mut OwnedDeps<MockStorage, MockApi, MockQuerier>) {
     // First set up basic pool
     setup_pool_storage(deps);
-    COMMITSTATUS.save(&mut deps.storage, &Uint128::new(25_000_000_000)).unwrap();
     // Mark threshold as hit
     IS_THRESHOLD_HIT.save(&mut deps.storage, &true).unwrap();
     USD_RAISED_FROM_COMMIT.save(&mut deps.storage, &Uint128::new(25_000_000_000)).unwrap(); // $25k reached
@@ -822,8 +825,11 @@ fn test_fee_calculation_after_swap() {
     let mut fee_state = POOL_FEE_STATE.load(&deps.storage).unwrap();
     fee_state.fee_growth_global_0 = Decimal::from_str("50").unwrap();
     fee_state.fee_growth_global_1 = Decimal::from_str("75").unwrap();
+    fee_state.fee_growth_global_1 = Decimal::from_str("75").unwrap();
     fee_state.total_fees_collected_0 = Uint128::new(500_000);
     fee_state.total_fees_collected_1 = Uint128::new(750_000);
+    fee_state.fee_reserve_0 = Uint128::new(1_000_000_000_000);
+    fee_state.fee_reserve_1 = Uint128::new(1_000_000_000_000);
     POOL_FEE_STATE.save(&mut deps.storage, &fee_state).unwrap();
     
     let env = mock_env();
@@ -859,6 +865,8 @@ fn test_multiple_positions_independent_fee_tracking() {
     
     let mut fee_state = POOL_FEE_STATE.load(&deps.storage).unwrap();
     fee_state.fee_growth_global_0 = Decimal::from_str("100").unwrap();
+    fee_state.fee_reserve_0 = Uint128::new(1_000_000_000_000); // Sufficient reserves
+    fee_state.fee_reserve_1 = Uint128::new(1_000_000_000_000);
     POOL_FEE_STATE.save(&mut deps.storage, &fee_state).unwrap();
     
     create_test_position(&mut deps, 2, "user2", Uint128::new(5_000_000));
@@ -870,6 +878,7 @@ fn test_multiple_positions_independent_fee_tracking() {
     
     let mut fee_state = POOL_FEE_STATE.load(&deps.storage).unwrap();
     fee_state.fee_growth_global_0 = Decimal::from_str("200").unwrap();
+    fee_state.fee_reserve_0 = Uint128::new(1_000_000_000_000); // Sufficient reserves
     POOL_FEE_STATE.save(&mut deps.storage, &fee_state).unwrap();
     
     deps.querier.update_wasm(|query| {
@@ -1135,6 +1144,8 @@ fn test_add_to_position_collects_fees_first() {
     let mut fee_state = POOL_FEE_STATE.load(&deps.storage).unwrap();
     fee_state.fee_growth_global_0 = Decimal::from_str("100").unwrap();
     fee_state.fee_growth_global_1 = Decimal::from_str("100").unwrap();
+    fee_state.fee_reserve_0 = Uint128::new(100_000_000);
+    fee_state.fee_reserve_1 = Uint128::new(100_000_000);
     POOL_FEE_STATE.save(&mut deps.storage, &fee_state).unwrap();
     
     deps.querier.update_wasm(|query| {
@@ -1164,7 +1175,7 @@ fn test_add_to_position_collects_fees_first() {
     let env = mock_env();
     let user = Addr::unchecked("liquidity_provider");
     let info = mock_info(user.as_str(), &[Coin {
-        denom: "bluechip".to_string(),
+        denom: "stake".to_string(),
         amount: Uint128::new(500_000_000),
     }]);
     
@@ -1345,7 +1356,7 @@ fn test_refund_calculation_accuracy() {
     let sent_token = Uint128::new(1_000_000_000); // 1k
     
     let info = mock_info(user.as_str(), &[Coin {
-        denom: "bluechip".to_string(),
+        denom: "stake".to_string(),
         amount: sent_bluechip,
     }]);
     
@@ -1717,4 +1728,157 @@ pub fn create_test_position(
         }
     }
 
+use cosmwasm_std::from_json;
+use cw721::Cw721QueryMsg;
+
+#[test]
+fn test_fee_distribution_proportional() {
+    let mut deps = mock_dependencies();
+    setup_pool_post_threshold(&mut deps);
+
+    // Initial pool state: 23.5k bluechip, 350k token
+    // Create 3 LPs with different shares
+    // LP1: 10%
+    // LP2: 20%
+    // LP3: 70% (of the new liquidity added, not total pool which includes seed)
     
+    // First, let's mock the NFT contract responses for all of them
+    deps.querier.update_wasm(|query| {
+        match query {
+            WasmQuery::Smart { contract_addr, msg } => {
+                if contract_addr == "nft_contract" {
+                    // Try to decode it to Cw721QueryMsg
+                    if let Ok(Cw721QueryMsg::OwnerOf { token_id, .. }) = from_json::<Cw721QueryMsg>(msg) {
+                        let owner = match token_id.as_str() {
+                            "2" => "lp1",
+                            "3" => "lp2",
+                            _ => "any_user",
+                        };
+                        return SystemResult::Ok(ContractResult::Ok(
+                            to_json_binary(&cw721::OwnerOfResponse {
+                                owner: owner.to_string(),
+                                approvals: vec![],
+                            }).unwrap()
+                        ));
+                    }
+                    
+                    // Fallback
+                    SystemResult::Ok(ContractResult::Ok(
+                        to_json_binary(&cw721::OwnerOfResponse {
+                            owner: "any_user".to_string(),
+                            approvals: vec![],
+                        }).unwrap()
+                    ))
+                } else {
+                    SystemResult::Err(SystemError::InvalidRequest {
+                        error: "Unknown contract".to_string(),
+                        request: msg.clone(),
+                    })
+                }
+            }
+            _ => SystemResult::Err(SystemError::InvalidRequest {
+                error: "Unknown query type".to_string(),
+                request: Binary::default(),
+            }),
+        }
+    });
+
+    let lp1 = Addr::unchecked("lp1");
+    let lp2 = Addr::unchecked("lp2");
+    
+    // LP1 deposits 1_000_000 bluechip + proportional token (Optimal size -> 1.0 multiplier)
+    let info1 = mock_info("lp1", &[Coin { denom: "stake".to_string(), amount: Uint128::new(1_000_000) }]);
+    execute_deposit_liquidity(deps.as_mut(), mock_env(), info1, lp1.clone(), Uint128::new(1_000_000), Uint128::new(15_000_000), None, None, None).unwrap();
+    
+    // LP2 deposits 2_000_000 bluechip + proportional token (2x LP1, also > Optimal -> 1.0 multiplier)
+    let info2 = mock_info("lp2", &[Coin { denom: "stake".to_string(), amount: Uint128::new(2_000_000) }]);
+    execute_deposit_liquidity(deps.as_mut(), mock_env(), info2, lp2.clone(), Uint128::new(2_000_000), Uint128::new(30_000_000), None, None, None).unwrap();
+
+    // Now generate some fees
+    // Fee is 0.3%
+    let mut pool_fee_state = POOL_FEE_STATE.load(&deps.storage).unwrap();
+    pool_fee_state.fee_growth_global_0 = pool_fee_state.fee_growth_global_0 + Decimal::from_ratio(300_000u128, 1_000_000u128); // Arbitrary growth
+    pool_fee_state.total_fees_collected_0 += Uint128::new(300_000);
+    pool_fee_state.fee_reserve_0 += Uint128::new(100_000_000); // Set high to avoid reserve cap limit during test
+    POOL_FEE_STATE.save(&mut deps.storage, &pool_fee_state).unwrap();
+
+    // Collect fees for LP1
+    // LP1 has position ID "2" (1 is seed, 2 is LP1, 3 is LP2)
+    let res1 = execute_collect_fees(deps.as_mut(), mock_env(), mock_info("lp1", &[]), "2".to_string()).unwrap();
+    
+    // Collect fees for LP2
+    let res2 = execute_collect_fees(deps.as_mut(), mock_env(), mock_info("lp2", &[]), "3".to_string()).unwrap();
+
+    let fee1 = res1.attributes.iter().find(|a| a.key == "fees_0").unwrap().value.parse::<u128>().unwrap();
+    let fee2 = res2.attributes.iter().find(|a| a.key == "fees_0").unwrap().value.parse::<u128>().unwrap();
+
+    // LP2 should have roughly 2x fees of LP1
+    // Note: Exact calculation depends on total liquidity including seed, but the ratio between LP1 and LP2 added liquidity is exact.
+    // Since they entered at same time (effectively, before fee growth), their share of *subsequent* fees should be proportional to their liquidity.
+    
+    // Let's verify LP2 > LP1
+    assert!(fee2 > fee1);
+    
+    // And roughly 2x (allow small rounding diffs)
+    let ratio = fee2 as f64 / fee1 as f64;
+    assert!(ratio > 1.9 && ratio < 2.1, "Fee ratio {} should be close to 2.0", ratio);
+}
+
+
+
+    
+#[test]
+fn test_deposit_underpayment_overflow() {
+    let mut deps = mock_dependencies();
+    setup_pool_post_threshold(&mut deps);
+    
+    let env = mock_env();
+    let user = Addr::unchecked("liquidity_provider");
+    
+    // Pool state to mimic production conditions (ratio 1:35M)
+    // We assume setup_pool_post_threshold sets up some basic liquidity.
+    // We will update the state to the ratio that causes issues.
+    {
+        let mut pool_state = POOL_STATE.load(deps.as_ref().storage).unwrap();
+        pool_state.reserve0 = Uint128::new(10020);
+        pool_state.reserve1 = Uint128::new(350000700698);
+        pool_state.total_liquidity = Uint128::new(59101);
+        POOL_STATE.save(deps.as_mut().storage, &pool_state).unwrap();
+    }
+    
+    // Attempt: high tokens (9.9B), low stake (10).
+    // ratio = 350000700698 / 10020 = 34,930,209 tokens/stake.
+    // Need: 9.9B / 34.9M ~ 285 stake.
+    // actual_amount0 = 285. paid = 10.
+    
+    let bluechip_amount = Uint128::new(10); 
+    let token_amount = Uint128::new(9_984_614_792); 
+    
+    let info = mock_info(user.as_str(), &[Coin {
+        denom: "stake".to_string(),
+        amount: bluechip_amount,
+    }]);
+    
+    let res = execute_deposit_liquidity(
+        deps.as_mut(),
+        env,
+        info,
+        user.clone(),
+        bluechip_amount,
+        token_amount,
+        None, 
+        None, 
+        None,
+    );
+    
+    match res {
+        Ok(r) => {
+             // Expect success with limited amount0
+             let amount0 = r.attributes.iter().find(|a| a.key == "actual_amount0").unwrap().value.clone();
+             assert_eq!(amount0, "10", "Should limit usage to available bluechip (10)");
+        },
+        Err(e) => {
+            panic!("Should have succeeded but failed with: {:?}", e);
+        }
+    }
+}

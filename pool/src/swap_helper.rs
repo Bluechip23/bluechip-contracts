@@ -5,9 +5,16 @@ use crate::error::ContractError;
 use crate::generic_helpers::decimal2decimal256;
 
 use crate::state::{PoolState, POOL_INFO};
+use cosmwasm_schema::cw_serde;
 use cosmwasm_std::{Decimal, Decimal256, Deps, Fraction, StdError, StdResult, Uint128, Uint256};
 use pool_factory_interfaces::{ConversionResponse, FactoryQueryMsg};
 use std::str::FromStr;
+
+// Wrapper for factory queries to match the factory's QueryMsg structure
+#[cw_serde]
+enum FactoryQueryWrapper {
+    InternalBlueChipOracleQuery(FactoryQueryMsg),
+}
 
 // calculates swap amounts using constant product formula (x * y = k)
 pub fn compute_swap(
@@ -20,41 +27,52 @@ pub fn compute_swap(
     let ask_pool: Uint256 = ask_pool.into();
     let offer_amount: Uint256 = offer_amount.into();
     let commission_rate = decimal2decimal256(commission_rate)?;
-    
+
     // constant product - use checked math
-    let cp: Uint256 = offer_pool
-        .checked_mul(ask_pool)
-        .map_err(|e| StdError::generic_err(format!("Overflow calculating constant product: {}", e)))?;
+    let cp: Uint256 = offer_pool.checked_mul(ask_pool).map_err(|e| {
+        StdError::generic_err(format!("Overflow calculating constant product: {}", e))
+    })?;
 
     let return_amount: Uint256 = (Decimal256::from_ratio(ask_pool, 1u8)
-        - Decimal256::from_ratio(cp, offer_pool
-            .checked_add(offer_amount)
-            .map_err(|e| StdError::generic_err(format!("Overflow in pool calculation: {}", e)))?))
-        .numerator()
+        - Decimal256::from_ratio(
+            cp,
+            offer_pool.checked_add(offer_amount).map_err(|e| {
+                StdError::generic_err(format!("Overflow in pool calculation: {}", e))
+            })?,
+        ))
+    .numerator()
         / Decimal256::one().denominator();
 
     // calculate spread - use checked math
     let price_ratio = Decimal256::from_ratio(ask_pool, offer_pool);
-    let spread_amount: Uint256 = offer_amount
+    // calculate spread - saturate to zero if actual > ideal (can happen with rounding)
+    let ideal_return = offer_amount
         .checked_mul(price_ratio.numerator())
         .map_err(|e| StdError::generic_err(format!("Overflow calculating spread: {}", e)))?
         .checked_div(price_ratio.denominator())
-        .map_err(|e| StdError::generic_err(format!("Division error calculating spread: {}", e)))?
-        .checked_sub(return_amount)
-        .map_err(|e| StdError::generic_err(format!("Underflow calculating spread: {}", e)))?;
-    
+        .map_err(|e| StdError::generic_err(format!("Division error calculating spread: {}", e)))?;
+
+    // If return_amount > ideal (favorable rounding), spread is zero
+    let spread_amount: Uint256 = if ideal_return > return_amount {
+        ideal_return - return_amount
+    } else {
+        Uint256::zero()
+    };
+
     // calculate commission - use checked math
     let commission_amount: Uint256 = return_amount
         .checked_mul(commission_rate.numerator())
         .map_err(|e| StdError::generic_err(format!("Overflow calculating commission: {}", e)))?
         .checked_div(commission_rate.denominator())
-        .map_err(|e| StdError::generic_err(format!("Division error calculating commission: {}", e)))?;
-    
+        .map_err(|e| {
+            StdError::generic_err(format!("Division error calculating commission: {}", e))
+        })?;
+
     // subtract commission from return amount - use checked math
     let final_return_amount: Uint256 = return_amount
         .checked_sub(commission_amount)
         .map_err(|e| StdError::generic_err(format!("Underflow subtracting commission: {}", e)))?;
-    
+
     Ok((
         final_return_amount.try_into()?,
         spread_amount.try_into()?,
@@ -102,9 +120,9 @@ pub fn get_usd_value(deps: Deps, bluechip_amount: Uint128) -> StdResult<Uint128>
 
     let response: ConversionResponse = deps.querier.query_wasm_smart(
         factory_address.factory_addr,
-        &FactoryQueryMsg::ConvertBluechipToUsd {
+        &FactoryQueryWrapper::InternalBlueChipOracleQuery(FactoryQueryMsg::ConvertBluechipToUsd {
             amount: bluechip_amount,
-        },
+        }),
     )?;
 
     Ok(response.amount)
@@ -115,7 +133,9 @@ pub fn get_bluechip_value(deps: Deps, usd_amount: Uint128) -> StdResult<Uint128>
 
     let response: ConversionResponse = deps.querier.query_wasm_smart(
         factory_address.factory_addr,
-        &FactoryQueryMsg::ConvertUsdToBluechip { amount: usd_amount },
+        &FactoryQueryWrapper::InternalBlueChipOracleQuery(FactoryQueryMsg::ConvertUsdToBluechip {
+            amount: usd_amount,
+        }),
     )?;
 
     Ok(response.amount)
@@ -134,32 +154,36 @@ pub fn compute_offer_amount(
     let ask_pool: Uint256 = ask_pool.into();
     let ask_amount: Uint256 = ask_amount.into();
     let commission_rate = decimal2decimal256(commission_rate)?;
-    
+
     // Calculate ask_amount before commission is applied
     // ask_amount_with_commission = ask_amount / (1 - commission _rate)
     let one_minus_commission = Decimal256::one() - commission_rate;
-   let ask_amount_before_commission = (Decimal256::from_ratio(ask_amount, 1u8) 
-    / one_minus_commission).numerator() / Decimal256::one().denominator();
-    
+    let ask_amount_before_commission =
+        (Decimal256::from_ratio(ask_amount, 1u8) / one_minus_commission).numerator()
+            / Decimal256::one().denominator();
+
     let cp: Uint256 = offer_pool * ask_pool;
-    let new_ask_pool = ask_pool.checked_sub(ask_amount_before_commission)
+    let new_ask_pool = ask_pool
+        .checked_sub(ask_amount_before_commission)
         .map_err(|_| StdError::generic_err("Insufficient liquidity in pool"))?;
-    
-    let new_offer_pool = cp.checked_div(new_ask_pool)
+
+    let new_offer_pool = cp
+        .checked_div(new_ask_pool)
         .map_err(|_| StdError::generic_err("Division error"))?;
-    
-    let offer_amount = new_offer_pool.checked_sub(offer_pool)
+
+    let offer_amount = new_offer_pool
+        .checked_sub(offer_pool)
         .map_err(|_| StdError::generic_err("Invalid offer amount calculation"))?;
-    
+
     // Calculate spread amount (price impact)
     // spread = offer_amount - (ask_amount_before_commission * offer_pool / ask_pool)
     let expected_offer_amount = ask_amount_before_commission * offer_pool / ask_pool;
     let spread_amount: Uint256 = offer_amount.saturating_sub(expected_offer_amount);
-    
+
     // Calculate commission on the ask amount
-    let commission_amount: Uint256 = ask_amount_before_commission * commission_rate.numerator() 
-        / commission_rate.denominator();
-    
+    let commission_amount: Uint256 =
+        ask_amount_before_commission * commission_rate.numerator() / commission_rate.denominator();
+
     Ok((
         //amount trader must offer
         offer_amount.try_into()?,
@@ -194,15 +218,24 @@ pub fn assert_max_spread(
             .checked_sub(return_amount)
             .unwrap_or_else(|_| Uint128::zero());
 
+        if expected_return.is_zero() {
+            return Err(ContractError::MaxSpreadAssertion {});
+        }
+
         if return_amount < expected_return
             && Decimal::from_ratio(spread_amount, expected_return) > max_spread
         {
             return Err(ContractError::MaxSpreadAssertion {});
         }
-    } else
-    //use calculated spread amount from swap computation
-    if Decimal::from_ratio(spread_amount, return_amount + spread_amount) > max_spread {
-        return Err(ContractError::MaxSpreadAssertion {});
+    } else {
+        let total_amount = return_amount + spread_amount;
+        if total_amount.is_zero() {
+            return Err(ContractError::MaxSpreadAssertion {});
+        }
+        //use calculated spread amount from swap computation
+        if Decimal::from_ratio(spread_amount, total_amount) > max_spread {
+            return Err(ContractError::MaxSpreadAssertion {});
+        }
     }
 
     Ok(())

@@ -24,8 +24,9 @@ pub const POOL_CREATION_STATES: Map<u64, PoolCreationState> = Map::new("creation
 pub const PYTH_CONTRACT_ADDR: &str =
     "neutron1m2emc93m9gpwgsrsf2vylv9xvgqh654630v7dfrhrkmr5slly53spg85wv";
 //direct feed used from pyth contract that exposes ATOM/USD price
-pub const ATOM_USD_PRICE_FEED_ID: &str =
-    "0xb00b60f88b03a6a625a8d1c048c3f66653edf217439983d037e7222c4e612819";
+//pub const ATOM_USD_PRICE_FEED_ID: &str =
+//  "0xb00b60f88b03a6a625a8d1c048c3f66653edf217439983d037e7222c4e612819";
+pub const ATOM_USD_PRICE_FEED_ID: &str = "ATOM_USD";
 pub const MAX_PRICE_AGE_SECONDS_BEFORE_STALE: u64 = 3000;
 pub const ATOM_BLUECHIP_ANCHOR_POOL_ADDRESS: Item<Addr> = Item::new("atom_pool_address");
 pub const POOL_REGISTRY: Map<u64, Addr> = Map::new("pool_registry");

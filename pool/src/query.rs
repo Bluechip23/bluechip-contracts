@@ -8,7 +8,7 @@ use crate::msg::{
     SimulationResponse,
 };
 use crate::state::{
-    PoolDetails, COMMITFEEINFO, COMMITSTATUS, COMMIT_LIMIT_INFO, IS_THRESHOLD_HIT, POOLS,
+    PoolDetails, COMMITFEEINFO, COMMIT_LIMIT_INFO, IS_THRESHOLD_HIT, POOLS,
     POOL_FEE_STATE, POOL_INFO, POOL_STATE, USD_RAISED_FROM_COMMIT,
 };
 use crate::state::{COMMIT_INFO, LIQUIDITY_POSITIONS, NEXT_POSITION_ID};
@@ -235,9 +235,11 @@ pub fn query_fee_info(deps: Deps) -> StdResult<FeeInfoResponse> {
 }
 
 pub fn query_check_commit(deps: Deps) -> StdResult<bool> {
+    if IS_THRESHOLD_HIT.load(deps.storage)? {
+        return Ok(true);
+    }
     let commit_info = COMMIT_LIMIT_INFO.load(deps.storage)?;
-    let usd_raised = COMMITSTATUS.load(deps.storage)?;
-    // true once we've raised at least the USD threshold
+    let usd_raised = USD_RAISED_FROM_COMMIT.load(deps.storage)?;
     Ok(usd_raised >= commit_info.commit_amount_for_threshold_usd)
 }
 
@@ -411,6 +413,7 @@ pub fn query_pool_commiters(
             last_payment_usd: commiting.last_payment_usd,
             last_commited: commiting.last_commited,
             total_paid_usd: commiting.total_paid_usd,
+            total_paid_bluechip: commiting.total_paid_bluechip,
         });
 
         count += 1;

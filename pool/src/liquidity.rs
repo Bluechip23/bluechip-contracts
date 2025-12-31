@@ -33,7 +33,7 @@ pub fn execute_deposit_liquidity(
 ) -> Result<Response, ContractError> {
     enforce_transaction_deadline(env.block.time, transaction_deadline)?;
 
-    const NATIVE_DENOM: &str = "bluechip";
+    const NATIVE_DENOM: &str = "stake";
     let paid_bluechip = info
         .funds
         .iter()
@@ -43,9 +43,18 @@ pub fn execute_deposit_liquidity(
     // calculate actual amounts needed to maintain pool ratio
     let (liquidity, actual_amount0, actual_amount1) =
         calc_liquidity_for_deposit(deps.as_ref(), amount0, amount1)?;
+
+    deps.api.debug(&format!(
+        "DEBUG_DEPOSIT: paid={}, actual0={}",
+        paid_bluechip, actual_amount0
+    ));
+
     // Ensure the user sent enough bluechip tokens
     if paid_bluechip < actual_amount0 {
-        return Err(ContractError::InvalidNativeAmount {});
+        return Err(ContractError::InvalidNativeAmount {
+            expected: actual_amount0,
+            actual: paid_bluechip,
+        });
     }
     //slippage check
     if let Some(min0) = min_amount0 {
@@ -53,7 +62,7 @@ pub fn execute_deposit_liquidity(
             return Err(ContractError::SlippageExceeded {
                 expected: min0,
                 actual: actual_amount0,
-                token: "bluechip".to_string(),
+                token: "stake".to_string(),
             });
         }
     }
@@ -100,7 +109,18 @@ pub fn execute_deposit_liquidity(
     }
 
     // Refund excess bluechip tokens
-    let refund_amount = paid_bluechip.checked_sub(actual_amount0)?;
+    // Handle edge case where paid might be slightly less than actual due to rounding
+    deps.api.debug(&format!(
+        "DEBUG_REFUND: paid={}, actual0={}",
+        paid_bluechip, actual_amount0
+    ));
+
+    let refund_amount = if paid_bluechip > actual_amount0 {
+        paid_bluechip - actual_amount0
+    } else {
+        Uint128::zero()
+    };
+
     if !refund_amount.is_zero() {
         let refund_msg = BankMsg::Send {
             to_address: info.sender.to_string(),
@@ -186,7 +206,7 @@ pub fn execute_collect_fees(
     info: MessageInfo,
     position_id: String,
 ) -> Result<Response, ContractError> {
-    let pool_fee_state = POOL_FEE_STATE.load(deps.storage)?;
+    let mut pool_fee_state = POOL_FEE_STATE.load(deps.storage)?;
     let pool_info = POOL_INFO.load(deps.storage)?;
     let mut pool_state = POOL_STATE.load(deps.storage)?;
     verify_position_ownership(
@@ -210,16 +230,21 @@ pub fn execute_collect_fees(
         liquidity_position.fee_size_multiplier,
     );
 
+    let fees_owed_0 = fees_owed_0.min(pool_fee_state.fee_reserve_0);
+    let fees_owed_1 = fees_owed_1.min(pool_fee_state.fee_reserve_1);
+
     liquidity_position.fee_growth_inside_0_last = pool_fee_state.fee_growth_global_0;
     liquidity_position.fee_growth_inside_1_last = pool_fee_state.fee_growth_global_1;
     liquidity_position.last_fee_collection = env.block.time.seconds();
 
     update_price_accumulator(&mut pool_state, env.block.time.seconds())?;
-    pool_state.reserve0 = pool_state.reserve0.checked_sub(fees_owed_0)?;
-    pool_state.reserve1 = pool_state.reserve1.checked_sub(fees_owed_1)?;
+    pool_fee_state.fee_reserve_0 = pool_fee_state.fee_reserve_0.checked_sub(fees_owed_0)?;
+    pool_fee_state.fee_reserve_1 = pool_fee_state.fee_reserve_1.checked_sub(fees_owed_1)?;
 
     LIQUIDITY_POSITIONS.save(deps.storage, &position_id, &liquidity_position)?;
     POOL_STATE.save(deps.storage, &pool_state)?;
+    POOL_FEE_STATE.save(deps.storage, &pool_fee_state)?;
+
     let mut response = Response::new()
         .add_attribute("action", "collect_fees")
         .add_attribute("position_id", position_id)
@@ -230,7 +255,7 @@ pub fn execute_collect_fees(
         let bluechip_msg = BankMsg::Send {
             to_address: info.sender.to_string(),
             amount: vec![Coin {
-                denom: "bluechip".to_string(),
+                denom: "stake".to_string(),
                 amount: fees_owed_0,
             }],
         };
@@ -269,7 +294,7 @@ pub fn add_to_position(
 ) -> Result<Response, ContractError> {
     enforce_transaction_deadline(env.block.time, transaction_deadline)?;
 
-    const NATIVE_DENOM: &str = "bluechip";
+    const NATIVE_DENOM: &str = "stake";
     let paid_bluechip = info
         .funds
         .iter()
@@ -277,7 +302,7 @@ pub fn add_to_position(
         .map(|c| c.amount)
         .unwrap_or_default();
 
-    let pool_fee_state = POOL_FEE_STATE.load(deps.storage)?;
+    let mut pool_fee_state = POOL_FEE_STATE.load(deps.storage)?;
     let pool_info = POOL_INFO.load(deps.storage)?;
     let mut pool_state = POOL_STATE.load(deps.storage)?;
     //make sure position belongs to wallet sending new funds
@@ -292,7 +317,10 @@ pub fn add_to_position(
         calc_liquidity_for_deposit(deps.as_ref(), amount0, amount1)?;
 
     if paid_bluechip < actual_amount0 {
-        return Err(ContractError::InvalidNativeAmount {});
+        return Err(ContractError::InvalidNativeAmount {
+            expected: actual_amount0,
+            actual: paid_bluechip,
+        });
     }
     let mut liquidity_position = LIQUIDITY_POSITIONS.load(deps.storage, &position_id)?;
     let mut messages: Vec<CosmosMsg> = vec![];
@@ -310,13 +338,16 @@ pub fn add_to_position(
         liquidity_position.fee_growth_inside_1_last,
         liquidity_position.fee_size_multiplier,
     );
+
+    let fees_owed_0 = fees_owed_0.min(pool_fee_state.fee_reserve_0);
+    let fees_owed_1 = fees_owed_1.min(pool_fee_state.fee_reserve_1);
     //check slippage
     if let Some(min0) = min_amount0 {
         if actual_amount0 < min0 {
             return Err(ContractError::SlippageExceeded {
                 expected: min0,
                 actual: actual_amount0,
-                token: "bluechip".to_string(),
+                token: "stake".to_string(),
             });
         }
     }
@@ -344,7 +375,12 @@ pub fn add_to_position(
         messages.push(CosmosMsg::Wasm(transfer_cw20_msg));
     }
 
-    let refund_amount = paid_bluechip.checked_sub(actual_amount0)?;
+    let refund_amount = if paid_bluechip > actual_amount0 {
+        paid_bluechip - actual_amount0
+    } else {
+        Uint128::zero()
+    };
+
     if !refund_amount.is_zero() {
         let refund_msg = BankMsg::Send {
             to_address: info.sender.to_string(),
@@ -367,8 +403,8 @@ pub fn add_to_position(
 
     update_price_accumulator(&mut pool_state, env.block.time.seconds())?;
     // subtract fees
-    pool_state.reserve0 = pool_state.reserve0.checked_sub(fees_owed_0)?;
-    pool_state.reserve1 = pool_state.reserve1.checked_sub(fees_owed_1)?;
+    pool_fee_state.fee_reserve_0 = pool_fee_state.fee_reserve_0.checked_sub(fees_owed_0)?;
+    pool_fee_state.fee_reserve_1 = pool_fee_state.fee_reserve_1.checked_sub(fees_owed_1)?;
 
     // add actual deposit amounts
     pool_state.reserve0 = pool_state.reserve0.checked_add(actual_amount0)?;
@@ -376,6 +412,7 @@ pub fn add_to_position(
 
     POOL_STATE.save(deps.storage, &pool_state)?;
     LIQUIDITY_POSITIONS.save(deps.storage, &position_id, &liquidity_position)?;
+    POOL_FEE_STATE.save(deps.storage, &pool_fee_state)?;
     let mut response = Response::new()
         .add_messages(messages)
         .add_attribute("action", "add_to_position")
@@ -426,7 +463,7 @@ pub fn remove_all_liquidity(
     min_amount1: Option<Uint128>,
     max_ratio_deviation_bps: Option<u16>,
 ) -> Result<Response, ContractError> {
-    let pool_fee_state = POOL_FEE_STATE.load(deps.storage)?;
+    let mut pool_fee_state = POOL_FEE_STATE.load(deps.storage)?;
     let pool_info = POOL_INFO.load(deps.storage)?;
     let mut pool_state = POOL_STATE.load(deps.storage)?;
 
@@ -452,7 +489,7 @@ pub fn remove_all_liquidity(
             return Err(ContractError::SlippageExceeded {
                 expected: min0,
                 actual: user_share_0,
-                token: "bluechip".to_string(),
+                token: "stake".to_string(),
             });
         }
     }
@@ -522,6 +559,8 @@ pub fn remove_all_liquidity(
         liquidity_position.fee_growth_inside_1_last,
         liquidity_position.fee_size_multiplier,
     );
+    let fees_owed_0 = fees_owed_0.min(pool_fee_state.fee_reserve_0);
+    let fees_owed_1 = fees_owed_1.min(pool_fee_state.fee_reserve_1);
 
     let total_amount_0 = user_share_0 + fees_owed_0;
     let total_amount_1 = user_share_1 + fees_owed_1;
@@ -530,29 +569,35 @@ pub fn remove_all_liquidity(
     pool_state.total_liquidity = pool_state
         .total_liquidity
         .checked_sub(liquidity_to_subtract)?;
-
-    let burn_msg = WasmMsg::Execute {
-        contract_addr: pool_info.position_nft_address.to_string(),
-        msg: to_json_binary(&cw721::Cw721ExecuteMsg::Burn {
-            token_id: position_id.clone(),
-        })?,
-        funds: vec![],
-    };
-    let messages = vec![CosmosMsg::Wasm(burn_msg)];
+    /*
+        let burn_msg = WasmMsg::Execute {
+            contract_addr: pool_info.position_nft_address.to_string(),
+            msg: to_json_binary(&cw721::Cw721ExecuteMsg::Burn {
+                token_id: position_id.clone(),
+            })?,
+            funds: vec![],
+        };
+        let messages = vec![CosmosMsg::Wasm(burn_msg)];
+    */
+    // Note: We don't burn the NFT because the pool contract is not the owner.
+    // The NFT remains with the user as a historical record of the position.
+    // If burning is desired, the user can manually burn it after removal.
+    let messages: Vec<CosmosMsg> = vec![];
 
     //update pool fees, collect fees, and reserve prices
     liquidity_position.fee_growth_inside_0_last = pool_fee_state.fee_growth_global_0;
     liquidity_position.fee_growth_inside_1_last = pool_fee_state.fee_growth_global_1;
-    
+
     update_price_accumulator(&mut pool_state, env.block.time.seconds())?;
     pool_state.reserve0 = pool_state.reserve0.checked_sub(user_share_0)?;
     pool_state.reserve1 = pool_state.reserve1.checked_sub(user_share_1)?;
     // subtract fees
-    pool_state.reserve0 = pool_state.reserve0.checked_sub(fees_owed_0)?;
-    pool_state.reserve1 = pool_state.reserve1.checked_sub(fees_owed_1)?;
-    
+    pool_fee_state.fee_reserve_0 = pool_fee_state.fee_reserve_0.checked_sub(fees_owed_0)?;
+    pool_fee_state.fee_reserve_1 = pool_fee_state.fee_reserve_1.checked_sub(fees_owed_1)?;
+
     POOL_STATE.save(deps.storage, &pool_state)?;
     LIQUIDITY_POSITIONS.remove(deps.storage, &position_id);
+    POOL_FEE_STATE.save(deps.storage, &pool_fee_state)?;
 
     let mut response = Response::new()
         .add_messages(messages)
@@ -573,7 +618,7 @@ pub fn remove_all_liquidity(
         let bluechip_msg = BankMsg::Send {
             to_address: info.sender.to_string(),
             amount: vec![Coin {
-                denom: "bluechip".to_string(),
+                denom: "stake".to_string(),
                 amount: total_amount_0,
             }],
         };
@@ -612,7 +657,7 @@ pub fn remove_partial_liquidity(
     let mut liquidity_position = LIQUIDITY_POSITIONS.load(deps.storage, &position_id)?;
     let pool_info = POOL_INFO.load(deps.storage)?;
     let mut pool_state = POOL_STATE.load(deps.storage)?;
-    let pool_fee_state = POOL_FEE_STATE.load(deps.storage)?;
+    let mut pool_fee_state = POOL_FEE_STATE.load(deps.storage)?;
 
     verify_position_ownership(
         deps.as_ref(),
@@ -671,12 +716,15 @@ pub fn remove_partial_liquidity(
         .checked_div(pool_state.total_liquidity)
         .map_err(|_| ContractError::DivideByZero)?;
 
+    let fees_owed_0 = fees_owed_0.min(pool_fee_state.fee_reserve_0);
+    let fees_owed_1 = fees_owed_1.min(pool_fee_state.fee_reserve_1);
+
     if let Some(min0) = min_amount0 {
         if withdrawal_amount_0 < min0 {
             return Err(ContractError::SlippageExceeded {
                 expected: min0,
                 actual: withdrawal_amount_0,
-                token: "bluechip".to_string(),
+                token: "stake".to_string(),
             });
         }
     }
@@ -748,13 +796,14 @@ pub fn remove_partial_liquidity(
     pool_state.reserve0 = pool_state.reserve0.checked_sub(withdrawal_amount_0)?;
     pool_state.reserve1 = pool_state.reserve1.checked_sub(withdrawal_amount_1)?;
     // subtract fees
-    pool_state.reserve0 = pool_state.reserve0.checked_sub(fees_owed_0)?;
-    pool_state.reserve1 = pool_state.reserve1.checked_sub(fees_owed_1)?;
+    pool_fee_state.fee_reserve_0 = pool_fee_state.fee_reserve_0.checked_sub(fees_owed_0)?;
+    pool_fee_state.fee_reserve_1 = pool_fee_state.fee_reserve_1.checked_sub(fees_owed_1)?;
 
     pool_state.total_liquidity = pool_state
         .total_liquidity
         .checked_sub(liquidity_to_remove)?;
     POOL_STATE.save(deps.storage, &pool_state)?;
+    POOL_FEE_STATE.save(deps.storage, &pool_fee_state)?;
 
     liquidity_position.last_fee_collection = env.block.time.seconds();
 
@@ -786,7 +835,7 @@ pub fn remove_partial_liquidity(
         let bluechip_msg = BankMsg::Send {
             to_address: info.sender.to_string(),
             amount: vec![Coin {
-                denom: "bluechip".to_string(),
+                denom: "stake".to_string(),
                 amount: total_amount_0,
             }],
         };

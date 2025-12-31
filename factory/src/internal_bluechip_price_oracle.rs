@@ -1,5 +1,10 @@
 use crate::{
-    asset::TokenType, error::ContractError, pyth_types::{PythPriceFeedResponse, PythQueryMsg}, state::{ATOM_USD_PRICE_FEED_ID, FACTORYINSTANTIATEINFO, POOLS_BY_CONTRACT_ADDRESS, POOLS_BY_ID}
+    asset::TokenType,
+    error::ContractError,
+    pyth_types::{PriceFeedResponse, PythQueryMsg},
+    state::{
+        ATOM_USD_PRICE_FEED_ID, FACTORYINSTANTIATEINFO, POOLS_BY_CONTRACT_ADDRESS, POOLS_BY_ID,
+    },
 };
 use cosmwasm_schema::cw_serde;
 use cosmwasm_std::{
@@ -10,47 +15,52 @@ use pool_factory_interfaces::{ConversionResponse, PoolQueryMsg, PoolStateRespons
 use sha2::{Digest, Sha256};
 #[cfg(test)]
 pub const MOCK_PYTH_PRICE: Item<Uint128> = Item::new("mock_pyth_price");
-pub const ATOM_BLUECHIP_POOL_CONTRACT_ADDRESS: &str =
-    "cosmos1atom_bluechip_pool_test_addr_000000000000";
+
 pub const ORACLE_POOL_COUNT: usize = 5;
-pub const MIN_POOL_LIQUIDITY: Uint128 = Uint128::new(10_000_000_000); 
-pub const TWAP_WINDOW: u64 = 3600; 
-pub const UPDATE_INTERVAL: u64 = 300; 
-pub const ROTATION_INTERVAL: u64 = 3600; 
+pub const MIN_POOL_LIQUIDITY: Uint128 = Uint128::new(10_000_000_000);
+pub const TWAP_WINDOW: u64 = 3600;
+pub const UPDATE_INTERVAL: u64 = 300;
+pub const ROTATION_INTERVAL: u64 = 3600;
 pub const INTERNAL_ORACLE: Item<BlueChipPriceInternalOracle> = Item::new("internal_oracle");
 const PRICE_PRECISION: u128 = 1_000_000;
 
 #[cw_serde]
 pub struct BlueChipPriceInternalOracle {
-    pub selected_pools: Vec<String>, 
-    pub atom_pool_contract_address: Addr, 
-    pub last_rotation: u64,          
-    pub rotation_interval: u64,      
+    pub selected_pools: Vec<String>,
+    pub atom_pool_contract_address: Addr,
+    pub last_rotation: u64,
+    pub rotation_interval: u64,
     pub bluechip_price_cache: PriceCache,
-    pub update_interval: u64, 
+    pub update_interval: u64,
 }
 #[cw_serde]
 pub struct PriceCache {
-    pub last_price: Uint128, 
-    pub last_update: u64,    
+    pub last_price: Uint128,
+    pub last_update: u64,
     pub twap_observations: Vec<PriceObservation>,
 }
 #[cw_serde]
 pub struct PriceObservation {
     pub timestamp: u64,
-    pub price: Uint128,           
-    pub atom_pool_price: Uint128, 
+    pub price: Uint128,
+    pub atom_pool_price: Uint128,
 }
 
 pub fn select_random_pools_with_atom(
-    _deps: Deps,
-    _env: Env,
-    _num_pools: usize,
+    deps: Deps,
+    env: Env,
+    num_pools: usize,
 ) -> StdResult<Vec<String>> {
-    let atom_pool_contract_contract_address = ATOM_BLUECHIP_POOL_CONTRACT_ADDRESS.to_string();
-    
-    /* 
-    // Will be re-enabled when external prices for creator tokens are available.
+    let factory_config = FACTORYINSTANTIATEINFO.load(deps.storage)?;
+    let atom_pool_contract_contract_address =
+        factory_config.atom_bluechip_anchor_pool_address.to_string();
+
+    // Mock Mode Check: If atom pool is admin, we are in local testing
+    if factory_config.atom_bluechip_anchor_pool_address == factory_config.factory_admin_address {
+        return Ok(vec![atom_pool_contract_contract_address]);
+    }
+
+    // Real Network Logic
     let eligible_pools = get_eligible_creator_pools(deps, &atom_pool_contract_contract_address)?;
     let random_pools_needed = num_pools.saturating_sub(1);
 
@@ -91,9 +101,6 @@ pub fn select_random_pools_with_atom(
     }
 
     Ok(selected)
-    */
-    
-    Ok(vec![atom_pool_contract_contract_address])
 }
 
 pub fn initialize_internal_bluechip_oracle(
@@ -108,9 +115,10 @@ pub fn initialize_internal_bluechip_oracle(
         )));
     }
 
+    let factory_config = FACTORYINSTANTIATEINFO.load(deps.storage)?;
     let oracle = BlueChipPriceInternalOracle {
         selected_pools,
-        atom_pool_contract_address: Addr::unchecked(ATOM_BLUECHIP_POOL_CONTRACT_ADDRESS),
+        atom_pool_contract_address: factory_config.atom_bluechip_anchor_pool_address,
         last_rotation: env.block.time.seconds(),
         rotation_interval: ROTATION_INTERVAL,
         bluechip_price_cache: PriceCache {
@@ -124,7 +132,6 @@ pub fn initialize_internal_bluechip_oracle(
     INTERNAL_ORACLE.save(deps.storage, &oracle)?;
     Ok(Response::new())
 }
-
 
 pub fn get_eligible_creator_pools(
     deps: Deps,
@@ -141,19 +148,20 @@ pub fn get_eligible_creator_pools(
             continue;
         }
 
-            let pool_has_bluechip = POOLS_BY_ID
+        let pool_has_bluechip = POOLS_BY_ID
             .range(deps.storage, None, None, Order::Ascending)
             .any(|result| {
                 if let Ok((_, pool_details)) = result {
                     if pool_details.creator_pool_addr == pool_address {
-                        return pool_details.pool_token_info.iter().any(|token| {
-                            matches!(token, TokenType::Bluechip { .. })
-                        });
+                        return pool_details
+                            .pool_token_info
+                            .iter()
+                            .any(|token| matches!(token, TokenType::Bluechip { .. }));
                     }
                 }
                 false
             });
-        
+
         if !pool_has_bluechip {
             continue;
         }
@@ -161,9 +169,9 @@ pub fn get_eligible_creator_pools(
             pool_address.to_string(),
             &PoolQueryMsg::GetPoolState {
                 pool_contract_address: pool_address.to_string(),
-            }
+            },
         )?;
-        
+
         let total_liquidity = pool_state.reserve0 + pool_state.reserve1;
         if total_liquidity >= MIN_POOL_LIQUIDITY {
             eligible.push(pool_address.to_string());
@@ -171,7 +179,6 @@ pub fn get_eligible_creator_pools(
     }
     Ok(eligible)
 }
-
 
 pub fn update_internal_oracle_price(deps: DepsMut, env: Env) -> Result<Response, ContractError> {
     let mut oracle = INTERNAL_ORACLE.load(deps.storage)?;
@@ -217,11 +224,14 @@ pub fn update_internal_oracle_price(deps: DepsMut, env: Env) -> Result<Response,
         .add_attribute("pools_used", pools_to_use.len().to_string()))
 }
 
-fn calculate_weighted_price_with_atom(
+pub fn calculate_weighted_price_with_atom(
     deps: Deps,
     pool_addresses: &[String],
 ) -> Result<(Uint128, Uint128), ContractError> {
-    let atom_pool_address = ATOM_BLUECHIP_POOL_CONTRACT_ADDRESS.to_string();
+    let factory_config = FACTORYINSTANTIATEINFO
+        .load(deps.storage)
+        .map_err(|e| ContractError::Std(e))?;
+    let atom_pool_address = factory_config.atom_bluechip_anchor_pool_address.to_string();
     if !pool_addresses.contains(&atom_pool_address) {
         return Err(ContractError::MissingAtomPool {});
     }
@@ -347,87 +357,127 @@ pub fn calculate_twap(observations: &[PriceObservation]) -> Result<Uint128, Cont
     Ok(weighted_average)
 }
 pub fn query_pyth_atom_usd_price(deps: Deps, env: Env) -> StdResult<Uint128> {
-
     #[cfg(not(test))]
     {
-    let factory = FACTORYINSTANTIATEINFO.load(deps.storage)?;
-    let query_msg = PythQueryMsg::PythConversionPriceFeed {
-        id: ATOM_USD_PRICE_FEED_ID.to_string(), 
-    };
+        let factory = FACTORYINSTANTIATEINFO.load(deps.storage)?;
+        let query_msg = PythQueryMsg::PythConversionPriceFeed {
+            id: ATOM_USD_PRICE_FEED_ID.to_string(),
+        };
 
-    let response: PythPriceFeedResponse = deps
-        .querier
-        .query_wasm_smart(factory.pyth_contract_addr_for_conversions, &query_msg)?;
+        // Try the standard query first, fallback to GetPrice for local/mock oracle
+        let response: PriceFeedResponse = match deps.querier.query_wasm_smart(
+            factory.pyth_contract_addr_for_conversions.clone(),
+            &query_msg,
+        ) {
+            Ok(res) => res,
+            //used for mock oracle
+            Err(_) => {
+                let fallback_msg = PythQueryMsg::GetPrice {
+                    price_id: ATOM_USD_PRICE_FEED_ID.to_string(),
+                };
+                deps.querier
+                    .query_wasm_smart(factory.pyth_contract_addr_for_conversions, &fallback_msg)?
+            }
+        };
 
-    let current_time = env.block.time.seconds() as i64;
-    if current_time - response.price_feed.price.publish_time > 60 {
-        return Err(StdError::generic_err("ATOM price is stale"));
-    }
+        let current_time = env.block.time.seconds() as i64;
 
-    // Validate price is positive
-    if response.price_feed.price.price <= 0 {
-        return Err(StdError::generic_err("Invalid negative or zero price"));
-    }
+        // Extract price data from either standard Pyth response or Mock Oracle response
+        let price_data = if let Some(feed) = response.price_feed {
+            feed.price
+        } else if let Some(price) = response.price {
+            price
+        } else {
+            return Err(StdError::generic_err(
+                "Invalid oracle response: missing price data",
+            ));
+        };
 
-    let price_u128 = response.price_feed.price.price as u128;
-    let expo = response.price_feed.price.expo;
+        if current_time - price_data.publish_time > 60 {
+            return Err(StdError::generic_err("ATOM price is stale"));
+        }
 
-    // Validate expo is within reasonable range for price feeds
-    if expo > -4 || expo < -12 {
-        return Err(StdError::generic_err(format!(
-            "Unexpected Pyth expo: {}. Expected between -12 and -4", expo
-        )));
-    }
+        // Validate price is positive
+        if price_data.price <= 0 {
+            return Err(StdError::generic_err("Invalid negative or zero price"));
+        }
 
-    // Normalize to 6 decimals (system standard)
-    let normalized_price = if expo == -6 {
-        Uint128::from(price_u128)
-    } else if expo < -6 {
-        let divisor = 10u128.pow((expo.abs() - 6) as u32);
-        Uint128::from(price_u128 / divisor)
-    } else {
-        let multiplier = 10u128.pow((6 - expo.abs()) as u32);
-        Uint128::from(price_u128 * multiplier)
-    };
+        let price_u128 = price_data.price as u128;
+        let expo = price_data.expo;
 
-    Ok(normalized_price)
+        // Validate expo is within reasonable range for price feeds
+        if expo > -4 || expo < -12 {
+            return Err(StdError::generic_err(format!(
+                "Unexpected Pyth expo: {}. Expected between -12 and -4",
+                expo
+            )));
+        }
+
+        // Normalize to 6 decimals (system standard)
+        let normalized_price = if expo == -6 {
+            Uint128::from(price_u128)
+        } else if expo < -6 {
+            let divisor = 10u128.pow((expo.abs() - 6) as u32);
+            Uint128::from(price_u128 / divisor)
+        } else {
+            let multiplier = 10u128.pow((6 - expo.abs()) as u32);
+            Uint128::from(price_u128 * multiplier)
+        };
+
+        Ok(normalized_price)
     }
     #[cfg(test)]
     {
-        let mock_price = MOCK_PYTH_PRICE.may_load(deps.storage)?
+        let mock_price = MOCK_PYTH_PRICE
+            .may_load(deps.storage)?
             .unwrap_or(Uint128::new(10_000_000)); // Default $10
         Ok(mock_price)
     }
 }
 
-
 pub fn get_bluechip_usd_price(deps: Deps, env: Env) -> StdResult<Uint128> {
     let atom_usd_price = query_pyth_atom_usd_price(deps, env)?;
-    
-    // Load the internal oracle to get the TWAP of Bluechip/ATOM
-    let oracle = INTERNAL_ORACLE.load(deps.storage).map_err(|_| {
-        StdError::generic_err("Internal oracle not initialized")
-    })?;
-    
-    let bluechip_per_atom_twap = oracle.bluechip_price_cache.last_price;
-    
-    if bluechip_per_atom_twap.is_zero() {
-        return Err(StdError::generic_err("TWAP price is zero - oracle may need update"));
+
+    // Check for Mock/Local Mode
+    let factory_config = FACTORYINSTANTIATEINFO.load(deps.storage)?;
+    if factory_config.atom_bluechip_anchor_pool_address == factory_config.factory_admin_address {
+        // BYPASS INTERNAL ORACLE FOR LOCAL TESTING
+        return Ok(atom_usd_price);
     }
-    
+
+    // Load the internal oracle to get the TWAP of Bluechip/ATOM
+    let oracle = INTERNAL_ORACLE
+        .load(deps.storage)
+        .map_err(|_| StdError::generic_err("Internal oracle not initialized"))?;
+
+    let bluechip_per_atom_twap = oracle.bluechip_price_cache.last_price;
+
+    if bluechip_per_atom_twap.is_zero() {
+        return Err(StdError::generic_err(
+            "TWAP price is zero - oracle may need update",
+        ));
+    }
+
     // Calculate USD price using TWAP
     // bluechip_usd_price = atom_usd_price / bluechip_per_atom_twap
     // Units: (USD/ATOM) / (Bluechip/ATOM) = USD/Bluechip
     let bluechip_usd_price = atom_usd_price
         .checked_mul(Uint128::from(PRICE_PRECISION))
-        .map_err(|e| StdError::generic_err(format!("Overflow calculating bluechip USD price: {}", e)))?
+        .map_err(|e| {
+            StdError::generic_err(format!("Overflow calculating bluechip USD price: {}", e))
+        })?
         .checked_div(bluechip_per_atom_twap)
-        .map_err(|e| StdError::generic_err(format!("Division error calculating bluechip USD price: {}", e)))?;
-    
+        .map_err(|e| {
+            StdError::generic_err(format!(
+                "Division error calculating bluechip USD price: {}",
+                e
+            ))
+        })?;
+
     if bluechip_usd_price.is_zero() {
         return Err(StdError::generic_err("Calculated bluechip price is zero"));
     }
-    
+
     Ok(bluechip_usd_price)
 }
 
@@ -438,42 +488,51 @@ pub fn bluechip_to_usd(
 ) -> StdResult<ConversionResponse> {
     let oracle = INTERNAL_ORACLE.load(deps.storage)?;
     let cached_price = get_bluechip_usd_price(deps, env)?;
-    
+
     if cached_price.is_zero() {
         return Err(StdError::generic_err("Invalid zero price"));
     }
-    
+
     let usd_amount = bluechip_amount
-        .checked_mul(Uint128::from(PRICE_PRECISION))
-        .map_err(|e| StdError::generic_err(format!("Overflow in bluechip to USD conversion: {}", e)))?
-        .checked_div(cached_price)
-        .map_err(|e| StdError::generic_err(format!("Division error in bluechip to USD conversion: {}", e)))?;
-    
+        .checked_mul(cached_price)
+        .map_err(|e| {
+            StdError::generic_err(format!("Overflow in bluechip to USD conversion: {}", e))
+        })?
+        .checked_div(Uint128::from(PRICE_PRECISION))
+        .map_err(|e| {
+            StdError::generic_err(format!(
+                "Division error in bluechip to USD conversion: {}",
+                e
+            ))
+        })?;
+
     Ok(ConversionResponse {
         amount: usd_amount,
         rate_used: cached_price,
         timestamp: oracle.bluechip_price_cache.last_update,
     })
 }
-
-pub fn usd_to_bluechip(
-    deps: Deps,
-    usd_amount: Uint128,
-    env: Env,
-) -> StdResult<ConversionResponse> {
+pub fn usd_to_bluechip(deps: Deps, usd_amount: Uint128, env: Env) -> StdResult<ConversionResponse> {
     let oracle = INTERNAL_ORACLE.load(deps.storage)?;
     let cached_price = get_bluechip_usd_price(deps, env)?;
-    
+
     if cached_price.is_zero() {
         return Err(StdError::generic_err("Invalid zero price"));
     }
-    
+
     let bluechip_amount = usd_amount
         .checked_mul(Uint128::from(PRICE_PRECISION))
-        .map_err(|e| StdError::generic_err(format!("Overflow in USD to bluechip conversion: {}", e)))?
+        .map_err(|e| {
+            StdError::generic_err(format!("Overflow in USD to bluechip conversion: {}", e))
+        })?
         .checked_div(cached_price)
-        .map_err(|e| StdError::generic_err(format!("Division error in USD to bluechip conversion: {}", e)))?;
-    
+        .map_err(|e| {
+            StdError::generic_err(format!(
+                "Division error in USD to bluechip conversion: {}",
+                e
+            ))
+        })?;
+
     Ok(ConversionResponse {
         amount: bluechip_amount,
         rate_used: cached_price,
@@ -530,14 +589,16 @@ fn query_pool_safe(
                 msg: format!("Failed to query pool {}: {}", pool_address, e),
             })
     }
-    
+
     #[cfg(test)]
     {
-        let addr = deps.api.addr_validate(pool_address)
+        let addr = deps
+            .api
+            .addr_validate(pool_address)
             .map_err(|e| ContractError::QueryError {
                 msg: format!("Invalid pool address {}: {}", pool_address, e),
             })?;
-        
+
         POOLS_BY_CONTRACT_ADDRESS
             .load(deps.storage, addr)
             .map_err(|_| ContractError::QueryError {
@@ -568,4 +629,3 @@ pub fn execute_force_rotate_pools(
         .add_attribute("action", "force_rotate_pools")
         .add_attribute("pools_count", new_pools.len().to_string()))
 }
-

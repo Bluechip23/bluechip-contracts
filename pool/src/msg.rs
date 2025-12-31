@@ -215,6 +215,7 @@ pub struct CommiterInfo {
     pub last_payment_usd: Uint128,
     pub last_commited: Timestamp,
     pub total_paid_usd: Uint128,
+    pub total_paid_bluechip: Uint128,
 }
 #[cw_serde]
 pub struct CommitFeeInfo {

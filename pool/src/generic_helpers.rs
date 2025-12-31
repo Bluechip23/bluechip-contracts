@@ -32,13 +32,15 @@ pub fn update_pool_fee_growth(
     let fee_growth = Decimal::from_ratio(commission_amt, pool_state.total_liquidity);
 
     if offer_contract_addressx == 0 {
-        // Token0 offered, fees collected in token0
-        pool_fee_state.fee_growth_global_0 += fee_growth;
-        pool_fee_state.total_fees_collected_0 += commission_amt;
-    } else {
-        // Token1 offered, fees collected in token1
+        // Token0 offered → Token1 is ask → fees in token1
         pool_fee_state.fee_growth_global_1 += fee_growth;
         pool_fee_state.total_fees_collected_1 += commission_amt;
+        pool_fee_state.fee_reserve_1 = pool_fee_state.fee_reserve_1.checked_add(commission_amt)?;
+    } else {
+        // Token1 offered → Token0 is ask → fees in token0
+        pool_fee_state.fee_growth_global_0 += fee_growth;
+        pool_fee_state.total_fees_collected_0 += commission_amt;
+        pool_fee_state.fee_reserve_0 = pool_fee_state.fee_reserve_0.checked_add(commission_amt)?;
     }
 
     Ok(())
@@ -369,7 +371,7 @@ pub fn process_distribution_batch(
                             // Try to create mint message
                             match mint_tokens(&pool_info.token_address, payer, reward) {
                                 Ok(msg) => msgs.push(msg),
-                                Err(e) => {
+                                Err(_e) => {
                                     continue;
                                 }
                             }
