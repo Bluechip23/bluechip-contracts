@@ -614,22 +614,14 @@ fn test_concurrent_threshold_crossing_attempts() {
         .unwrap();
 
     // Second user tries to commit while first is processing
-<<<<<<< HEAD
-    let info2 = mock_info("user2", &[Coin {
-        denom: "stake".to_string(),
-        amount: Uint128::new(2_000_000),
-    }]);
-    
-=======
     let info2 = mock_info(
         "user2",
         &[Coin {
-            denom: "bluechip".to_string(),
+            denom: "stake".to_string(),
             amount: Uint128::new(2_000_000),
         }],
     );
 
->>>>>>> 7c3b659 (removed cw721_base adn cw20_base for contract optimization)
     let msg = ExecuteMsg::Commit {
         asset: TokenInfo {
             info: TokenType::Bluechip {
@@ -822,26 +814,20 @@ fn test_concurrent_threshold_crossing_race_condition() {
     with_factory_oracle(&mut deps, Uint128::new(1_000_000));
 
     // User 1 commits enough to cross
-<<<<<<< HEAD
-    let info1 = mock_info("user1", &[Coin { denom: "stake".to_string(), amount: Uint128::new(2_000_000) }]);
-    let msg1 = ExecuteMsg::Commit {
-        asset: TokenInfo { info: TokenType::Bluechip { denom: "stake".to_string() }, amount: Uint128::new(2_000_000) },
-=======
     let info1 = mock_info(
         "user1",
         &[Coin {
-            denom: "bluechip".to_string(),
+            denom: "stake".to_string(),
             amount: Uint128::new(2_000_000),
         }],
     );
     let msg1 = ExecuteMsg::Commit {
         asset: TokenInfo {
             info: TokenType::Bluechip {
-                denom: "bluechip".to_string(),
+                denom: "stake".to_string(),
             },
             amount: Uint128::new(2_000_000),
         },
->>>>>>> 7c3b659 (removed cw721_base adn cw20_base for contract optimization)
         amount: Uint128::new(2_000_000),
         transaction_deadline: None,
         belief_price: None,
@@ -849,17 +835,13 @@ fn test_concurrent_threshold_crossing_race_condition() {
     };
 
     // User 2 commits enough to cross (simulating same block execution)
-<<<<<<< HEAD
-    let info2 = mock_info("user2", &[Coin { denom: "stake".to_string(), amount: Uint128::new(2_000_000) }]);
-=======
     let info2 = mock_info(
         "user2",
         &[Coin {
-            denom: "bluechip".to_string(),
+            denom: "stake".to_string(),
             amount: Uint128::new(2_000_000),
         }],
     );
->>>>>>> 7c3b659 (removed cw721_base adn cw20_base for contract optimization)
     let msg2 = msg1.clone();
 
     // Execute User 1 - Should trigger threshold
@@ -872,30 +854,7 @@ fn test_concurrent_threshold_crossing_race_condition() {
         .any(|a| a.key == "phase" && a.value == "threshold_crossing"));
     assert_eq!(IS_THRESHOLD_HIT.load(&deps.storage).unwrap(), true);
 
-    // Execute User 2 - Should NOT trigger threshold again, but should be processed as post-threshold commit/swap
-    // Note: In real chain, this would happen sequentially. If User 1 finishes, IS_THRESHOLD_HIT is true.
-    // So User 2 should see IS_THRESHOLD_HIT = true and process as swap (or fail if pool paused/transitioning).
-    // The contract logic for Commit checks IS_THRESHOLD_HIT. If true, it might fail or process differently.
-    // Let's see what Commit does when threshold is hit.
-    // Looking at contract.rs: Commit -> execute_commit_logic -> ...
-    // If threshold hit, it usually returns error or processes differently?
-    // Actually, Commit is only for pre-threshold. If threshold is hit, Commit might fail or redirect?
-    // Let's check contract.rs...
-    // Ah, I can't check contract.rs right now easily without scrolling.
-    // But typically Commit is for pre-threshold. Post-threshold should use Swap.
-    // However, if the UI sends Commit, and it lands after threshold, the contract should probably handle it gracefully or reject.
-    // Let's assume it rejects or handles it. The test will verify *what* it does.
-
-    // But wait, if User 1 sets THRESHOLD_PROCESSING = true (which it does during the crossing if it's async/multi-stage, but here it seems synchronous in one tx?),
-    // In `test_commit_threshold_overshoot_split`, THRESHOLD_PROCESSING is cleared at the end.
-    // So User 2 sees IS_THRESHOLD_HIT = true.
-
     let res2 = execute(deps.as_mut(), env.clone(), info2, msg2);
-
-    // If Commit is called after threshold is hit, what happens?
-    // Based on `execute_commit_logic` in `contract.rs` (from memory/previous reads), it checks `query_check_commit`.
-    // If `query_check_commit` returns true (threshold met), `Commit` might be disabled?
-    // Let's verify if it returns an error or processes as swap.
 
     match res2 {
         Ok(res) => {
@@ -912,8 +871,4 @@ fn test_concurrent_threshold_crossing_race_condition() {
             println!("User 2 failed with: {:?}", e);
         }
     }
-
-    // Verify payouts
-    // User 1 should have got some refund/swap tokens
-    // User 2 (if failed) got nothing (tx reverted). If succeeded, got tokens.
 }
