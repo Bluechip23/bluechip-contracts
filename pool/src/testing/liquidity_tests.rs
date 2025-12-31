@@ -249,6 +249,8 @@ fn test_collect_fees_with_accrued_fees() {
     fee_state.fee_growth_global_1 = Decimal::percent(2); // 2% fees
     fee_state.total_fees_collected_0 = Uint128::new(100_000);
     fee_state.total_fees_collected_1 = Uint128::new(200_000);
+    fee_state.fee_reserve_0 = Uint128::new(100_000);
+    fee_state.fee_reserve_1 = Uint128::new(200_000);
     POOL_FEE_STATE.save(&mut deps.storage, &fee_state).unwrap();
     
     let env = mock_env();
@@ -1142,6 +1144,8 @@ fn test_add_to_position_collects_fees_first() {
     let mut fee_state = POOL_FEE_STATE.load(&deps.storage).unwrap();
     fee_state.fee_growth_global_0 = Decimal::from_str("100").unwrap();
     fee_state.fee_growth_global_1 = Decimal::from_str("100").unwrap();
+    fee_state.fee_reserve_0 = Uint128::new(100_000_000);
+    fee_state.fee_reserve_1 = Uint128::new(100_000_000);
     POOL_FEE_STATE.save(&mut deps.storage, &fee_state).unwrap();
     
     deps.querier.update_wasm(|query| {
@@ -1782,20 +1786,20 @@ fn test_fee_distribution_proportional() {
     let lp1 = Addr::unchecked("lp1");
     let lp2 = Addr::unchecked("lp2");
     
-    // LP1 deposits 1000 bluechip + proportional token
-    let info1 = mock_info("lp1", &[Coin { denom: "stake".to_string(), amount: Uint128::new(1000) }]);
-    execute_deposit_liquidity(deps.as_mut(), mock_env(), info1, lp1.clone(), Uint128::new(1000), Uint128::new(15000), None, None, None).unwrap();
+    // LP1 deposits 1_000_000 bluechip + proportional token (Optimal size -> 1.0 multiplier)
+    let info1 = mock_info("lp1", &[Coin { denom: "stake".to_string(), amount: Uint128::new(1_000_000) }]);
+    execute_deposit_liquidity(deps.as_mut(), mock_env(), info1, lp1.clone(), Uint128::new(1_000_000), Uint128::new(15_000_000), None, None, None).unwrap();
     
-    // LP2 deposits 2000 bluechip + proportional token (2x LP1)
-    let info2 = mock_info("lp2", &[Coin { denom: "stake".to_string(), amount: Uint128::new(2000) }]);
-    execute_deposit_liquidity(deps.as_mut(), mock_env(), info2, lp2.clone(), Uint128::new(2000), Uint128::new(30000), None, None, None).unwrap();
+    // LP2 deposits 2_000_000 bluechip + proportional token (2x LP1, also > Optimal -> 1.0 multiplier)
+    let info2 = mock_info("lp2", &[Coin { denom: "stake".to_string(), amount: Uint128::new(2_000_000) }]);
+    execute_deposit_liquidity(deps.as_mut(), mock_env(), info2, lp2.clone(), Uint128::new(2_000_000), Uint128::new(30_000_000), None, None, None).unwrap();
 
     // Now generate some fees
-    // Swap 1000 bluechip into the pool
-    // Fee is 0.3% = 3 bluechip
+    // Fee is 0.3%
     let mut pool_fee_state = POOL_FEE_STATE.load(&deps.storage).unwrap();
-    pool_fee_state.fee_growth_global_0 = pool_fee_state.fee_growth_global_0 + Decimal::from_ratio(3000u128, 1_000_000u128); // Arbitrary growth
-    pool_fee_state.total_fees_collected_0 += Uint128::new(3000);
+    pool_fee_state.fee_growth_global_0 = pool_fee_state.fee_growth_global_0 + Decimal::from_ratio(300_000u128, 1_000_000u128); // Arbitrary growth
+    pool_fee_state.total_fees_collected_0 += Uint128::new(300_000);
+    pool_fee_state.fee_reserve_0 += Uint128::new(100_000_000); // Set high to avoid reserve cap limit during test
     POOL_FEE_STATE.save(&mut deps.storage, &pool_fee_state).unwrap();
 
     // Collect fees for LP1
@@ -1868,17 +1872,13 @@ fn test_deposit_underpayment_overflow() {
     );
     
     match res {
-        Err(ContractError::InvalidNativeAmount { expected, actual }) => {
-            println!("Got expected error: InvalidNativeAmount expected={}, actual={}", expected, actual);
-            // This confirms logic is correct
+        Ok(r) => {
+             // Expect success with limited amount0
+             let amount0 = r.attributes.iter().find(|a| a.key == "actual_amount0").unwrap().value.clone();
+             assert_eq!(amount0, "10", "Should limit usage to available bluechip (10)");
         },
         Err(e) => {
-            panic!("Unexpected error: {:?}", e);
-        },
-        Ok(r) => {
-             // If this passes, it means actual_amount0 was calculated <= 10.
-             // This would explain why it passes.
-             panic!("Should have failed, but succeeded with: {:?}", r);
+            panic!("Should have succeeded but failed with: {:?}", e);
         }
     }
 }

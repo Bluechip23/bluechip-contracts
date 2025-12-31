@@ -371,7 +371,7 @@ pub fn process_distribution_batch(
                             // Try to create mint message
                             match mint_tokens(&pool_info.token_address, payer, reward) {
                                 Ok(msg) => msgs.push(msg),
-                                Err(e) => {
+                                Err(_e) => {
                                     continue;
                                 }
                             }

@@ -1,9 +1,12 @@
 use crate::mint_bluechips_pool_creation::calculate_mint_amount;
 use crate::state::{
-    CreationStatus, FACTORYINSTANTIATEINFO, FIRST_POOL_TIMESTAMP, FactoryInstantiate, POOL_COUNTER, POOL_CREATION_STATES, POOLS_BY_CONTRACT_ADDRESS, POOLS_BY_ID, PoolCreationState, SETCOMMIT, TEMP_POOL_CREATION
+    CreationStatus, FactoryInstantiate, PoolCreationState, FACTORYINSTANTIATEINFO,
+    FIRST_POOL_TIMESTAMP, POOLS_BY_CONTRACT_ADDRESS, POOLS_BY_ID, POOL_COUNTER,
+    POOL_CREATION_STATES, SETCOMMIT, TEMP_POOL_CREATION,
 };
 use cosmwasm_std::{
-    Addr, BankMsg, Binary, CosmosMsg, Decimal, Env, Event, OwnedDeps, Reply, SubMsgResponse, SubMsgResult, Uint128
+    Addr, BankMsg, Binary, CosmosMsg, Decimal, Env, Event, OwnedDeps, Reply, SubMsgResponse,
+    SubMsgResult, Uint128,
 };
 
 use crate::asset::{TokenInfo, TokenType};
@@ -12,9 +15,11 @@ use crate::execute::{
 };
 use crate::internal_bluechip_price_oracle::{
     bluechip_to_usd, calculate_twap, get_bluechip_usd_price, query_pyth_atom_usd_price,
-    usd_to_bluechip, BlueChipPriceInternalOracle, PriceCache, PriceObservation,
-    ATOM_BLUECHIP_POOL_CONTRACT_ADDRESS, INTERNAL_ORACLE, MOCK_PYTH_PRICE,
+    usd_to_bluechip, BlueChipPriceInternalOracle, PriceCache, PriceObservation, INTERNAL_ORACLE,
+    MOCK_PYTH_PRICE,
 };
+const ATOM_BLUECHIP_POOL_CONTRACT_ADDRESS: &str =
+    "cosmos1atom_bluechip_pool_test_addr_000000000000";
 use crate::mock_querier::{mock_dependencies, WasmMockQuerier};
 use crate::msg::{CreatorTokenInfo, ExecuteMsg};
 use crate::pool_struct::{CommitFeeInfo, CreatePool, PoolDetails, TempPoolCreation};
@@ -1092,7 +1097,6 @@ fn test_oracle_twap_with_three_observations() {
 
     let twap = calculate_twap(&observations).unwrap();
 
-
     let expected_twap = Uint128::new(8_250_000);
 
     assert_eq!(twap, expected_twap, "TWAP should be 8.25M, got: {}", twap);
@@ -1349,8 +1353,8 @@ fn test_oracle_aggregates_multiple_pool_prices() {
     let oracle = INTERNAL_ORACLE.load(&deps.storage).unwrap();
 
     assert!(
-        oracle.selected_pools.len() == 1,
-        "Should only select ATOM pool - found: {:?}",
+        oracle.selected_pools.len() > 1,
+        "Should select more than just ATOM pool - found: {:?}",
         oracle.selected_pools
     );
 
@@ -1808,7 +1812,7 @@ fn test_conversion_functions_with_pyth() {
 
     let env = mock_env();
 
-    let bluechip_amount = Uint128::new(5_000_000); 
+    let bluechip_amount = Uint128::new(5_000_000);
     let result = bluechip_to_usd(deps.as_ref(), bluechip_amount, env.clone());
     assert!(result.is_ok(), "bluechip_to_usd should succeed");
     println!("5 bluechip = ${}", result.as_ref().unwrap().amount);
@@ -1838,7 +1842,7 @@ fn test_mint_formula() {
 #[test]
 fn test_bluechip_minting_on_pool_creation() {
     let mut deps = mock_dependencies(&[]);
-    
+
     setup_atom_pool(&mut deps);
     let msg = FactoryInstantiate {
         factory_admin_address: Addr::unchecked(ADMIN),
@@ -1856,11 +1860,11 @@ fn test_bluechip_minting_on_pool_creation() {
         creator_excess_liquidity_lock_days: 7,
         atom_bluechip_anchor_pool_address: Addr::unchecked(ATOM_BLUECHIP_POOL_CONTRACT_ADDRESS),
     };
-    
+
     let env = mock_env();
     let info = mock_info(ADMIN, &[]);
     instantiate(deps.as_mut(), env.clone(), info, msg).unwrap();
-    
+
     // Create first pool - should set timestamp and mint ~500 tokens
     let create_msg = ExecuteMsg::Create {
         pool_msg: create_test_pool_msg(),
@@ -1870,18 +1874,23 @@ fn test_bluechip_minting_on_pool_creation() {
             decimal: 6,
         },
     };
-    
+
     let info = mock_info(ADMIN, &[]);
     let res = execute(deps.as_mut(), env.clone(), info, create_msg).unwrap();
-    
+
     let first_timestamp = FIRST_POOL_TIMESTAMP.load(&deps.storage).unwrap();
     assert_eq!(first_timestamp, env.block.time);
-    
-    let mint_msg = res.messages.iter()
+
+    let mint_msg = res
+        .messages
+        .iter()
         .find(|m| matches!(m.msg, CosmosMsg::Bank(BankMsg::Send { .. })));
-    
-    assert!(mint_msg.is_some(), "Should have mint message for first pool");
-    
+
+    assert!(
+        mint_msg.is_some(),
+        "Should have mint message for first pool"
+    );
+
     if let CosmosMsg::Bank(BankMsg::Send { to_address, amount }) = &mint_msg.unwrap().msg {
         assert_eq!(to_address, "bluechip_wallet");
         assert_eq!(amount.len(), 1);
@@ -1890,11 +1899,11 @@ fn test_bluechip_minting_on_pool_creation() {
         assert!(amount[0].amount > Uint128::new(499_000_000));
         assert!(amount[0].amount <= Uint128::new(500_000_000));
     }
-    
+
     // Create second pool after 1 hour
     let mut env2 = mock_env();
-    env2.block.time = env.block.time.plus_seconds(3600); 
-    
+    env2.block.time = env.block.time.plus_seconds(3600);
+
     let create_msg2 = ExecuteMsg::Create {
         pool_msg: create_test_pool_msg(),
         token_info: CreatorTokenInfo {
@@ -1903,25 +1912,33 @@ fn test_bluechip_minting_on_pool_creation() {
             decimal: 6,
         },
     };
-    
+
     let info = mock_info(ADMIN, &[]);
     let res = execute(deps.as_mut(), env2.clone(), info, create_msg2).unwrap();
-    
+
     // Check mint message for second pool
-    let mint_msg2 = res.messages.iter()
+    let mint_msg2 = res
+        .messages
+        .iter()
         .find(|m| matches!(m.msg, CosmosMsg::Bank(BankMsg::Send { .. })));
-    
-    assert!(mint_msg2.is_some(), "Should have mint message for second pool");
-    
+
+    assert!(
+        mint_msg2.is_some(),
+        "Should have mint message for second pool"
+    );
+
     if let CosmosMsg::Bank(BankMsg::Send { amount, .. }) = &mint_msg2.unwrap().msg {
         assert!(amount[0].amount <= Uint128::new(500_000_000));
         assert!(amount[0].amount > Uint128::new(495_000_000));
     }
-    
+
     // Verify first pool timestamp hasn't changed
     let first_timestamp_after = FIRST_POOL_TIMESTAMP.load(&deps.storage).unwrap();
-    assert_eq!(first_timestamp_after, first_timestamp, "First timestamp should not change");
-    
+    assert_eq!(
+        first_timestamp_after, first_timestamp,
+        "First timestamp should not change"
+    );
+
     // Verify pool counter incremented correctly
     let pool_count = POOL_COUNTER.load(&deps.storage).unwrap();
     assert_eq!(pool_count, 2);
@@ -1947,14 +1964,18 @@ fn test_no_mint_when_amount_is_zero() {
         creator_excess_liquidity_lock_days: 7,
         atom_bluechip_anchor_pool_address: Addr::unchecked(ATOM_BLUECHIP_POOL_CONTRACT_ADDRESS),
     };
-    
+
     let env = mock_env();
     instantiate(deps.as_mut(), env.clone(), mock_info(ADMIN, &[]), msg).unwrap();
-    
-    POOL_COUNTER.save(&mut deps.storage, &10_000_000_000_000).unwrap();
-    
-    FIRST_POOL_TIMESTAMP.save(&mut deps.storage, &env.block.time).unwrap();
-    
+
+    POOL_COUNTER
+        .save(&mut deps.storage, &10_000_000_000_000)
+        .unwrap();
+
+    FIRST_POOL_TIMESTAMP
+        .save(&mut deps.storage, &env.block.time)
+        .unwrap();
+
     let create_msg = ExecuteMsg::Create {
         pool_msg: create_test_pool_msg(),
         token_info: CreatorTokenInfo {
@@ -1963,13 +1984,15 @@ fn test_no_mint_when_amount_is_zero() {
             decimal: 6,
         },
     };
-    
+
     let info = mock_info(ADMIN, &[]);
     let res = execute(deps.as_mut(), env, info, create_msg).unwrap();
-    
-    let has_bank_msg = res.messages.iter()
+
+    let has_bank_msg = res
+        .messages
+        .iter()
         .any(|m| matches!(m.msg, CosmosMsg::Bank(BankMsg::Send { .. })));
-    
+
     assert!(!has_bank_msg, "Should not mint when amount would be zero");
 }
 

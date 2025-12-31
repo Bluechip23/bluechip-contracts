@@ -21,6 +21,7 @@ use crate::{
     },
     testing::liquidity_tests::{setup_pool_post_threshold, setup_pool_storage},
 };
+use cosmwasm_schema::cw_serde;
 use cosmwasm_std::{
     from_json,
     testing::{
@@ -32,6 +33,11 @@ use cosmwasm_std::{
 };
 use cw20::Cw20ReceiveMsg;
 use pool_factory_interfaces::{ConversionResponse, FactoryQueryMsg};
+
+#[cw_serde]
+enum FactoryQueryWrapper {
+    InternalBlueChipOracleQuery(FactoryQueryMsg),
+}
 fn mock_dependencies_with_balance(
     balances: &[Coin],
 ) -> OwnedDeps<MockStorage, MockApi, MockQuerier> {
@@ -40,14 +46,17 @@ fn mock_dependencies_with_balance(
         .update_balance(MOCK_CONTRACT_ADDR, balances.to_vec());
     deps
 }
+
 pub fn with_factory_oracle(
     deps: &mut OwnedDeps<MockStorage, MockApi, MockQuerier>,
     bluechip_to_usd_rate: Uint128,
 ) {
     deps.querier.update_wasm(move |query| match query {
         WasmQuery::Smart { contract_addr, msg } => {
-            if contract_addr == "factory_contract" {
-                if let Ok(factory_query) = from_json::<FactoryQueryMsg>(msg) {
+            if contract_addr == "factory_contract" || contract_addr == "factory" {
+                if let Ok(FactoryQueryWrapper::InternalBlueChipOracleQuery(factory_query)) =
+                    from_json::<FactoryQueryWrapper>(msg)
+                {
                     match factory_query {
                         FactoryQueryMsg::ConvertBluechipToUsd { amount } => {
                             let intermediate = match amount.checked_mul(bluechip_to_usd_rate) {

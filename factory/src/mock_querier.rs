@@ -1,9 +1,9 @@
 #![cfg(not(target_arch = "wasm32"))]
 
-
 use cosmwasm_std::testing::{MockApi, MockQuerier, MockStorage, MOCK_CONTRACT_ADDR};
 use cosmwasm_std::{
-    from_json, to_json_binary, Addr, Coin, Empty, OwnedDeps, Querier, QuerierResult, QueryRequest, SystemError, SystemResult, WasmQuery
+    from_json, to_json_binary, Addr, Coin, Empty, OwnedDeps, Querier, QuerierResult, QueryRequest,
+    SystemError, SystemResult, WasmQuery,
 };
 use pool_factory_interfaces::{PoolQueryMsg, PoolStateResponseForFactory};
 use std::collections::HashMap;
@@ -73,7 +73,9 @@ impl WasmMockQuerier {
                 // Try parsing as PoolQueryMsg first (for pool contract queries)
                 if let Ok(pool_msg) = from_json::<PoolQueryMsg>(&msg) {
                     match pool_msg {
-                        PoolQueryMsg::GetPoolState { pool_contract_address } => {
+                        PoolQueryMsg::GetPoolState {
+                            pool_contract_address,
+                        } => {
                             let pool_state = PoolStateResponseForFactory {
                                 pool_contract_address: Addr::unchecked(&pool_contract_address),
                                 nft_ownership_accepted: true,
@@ -94,10 +96,10 @@ impl WasmMockQuerier {
                         }
                     }
                 }
-                
+
                 if let Ok(factory_msg) = from_json::<QueryMsg>(&msg) {
                     match factory_msg {
-                        QueryMsg::Pool { pool_address } => {
+                        QueryMsg::Pool { pool_address: _ } => {
                             let pair_info: PoolDetails =
                                 match self.betfi_pair_querier.pairs.get(contract_addr) {
                                     Some(v) => v.clone(),
@@ -112,7 +114,7 @@ impl WasmMockQuerier {
                         _ => panic!("Unsupported factory query"),
                     }
                 }
-                
+
                 // If neither parse succeeded
                 SystemResult::Err(SystemError::InvalidRequest {
                     error: "Could not parse query message".to_string(),

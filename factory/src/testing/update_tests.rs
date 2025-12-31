@@ -8,7 +8,8 @@ use cosmwasm_std::{
 use crate::asset::TokenType;
 use crate::error::ContractError;
 use crate::execute::{execute, instantiate};
-use crate::internal_bluechip_price_oracle::ATOM_BLUECHIP_POOL_CONTRACT_ADDRESS;
+const ATOM_BLUECHIP_POOL_CONTRACT_ADDRESS: &str =
+    "cosmos1atom_bluechip_pool_test_addr_000000000000";
 use crate::mock_querier::WasmMockQuerier;
 use crate::msg::ExecuteMsg;
 use crate::pool_struct::{CommitFeeInfo, PoolConfigUpdate, PoolDetails};

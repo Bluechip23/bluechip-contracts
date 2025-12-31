@@ -787,8 +787,17 @@ pub fn execute_commit_logic(
         return Err(ContractError::InvalidOraclePrice {});
     }
 
+    // Identify valid bluechip denom from pool config
+    let bluechip_denom = match &pool_info.pool_info.asset_infos[0] {
+        TokenType::Bluechip { denom } => denom.clone(),
+        _ => match &pool_info.pool_info.asset_infos[1] {
+            TokenType::Bluechip { denom } => denom.clone(),
+            _ => return Err(ContractError::AssetMismatch {}),
+        },
+    };
+
     match &asset.info {
-        TokenType::Bluechip { denom } if denom == "stake" => {
+        TokenType::Bluechip { denom } if denom == &bluechip_denom => {
             // Verify funds were actually sent
             let sent = info
                 .funds
@@ -1188,7 +1197,7 @@ fn process_pre_threshold_commit(
         Ok(v.unwrap_or_default() + usd_value)
     })?;
     // Update total USD raised
-    let usd_total =
+    let _usd_total =
         USD_RAISED_FROM_COMMIT.update::<_, ContractError>(deps.storage, |r| Ok(r + usd_value))?;
     NATIVE_RAISED_FROM_COMMIT.update::<_, ContractError>(deps.storage, |r| Ok(r + asset.amount))?;
 
