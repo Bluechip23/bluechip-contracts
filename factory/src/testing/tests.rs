@@ -277,6 +277,7 @@ fn create_pair() {
                 creator_token_address: Addr::unchecked("WILL_BE_CREATED_BY_FACTORY"),
                 max_bluechip_lock_per_pool: Uint128::new(10_000_000_000),
                 creator_excess_liquidity_lock_days: 7,
+                is_standard_pool: None,
             },
             token_info: CreatorTokenInfo {
                 name: "Test Token".to_string(),
@@ -350,6 +351,7 @@ fn test_create_pair_with_custom_params() {
             creator_token_address: Addr::unchecked("WILL_BE_CREATED_BY_FACTORY"),
             max_bluechip_lock_per_pool: Uint128::new(10_000_000_000),
             creator_excess_liquidity_lock_days: 7,
+            is_standard_pool: None,
         },
         token_info: CreatorTokenInfo {
             name: "Custom Token".to_string(),
@@ -396,6 +398,7 @@ fn create_pool_msg(name: &str) -> ExecuteMsg {
             creator_token_address: Addr::unchecked("WILL_BE_CREATED_BY_FACTORY"),
             max_bluechip_lock_per_pool: Uint128::new(10_000_000_000),
             creator_excess_liquidity_lock_days: 7,
+            is_standard_pool: None,
         },
         token_info: CreatorTokenInfo {
             name: name.to_string(),
@@ -567,6 +570,7 @@ fn test_complete_pool_creation_flow() {
         creator_token_address: Addr::unchecked("token0000"),
         max_bluechip_lock_per_pool: Uint128::new(10_000_000_000),
         creator_excess_liquidity_lock_days: 7,
+        is_standard_pool: None,
     };
 
     let create_msg = ExecuteMsg::Create {
@@ -770,6 +774,7 @@ fn test_reply_handling() {
         creator_token_address: Addr::unchecked("token0000"),
         max_bluechip_lock_per_pool: Uint128::new(10_000_000_000),
         creator_excess_liquidity_lock_days: 7,
+        is_standard_pool: None,
     };
 
     let pool_context = TempPoolCreation {
@@ -2023,5 +2028,6 @@ fn create_test_pool_msg() -> CreatePool {
         creator_token_address: Addr::unchecked("WILL_BE_CREATED_BY_FACTORY"),
         max_bluechip_lock_per_pool: Uint128::new(10_000_000_000),
         creator_excess_liquidity_lock_days: 7,
+        is_standard_pool: None,
     }
 }

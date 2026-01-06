@@ -26,6 +26,7 @@ pub struct CreatePoolReplyMsg {
     pub position_nft_address: Addr,
     pub max_bluechip_lock_per_pool: Uint128,
     pub creator_excess_liquidity_lock_days: u64,
+    pub is_standard_pool: Option<bool>,
 }
 
 #[cw_serde]

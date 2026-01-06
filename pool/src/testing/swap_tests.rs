@@ -1275,6 +1275,7 @@ fn test_factory_impersonation_prevented() {
         commit_threshold_limit_usd: Uint128::new(350_000_000_000),
         position_nft_address: Addr::unchecked("NFT_contract"),
         token_address: Addr::unchecked("token_contract"),
+        is_standard_pool: None,
     };
     let info = mock_info("fake_factory", &[]); // Wrong sender!
     let err = instantiate(deps.as_mut(), mock_env(), info, msg).unwrap_err();

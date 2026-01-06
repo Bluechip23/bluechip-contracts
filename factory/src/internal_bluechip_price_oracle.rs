@@ -1,11 +1,9 @@
-use crate::{
-    asset::TokenType,
-    error::ContractError,
-    pyth_types::{PriceFeedResponse, PythQueryMsg},
-    state::{
-        ATOM_USD_PRICE_FEED_ID, FACTORYINSTANTIATEINFO, POOLS_BY_CONTRACT_ADDRESS, POOLS_BY_ID,
-    },
-};
+#[cfg(not(test))]
+use crate::pyth_types::{PriceFeedResponse, PythQueryMsg};
+#[cfg(not(test))]
+use crate::state::ATOM_USD_PRICE_FEED_ID;
+use crate::state::{FACTORYINSTANTIATEINFO, POOLS_BY_CONTRACT_ADDRESS, POOLS_BY_ID};
+use crate::{asset::TokenType, error::ContractError};
 use cosmwasm_schema::cw_serde;
 use cosmwasm_std::{
     Addr, Deps, DepsMut, Env, MessageInfo, Order, Response, StdError, StdResult, Uint128, Uint256,
@@ -436,7 +434,7 @@ pub fn query_pyth_atom_usd_price(deps: Deps, env: Env) -> StdResult<Uint128> {
 }
 
 pub fn get_bluechip_usd_price(deps: Deps, env: Env) -> StdResult<Uint128> {
-    let atom_usd_price = query_pyth_atom_usd_price(deps, env)?;
+    let atom_usd_price = query_pyth_atom_usd_price(deps, env.clone())?;
 
     // Check for Mock/Local Mode
     let factory_config = FACTORYINSTANTIATEINFO.load(deps.storage)?;

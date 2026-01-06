@@ -28,6 +28,7 @@ pub struct CreatePool {
     pub pyth_atom_usd_price_feed_id: String,
     pub max_bluechip_lock_per_pool: Uint128,
     pub creator_excess_liquidity_lock_days: u64,
+    pub is_standard_pool: Option<bool>,
 }
 #[cw_serde]
 pub struct PoolConfigUpdate {

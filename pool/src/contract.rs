@@ -81,16 +81,27 @@ pub fn instantiate(
     {
         return Err(ContractError::InvalidFee {});
     }
-    let threshold_payouts = if let Some(params_binary) = msg.threshold_payout {
-        let params: ThresholdPayoutAmounts = from_json(&params_binary)?;
-        //make sure params match - no funny business with token minting.
-        //checks total value and predetermined amounts for creator, BlueChip, original subscribers (commit amount), and the pool itself
-        validate_pool_threshold_payments(&params)?;
-        params
+    let is_standard_pool = msg.is_standard_pool.unwrap_or(false);
+
+    let threshold_payout_amounts = if is_standard_pool {
+        ThresholdPayoutAmounts {
+            creator_reward_amount: Uint128::zero(),
+            bluechip_reward_amount: Uint128::zero(),
+            pool_seed_amount: Uint128::zero(),
+            commit_return_amount: Uint128::zero(),
+        }
     } else {
-        return Err(ContractError::InvalidThresholdParams {
-            msg: format!("Your params could not be validated during pool instantiation."),
-        });
+        if let Some(params_binary) = msg.threshold_payout {
+            let params: ThresholdPayoutAmounts = from_json(&params_binary)?;
+            //make sure params match - no funny business with token minting.
+            //checks total value and predetermined amounts for creator, BlueChip, original subscribers (commit amount), and the pool itself
+            validate_pool_threshold_payments(&params)?;
+            params
+        } else {
+            return Err(ContractError::InvalidThresholdParams {
+                msg: format!("Your params could not be validated during pool instantiation."),
+            });
+        }
     };
     set_contract_version(deps.storage, CONTRACT_NAME, CONTRACT_VERSION)?;
 
@@ -120,13 +131,6 @@ pub fn instantiate(
         lp_fee: Decimal::permille(3),   // 0.3% LP fee
         min_commit_interval: 13,        // Minimum commit interval in seconds
         usd_payment_tolerance_bps: 100, // 1% tolerance
-    };
-
-    let threshold_payout_amounts = ThresholdPayoutAmounts {
-        creator_reward_amount: threshold_payouts.creator_reward_amount,
-        bluechip_reward_amount: threshold_payouts.bluechip_reward_amount,
-        pool_seed_amount: threshold_payouts.pool_seed_amount,
-        commit_return_amount: threshold_payouts.commit_return_amount,
     };
 
     let commit_config = CommitLimitInfo {
@@ -164,7 +168,7 @@ pub fn instantiate(
     USD_RAISED_FROM_COMMIT.save(deps.storage, &Uint128::zero())?;
     COMMITFEEINFO.save(deps.storage, &msg.commit_fee_info)?;
     NATIVE_RAISED_FROM_COMMIT.save(deps.storage, &Uint128::zero())?;
-    IS_THRESHOLD_HIT.save(deps.storage, &false)?;
+    IS_THRESHOLD_HIT.save(deps.storage, &is_standard_pool)?;
     NEXT_POSITION_ID.save(deps.storage, &0u64)?;
     POOL_INFO.save(deps.storage, &pool_info)?;
     POOL_FEE_STATE.save(deps.storage, &pool_fee_state)?;

@@ -138,6 +138,7 @@ pub fn mint_create_pool(deps: DepsMut, env: Env, msg: Reply) -> Result<Response,
                     max_bluechip_lock_per_pool: factory_config.max_bluechip_lock_per_pool,
                     creator_excess_liquidity_lock_days: factory_config
                         .creator_excess_liquidity_lock_days,
+                    is_standard_pool: pool_context.temp_pool_info.is_standard_pool,
                 })?,
                 funds: vec![],
                 admin: Some(env.contract.address.to_string()),
