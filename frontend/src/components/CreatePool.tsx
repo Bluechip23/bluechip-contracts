@@ -13,6 +13,7 @@ interface CreatePoolProps {
 const CreatePool = ({ client, address }: CreatePoolProps) => {
     const [tokenName, setTokenName] = useState('');
     const [tokenSymbol, setTokenSymbol] = useState('');
+    const [isStandardPool, setIsStandardPool] = useState(false);
     const [status, setStatus] = useState('');
     const [txHash, setTxHash] = useState('');
     const [copySuccess, setCopySuccess] = useState(false);
@@ -81,7 +82,8 @@ const CreatePool = ({ client, address }: CreatePoolProps) => {
                         pyth_contract_addr_for_conversions: 'oracle_address_placeholder', // TODO: Get from factory config
                         pyth_atom_usd_price_feed_id: 'ATOM_USD',
                         max_bluechip_lock_per_pool: DEFAULT_CONFIG.maxBluechipLock,
-                        creator_excess_liquidity_lock_days: DEFAULT_CONFIG.creatorExcessLockDays
+                        creator_excess_liquidity_lock_days: DEFAULT_CONFIG.creatorExcessLockDays,
+                        is_standard_pool: isStandardPool
                     },
                     token_info: {
                         name: tokenName,
@@ -112,6 +114,7 @@ const CreatePool = ({ client, address }: CreatePoolProps) => {
             // Clear form on success
             setTokenName('');
             setTokenSymbol('');
+            setIsStandardPool(false);
         } catch (err) {
             console.error('Full error:', err);
             setStatus('Error: ' + (err as Error).message);
@@ -153,6 +156,40 @@ const CreatePool = ({ client, address }: CreatePoolProps) => {
                         inputProps={{ maxLength: 10 }}
                     />
 
+                    <Box sx={{
+                        p: 2,
+                        border: '1px solid',
+                        borderColor: isStandardPool ? 'primary.main' : 'divider',
+                        borderRadius: 1,
+                        bgcolor: isStandardPool ? 'primary.50' : 'background.paper',
+                        cursor: 'pointer',
+                        transition: 'all 0.2s ease'
+                    }}
+                        onClick={() => setIsStandardPool(!isStandardPool)}
+                    >
+                        <Box sx={{ display: 'flex', alignItems: 'center', mb: 1 }}>
+                            <div className={`checkbox ${isStandardPool ? 'checked' : ''}`} style={{
+                                width: 20,
+                                height: 20,
+                                borderRadius: 4,
+                                border: `2px solid ${isStandardPool ? '#1976d2' : '#757575'}`,
+                                marginRight: 12,
+                                display: 'flex',
+                                alignItems: 'center',
+                                justifyContent: 'center',
+                                backgroundColor: isStandardPool ? '#1976d2' : 'transparent',
+                            }}>
+                                {isStandardPool && <span style={{ color: 'white', fontSize: 14 }}>✓</span>}
+                            </div>
+                            <Typography variant="subtitle2" sx={{ fontWeight: 'bold' }}>
+                                Create as Standard Pool
+                            </Typography>
+                        </Box>
+                        <Typography variant="caption" color="text.secondary" sx={{ display: 'block', ml: 4 }}>
+                            Skips the commit phase. Pool starts immediate with 0 liquidity. You must manually deposit liquidity to set the initial price.
+                        </Typography>
+                    </Box>
+
                     <Box sx={{ p: 2, bgcolor: 'info.light', borderRadius: 1 }}>
                         <Typography variant="subtitle2" sx={{ fontWeight: 'bold', mb: 1 }}>
                             Pool Configuration (Pre-set)
@@ -163,8 +200,7 @@ const CreatePool = ({ client, address }: CreatePoolProps) => {
                         <Typography variant="body2">• Liquidity Lock: 7 days</Typography>
                     </Box>
 
-                    <Button
-                        variant="contained"
+                    <Button variant="contained"
                         color="primary"
                         onClick={handleCreatePool}
                         disabled={!client || !address || !tokenName || !tokenSymbol}
