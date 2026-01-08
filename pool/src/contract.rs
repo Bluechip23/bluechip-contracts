@@ -15,7 +15,7 @@ use crate::liquidity::{
 use crate::liquidity_helpers::execute_claim_creator_excess;
 use crate::msg::{Cw20HookMsg, ExecuteMsg, MigrateMsg, PoolConfigUpdate, PoolInstantiateMsg};
 use crate::query::query_check_commit;
-use crate::response::MsgInstantiateContractResponse;
+// use crate::response::MsgInstantiateContractResponse;
 use crate::state::{
     CommitLimitInfo, ExpectedFactory, OracleInfo, PoolDetails, PoolFeeState, PoolInfo, PoolSpecs,
     RecoveryType, ThresholdPayoutAmounts, COMMITFEEINFO, COMMIT_LEDGER, COMMIT_LIMIT_INFO,
@@ -31,13 +31,12 @@ use crate::swap_helper::{
     assert_max_spread, compute_swap, get_bluechip_value, get_usd_value, update_price_accumulator,
 };
 use cosmwasm_std::{
-    entry_point, from_json, to_json_binary, Addr, Binary, CosmosMsg, Decimal, DepsMut, Env,
-    Fraction, MessageInfo, Reply, Response, StdError, StdResult, Storage, SubMsgResult, Timestamp,
-    Uint128, WasmMsg,
+    entry_point, from_json, to_json_binary, Addr, CosmosMsg, Decimal, DepsMut, Env, Fraction,
+    MessageInfo, Reply, Response, StdError, StdResult, Storage, Timestamp, Uint128, WasmMsg,
 };
 use cw2::set_contract_version;
 use cw20::{Cw20ExecuteMsg, Cw20ReceiveMsg};
-use protobuf::Message;
+// use protobuf::Message;
 use std::vec;
 // The default swap slippage
 pub const DEFAULT_SLIPPAGE: &str = "0.005";
@@ -539,23 +538,11 @@ pub fn execute_swap_cw20(
 #[cfg_attr(not(feature = "library"), entry_point)]
 pub fn reply(deps: DepsMut, _env: Env, msg: Reply) -> Result<Response, ContractError> {
     if msg.id == 42 {
-        let res = match msg.result {
-            SubMsgResult::Ok(res) => res,
-            SubMsgResult::Err(err) => {
-                return Err(StdError::generic_err(format!("submsg error: {err}")).into())
-            }
-        };
-        let data: Binary = res
-            .data
-            .ok_or_else(|| StdError::not_found("instantiate data"))?;
-        let parsed: MsgInstantiateContractResponse = Message::parse_from_bytes(data.as_slice())
-            .map_err(|_| {
-                StdError::parse_err(
-                    "MsgInstantiateContractResponse",
-                    "invalid instantiate reply data",
-                )
-            })?;
-        let lp: Addr = deps.api.addr_validate(parsed.get_contract_address())?;
+        let res =
+            cw_utils::parse_instantiate_response_data(msg.result.unwrap().data.unwrap().as_slice())
+                .map_err(|e| StdError::generic_err(format!("parse error: {}", e)))?;
+
+        let lp: Addr = deps.api.addr_validate(&res.contract_address)?;
 
         POOL_INFO.update(deps.storage, |pool_info| -> Result<_, ContractError> {
             Ok(pool_info)
