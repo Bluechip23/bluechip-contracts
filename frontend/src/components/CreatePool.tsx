@@ -4,7 +4,7 @@ import ContentCopyIcon from '@mui/icons-material/ContentCopy';
 import { SigningCosmWasmClient } from '@cosmjs/cosmwasm-stargate';
 
 // Factory contract address - configured during deployment. Will need to make dynamic
-const FACTORY_ADDRESS = 'cosmos1yvgh8xeju5dyr0zxlkvq09htvhjj20fncp5g58np4u25g8rkpgjst8ghg8';
+const FACTORY_ADDRESS = import.meta.env.VITE_FACTORY_ADDRESS || 'cosmos1yvgh8xeju5dyr0zxlkvq09htvhjj20fncp5g58np4u25g8rkpgjst8ghg8';
 interface CreatePoolProps {
     client: SigningCosmWasmClient | null;
     address: string;
@@ -64,7 +64,7 @@ const CreatePool = ({ client, address }: CreatePoolProps) => {
                 create: {
                     pool_msg: {
                         pool_token_info: [
-                            { bluechip: { denom: 'stake' } },
+                            { bluechip: { denom: 'ubluechip' } },
                             { creator_token: { contract_addr: 'WILL_BE_CREATED_BY_FACTORY' } }
                         ],
                         cw20_token_contract_id: DEFAULT_CONFIG.cw20CodeId,
@@ -79,7 +79,7 @@ const CreatePool = ({ client, address }: CreatePoolProps) => {
                         creator_token_address: address, // Placeholder, will be set by factory
                         commit_amount_for_threshold: DEFAULT_CONFIG.commitAmountForThreshold,
                         commit_limit_usd: DEFAULT_CONFIG.commitThresholdUsd,
-                        pyth_contract_addr_for_conversions: 'oracle_address_placeholder', // TODO: Get from factory config
+                        pyth_contract_addr_for_conversions: import.meta.env.VITE_ORACLE_ADDRESS || 'oracle_address_placeholder',
                         pyth_atom_usd_price_feed_id: 'ATOM_USD',
                         max_bluechip_lock_per_pool: DEFAULT_CONFIG.maxBluechipLock,
                         creator_excess_liquidity_lock_days: DEFAULT_CONFIG.creatorExcessLockDays,

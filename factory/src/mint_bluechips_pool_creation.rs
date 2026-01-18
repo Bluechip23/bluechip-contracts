@@ -75,7 +75,7 @@ pub fn calculate_and_mint_bluechip(
         msgs.push(CosmosMsg::Bank(BankMsg::Send {
             to_address: config.bluechip_wallet_address.to_string(),
             amount: vec![Coin {
-                denom: "stake".to_string(),
+                denom: "ubluechip".to_string(),
                 amount: mint_amount,
             }],
         }));

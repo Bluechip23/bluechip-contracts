@@ -47,7 +47,7 @@ fn test_propose_and_execute_update_config() {
         pyth_atom_usd_price_feed_id: "ORCL".to_string(),
         cw20_token_contract_id: 10,
         create_pool_wasm_contract_id: 11,
-        bluechip_wallet_address: Addr::unchecked("stake"),
+        bluechip_wallet_address: Addr::unchecked("ubluechip"),
         commit_fee_bluechip: Decimal::from_ratio(10u128, 100u128),
         commit_fee_creator: Decimal::from_ratio(10u128, 100u128),
         max_bluechip_lock_per_pool: Uint128::new(10_000_000_000),
@@ -180,7 +180,7 @@ fn test_update_specific_pool_from_registry() {
         pool_id,
         pool_token_info: [
             TokenType::Bluechip {
-                denom: "stake".to_string(),
+                denom: "ubluechip".to_string(),
             },
             TokenType::CreatorToken {
                 contract_addr: Addr::unchecked("token"),
@@ -195,7 +195,7 @@ fn test_update_specific_pool_from_registry() {
     let admin_info = mock_info("admin", &[]);
     let pool_config = PoolConfigUpdate {
         commit_fee_info: Some(CommitFeeInfo {
-            bluechip_wallet_address: Addr::unchecked("stake"),
+            bluechip_wallet_address: Addr::unchecked("ubluechip"),
             creator_wallet_address: Addr::unchecked("creator"),
             commit_fee_bluechip: Decimal::percent(2), // Changed
             commit_fee_creator: Decimal::percent(10), // Changed
@@ -289,7 +289,7 @@ fn setup_factory(deps: &mut OwnedDeps<MockStorage, MockApi, MockQuerier>) {
         cw20_token_contract_id: 10,
         cw721_nft_contract_id: 20,
         create_pool_wasm_contract_id: 30,
-        bluechip_wallet_address: Addr::unchecked("stake"),
+        bluechip_wallet_address: Addr::unchecked("ubluechip"),
         commit_fee_bluechip: Decimal::percent(1),
         commit_fee_creator: Decimal::percent(5),
         max_bluechip_lock_per_pool: Uint128::new(10_000_000_000),

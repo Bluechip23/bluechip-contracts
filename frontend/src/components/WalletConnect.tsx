@@ -93,46 +93,46 @@ const WalletConnect: React.FC<WalletConnectProps> = ({ setClient, setAddress, se
         }
     };
 
-    const connectWallet = (): Promise<void> => {
+    const connectMainnet = (): Promise<void> => {
         const config: ChainConfig = {
-            chainId: "atlantic-2",
-            chainName: "Sei Testnet",
-            rpc: "https://rpc-testnet.sei-apis.com",
-            rest: "https://rest-testnet.sei-apis.com",
+            chainId: "bluechip-1",
+            chainName: "Bluechip Mainnet",
+            rpc: "https://bluechip.rpc.bluechip.link", // Placeholder
+            rest: "https://bluechip.api.bluechip.link", // Placeholder
             bip44: { coinType: 118 },
             bech32Config: {
-                bech32PrefixAccAddr: "sei",
-                bech32PrefixAccPub: "seipub",
-                bech32PrefixValAddr: "seivaloper",
-                bech32PrefixValPub: "seivaloperpub",
-                bech32PrefixConsAddr: "seivalcons",
-                bech32PrefixConsPub: "seivalconspub",
+                bech32PrefixAccAddr: "bluechip",
+                bech32PrefixAccPub: "bluechippub",
+                bech32PrefixValAddr: "bluechipvaloper",
+                bech32PrefixValPub: "bluechipvaloperpub",
+                bech32PrefixConsAddr: "bluechipvalcons",
+                bech32PrefixConsPub: "bluechipvalconspub",
             },
             currencies: [{
-                coinDenom: "SEI",
-                coinMinimalDenom: "usei",
+                coinDenom: "BLUECHIP",
+                coinMinimalDenom: "ubluechip",
                 coinDecimals: 6,
-                coinGeckoId: "sei-network",
+                coinGeckoId: "bluechip",
             }],
             feeCurrencies: [{
-                coinDenom: "SEI",
-                coinMinimalDenom: "usei",
+                coinDenom: "BLUECHIP",
+                coinMinimalDenom: "ubluechip",
                 coinDecimals: 6,
-                coinGeckoId: "sei-network",
-                gasPriceStep: { low: 0.1, average: 0.2, high: 0.3 },
+                coinGeckoId: "bluechip",
+                gasPriceStep: { low: 0.01, average: 0.025, high: 0.04 },
             }],
             stakeCurrency: {
-                coinDenom: "SEI",
-                coinMinimalDenom: "usei",
+                coinDenom: "BLUECHIP",
+                coinMinimalDenom: "ubluechip",
                 coinDecimals: 6,
-                coinGeckoId: "sei-network",
+                coinGeckoId: "bluechip",
             },
         };
-        return connectToChain(config, "usei");
+        return connectToChain(config, "ubluechip");
     };
 
     const connectLocalWallet = (): Promise<void> => {
-        const denom = "stake";
+        const denom = "ubluechip";
         const prefix = "cosmos";
 
         const config: ChainConfig = {
@@ -183,9 +183,9 @@ const WalletConnect: React.FC<WalletConnectProps> = ({ setClient, setAddress, se
                     <Button
                         variant="contained"
                         startIcon={<AccountBalanceWalletIcon />}
-                        onClick={connectWallet}
+                        onClick={connectMainnet}
                     >
-                        Connect Sei Testnet
+                        Connect Mainnet
                     </Button>
                     <Button
                         variant="outlined"

@@ -478,6 +478,17 @@ cargo test
 5. Initialize internal oracle
 6. Creators can now create pools
 
+### Mainnet Deployment
+
+To deploy to Bluechip Mainnet:
+
+1. Configure your wallet (ensure you have `bluechipd` CLI tool)
+2. Run the deployment script:
+   ```bash
+   ./deploy_mainnet.sh
+   ```
+3. Update specific configurations in `deploy_mainnet.sh` (Oracle address, Price Feed ID) if necessary.
+
 ---
 
 

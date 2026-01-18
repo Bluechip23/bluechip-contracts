@@ -154,7 +154,7 @@ const Liquidity: React.FC<LiquidityProps> = ({ client, address }) => {
                     gas: "500000" // Explicit gas limit
                 },
                 "Deposit Liquidity",
-                [{ denom: 'stake', amount: amount0Micro }] // Funds to transfer
+                [{ denom: 'ubluechip', amount: amount0Micro }] // Funds to transfer
             );
             console.log("Transaction Hash:", result.transactionHash);
             setStatus(`Success! Tx Hash: ${result.transactionHash}`);
@@ -348,7 +348,7 @@ const Liquidity: React.FC<LiquidityProps> = ({ client, address }) => {
                     gas: "500000" // Explicit gas limit
                 },
                 "Add to Position",
-                [{ denom: 'stake', amount: amount0Micro }]
+                [{ denom: 'ubluechip', amount: amount0Micro }]
             );
             console.log("Transaction Hash:", result.transactionHash);
             setStatus(`Success! Tx Hash: ${result.transactionHash}`);
@@ -382,7 +382,7 @@ const Liquidity: React.FC<LiquidityProps> = ({ client, address }) => {
                 {tab === 0 && (
                     <Box sx={{ display: 'flex', flexDirection: 'column', gap: 2 }}>
                         <TextField
-                            label="Amount 0 (Stake)"
+                            label="Amount 0 (bluechip)"
                             value={amount0}
                             onChange={(e) => handleAmount0Change(e.target.value)}
                             type="number"

@@ -114,7 +114,7 @@ impl WasmMockQuerier {
                 if contract_addr == "factory" {
                     if let Ok(QueryMsg::FeeInfo {}) = from_json(&msg) {
                         let fee_info = CommitFeeInfo {
-                            bluechip_wallet_address: Addr::unchecked("stake"),
+                            bluechip_wallet_address: Addr::unchecked("ubluechip"),
                             creator_wallet_address: Addr::unchecked("creator"),
                             commit_fee_bluechip: Decimal::percent(10),
                             commit_fee_creator: Decimal::percent(10),
