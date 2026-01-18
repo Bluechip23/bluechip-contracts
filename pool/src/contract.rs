@@ -192,22 +192,11 @@ pub fn execute(
 ) -> Result<Response, ContractError> {
     match msg {
         ExecuteMsg::UpdateConfigFromFactory { update } => {
-            // Verify sender is factory
-            let pool_info = POOL_INFO.load(deps.storage)?;
-            if info.sender != pool_info.factory_addr {
-                return Err(ContractError::Unauthorized {});
-            }
-
-            // Apply updates
-            if let Some(fee) = update.lp_fee {
-                POOL_SPECS.update(deps.storage, |mut specs| -> StdResult<_> {
-                    specs.lp_fee = fee;
-                    Ok(specs)
-                })?;
-            }
-
-            Ok(Response::new().add_attribute("action", "config_updated"))
+            execute_update_config_from_factory(deps, info, update)
         }
+        ExecuteMsg::Pause {} => execute_pause(deps, info),
+        ExecuteMsg::Unpause {} => execute_unpause(deps, info),
+        ExecuteMsg::EmergencyWithdraw {} => execute_emergency_withdraw(deps, env, info),
         ExecuteMsg::RecoverStuckStates { recovery_type } => {
             execute_recover_stuck_states(deps, env, info, recovery_type)
         }
@@ -1400,4 +1389,125 @@ pub fn migrate(deps: DepsMut, _env: Env, msg: MigrateMsg) -> StdResult<Response>
     Ok(Response::new()
         .add_attribute("action", "migrate")
         .add_attribute("version", CONTRACT_VERSION))
+}
+
+pub fn execute_update_config_from_factory(
+    deps: DepsMut,
+    info: MessageInfo,
+    update: PoolConfigUpdate,
+) -> Result<Response, ContractError> {
+    let pool_info = POOL_INFO.load(deps.storage)?;
+    if info.sender != pool_info.factory_addr {
+        return Err(ContractError::Unauthorized {});
+    }
+
+    let mut attributes = vec![("action", "update_config")];
+
+    if let Some(fee) = update.lp_fee {
+        POOL_SPECS.update(deps.storage, |mut specs| -> StdResult<_> {
+            specs.lp_fee = fee;
+            Ok(specs)
+        })?;
+        attributes.push(("lp_fee", "updated"));
+    }
+
+    if let Some(interval) = update.min_commit_interval {
+        POOL_SPECS.update(deps.storage, |mut specs| -> StdResult<_> {
+            specs.min_commit_interval = interval;
+            Ok(specs)
+        })?;
+        attributes.push(("min_commit_interval", "updated"));
+    }
+
+    if let Some(tolerance) = update.usd_payment_tolerance_bps {
+        POOL_SPECS.update(deps.storage, |mut specs| -> StdResult<_> {
+            specs.usd_payment_tolerance_bps = tolerance;
+            Ok(specs)
+        })?;
+        attributes.push(("usd_payment_tolerance_bps", "updated"));
+    }
+
+    if let Some(oracle_addr) = update.oracle_address {
+        ORACLE_INFO.update(deps.storage, |mut info| -> StdResult<_> {
+            info.oracle_addr = deps.api.addr_validate(&oracle_addr)?;
+            Ok(info)
+        })?;
+        attributes.push(("oracle_address", "updated"));
+    }
+
+    Ok(Response::new().add_attributes(attributes))
+}
+
+pub fn execute_pause(deps: DepsMut, info: MessageInfo) -> Result<Response, ContractError> {
+    let pool_info = POOL_INFO.load(deps.storage)?;
+    if info.sender != pool_info.factory_addr {
+        return Err(ContractError::Unauthorized {});
+    }
+
+    POOL_PAUSED.save(deps.storage, &true)?;
+    Ok(Response::new().add_attribute("action", "pause"))
+}
+
+pub fn execute_unpause(deps: DepsMut, info: MessageInfo) -> Result<Response, ContractError> {
+    let pool_info = POOL_INFO.load(deps.storage)?;
+    if info.sender != pool_info.factory_addr {
+        return Err(ContractError::Unauthorized {});
+    }
+
+    POOL_PAUSED.save(deps.storage, &false)?;
+    Ok(Response::new().add_attribute("action", "unpause"))
+}
+
+pub fn execute_emergency_withdraw(
+    deps: DepsMut,
+    _env: Env,
+    info: MessageInfo,
+) -> Result<Response, ContractError> {
+    let pool_info = POOL_INFO.load(deps.storage)?;
+    if info.sender != pool_info.factory_addr {
+        return Err(ContractError::Unauthorized {});
+    }
+
+    // 1. Pause the pool to prevent further activity
+    POOL_PAUSED.save(deps.storage, &true)?;
+
+    // 2. Get current reserves
+    let mut pool_state = POOL_STATE.load(deps.storage)?;
+    let reserve0 = pool_state.reserve0;
+    let reserve1 = pool_state.reserve1;
+
+    // 3. Set reserves to zero
+    pool_state.reserve0 = Uint128::zero();
+    pool_state.reserve1 = Uint128::zero();
+    // pool_state.total_liquidity = Uint128::zero(); // Keeping liquidity tokens in existence, though worthless
+    POOL_STATE.save(deps.storage, &pool_state)?;
+
+    // 4. Send funds to factory (sender)
+    let mut messages = vec![];
+
+    if !reserve0.is_zero() {
+        messages.push(
+            TokenInfo {
+                info: pool_info.pool_info.asset_infos[0].clone(),
+                amount: reserve0,
+            }
+            .into_msg(&deps.querier, info.sender.clone())?,
+        );
+    }
+
+    if !reserve1.is_zero() {
+        messages.push(
+            TokenInfo {
+                info: pool_info.pool_info.asset_infos[1].clone(),
+                amount: reserve1,
+            }
+            .into_msg(&deps.querier, info.sender.clone())?,
+        );
+    }
+
+    Ok(Response::new()
+        .add_messages(messages)
+        .add_attribute("action", "emergency_withdraw")
+        .add_attribute("amount0", reserve0)
+        .add_attribute("amount1", reserve1))
 }

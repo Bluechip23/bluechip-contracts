@@ -2916,3 +2916,136 @@ fn test_swap_slippage_lopsided() {
         _ => panic!("Expected MaxSpreadAssertion error due to high slippage in lopsided pool"),
     }
 }
+
+fn update_oracle_price(
+    deps: &mut OwnedDeps<MockStorage, MockApi, MockQuerier>,
+    new_price: Uint128,
+) {
+    with_factory_oracle(deps, new_price);
+}
+
+#[test]
+fn test_commit_and_swap_with_price_change() {
+    let mut deps = mock_dependencies_with_balance(&[Coin {
+        denom: "stake".to_string(),
+        amount: Uint128::new(10_000_000_000),
+    }]);
+    setup_pool_storage(&mut deps);
+
+    let env = mock_env();
+
+    // Set initial price: $1.00 per bluechip (1_000_000 = $1 with 6 decimals)
+    with_factory_oracle(&mut deps, Uint128::new(1_000_000));
+
+    // User1 commits 1000 bluechip at $1.00 = $1000 USD
+    let commit_msg = ExecuteMsg::Commit {
+        asset: TokenInfo {
+            info: TokenType::Bluechip {
+                denom: "stake".to_string(),
+            },
+            amount: Uint128::new(1_000_000_000),
+        },
+        amount: Uint128::new(1_000_000_000),
+        transaction_deadline: None,
+        belief_price: None,
+        max_spread: None,
+    };
+
+    execute(
+        deps.as_mut(),
+        env.clone(),
+        mock_info(
+            "user1",
+            &[Coin {
+                denom: "stake".to_string(),
+                amount: Uint128::new(1_000_000_000),
+            }],
+        ),
+        commit_msg,
+    )
+    .unwrap();
+
+    // Verify commit at $1
+    let user_commit = COMMIT_LEDGER
+        .load(&deps.storage, &Addr::unchecked("user1"))
+        .unwrap();
+    assert_eq!(user_commit, Uint128::new(1_000_000_000)); // $1000 USD
+
+    // === PRICE CHANGES TO $1.50 ===
+    update_oracle_price(&mut deps, Uint128::new(1_500_000)); // $1.50
+
+    // User2 commits 1000 bluechip at $1.50 = $1500 USD
+    let commit_msg_2 = ExecuteMsg::Commit {
+        asset: TokenInfo {
+            info: TokenType::Bluechip {
+                denom: "stake".to_string(),
+            },
+            amount: Uint128::new(1_000_000_000),
+        },
+        amount: Uint128::new(1_000_000_000),
+        transaction_deadline: None,
+        belief_price: None,
+        max_spread: None,
+    };
+
+    execute(
+        deps.as_mut(),
+        env.clone(),
+        mock_info(
+            "user2",
+            &[Coin {
+                denom: "stake".to_string(),
+                amount: Uint128::new(1_000_000_000),
+            }],
+        ),
+        commit_msg_2,
+    )
+    .unwrap();
+
+    // Verify user2's commit at $1.50
+    let user2_commit = COMMIT_LEDGER
+        .load(&deps.storage, &Addr::unchecked("user2"))
+        .unwrap();
+    assert_eq!(user2_commit, Uint128::new(1_500_000_000)); // $1500 USD
+
+    // Total raised should be $2500
+    let total_usd = USD_RAISED_FROM_COMMIT.load(&deps.storage).unwrap();
+    assert_eq!(total_usd, Uint128::new(2_500_000_000));
+
+    // === PRICE CRASHES TO $0.80 ===
+    update_oracle_price(&mut deps, Uint128::new(800_000)); // $0.80
+
+    // User3 commits at crashed price - verify they need more bluechip for same USD value
+    let commit_msg_3 = ExecuteMsg::Commit {
+        asset: TokenInfo {
+            info: TokenType::Bluechip {
+                denom: "stake".to_string(),
+            },
+            amount: Uint128::new(1_250_000_000), // 1250 bluechip
+        },
+        amount: Uint128::new(1_250_000_000),
+        transaction_deadline: None,
+        belief_price: None,
+        max_spread: None,
+    };
+
+    execute(
+        deps.as_mut(),
+        env.clone(),
+        mock_info(
+            "user3",
+            &[Coin {
+                denom: "stake".to_string(),
+                amount: Uint128::new(1_250_000_000),
+            }],
+        ),
+        commit_msg_3,
+    )
+    .unwrap();
+
+    // 1250 bluechip * $0.80 = $1000 USD
+    let user3_commit = COMMIT_LEDGER
+        .load(&deps.storage, &Addr::unchecked("user3"))
+        .unwrap();
+    assert_eq!(user3_commit, Uint128::new(1_000_000_000)); // $1000 USD
+}

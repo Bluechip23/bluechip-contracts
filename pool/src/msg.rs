@@ -21,6 +21,9 @@ pub enum ExecuteMsg {
         recovery_type: RecoveryType,
     },
     ContinueDistribution {},
+    Pause {},
+    Unpause {},
+    EmergencyWithdraw {},
     Commit {
         asset: TokenInfo,
         amount: Uint128,
@@ -203,8 +206,9 @@ pub struct PoolConfigUpdate {
     pub cw20_token_contract_id: Option<u64>,
     pub cw721_nft_contract_id: Option<u64>,
     pub lp_fee: Option<Decimal>,
-    pub min_commit_interval: u64,
-    pub usd_payment_tolerance_bps: u16,
+    pub min_commit_interval: Option<u64>,
+    pub usd_payment_tolerance_bps: Option<u16>,
+    pub oracle_address: Option<String>,
 }
 
 #[cw_serde]

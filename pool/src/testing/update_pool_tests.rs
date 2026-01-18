@@ -4,12 +4,11 @@ use cosmwasm_std::{
 };
 
 use crate::{
-    contract::{execute},
+    contract::execute,
     error::ContractError,
     msg::{CommitFeeInfo, ExecuteMsg, PoolConfigUpdate},
     testing::liquidity_tests::setup_pool_storage,
 };
-
 
 #[test]
 fn test_pool_update_config_from_factory() {
@@ -32,9 +31,10 @@ fn test_pool_update_config_from_factory() {
         threshold_payout: None,
         cw20_token_contract_id: None,
         cw721_nft_contract_id: None,
-        lp_fee: Some(Decimal::permille(3)), // 0.3% LP fee
-        min_commit_interval: 120,           // 2 minutes between commits
-        usd_payment_tolerance_bps: 100,     // 1% tolerance (100 basis points)
+        lp_fee: Some(Decimal::permille(3)),   // 0.3% LP fee
+        min_commit_interval: Some(120),       // 2 minutes between commits
+        usd_payment_tolerance_bps: Some(100), // 1% tolerance (100 basis points)
+        oracle_address: None,
     };
 
     let res = execute(
@@ -61,9 +61,10 @@ fn test_pool_update_config_from_factory() {
         threshold_payout: None,
         cw20_token_contract_id: None,
         cw721_nft_contract_id: None,
-        lp_fee: Some(Decimal::permille(3)), // 0.3% LP fee
-        min_commit_interval: 120,           // 2 minutes between commits
-        usd_payment_tolerance_bps: 100,     // 1% tolerance (100 basis points)
+        lp_fee: Some(Decimal::permille(3)),   // 0.3% LP fee
+        min_commit_interval: Some(120),       // 2 minutes between commits
+        usd_payment_tolerance_bps: Some(100), // 1% tolerance (100 basis points)
+        oracle_address: None,
     };
 
     let hacker = mock_info("hacker", &[]);
