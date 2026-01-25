@@ -212,8 +212,11 @@ pub fn assert_max_spread(
 
     if let Some(belief_price) = belief_price {
         //compare against traders expected price
-        let expected_return = offer_amount * belief_price.inv().unwrap().numerator()
-            / belief_price.inv().unwrap().denominator();
+        let inverse = belief_price.inv().ok_or_else(|| {
+            ContractError::Std(StdError::generic_err("Invalid belief price: zero"))
+        })?;
+
+        let expected_return = offer_amount * inverse.numerator() / inverse.denominator();
         let spread_amount = expected_return
             .checked_sub(return_amount)
             .unwrap_or_else(|_| Uint128::zero());

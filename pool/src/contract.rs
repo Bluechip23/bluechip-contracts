@@ -527,9 +527,8 @@ pub fn execute_swap_cw20(
 #[cfg_attr(not(feature = "library"), entry_point)]
 pub fn reply(deps: DepsMut, _env: Env, msg: Reply) -> Result<Response, ContractError> {
     if msg.id == 42 {
-        let res =
-            cw_utils::parse_instantiate_response_data(msg.result.unwrap().data.unwrap().as_slice())
-                .map_err(|e| StdError::generic_err(format!("parse error: {}", e)))?;
+        let res = cw_utils::parse_reply_instantiate_data(msg)
+            .map_err(|e| StdError::generic_err(format!("parse error: {}", e)))?;
 
         let lp: Addr = deps.api.addr_validate(&res.contract_address)?;
 

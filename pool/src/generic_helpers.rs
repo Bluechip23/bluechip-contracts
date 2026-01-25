@@ -276,8 +276,7 @@ pub fn trigger_threshold_payout(
         // (excess_bluechip / total_bluechip) * total_creator_tokens
         let excess_creator_tokens = payout
             .pool_seed_amount
-            .checked_mul(excess_bluechip)?
-            .checked_div(pools_bluechip_seed)?;
+            .multiply_ratio(excess_bluechip, pools_bluechip_seed);
 
         // Store creator's locked excess position
         CREATOR_EXCESS_POSITION.save(

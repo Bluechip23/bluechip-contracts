@@ -56,7 +56,7 @@ pub fn calculate_fee_size_multiplier(liquidity: Uint128) -> Decimal {
     } else {
         // linear scaling from 10% to 100% relative to position size
         let ratio = Decimal::from_ratio(liquidity, OPTIMAL_LIQUIDITY);
-        let min_mult = Decimal::from_str(MIN_MULTIPLIER).unwrap();
+        let min_mult = Decimal::from_str(MIN_MULTIPLIER).unwrap_or(Decimal::percent(10));
         min_mult + (Decimal::one() - min_mult) * ratio
     }
 }
@@ -94,19 +94,20 @@ pub fn calc_liquidity_for_deposit(
         }
 
         // If reserves exist (post-threshold), maintain the existing ratio
-        let (final_amount0, final_amount1) = if !current_reserve0.is_zero() && !current_reserve1.is_zero() {
-            let optimal_amount1 = (amount0 * current_reserve1) / current_reserve0;
-            let optimal_amount0 = (amount1 * current_reserve0) / current_reserve1;
+        let (final_amount0, final_amount1) =
+            if !current_reserve0.is_zero() && !current_reserve1.is_zero() {
+                let optimal_amount1 = current_reserve1.multiply_ratio(amount0, current_reserve0);
+                let optimal_amount0 = current_reserve0.multiply_ratio(amount1, current_reserve1);
 
-            if optimal_amount1 <= amount1 {
-                (amount0, optimal_amount1)
+                if optimal_amount1 <= amount1 {
+                    (amount0, optimal_amount1)
+                } else {
+                    (optimal_amount0, amount1)
+                }
             } else {
-                (optimal_amount0, amount1)
-            }
-        } else {
-            // True first deposit with no reserves - use amounts as provided
-            (amount0, amount1)
-        };
+                // True first deposit with no reserves - use amounts as provided
+                (amount0, amount1)
+            };
 
         if final_amount0.is_zero() || final_amount1.is_zero() {
             return Err(ContractError::InsufficientLiquidity {});
@@ -133,8 +134,8 @@ pub fn calc_liquidity_for_deposit(
     }
 
     // Calculate optimal amounts to maintain pool ratio
-    let optimal_amount1_for_amount0 = (amount0 * current_reserve1) / current_reserve0;
-    let optimal_amount0_for_amount1 = (amount1 * current_reserve0) / current_reserve1;
+    let optimal_amount1_for_amount0 = current_reserve1.multiply_ratio(amount0, current_reserve0);
+    let optimal_amount0_for_amount1 = current_reserve0.multiply_ratio(amount1, current_reserve1);
 
     let (final_amount0, final_amount1) = if optimal_amount1_for_amount0 <= amount1 {
         (amount0, optimal_amount1_for_amount0)
@@ -147,8 +148,8 @@ pub fn calc_liquidity_for_deposit(
     }
 
     // Standard AMM formula: liquidity proportional to contribution
-    let liquidity_from_amount0 = (final_amount0 * total_liquidity) / current_reserve0;
-    let liquidity_from_amount1 = (final_amount1 * total_liquidity) / current_reserve1;
+    let liquidity_from_amount0 = total_liquidity.multiply_ratio(final_amount0, current_reserve0);
+    let liquidity_from_amount1 = total_liquidity.multiply_ratio(final_amount1, current_reserve1);
     let liquidity = liquidity_from_amount0.min(liquidity_from_amount1);
 
     if liquidity.is_zero() {

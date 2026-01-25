@@ -478,9 +478,9 @@ pub fn remove_all_liquidity(
     let current_reserve1 = pool_state.reserve1;
 
     let user_share_0 =
-        (liquidity_position.liquidity * current_reserve0) / pool_state.total_liquidity;
+        current_reserve0.multiply_ratio(liquidity_position.liquidity, pool_state.total_liquidity);
     let user_share_1 =
-        (liquidity_position.liquidity * current_reserve1) / pool_state.total_liquidity;
+        current_reserve1.multiply_ratio(liquidity_position.liquidity, pool_state.total_liquidity);
     //protect against slippage and error out transaction
     if let Some(min0) = min_amount0 {
         if user_share_0 < min0 {
@@ -704,15 +704,11 @@ pub fn remove_partial_liquidity(
         liquidity_position.fee_size_multiplier,
     );
     //finds total amount based on the amount of liquidity the user would like to remove.
-    let withdrawal_amount_0 = liquidity_to_remove
-        .checked_mul(current_reserve0)?
-        .checked_div(pool_state.total_liquidity)
-        .map_err(|_| ContractError::DivideByZero)?;
+    let withdrawal_amount_0 =
+        current_reserve0.multiply_ratio(liquidity_to_remove, pool_state.total_liquidity);
 
-    let withdrawal_amount_1 = liquidity_to_remove
-        .checked_mul(current_reserve1)?
-        .checked_div(pool_state.total_liquidity)
-        .map_err(|_| ContractError::DivideByZero)?;
+    let withdrawal_amount_1 =
+        current_reserve1.multiply_ratio(liquidity_to_remove, pool_state.total_liquidity);
 
     let fees_owed_0 = fees_owed_0.min(pool_fee_state.fee_reserve_0);
     let fees_owed_1 = fees_owed_1.min(pool_fee_state.fee_reserve_1);

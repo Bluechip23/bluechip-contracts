@@ -354,7 +354,7 @@ pub fn calculate_twap(observations: &[PriceObservation]) -> Result<Uint128, Cont
 
     Ok(weighted_average)
 }
-pub fn query_pyth_atom_usd_price(deps: Deps, env: Env) -> StdResult<Uint128> {
+pub fn query_pyth_atom_usd_price(deps: Deps, _env: Env) -> StdResult<Uint128> {
     #[cfg(not(test))]
     {
         let factory = FACTORYINSTANTIATEINFO.load(deps.storage)?;
