@@ -8,8 +8,8 @@ use crate::msg::{
     SimulationResponse,
 };
 use crate::state::{
-    PoolDetails, COMMITFEEINFO, COMMIT_LIMIT_INFO, IS_THRESHOLD_HIT, POOLS,
-    POOL_FEE_STATE, POOL_INFO, POOL_STATE, USD_RAISED_FROM_COMMIT,
+    PoolDetails, COMMITFEEINFO, COMMIT_LIMIT_INFO, IS_THRESHOLD_HIT, POOLS, POOL_FEE_STATE,
+    POOL_INFO, POOL_STATE, USD_RAISED_FROM_COMMIT,
 };
 use crate::state::{COMMIT_INFO, LIQUIDITY_POSITIONS, NEXT_POSITION_ID};
 use crate::swap_helper::{compute_offer_amount, compute_swap, update_price_accumulator};
@@ -433,10 +433,21 @@ pub fn query_pool_commiters(
 pub fn query_for_factory(deps: Deps, _env: Env, msg: PoolQueryMsg) -> StdResult<Binary> {
     match msg {
         PoolQueryMsg::GetPoolState {
-            pool_contract_address,
+            pool_contract_address: _, // Ignore address check for now, simply return self state
         } => {
-            // Query specific pool from the Map
-            let pool_state = POOLS.load(deps.storage, &pool_contract_address)?;
+            // Fix: Load from POOL_STATE (Item) instead of POOLS (Map which is never populated)
+            let pool_state = POOL_STATE.load(deps.storage)?;
+
+            // Load pool info to get assets
+            let pool_info = POOL_INFO.load(deps.storage)?;
+
+            // Map TokenType to String
+            let assets: Vec<String> = pool_info
+                .pool_info
+                .asset_infos
+                .iter()
+                .map(|a| a.to_string())
+                .collect();
 
             // Convert to response
             let response = PoolStateResponseForFactory {
@@ -448,33 +459,38 @@ pub fn query_for_factory(deps: Deps, _env: Env, msg: PoolQueryMsg) -> StdResult<
                 block_time_last: pool_state.block_time_last,
                 price0_cumulative_last: pool_state.price0_cumulative_last,
                 price1_cumulative_last: pool_state.price1_cumulative_last,
+                assets,
             };
 
             to_json_binary(&response)
         }
         PoolQueryMsg::GetAllPools {} => {
-            // Optional: Query all pools
-            let pools: StdResult<Vec<_>> = POOLS
-                .range(deps.storage, None, None, Order::Ascending)
-                .map(|item| {
-                    let (key, pool) = item?;
-                    Ok((
-                        key,
-                        PoolStateResponseForFactory {
-                            pool_contract_address: pool.pool_contract_address,
-                            nft_ownership_accepted: pool.nft_ownership_accepted,
-                            reserve0: pool.reserve0,
-                            reserve1: pool.reserve1,
-                            total_liquidity: pool.total_liquidity,
-                            block_time_last: pool.block_time_last,
-                            price0_cumulative_last: pool.price0_cumulative_last,
-                            price1_cumulative_last: pool.price1_cumulative_last,
-                        },
-                    ))
-                })
+            // Fix: Return single pool state since this contract is a single pool instance
+            let pool_state = POOL_STATE.load(deps.storage)?;
+            let pool_info = POOL_INFO.load(deps.storage)?;
+            let assets: Vec<String> = pool_info
+                .pool_info
+                .asset_infos
+                .iter()
+                .map(|a| a.to_string())
                 .collect();
 
-            to_json_binary(&AllPoolsResponse { pools: pools? })
+            let response = PoolStateResponseForFactory {
+                pool_contract_address: pool_state.pool_contract_address.clone(),
+                nft_ownership_accepted: pool_state.nft_ownership_accepted,
+                reserve0: pool_state.reserve0,
+                reserve1: pool_state.reserve1,
+                total_liquidity: pool_state.total_liquidity,
+                block_time_last: pool_state.block_time_last,
+                price0_cumulative_last: pool_state.price0_cumulative_last,
+                price1_cumulative_last: pool_state.price1_cumulative_last,
+                assets,
+            };
+
+            // Return vector containing just this pool
+            to_json_binary(&AllPoolsResponse {
+                pools: vec![(pool_state.pool_contract_address.to_string(), response)],
+            })
         }
     }
 }

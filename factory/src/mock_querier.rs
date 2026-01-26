@@ -85,6 +85,7 @@ impl WasmMockQuerier {
                                 block_time_last: 0,
                                 price0_cumulative_last: cosmwasm_std::Uint128::zero(),
                                 price1_cumulative_last: cosmwasm_std::Uint128::zero(),
+                                assets: vec![],
                             };
                             return SystemResult::Ok(to_json_binary(&pool_state).into());
                         }

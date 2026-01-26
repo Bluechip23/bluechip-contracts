@@ -252,20 +252,33 @@ pub fn calculate_weighted_price_with_atom(
                     continue;
                 }
 
-                match calculate_price_from_reserves(pool_state.reserve0, pool_state.reserve1) {
+                // Determine if Bluechip is reserve0 or reserve1 based on assets
+                let is_bluechip_second = if pool_state.assets.len() >= 2 {
+                    // If assets[0] is a valid address (CreatorToken), then Bluechip (Native) is assets[1]
+                    deps.api.addr_validate(&pool_state.assets[0]).is_ok()
+                } else {
+                    false // Default/Fallback
+                };
+
+                let (bluechip_reserve, other_reserve) = if is_bluechip_second {
+                    (pool_state.reserve1, pool_state.reserve0)
+                } else {
+                    (pool_state.reserve0, pool_state.reserve1)
+                };
+
+                match calculate_price_from_reserves(bluechip_reserve, other_reserve) {
                     Ok(price) => {
                         let liquidity_weight = if pool_address == &atom_pool_address {
                             has_atom_pool = true;
                             atom_pool_price = price;
 
-                            pool_state
-                                .reserve0
+                            bluechip_reserve
                                 .checked_mul(Uint128::from(2u128))
                                 .map_err(|_| {
                                     ContractError::Std(StdError::generic_err("Weight overflow"))
                                 })?
                         } else {
-                            pool_state.reserve0
+                            bluechip_reserve
                         };
                         weighted_sum = weighted_sum
                             .checked_add(
@@ -354,12 +367,16 @@ pub fn calculate_twap(observations: &[PriceObservation]) -> Result<Uint128, Cont
 
     Ok(weighted_average)
 }
-pub fn query_pyth_atom_usd_price(deps: Deps, _env: Env) -> StdResult<Uint128> {
+pub fn query_pyth_atom_usd_price(deps: Deps, env: Env) -> StdResult<Uint128> {
     #[cfg(not(test))]
     {
         let factory = FACTORYINSTANTIATEINFO.load(deps.storage)?;
+
+        // Use the configurable feed ID from factory config, not the hardcoded constant
+        let feed_id = &factory.pyth_atom_usd_price_feed_id;
+
         let query_msg = PythQueryMsg::PythConversionPriceFeed {
-            id: ATOM_USD_PRICE_FEED_ID.to_string(),
+            id: feed_id.clone(),
         };
 
         // Try the standard query first, fallback to GetPrice for local/mock oracle
@@ -371,7 +388,7 @@ pub fn query_pyth_atom_usd_price(deps: Deps, _env: Env) -> StdResult<Uint128> {
             //used for mock oracle
             Err(_) => {
                 let fallback_msg = PythQueryMsg::GetPrice {
-                    price_id: ATOM_USD_PRICE_FEED_ID.to_string(),
+                    price_id: feed_id.clone(),
                 };
                 deps.querier
                     .query_wasm_smart(factory.pyth_contract_addr_for_conversions, &fallback_msg)?

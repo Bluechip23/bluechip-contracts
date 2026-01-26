@@ -58,6 +58,7 @@ pub fn setup_atom_pool(deps: &mut OwnedDeps<MockStorage, MockApi, WasmMockQuerie
         block_time_last: 0,
         price0_cumulative_last: Uint128::zero(),
         price1_cumulative_last: Uint128::zero(),
+        assets: vec![],
     };
 
     POOLS_BY_CONTRACT_ADDRESS
@@ -173,18 +174,20 @@ fn test_oracle_initialization_with_multiple_pools() {
     // Add 5 more creator pools with sufficient liquidity
     for i in 1..=5 {
         let pool_addr = Addr::unchecked(format!("creator_pool_{}", i));
-        let pool_state = PoolStateResponseForFactory {
-            pool_contract_address: pool_addr.clone(),
-            nft_ownership_accepted: true,
-            reserve0: Uint128::new(50_000_000_000), // 50k bluechip
-            reserve1: Uint128::new(10_000_000_000), // 10k creator token
-            total_liquidity: Uint128::new(10_000_000),
-            block_time_last: 0,
-            price0_cumulative_last: Uint128::zero(),
-            price1_cumulative_last: Uint128::zero(),
+        let pool_details = PoolDetails {
+            pool_id: i,
+            pool_token_info: [
+                TokenType::Bluechip {
+                    denom: "ubluechip".to_string(),
+                },
+                TokenType::CreatorToken {
+                    contract_addr: Addr::unchecked("token"),
+                },
+            ],
+            creator_pool_addr: pool_addr.clone(),
         };
-        POOLS_BY_CONTRACT_ADDRESS
-            .save(deps.as_mut().storage, pool_addr, &pool_state)
+        POOLS_BY_ID
+            .save(deps.as_mut().storage, i, &pool_details)
             .unwrap();
     }
 
@@ -859,6 +862,7 @@ fn test_oracle_execute_update_price() {
             block_time_last: 0,
             price0_cumulative_last: Uint128::zero(),
             price1_cumulative_last: Uint128::zero(),
+            assets: vec![],
         };
         POOLS_BY_CONTRACT_ADDRESS
             .save(deps.as_mut().storage, pool_addr, &pool_state)
@@ -919,6 +923,7 @@ fn test_oracle_force_rotate_pools() {
             block_time_last: 0,
             price0_cumulative_last: Uint128::zero(),
             price1_cumulative_last: Uint128::zero(),
+            assets: vec![],
         };
         POOLS_BY_CONTRACT_ADDRESS
             .save(deps.as_mut().storage, pool_addr, &pool_state)
@@ -1294,6 +1299,7 @@ fn test_oracle_aggregates_multiple_pool_prices() {
             block_time_last: 0,
             price0_cumulative_last: Uint128::zero(),
             price1_cumulative_last: Uint128::zero(),
+            assets: vec![],
         };
         POOLS_BY_CONTRACT_ADDRESS
             .save(&mut deps.storage, pool_addr.clone(), &pool_state)
@@ -1392,6 +1398,7 @@ fn test_oracle_filters_outlier_pool_prices() {
             block_time_last: 0,
             price0_cumulative_last: Uint128::zero(),
             price1_cumulative_last: Uint128::zero(),
+            assets: vec![],
         };
         POOLS_BY_CONTRACT_ADDRESS
             .save(deps.as_mut().storage, pool_addr, &pool_state)
@@ -1408,6 +1415,7 @@ fn test_oracle_filters_outlier_pool_prices() {
         block_time_last: 0,
         price0_cumulative_last: Uint128::zero(),
         price1_cumulative_last: Uint128::zero(),
+        assets: vec![],
     };
     POOLS_BY_CONTRACT_ADDRESS
         .save(
@@ -1481,6 +1489,7 @@ fn test_oracle_handles_pools_with_different_liquidities() {
         block_time_last: 0,
         price0_cumulative_last: Uint128::zero(),
         price1_cumulative_last: Uint128::zero(),
+        assets: vec![],
     };
     POOLS_BY_CONTRACT_ADDRESS
         .save(deps.as_mut().storage, small_pool, &small_state)
@@ -1496,6 +1505,7 @@ fn test_oracle_handles_pools_with_different_liquidities() {
         block_time_last: 0,
         price0_cumulative_last: Uint128::zero(),
         price1_cumulative_last: Uint128::zero(),
+        assets: vec![],
     };
     POOLS_BY_CONTRACT_ADDRESS
         .save(deps.as_mut().storage, large_pool, &large_state)

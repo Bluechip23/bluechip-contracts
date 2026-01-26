@@ -45,6 +45,7 @@ pub struct PoolStateResponseForFactory {
     pub block_time_last: u64,
     pub price0_cumulative_last: Uint128,
     pub price1_cumulative_last: Uint128,
+    pub assets: Vec<String>,
 }
 
 #[cw_serde]

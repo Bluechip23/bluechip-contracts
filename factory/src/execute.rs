@@ -38,6 +38,7 @@ pub fn instantiate(
     msg: FactoryInstantiate,
 ) -> Result<Response, ContractError> {
     cw2::set_contract_version(deps.storage, CONTRACT_NAME, CONTRACT_VERSION)?;
+
     FACTORYINSTANTIATEINFO.save(deps.storage, &msg)?;
     initialize_internal_bluechip_oracle(deps, env)?;
     Ok(Response::new().add_attribute("action", "init_contract"))
@@ -106,6 +107,7 @@ pub fn execute_propose_factory_config_update(
     config: FactoryInstantiate,
 ) -> Result<Response, ContractError> {
     assert_correct_factory_address(deps.as_ref(), info)?;
+
     let pending = PendingConfig {
         new_config: config,
         effective_after: env.block.time.plus_seconds(86400 * 2), // 48 hour delay
