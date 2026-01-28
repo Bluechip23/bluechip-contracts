@@ -443,6 +443,7 @@ pub fn query_pyth_atom_usd_price(deps: Deps, env: Env) -> StdResult<Uint128> {
     }
     #[cfg(test)]
     {
+        let _ = env;
         let mock_price = MOCK_PYTH_PRICE
             .may_load(deps.storage)?
             .unwrap_or(Uint128::new(10_000_000)); // Default $10

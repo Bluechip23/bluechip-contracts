@@ -52,3 +52,13 @@ pub struct PoolStateResponseForFactory {
 pub struct AllPoolsResponse {
     pub pools: Vec<(String, PoolStateResponseForFactory)>,
 }
+
+#[cw_serde]
+pub enum ExpandEconomyMsg {
+    RequestExpansion { recipient: String, amount: Uint128 },
+}
+
+#[cw_serde]
+pub enum ExpandEconomyExecuteMsg {
+    ExpandEconomy(ExpandEconomyMsg),
+}

@@ -53,6 +53,7 @@ fn test_propose_and_execute_update_config() {
         max_bluechip_lock_per_pool: Uint128::new(10_000_000_000),
         creator_excess_liquidity_lock_days: 7,
         atom_bluechip_anchor_pool_address: Addr::unchecked(ATOM_BLUECHIP_POOL_CONTRACT_ADDRESS),
+        bluechip_mint_contract_address: None,
     };
 
     let env = mock_env();
@@ -295,6 +296,7 @@ fn setup_factory(deps: &mut OwnedDeps<MockStorage, MockApi, MockQuerier>) {
         max_bluechip_lock_per_pool: Uint128::new(10_000_000_000),
         creator_excess_liquidity_lock_days: 7,
         atom_bluechip_anchor_pool_address: Addr::unchecked(ATOM_BLUECHIP_POOL_CONTRACT_ADDRESS),
+        bluechip_mint_contract_address: None,
     };
 
     instantiate(deps.as_mut(), mock_env(), mock_info("deployer", &[]), msg).unwrap();

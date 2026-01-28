@@ -69,16 +69,31 @@ pub fn calculate_and_mint_bluechip(
     let seconds_elapsed = env.block.time.seconds() - first_pool_time.seconds();
 
     let mint_amount = calculate_mint_amount(seconds_elapsed, pool_count)?;
+    let mut msgs = Vec::new();
 
     if !mint_amount.is_zero() {
-        let mut msgs = Vec::new();
-        msgs.push(CosmosMsg::Bank(BankMsg::Send {
-            to_address: config.bluechip_wallet_address.to_string(),
-            amount: vec![Coin {
-                denom: "ubluechip".to_string(),
-                amount: mint_amount,
-            }],
-        }));
+        if let Some(expand_economy_contract) = config.bluechip_mint_contract_address {
+            msgs.push(CosmosMsg::Wasm(cosmwasm_std::WasmMsg::Execute {
+                contract_addr: expand_economy_contract.to_string(),
+                msg: cosmwasm_std::to_json_binary(
+                    &pool_factory_interfaces::ExpandEconomyExecuteMsg::ExpandEconomy(
+                        pool_factory_interfaces::ExpandEconomyMsg::RequestExpansion {
+                            recipient: config.bluechip_wallet_address.to_string(),
+                            amount: mint_amount,
+                        },
+                    ),
+                )?,
+                funds: vec![],
+            }));
+        } else {
+            msgs.push(CosmosMsg::Bank(BankMsg::Send {
+                to_address: config.bluechip_wallet_address.to_string(),
+                amount: vec![Coin {
+                    denom: "ubluechip".to_string(),
+                    amount: mint_amount,
+                }],
+            }));
+        }
         return Ok(msgs);
     }
 

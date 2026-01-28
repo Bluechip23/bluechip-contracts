@@ -59,9 +59,10 @@ pub struct FactoryInstantiate {
     pub commit_fee_creator: Decimal,
     //max bluechip that can be locked per pool - protects against pools locking to much bluechip in extreme market conditions
     pub max_bluechip_lock_per_pool: Uint128,
-    //days until creator gains access to above max locked bluechip for their pool. 
+    //days until creator gains access to above max locked bluechip for their pool.
     pub creator_excess_liquidity_lock_days: u64,
     pub atom_bluechip_anchor_pool_address: Addr,
+    pub bluechip_mint_contract_address: Option<Addr>,
 }
 #[cw_serde]
 pub struct PendingConfig {

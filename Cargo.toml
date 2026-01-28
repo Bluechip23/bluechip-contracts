@@ -4,6 +4,7 @@ members = [
     "pool",
     "factory",
     "mockoracle",
+    "expand-economy",
 ]
 
 resolver = "2"

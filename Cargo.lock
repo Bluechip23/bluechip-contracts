@@ -909,6 +909,19 @@ dependencies = [
 ]
 
 [[package]]
+name = "expand-economy"
+version = "1.0.0"
+dependencies = [
+ "cosmwasm-schema",
+ "cosmwasm-std 1.5.11",
+ "cw-multi-test",
+ "cw-storage-plus 1.2.0",
+ "cw2 1.1.2",
+ "pool-factory-interfaces",
+ "thiserror 2.0.12",
+]
+
+[[package]]
 name = "factory"
 version = "1.0.0"
 dependencies = [
