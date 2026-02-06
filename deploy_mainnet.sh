@@ -6,7 +6,7 @@ CHAIN_ID="bluechip-1"
 RPC="https://rpc.bluechip.zone"
 # Start with a public node, or use your own
 NODE="--node $RPC"
-DENOM="ubluechip"
+DENOM="stake"
 
 # Contracts
 # TODO: Update with real Mainnet Pyth address

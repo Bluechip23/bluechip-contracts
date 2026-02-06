@@ -1,0 +1,14 @@
+WARNING:(ast) sonic only supports go1.17~1.23, but your environment is not suitable
+code: 0
+codespace: ""
+data: ""
+events: []
+gas_used: "0"
+gas_wanted: "0"
+height: "0"
+info: ""
+logs: []
+raw_log: ""
+timestamp: ""
+tx: null
+txhash: DF40FB3385ED0523C5D639B9E665107B4F58A50F4CEBE9EFAA90ED1419A43F86

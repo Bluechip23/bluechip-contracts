@@ -47,13 +47,13 @@ fn test_propose_and_execute_update_config() {
         pyth_atom_usd_price_feed_id: "ORCL".to_string(),
         cw20_token_contract_id: 10,
         create_pool_wasm_contract_id: 11,
-        bluechip_wallet_address: Addr::unchecked("ubluechip"),
+        bluechip_wallet_address: Addr::unchecked("stake"),
         commit_fee_bluechip: Decimal::from_ratio(10u128, 100u128),
         commit_fee_creator: Decimal::from_ratio(10u128, 100u128),
         max_bluechip_lock_per_pool: Uint128::new(10_000_000_000),
         creator_excess_liquidity_lock_days: 7,
         atom_bluechip_anchor_pool_address: Addr::unchecked(ATOM_BLUECHIP_POOL_CONTRACT_ADDRESS),
-        bluechip_mint_contract_address: None,
+        bluechip_mint_contract_address: Some(Addr::unchecked("expand_economy")),
     };
 
     let env = mock_env();
@@ -181,7 +181,7 @@ fn test_update_specific_pool_from_registry() {
         pool_id,
         pool_token_info: [
             TokenType::Bluechip {
-                denom: "ubluechip".to_string(),
+                denom: "stake".to_string(),
             },
             TokenType::CreatorToken {
                 contract_addr: Addr::unchecked("token"),
@@ -196,7 +196,7 @@ fn test_update_specific_pool_from_registry() {
     let admin_info = mock_info("admin", &[]);
     let pool_config = PoolConfigUpdate {
         commit_fee_info: Some(CommitFeeInfo {
-            bluechip_wallet_address: Addr::unchecked("ubluechip"),
+            bluechip_wallet_address: Addr::unchecked("stake"),
             creator_wallet_address: Addr::unchecked("creator"),
             commit_fee_bluechip: Decimal::percent(2), // Changed
             commit_fee_creator: Decimal::percent(10), // Changed
@@ -290,13 +290,13 @@ fn setup_factory(deps: &mut OwnedDeps<MockStorage, MockApi, MockQuerier>) {
         cw20_token_contract_id: 10,
         cw721_nft_contract_id: 20,
         create_pool_wasm_contract_id: 30,
-        bluechip_wallet_address: Addr::unchecked("ubluechip"),
+        bluechip_wallet_address: Addr::unchecked("stake"),
         commit_fee_bluechip: Decimal::percent(1),
         commit_fee_creator: Decimal::percent(5),
         max_bluechip_lock_per_pool: Uint128::new(10_000_000_000),
         creator_excess_liquidity_lock_days: 7,
         atom_bluechip_anchor_pool_address: Addr::unchecked(ATOM_BLUECHIP_POOL_CONTRACT_ADDRESS),
-        bluechip_mint_contract_address: None,
+        bluechip_mint_contract_address: Some(Addr::unchecked("expand_economy")),
     };
 
     instantiate(deps.as_mut(), mock_env(), mock_info("deployer", &[]), msg).unwrap();

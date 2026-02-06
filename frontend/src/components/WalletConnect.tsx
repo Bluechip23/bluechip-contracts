@@ -110,29 +110,29 @@ const WalletConnect: React.FC<WalletConnectProps> = ({ setClient, setAddress, se
             },
             currencies: [{
                 coinDenom: "BLUECHIP",
-                coinMinimalDenom: "ubluechip",
+                coinMinimalDenom: "stake",
                 coinDecimals: 6,
                 coinGeckoId: "bluechip",
             }],
             feeCurrencies: [{
                 coinDenom: "BLUECHIP",
-                coinMinimalDenom: "ubluechip",
+                coinMinimalDenom: "stake",
                 coinDecimals: 6,
                 coinGeckoId: "bluechip",
                 gasPriceStep: { low: 0.01, average: 0.025, high: 0.04 },
             }],
             stakeCurrency: {
                 coinDenom: "BLUECHIP",
-                coinMinimalDenom: "ubluechip",
+                coinMinimalDenom: "stake",
                 coinDecimals: 6,
                 coinGeckoId: "bluechip",
             },
         };
-        return connectToChain(config, "ubluechip");
+        return connectToChain(config, "stake");
     };
 
     const connectLocalWallet = (): Promise<void> => {
-        const denom = "ubluechip";
+        const denom = "stake";
         const prefix = "cosmos";
 
         const config: ChainConfig = {

@@ -64,7 +64,7 @@ const CreatePool = ({ client, address }: CreatePoolProps) => {
                 create: {
                     pool_msg: {
                         pool_token_info: [
-                            { bluechip: { denom: 'ubluechip' } },
+                            { bluechip: { denom: 'stake' } },
                             { creator_token: { contract_addr: 'WILL_BE_CREATED_BY_FACTORY' } }
                         ],
                         cw20_token_contract_id: DEFAULT_CONFIG.cw20CodeId,

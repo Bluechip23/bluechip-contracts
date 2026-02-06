@@ -81,7 +81,7 @@ pub fn execute_expand_economy(
             let send_msg = BankMsg::Send {
                 to_address: recipient.clone(),
                 amount: vec![Coin {
-                    denom: "ubluechip".to_string(),
+                    denom: "stake".to_string(),
                     amount,
                 }],
             };

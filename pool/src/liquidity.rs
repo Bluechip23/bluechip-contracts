@@ -33,7 +33,7 @@ pub fn execute_deposit_liquidity(
 ) -> Result<Response, ContractError> {
     enforce_transaction_deadline(env.block.time, transaction_deadline)?;
 
-    const NATIVE_DENOM: &str = "ubluechip";
+    const NATIVE_DENOM: &str = "stake";
     let paid_bluechip = info
         .funds
         .iter()
@@ -253,7 +253,7 @@ pub fn execute_collect_fees(
         let bluechip_msg = BankMsg::Send {
             to_address: info.sender.to_string(),
             amount: vec![Coin {
-                denom: "ubluechip".to_string(),
+                denom: "stake".to_string(),
                 amount: fees_owed_0,
             }],
         };
@@ -292,7 +292,7 @@ pub fn add_to_position(
 ) -> Result<Response, ContractError> {
     enforce_transaction_deadline(env.block.time, transaction_deadline)?;
 
-    const NATIVE_DENOM: &str = "ubluechip";
+    const NATIVE_DENOM: &str = "stake";
     let paid_bluechip = info
         .funds
         .iter()
@@ -616,7 +616,7 @@ pub fn remove_all_liquidity(
         let bluechip_msg = BankMsg::Send {
             to_address: info.sender.to_string(),
             amount: vec![Coin {
-                denom: "ubluechip".to_string(),
+                denom: "stake".to_string(),
                 amount: total_amount_0,
             }],
         };
@@ -829,7 +829,7 @@ pub fn remove_partial_liquidity(
         let bluechip_msg = BankMsg::Send {
             to_address: info.sender.to_string(),
             amount: vec![Coin {
-                denom: "ubluechip".to_string(),
+                denom: "stake".to_string(),
                 amount: total_amount_0,
             }],
         };

@@ -48,7 +48,7 @@ pub fn calculate_fees_owed(
 }
 //used to protect against many small liquidity positions
 pub fn calculate_fee_size_multiplier(liquidity: Uint128) -> Decimal {
-    //if position has optimal liquidty they will not be punished
+    //if position has optimal liquidty they will not be punished1
 
     if liquidity >= OPTIMAL_LIQUIDITY {
         //provide full fees for optimal size

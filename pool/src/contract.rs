@@ -118,7 +118,7 @@ pub fn instantiate(
 
     let liquidity_position = Position {
         liquidity: Uint128::zero(),
-        owner: Addr::unchecked(""),
+        owner: env.contract.address.clone(), // Use contract address as placeholder for empty position
         fee_growth_inside_0_last: Decimal::zero(),
         fee_growth_inside_1_last: Decimal::zero(),
         created_at: env.block.time.seconds(),

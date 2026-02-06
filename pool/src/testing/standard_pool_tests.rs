@@ -18,7 +18,7 @@ fn test_standard_pool_instantiation() {
         pool_id: 1,
         pool_token_info: [
             TokenType::Bluechip {
-                denom: "ubluechip".to_string(),
+                denom: "stake".to_string(),
             },
             TokenType::CreatorToken {
                 contract_addr: Addr::unchecked("token"),
@@ -59,7 +59,7 @@ fn test_standard_pool_immediate_swap_and_deposit() {
         pool_id: 1,
         pool_token_info: [
             TokenType::Bluechip {
-                denom: "ubluechip".to_string(),
+                denom: "stake".to_string(),
             },
             TokenType::CreatorToken {
                 contract_addr: Addr::unchecked("token"),
@@ -89,14 +89,14 @@ fn test_standard_pool_immediate_swap_and_deposit() {
     let swap_info = mock_info(
         "trader",
         &[Coin {
-            denom: "ubluechip".to_string(),
+            denom: "stake".to_string(),
             amount: Uint128::new(1000),
         }],
     );
     let swap_msg = ExecuteMsg::SimpleSwap {
         offer_asset: TokenInfo {
             info: TokenType::Bluechip {
-                denom: "ubluechip".to_string(),
+                denom: "stake".to_string(),
             },
             amount: Uint128::new(1000),
         },
@@ -114,7 +114,7 @@ fn test_standard_pool_immediate_swap_and_deposit() {
     let deposit_info = mock_info(
         "provider",
         &[Coin {
-            denom: "ubluechip".to_string(),
+            denom: "stake".to_string(),
             amount: Uint128::new(1000),
         }],
     );

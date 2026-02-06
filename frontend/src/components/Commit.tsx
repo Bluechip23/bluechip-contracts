@@ -52,7 +52,7 @@ const Commit = ({ client, address }: CommitProps) => {
             } = {
                 asset: {
                     info: {
-                        bluechip: { denom: 'ubluechip' }
+                        bluechip: { denom: 'stake' }
                     },
                     amount: amountInMicroUnits
                 },
@@ -72,7 +72,7 @@ const Commit = ({ client, address }: CommitProps) => {
                 commit: commitMsg
             };
 
-            const funds = [{ denom: 'ubluechip', amount: amountInMicroUnits }];
+            const funds = [{ denom: 'stake', amount: amountInMicroUnits }];
 
             console.log('Sending commit message:', JSON.stringify(msg, null, 2));
             console.log('With funds:', funds);

@@ -40,7 +40,7 @@ pub fn setup_pool_with_excess_config(deps: &mut OwnedDeps<MockStorage, MockApi, 
         .unwrap();
 
     let fee_info = CommitFeeInfo {
-        bluechip_wallet_address: Addr::unchecked("ubluechip"),
+        bluechip_wallet_address: Addr::unchecked("stake"),
         creator_wallet_address: Addr::unchecked("creator"),
         commit_fee_bluechip: Decimal::percent(1),
         commit_fee_creator: Decimal::percent(5),
@@ -80,12 +80,12 @@ fn test_threshold_with_excess_creates_position() {
         }),
     });
     let env = mock_env();
-    let info = mock_info("final_committer", &[coin(100_000_000_000_000, "ubluechip")]);
+    let info = mock_info("final_committer", &[coin(100_000_000_000_000, "stake")]);
 
     let msg = ExecuteMsg::Commit {
         asset: TokenInfo {
             info: TokenType::Bluechip {
-                denom: "ubluechip".to_string(),
+                denom: "stake".to_string(),
             },
             amount: Uint128::new(100_000_000_000_000),
         },
@@ -283,12 +283,12 @@ fn test_no_excess_when_under_cap() {
     });
 
     let env = mock_env();
-    let info = mock_info("final_committer", &[coin(100_000_000, "ubluechip")]);
+    let info = mock_info("final_committer", &[coin(100_000_000, "stake")]);
 
     let msg = ExecuteMsg::Commit {
         asset: TokenInfo {
             info: TokenType::Bluechip {
-                denom: "ubluechip".to_string(),
+                denom: "stake".to_string(),
             },
             amount: Uint128::new(100_000_000),
         },
@@ -320,7 +320,7 @@ fn check_correct_factory(deps: &mut OwnedDeps<MockStorage, MockApi, MockQuerier>
 #[test]
 fn test_commit_threshold_overshoot_split() {
     let mut deps = mock_dependencies_with_balance(&[Coin {
-        denom: "ubluechip".to_string(),
+        denom: "stake".to_string(),
         amount: Uint128::new(100_000_000_000),
     }]);
 
@@ -342,7 +342,7 @@ fn test_commit_threshold_overshoot_split() {
     let info = mock_info(
         "whale",
         &[Coin {
-            denom: "ubluechip".to_string(),
+            denom: "stake".to_string(),
             amount: commit_amount,
         }],
     );
@@ -350,7 +350,7 @@ fn test_commit_threshold_overshoot_split() {
     let msg = ExecuteMsg::Commit {
         asset: TokenInfo {
             info: TokenType::Bluechip {
-                denom: "ubluechip".to_string(),
+                denom: "stake".to_string(),
             },
             amount: commit_amount,
         },
@@ -483,7 +483,7 @@ fn test_commit_threshold_overshoot_split() {
 #[test]
 fn test_commit_exact_threshold() {
     let mut deps = mock_dependencies_with_balance(&[Coin {
-        denom: "ubluechip".to_string(),
+        denom: "stake".to_string(),
         amount: Uint128::new(100_000_000_000),
     }]);
 
@@ -513,7 +513,7 @@ fn test_commit_exact_threshold() {
     let info = mock_info(
         "user",
         &[Coin {
-            denom: "ubluechip".to_string(),
+            denom: "stake".to_string(),
             amount: commit_amount,
         }],
     );
@@ -521,7 +521,7 @@ fn test_commit_exact_threshold() {
     let msg = ExecuteMsg::Commit {
         asset: TokenInfo {
             info: TokenType::Bluechip {
-                denom: "ubluechip".to_string(),
+                denom: "stake".to_string(),
             },
             amount: commit_amount,
         },
@@ -594,7 +594,7 @@ fn test_recover_stuck_threshold() {
 #[test]
 fn test_concurrent_threshold_crossing_attempts() {
     let mut deps = mock_dependencies_with_balance(&[Coin {
-        denom: "ubluechip".to_string(),
+        denom: "stake".to_string(),
         amount: Uint128::new(100_000_000_000),
     }]);
 
@@ -617,7 +617,7 @@ fn test_concurrent_threshold_crossing_attempts() {
     let info2 = mock_info(
         "user2",
         &[Coin {
-            denom: "ubluechip".to_string(),
+            denom: "stake".to_string(),
             amount: Uint128::new(2_000_000),
         }],
     );
@@ -625,7 +625,7 @@ fn test_concurrent_threshold_crossing_attempts() {
     let msg = ExecuteMsg::Commit {
         asset: TokenInfo {
             info: TokenType::Bluechip {
-                denom: "ubluechip".to_string(),
+                denom: "stake".to_string(),
             },
             amount: Uint128::new(2_000_000),
         },
@@ -761,12 +761,12 @@ fn test_accumulated_bluechips_respected() {
 
     let env = mock_env();
     // Commit remaining ,000 (requires 2,000 bluechips at /bin/bash.50)
-    let info = mock_info("final_committer", &[coin(2_000_000_000, "ubluechip")]);
+    let info = mock_info("final_committer", &[coin(2_000_000_000, "stake")]);
 
     let msg = ExecuteMsg::Commit {
         asset: TokenInfo {
             info: TokenType::Bluechip {
-                denom: "ubluechip".to_string(),
+                denom: "stake".to_string(),
             },
             amount: Uint128::new(2_000_000_000),
         },
@@ -798,7 +798,7 @@ fn test_accumulated_bluechips_respected() {
 #[test]
 fn test_concurrent_threshold_crossing_race_condition() {
     let mut deps = mock_dependencies_with_balance(&[Coin {
-        denom: "ubluechip".to_string(),
+        denom: "stake".to_string(),
         amount: Uint128::new(100_000_000_000),
     }]);
 
@@ -817,14 +817,14 @@ fn test_concurrent_threshold_crossing_race_condition() {
     let info1 = mock_info(
         "user1",
         &[Coin {
-            denom: "ubluechip".to_string(),
+            denom: "stake".to_string(),
             amount: Uint128::new(2_000_000),
         }],
     );
     let msg1 = ExecuteMsg::Commit {
         asset: TokenInfo {
             info: TokenType::Bluechip {
-                denom: "ubluechip".to_string(),
+                denom: "stake".to_string(),
             },
             amount: Uint128::new(2_000_000),
         },
@@ -838,7 +838,7 @@ fn test_concurrent_threshold_crossing_race_condition() {
     let info2 = mock_info(
         "user2",
         &[Coin {
-            denom: "ubluechip".to_string(),
+            denom: "stake".to_string(),
             amount: Uint128::new(2_000_000),
         }],
     );
@@ -871,4 +871,79 @@ fn test_concurrent_threshold_crossing_race_condition() {
             println!("User 2 failed with: {:?}", e);
         }
     }
+}
+
+#[test]
+fn test_excess_calculation_logic() {
+    use cosmwasm_std::{Decimal, Uint128};
+    
+    // Simulate the calculation from our fix
+    let total_bluechip_raised = Uint128::new(3_000_000_000_000); // 3000 ATOM
+    let commit_fee_bluechip = Decimal::percent(1); // 1%
+    let commit_fee_creator = Decimal::percent(5); // 5%
+    let total_fee_rate = commit_fee_bluechip + commit_fee_creator; // 6%
+    let max_bluechip_lock_per_pool = Uint128::new(10_000_000_000); // 10 ATOM
+    
+    // Our fix's calculation
+    let fee_rate_decimal = total_fee_rate * Decimal::from_atomics(10000u128, 0).unwrap();
+    let fee_rate_bps = fee_rate_decimal.atomics().u128() / 1_000_000_000_000_000_000;
+    
+    println!("total_fee_rate: {:?}", total_fee_rate);
+    println!("fee_rate_decimal: {:?}", fee_rate_decimal);
+    println!("fee_rate_bps: {}", fee_rate_bps);
+    
+    let fee_deduction = total_bluechip_raised
+        .checked_multiply_ratio(fee_rate_bps, 10000u128)
+        .unwrap();
+    
+    println!("fee_deduction: {} ({} ATOM)", fee_deduction, fee_deduction.u128() / 1_000_000_000);
+    
+    let pools_bluechip_seed = total_bluechip_raised.checked_sub(fee_deduction).unwrap();
+    
+    println!("pools_bluechip_seed: {} ({} ATOM)", pools_bluechip_seed, pools_bluechip_seed.u128() / 1_000_000_000);
+    println!("max_bluechip_lock_per_pool: {} ({} ATOM)", max_bluechip_lock_per_pool, max_bluechip_lock_per_pool.u128() / 1_000_000_000);
+    println!("Condition check: {} > {} = {}", pools_bluechip_seed, max_bluechip_lock_per_pool, pools_bluechip_seed > max_bluechip_lock_per_pool);
+    
+    assert!(pools_bluechip_seed > max_bluechip_lock_per_pool, "Excess condition should be TRUE!");
+    
+    let excess_bluechip = pools_bluechip_seed.checked_sub(max_bluechip_lock_per_pool).unwrap();
+    println!("excess_bluechip: {} ({} ATOM)", excess_bluechip, excess_bluechip.u128() / 1_000_000_000);
+}
+
+#[test]
+fn test_fee_calculation_detailed() {
+    use cosmwasm_std::{Decimal, Uint128};
+    
+    let total_bluechip_raised = Uint128::new(3_000_000_000_000);
+    let commit_fee_bluechip = Decimal::percent(1);
+    let commit_fee_creator = Decimal::percent(5);
+    let total_fee_rate = commit_fee_bluechip + commit_fee_creator;
+    
+    println!("\n=== Fee Calculation Test ===");
+    println!("total_bluechip_raised: {}", total_bluechip_raised);
+    println!("commit_fee_bluechip: {:?}", commit_fee_bluechip);
+    println!("commit_fee_creator: {:?}", commit_fee_creator);
+    println!("total_fee_rate: {:?}", total_fee_rate);
+    println!("total_fee_rate atomics: {}", total_fee_rate.atomics());
+    
+    // My current calculation
+    let fee_rate_decimal = total_fee_rate * Decimal::from_atomics(10000u128, 0).unwrap();
+    println!("\nfee_rate_decimal: {:?}", fee_rate_decimal);
+    println!("fee_rate_decimal atomics: {}", fee_rate_decimal.atomics());
+    
+    let fee_rate_bps = fee_rate_decimal.atomics().u128() / 1_000_000_000_000_000_000;
+    println!("fee_rate_bps: {}", fee_rate_bps);
+    
+    let fee_deduction = total_bluechip_raised
+        .checked_multiply_ratio(fee_rate_bps, 10000u128)
+        .unwrap();
+    println!("\nfee_deduction: {} ({} ATOM)", fee_deduction, fee_deduction.u128() / 1_000_000_000);
+    
+    let pools_bluechip_seed = total_bluechip_raised.checked_sub(fee_deduction).unwrap();
+    println!("pools_bluechip_seed: {} ({} ATOM)", pools_bluechip_seed, pools_bluechip_seed.u128() / 1_000_000_000);
+    
+    // Expected: 6% of 3000 = 180 ATOM fees
+    // So pools_bluechip_seed should be 2820 ATOM
+    assert_eq!(fee_deduction.u128(), 180_000_000_000, "Fee deduction should be 180 ATOM");
+    assert_eq!(pools_bluechip_seed.u128(), 2_820_000_000_000, "Pools seed should be 2820 ATOM");
 }

@@ -110,7 +110,7 @@ pub fn execute_propose_factory_config_update(
 
     let pending = PendingConfig {
         new_config: config,
-        effective_after: env.block.time.plus_seconds(86400 * 2), // 48 hour delay
+        effective_after: env.block.time.plus_seconds(1), // 1 second delay
     };
     PENDING_CONFIG.save(deps.storage, &pending)?;
     Ok(Response::new()

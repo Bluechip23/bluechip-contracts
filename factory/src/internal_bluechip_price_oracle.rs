@@ -1,7 +1,6 @@
 #[cfg(not(test))]
 use crate::pyth_types::{PriceFeedResponse, PythQueryMsg};
-#[cfg(not(test))]
-use crate::state::ATOM_USD_PRICE_FEED_ID;
+
 use crate::state::{FACTORYINSTANTIATEINFO, POOLS_BY_CONTRACT_ADDRESS, POOLS_BY_ID};
 use crate::{asset::TokenType, error::ContractError};
 use cosmwasm_schema::cw_serde;

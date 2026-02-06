@@ -1,0 +1,1 @@
+WARNING:(ast) sonic only supports go1.17~1.23, but your environment is not suitable

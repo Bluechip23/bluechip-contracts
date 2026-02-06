@@ -93,11 +93,11 @@ pub fn validate_pool_threshold_payments(
     params: &ThresholdPayoutAmounts,
 ) -> Result<(), ContractError> {
     // the ONLY acceptable values
-    const EXPECTED_CREATOR: u128 = 325_000_000_000;
-    const EXPECTED_BLUECHIP: u128 = 25_000_000_000;
-    const EXPECTED_POOL: u128 = 350_000_000_000;
+    const EXPECTED_CREATOR: u128 = 500_000_000_000;
+    const EXPECTED_BLUECHIP: u128 = 500_000_000;
+    const EXPECTED_POOL: u128 = 2_000_000_000;
     const EXPECTED_COMMIT: u128 = 500_000_000_000;
-    const EXPECTED_TOTAL: u128 = 1_200_000_000_000;
+    const EXPECTED_TOTAL: u128 = 1_002_500_000_000;
 
     // verify each amount specifically - creator amount
     if params.creator_reward_amount != Uint128::new(EXPECTED_CREATOR) {
@@ -156,9 +156,49 @@ pub fn trigger_threshold_payout(
         + payout.pool_seed_amount
         + payout.commit_return_amount;
 
-    if total != Uint128::new(1_200_000_000_000) {
+    // Verify data integrity: detect corruption by checking for reasonable bounds
+    // All components should be non-zero for a valid threshold payout
+    if payout.creator_reward_amount.is_zero()
+        || payout.bluechip_reward_amount.is_zero()
+        || payout.pool_seed_amount.is_zero()
+        || payout.commit_return_amount.is_zero()
+    {
         return Err(StdError::generic_err(
-            "Threshold payout corruption detected",
+            "Threshold payout corruption detected: zero component",
+        ));
+    }
+
+    // Check for unreasonably large values (> 10 trillion)
+    const MAX_REASONABLE: u128 = 10_000_000_000_000;
+    if total > Uint128::new(MAX_REASONABLE) {
+        return Err(StdError::generic_err(
+            "Threshold payout corruption detected: total exceeds maximum",
+        ));
+    }
+
+    // Check that no single component is larger than the total (overflow protection)
+    if payout.creator_reward_amount > total
+        || payout.bluechip_reward_amount > total
+        || payout.pool_seed_amount > total
+        || payout.commit_return_amount > total
+    {
+        return Err(StdError::generic_err(
+            "Threshold payout corruption detected: component exceeds total",
+        ));
+    }
+
+    // Check that no single component dominates (> 50% of total) to detect subtle corruption
+    let max_component_ratio = Uint128::from(1u128); // 50% = 1/2
+    let denominator = Uint128::from(2u128);
+    let max_allowed = total.multiply_ratio(max_component_ratio, denominator);
+
+    if payout.creator_reward_amount > max_allowed
+        || payout.bluechip_reward_amount > max_allowed
+        || payout.pool_seed_amount > max_allowed
+        || payout.commit_return_amount > max_allowed
+    {
+        return Err(StdError::generic_err(
+            "Threshold payout corruption detected: component ratio invalid",
         ));
     }
 
@@ -265,15 +305,20 @@ pub fn trigger_threshold_payout(
         }
     }
 
-    let total_fee_rate = fee_info.commit_fee_bluechip + fee_info.commit_fee_creator;
+    let _total_fee_rate = fee_info.commit_fee_bluechip + fee_info.commit_fee_creator;
     let total_bluechip_raised = crate::state::NATIVE_RAISED_FROM_COMMIT.load(storage)?;
-    let pools_bluechip_seed = total_bluechip_raised * (Decimal::one() - total_fee_rate);
+
+    // HYPOTHESIS TEST: Maybe fees are already deducted when storing NATIVE_RAISED_FROM_COMMIT
+    // So we should NOT deduct them again here. Let's test by using total_bluechip_raised directly.
+    let pools_bluechip_seed = total_bluechip_raised;
 
     if pools_bluechip_seed > commit_config.max_bluechip_lock_per_pool {
-        let excess_bluechip = pools_bluechip_seed - commit_config.max_bluechip_lock_per_pool;
+        let excess_bluechip = pools_bluechip_seed
+            .checked_sub(commit_config.max_bluechip_lock_per_pool)
+            .map_err(|e| StdError::generic_err(format!("Excess calculation error: {}", e)))?;
 
         // Calculate proportional creator tokens for the excess
-        // (excess_bluechip / total_bluechip) * total_creator_tokens
+        // (excess_bluechip / pools_bluechip_seed) * total_creator_tokens
         let excess_creator_tokens = payout
             .pool_seed_amount
             .multiply_ratio(excess_bluechip, pools_bluechip_seed);

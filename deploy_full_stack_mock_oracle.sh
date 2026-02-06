@@ -56,6 +56,23 @@ sleep 6
 ORACLE_CODE_ID=$(bluechipChaind query tx $ORACLE_UPLOAD_TX --output json | jq -r '.events[] | select(.type == "store_code") | .attributes[] | select(.key == "code_id") | .value')
 echo "✅ Oracle uploaded as Code ID: $ORACLE_CODE_ID"
 
+# Step 2b: Upload expand economy
+echo ""
+echo "📤 Uploading expand economy..."
+cp target/wasm32-unknown-unknown/release/expand_economy.wasm artifacts/expand_economy.wasm
+
+ECON_UPLOAD_TX=$(bluechipChaind tx wasm store artifacts/expand_economy.wasm \
+  --from $FROM \
+  --chain-id $CHAIN_ID \
+  --gas 3000000 \
+  --keyring-backend $KEYRING \
+  -y --output json | jq -r '.txhash')
+
+sleep 6
+
+ECON_CODE_ID=$(bluechipChaind query tx $ECON_UPLOAD_TX --output json | jq -r '.events[] | select(.type == "store_code") | .attributes[] | select(.key == "code_id") | .value')
+echo "✅ Expand Economy uploaded as Code ID: $ECON_CODE_ID"
+
 # Step 3: Instantiate mock oracle
 echo "🔮 Instantiating mock oracle..."
 bluechipChaind tx wasm instantiate $ORACLE_CODE_ID '{}' \
@@ -71,6 +88,31 @@ sleep 6
 
 ORACLE_ADDR=$(bluechipChaind query wasm list-contract-by-code $ORACLE_CODE_ID --output json | jq -r '.contracts[0]')
 echo "✅ Mock Oracle: $ORACLE_ADDR"
+
+# Step 3b: Instantiate expand economy (with Alice as temporary factory)
+echo "📈 Instantiating expand economy..."
+bluechipChaind tx wasm instantiate $ECON_CODE_ID "{\"factory_address\":\"$ALICE_ADDR\"}" \
+  --from $FROM \
+  --label "expand_economy" \
+  --chain-id $CHAIN_ID \
+  --gas 200000 \
+  --keyring-backend $KEYRING \
+  --no-admin \
+  -y
+
+sleep 6
+
+ECON_ADDR=$(bluechipChaind query wasm list-contract-by-code $ECON_CODE_ID --output json | jq -r '.contracts[0]')
+echo "✅ Expand Economy: $ECON_ADDR"
+
+# Step 3c: Fund expand economy with some stake for minting test
+echo "💰 Funding expand economy with 1000000000stake..."
+bluechipChaind tx bank send $ALICE_ADDR $ECON_ADDR 1000000000stake \
+  --from $FROM \
+  --chain-id $CHAIN_ID \
+  --keyring-backend $KEYRING \
+  -y
+sleep 6
 
 # Step 4: Set ATOM/USD price (1 ATOM = $10, with expo -8 = 1000000000)
 echo "💰 Setting ATOM/USD price to \$10..."
@@ -101,13 +143,13 @@ sleep 6
 FACTORY_CODE_ID=$(bluechipChaind query tx $FACTORY_UPLOAD_TX --output json | jq -r '.events[] | select(.type == "store_code") | .attributes[] | select(.key == "code_id") | .value')
 echo "✅ Factory uploaded as Code ID: $FACTORY_CODE_ID"
 
-# Step 6: Instantiate factory with mock oracle
+# Step 6: Instantiate factory with mock oracle and expand economy
 echo "🏭 Instantiating factory..."
 FACTORY_INIT=$(cat <<EOF
 {
   "factory_admin_address": "$ALICE_ADDR",
   "commit_amount_for_threshold_bluechip": "0",
-  "commit_threshold_limit_usd": "25000",
+  "commit_threshold_limit_usd": "25000000000",
   "pyth_contract_addr_for_conversions": "$ORACLE_ADDR",
   "pyth_atom_usd_price_feed_id": "ATOM_USD",
   "cw721_nft_contract_id": 2,
@@ -118,7 +160,8 @@ FACTORY_INIT=$(cat <<EOF
   "commit_fee_creator": "0.05",
   "max_bluechip_lock_per_pool": "25000000000",
   "creator_excess_liquidity_lock_days": 604800,
-  "atom_bluechip_anchor_pool_address": "$ALICE_ADDR"
+  "atom_bluechip_anchor_pool_address": "$ALICE_ADDR",
+  "bluechip_mint_contract_address": "$ECON_ADDR"
 }
 EOF
 )
@@ -137,10 +180,20 @@ sleep 6
 FACTORY_ADDR=$(bluechipChaind query wasm list-contract-by-code $FACTORY_CODE_ID --output json | jq -r '.contracts[0]')
 echo "✅ Factory: $FACTORY_ADDR"
 
+# Step 6b: Update expand economy with real factory address
+echo "🔗 Linking expand economy to factory..."
+bluechipChaind tx wasm execute $ECON_ADDR \
+  "{\"update_config\":{\"factory_address\":\"$FACTORY_ADDR\"}}" \
+  --from $FROM \
+  --chain-id $CHAIN_ID \
+  --keyring-backend $KEYRING \
+  -y
+sleep 6
+
 # Step 7: Instantiate pool with factory address (threshold NOT crossed)
 echo ""
 echo "🏊 Instantiating pool with factory..."
-THRESHOLD_PAYOUT='{"creator_reward_amount":"325000000000","bluechip_reward_amount":"25000000000","pool_seed_amount":"350000000000","commit_return_amount":"500000000000"}'
+THRESHOLD_PAYOUT='{"creator_reward_amount":"500000000000","bluechip_reward_amount":"500000000","pool_seed_amount":"2000000000","commit_return_amount":"500000000000"}'
 THRESHOLD_B64=$(echo $THRESHOLD_PAYOUT | base64 -w 0)
 
 CREATE_POOL_MSG=$(cat <<EOF

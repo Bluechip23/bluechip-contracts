@@ -26,7 +26,7 @@ fn test_repro_token_sort_order_bug() {
         max_bluechip_lock_per_pool: Uint128::zero(),
         creator_excess_liquidity_lock_days: 0,
         atom_bluechip_anchor_pool_address: Addr::unchecked(ATOM_BLUECHIP_ANCHOR_POOL),
-        bluechip_mint_contract_address: None,
+        bluechip_mint_contract_address: Some(Addr::unchecked("expand_economy")),
     };
     FACTORYINSTANTIATEINFO
         .save(deps.as_mut().storage, &config)

@@ -114,7 +114,7 @@ impl WasmMockQuerier {
                 if contract_addr == "factory" {
                     if let Ok(QueryMsg::FeeInfo {}) = from_json(&msg) {
                         let fee_info = CommitFeeInfo {
-                            bluechip_wallet_address: Addr::unchecked("ubluechip"),
+                            bluechip_wallet_address: Addr::unchecked("stake"),
                             creator_wallet_address: Addr::unchecked("creator"),
                             commit_fee_bluechip: Decimal::percent(10),
                             commit_fee_creator: Decimal::percent(10),
@@ -142,7 +142,7 @@ impl WasmMockQuerier {
                 if let Ok(QueryMsg::PoolInfo {}) = from_json(&msg) {
                     // bluechip balance from bank
                     let bluechip = QuerierWrapper::<Empty>::new(&self.base)
-                        .query_balance(contract_addr.clone(), "ubluechip".to_string())
+                        .query_balance(contract_addr.clone(), "stake".to_string())
                         .unwrap();
                     // cw20 balance via smart query
                     let wrapper = QuerierWrapper::<Empty>::new(&self.base);
@@ -157,7 +157,7 @@ impl WasmMockQuerier {
                     let cw20_amount = raw.balance;
                     let resp = PoolResponse {
                         assets: [
-                            crate::asset::bluechip_asset("ubluechip".to_string(), bluechip.amount),
+                            crate::asset::bluechip_asset("stake".to_string(), bluechip.amount),
                             crate::asset::token_asset(
                                 Addr::unchecked(contract_addr.clone()),
                                 cw20_amount,

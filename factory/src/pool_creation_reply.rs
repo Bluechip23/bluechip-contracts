@@ -97,13 +97,13 @@ pub fn mint_create_pool(deps: DepsMut, env: Env, msg: Reply) -> Result<Response,
             })?;
 
             let threshold_payout = ThresholdPayoutAmounts {
-                creator_reward_amount: Uint128::new(325_000_000_000),
-                bluechip_reward_amount: Uint128::new(25_000_000_000),
-                pool_seed_amount: Uint128::new(350_000_000_000),
+                creator_reward_amount: Uint128::new(500_000_000_000),
+                bluechip_reward_amount: Uint128::new(500_000_000),
+                pool_seed_amount: Uint128::new(2_000_000_000),
                 commit_return_amount: Uint128::new(500_000_000_000),
             };
 
-            threshold_payout.validate(Uint128::new(1_200_000_000_000))?;
+            threshold_payout.validate(Uint128::new(1_002_500_000_000))?;
 
             let threshold_binary = to_json_binary(&threshold_payout)?;
 
