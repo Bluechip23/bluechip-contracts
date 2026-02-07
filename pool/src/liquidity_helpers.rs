@@ -244,6 +244,11 @@ pub fn execute_claim_creator_excess(
 
     LIQUIDITY_POSITIONS.save(deps.storage, &position_id, &position)?;
 
+    // Update pool total_liquidity to include this new position
+    let mut pool_state = POOL_STATE.load(deps.storage)?;
+    pool_state.total_liquidity = pool_state.total_liquidity.checked_add(liquidity)?;
+    POOL_STATE.save(deps.storage, &pool_state)?;
+
     // Clean up the excess position record
     CREATOR_EXCESS_POSITION.remove(deps.storage);
 

@@ -33,7 +33,13 @@ pub fn calculate_mint_amount(seconds_elapsed: u64, pools_created: u64) -> StdRes
         return Ok(Uint128::new(500_000_000));
     }
 
-    let division_result = numerator / denominator;
+    // Scale numerator by 1_000_000 before dividing to preserve fractional precision,
+    // since the formula produces values in the 0..500 range but base_amount is 500_000_000.
+    let scaled_numerator = numerator
+        .checked_mul(1_000_000)
+        .ok_or_else(|| StdError::generic_err("Overflow in scaled numerator"))?;
+
+    let division_result = scaled_numerator / denominator;
 
     let base_amount = 500_000_000u128;
 

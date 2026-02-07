@@ -56,6 +56,7 @@ pub fn execute(
             config: factory_instantiate,
         } => execute_propose_factory_config_update(deps, env, info, factory_instantiate),
         ExecuteMsg::UpdateConfig {} => execute_update_factory_config(deps, env),
+        ExecuteMsg::CancelConfigUpdate {} => execute_cancel_factory_config_update(deps, info),
         ExecuteMsg::Create {
             pool_msg,
             token_info,
@@ -274,12 +275,16 @@ pub fn execute_update_pool_config(
 
     let pool_addr = POOL_REGISTRY.load(deps.storage, pool_id)?;
 
-    // Send update message to specific pool
+    // Send update message to specific pool using the pool's expected message format
+    #[derive(serde::Serialize)]
+    #[serde(rename_all = "snake_case")]
+    enum PoolExecuteMsg {
+        UpdateConfigFromFactory { update: PoolConfigUpdate },
+    }
     let msg = CosmosMsg::Wasm(WasmMsg::Execute {
         contract_addr: pool_addr.to_string(),
-        msg: to_json_binary(&ExecuteMsg::UpdatePoolConfig {
-            pool_id: pool_id,
-            pool_config: update_msg,
+        msg: to_json_binary(&PoolExecuteMsg::UpdateConfigFromFactory {
+            update: update_msg,
         })?,
         funds: vec![],
     });

@@ -408,7 +408,7 @@ pub fn query_pyth_atom_usd_price(deps: Deps, env: Env) -> StdResult<Uint128> {
             ));
         };
 
-        if current_time - price_data.publish_time > 60 {
+        if current_time - price_data.publish_time > crate::state::MAX_PRICE_AGE_SECONDS_BEFORE_STALE as i64 {
             return Err(StdError::generic_err("ATOM price is stale"));
         }
 

@@ -9,8 +9,8 @@ use crate::{
     },
     pool_struct::{CommitFeeInfo, PoolDetails, ThresholdPayoutAmounts},
     state::{
-        CommitInfo, CreationStatus, FACTORYINSTANTIATEINFO, POOLS_BY_ID, POOL_CREATION_STATES,
-        POOL_REGISTRY, SETCOMMIT, TEMP_POOL_CREATION,
+        CommitInfo, CreationStatus, FACTORYINSTANTIATEINFO, POOLS_BY_CONTRACT_ADDRESS,
+        POOLS_BY_ID, POOL_CREATION_STATES, POOL_REGISTRY, SETCOMMIT, TEMP_POOL_CREATION,
     },
 };
 use cosmwasm_std::{
@@ -219,6 +219,32 @@ pub fn finalize_pool(deps: DepsMut, _env: Env, msg: Reply) -> Result<Response, C
             // Clean up temporary state
             cleanup_temp_state(deps.storage)?;
             POOL_REGISTRY.save(deps.storage, pool_id, &pool_address)?;
+
+            // Register pool for oracle eligibility and factory queries
+            let asset_strings: Vec<String> = pool_details
+                .pool_token_info
+                .iter()
+                .map(|t| match t {
+                    TokenType::Bluechip { denom } => denom.clone(),
+                    TokenType::CreatorToken { contract_addr } => contract_addr.to_string(),
+                })
+                .collect();
+            POOLS_BY_CONTRACT_ADDRESS.save(
+                deps.storage,
+                pool_address.clone(),
+                &pool_factory_interfaces::PoolStateResponseForFactory {
+                    pool_contract_address: pool_address.clone(),
+                    nft_ownership_accepted: false,
+                    reserve0: Uint128::zero(),
+                    reserve1: Uint128::zero(),
+                    total_liquidity: Uint128::zero(),
+                    block_time_last: 0,
+                    price0_cumulative_last: Uint128::zero(),
+                    price1_cumulative_last: Uint128::zero(),
+                    assets: asset_strings,
+                },
+            )?;
+
             Ok(Response::new()
                 .add_messages(ownership_msgs)
                 .add_attribute("action", "pool_created_successfully")

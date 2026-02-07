@@ -118,7 +118,7 @@ pub fn instantiate(
 
     let liquidity_position = Position {
         liquidity: Uint128::zero(),
-        owner: Addr::unchecked(""),
+        owner: env.contract.address.clone(),
         fee_growth_inside_0_last: Decimal::zero(),
         fee_growth_inside_1_last: Decimal::zero(),
         created_at: env.block.time.seconds(),
@@ -839,6 +839,7 @@ pub fn execute_commit_logic(
             if amount_after_fees.is_zero() {
                 return Err(ContractError::InvalidFee {});
             }
+            let total_fee_rate = fee_info.commit_fee_bluechip + fee_info.commit_fee_creator;
             // Create fee transfer messages
             if !commit_fee_bluechip_amt.is_zero() {
                 let bluechip_transfer = get_bank_transfer_to_msg(
@@ -898,6 +899,7 @@ pub fn execute_commit_logic(
                                 env,
                                 sender,
                                 asset,
+                                amount_after_fees,
                                 usd_value,
                                 messages,
                                 belief_price,
@@ -921,6 +923,8 @@ pub fn execute_commit_logic(
                         let bluechip_to_threshold =
                             get_bluechip_value(deps.as_ref(), usd_to_threshold)?;
                         let bluechip_excess = asset.amount.checked_sub(bluechip_to_threshold)?;
+                        // Deduct fees from excess (fees were sent from pool balance via BankMsg)
+                        let effective_bluechip_excess = bluechip_excess * (Decimal::one() - total_fee_rate);
                         let usd_excess = usd_value.checked_sub(usd_to_threshold)?;
                         // Update commit ledger with only the threshold portion
                         COMMIT_LEDGER.update::<_, ContractError>(deps.storage, &sender, |v| {
@@ -976,11 +980,11 @@ pub fn execute_commit_logic(
                         let mut return_amt = Uint128::zero();
                         let mut spread_amt = Uint128::zero();
                         let mut commission_amt = Uint128::zero();
-                        if bluechip_excess > Uint128::zero() {
+                        if effective_bluechip_excess > Uint128::zero() {
                             // Load updated pool state (modified by threshold payout)
                             let mut pool_state = POOL_STATE.load(deps.storage)?;
                             let mut pool_fee_state = POOL_FEE_STATE.load(deps.storage)?;
-                            // Perform swap with excess amount
+                            // Perform swap with fee-adjusted excess amount
                             let offer_pool = pool_state.reserve0;
                             let ask_pool = pool_state.reserve1;
                             //make sure both assets have been set in the pool properly
@@ -988,7 +992,7 @@ pub fn execute_commit_logic(
                                 let (ret_amt, sp_amt, comm_amt) = compute_swap(
                                     offer_pool,
                                     ask_pool,
-                                    bluechip_excess,
+                                    effective_bluechip_excess,
                                     pool_specs.lp_fee,
                                 )?;
                                 return_amt = ret_amt;
@@ -1000,13 +1004,13 @@ pub fn execute_commit_logic(
                                 assert_max_spread(
                                     belief_price,
                                     Some(max_spread),
-                                    bluechip_excess,
+                                    effective_bluechip_excess,
                                     return_amt,
                                     spread_amt,
                                 )?;
                             }
-                            // Update reserves
-                            pool_state.reserve0 = offer_pool.checked_add(bluechip_excess)?;
+                            // Update reserves with fee-adjusted amount (actual tokens remaining in pool)
+                            pool_state.reserve0 = offer_pool.checked_add(effective_bluechip_excess)?;
                             pool_state.reserve1 = ask_pool.checked_sub(return_amt)?;
 
                             // Update fee growth
@@ -1062,7 +1066,7 @@ pub fn execute_commit_logic(
                                 "threshold_amount_bluechip",
                                 bluechip_to_threshold.to_string(),
                             )
-                            .add_attribute("swap_amount_bluechip", bluechip_excess.to_string())
+                            .add_attribute("swap_amount_bluechip", effective_bluechip_excess.to_string())
                             .add_attribute("threshold_amount_usd", usd_to_threshold.to_string())
                             .add_attribute("swap_amount_usd", usd_excess.to_string())
                             .add_attribute("bluechip_excess_spread", spread_amt.to_string())
@@ -1149,6 +1153,7 @@ pub fn execute_commit_logic(
                     env,
                     sender,
                     asset,
+                    amount_after_fees,
                     usd_value,
                     messages,
                     belief_price,
@@ -1221,6 +1226,7 @@ fn process_post_threshold_commit(
     env: Env,
     sender: Addr,
     asset: TokenInfo,
+    swap_amount: Uint128,
     usd_value: Uint128,
     mut messages: Vec<CosmosMsg>,
     belief_price: Option<Decimal>,
@@ -1234,19 +1240,19 @@ fn process_post_threshold_commit(
     // Load current pool balances
     let offer_pool = pool_state.reserve0;
     let ask_pool = pool_state.reserve1;
-    // Calculate swap output
+    // Calculate swap output using fee-adjusted amount (actual tokens remaining in pool)
     let (return_amt, spread_amt, commission_amt) =
-        compute_swap(offer_pool, ask_pool, asset.amount, pool_specs.lp_fee)?;
+        compute_swap(offer_pool, ask_pool, swap_amount, pool_specs.lp_fee)?;
     // Check slippage
     assert_max_spread(
         belief_price,
         max_spread,
-        asset.amount,
+        swap_amount,
         return_amt,
         spread_amt,
     )?;
-    // Update reserves
-    pool_state.reserve0 = offer_pool.checked_add(asset.amount)?;
+    // Update reserves with fee-adjusted amount (actual tokens remaining in pool)
+    pool_state.reserve0 = offer_pool.checked_add(swap_amount)?;
     pool_state.reserve1 = ask_pool.checked_sub(return_amt)?;
     // Update fee growth
     update_pool_fee_growth(&mut pool_fee_state, &pool_state, 0, commission_amt)?;
@@ -1345,30 +1351,6 @@ pub fn execute_continue_distribution(
         .add_messages(msgs)
         .add_attribute("action", "continue_distribution")
         .add_attribute("remaining", dist_state.distributions_remaining.to_string()))
-}
-
-pub fn execute_update_config(
-    deps: DepsMut,
-    info: MessageInfo,
-    update: PoolConfigUpdate,
-) -> Result<Response, ContractError> {
-    let pool_info = POOL_INFO.load(deps.storage)?;
-
-    // Only factory can update
-    if info.sender != pool_info.factory_addr {
-        return Err(ContractError::Unauthorized {});
-    }
-
-    // Apply updates
-    if let Some(lp_fee) = update.lp_fee {
-        let mut pool_specs = POOL_SPECS.load(deps.storage)?;
-        pool_specs.lp_fee = lp_fee;
-        POOL_SPECS.save(deps.storage, &pool_specs)?;
-    }
-
-    Ok(Response::new()
-        .add_attribute("action", "update_config")
-        .add_attribute("sender", info.sender))
 }
 
 #[entry_point]

@@ -208,6 +208,10 @@ fn test_update_specific_pool_from_registry() {
         threshold_payout: None,
         cw20_token_contract_id: None,
         cw721_nft_contract_id: None,
+        lp_fee: None,
+        min_commit_interval: None,
+        usd_payment_tolerance_bps: None,
+        oracle_address: None,
     };
 
     let update_msg = ExecuteMsg::UpdatePoolConfig {

@@ -9,7 +9,7 @@ use crate::msg::{
 };
 use crate::state::{
     PoolDetails, COMMITFEEINFO, COMMIT_LIMIT_INFO, IS_THRESHOLD_HIT, POOLS, POOL_FEE_STATE,
-    POOL_INFO, POOL_STATE, USD_RAISED_FROM_COMMIT,
+    POOL_INFO, POOL_SPECS, POOL_STATE, USD_RAISED_FROM_COMMIT,
 };
 use crate::state::{COMMIT_INFO, LIQUIDITY_POSITIONS, NEXT_POSITION_ID};
 use crate::swap_helper::{compute_offer_amount, compute_swap, update_price_accumulator};
@@ -117,6 +117,7 @@ pub fn query_check_threshold_limit(deps: Deps) -> StdResult<CommitStatus> {
 
 pub fn query_simulation(deps: Deps, offer_asset: TokenInfo) -> StdResult<SimulationResponse> {
     let pool_info = POOL_INFO.load(deps.storage)?;
+    let pool_specs = POOL_SPECS.load(deps.storage)?;
     let contract_addr = pool_info.pool_info.contract_addr.clone();
 
     let pools: [TokenInfo; 2] = pool_info
@@ -137,14 +138,11 @@ pub fn query_simulation(deps: Deps, offer_asset: TokenInfo) -> StdResult<Simulat
         ));
     }
 
-    let fee_info = COMMITFEEINFO.load(deps.storage)?;
-    let commission_rate = fee_info.commit_fee_bluechip + fee_info.commit_fee_creator;
-
     let (return_amount, spread_amount, commission_amount) = compute_swap(
         offer_pool.amount,
         ask_pool.amount,
         offer_asset.amount,
-        commission_rate,
+        pool_specs.lp_fee,
     )?;
 
     Ok(SimulationResponse {
@@ -159,6 +157,7 @@ pub fn query_reverse_simulation(
     ask_asset: TokenInfo,
 ) -> StdResult<ReverseSimulationResponse> {
     let pool_info = POOL_INFO.load(deps.storage)?;
+    let pool_specs = POOL_SPECS.load(deps.storage)?;
     let contract_addr = pool_info.pool_info.contract_addr.clone();
 
     let pools: [TokenInfo; 2] = pool_info
@@ -179,14 +178,11 @@ pub fn query_reverse_simulation(
         ));
     }
 
-    let fee_info = COMMITFEEINFO.load(deps.storage)?;
-    let commission_rate = fee_info.commit_fee_bluechip + fee_info.commit_fee_creator;
-
     let (offer_amount, spread_amount, commission_amount) = compute_offer_amount(
         offer_pool.amount,
         ask_pool.amount,
         ask_asset.amount,
-        commission_rate,
+        pool_specs.lp_fee,
     )?;
 
     Ok(ReverseSimulationResponse {

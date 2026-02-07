@@ -937,6 +937,7 @@ dependencies = [
  "pool-factory-interfaces",
  "protobuf",
  "semver",
+ "serde",
  "sha2 0.10.8",
  "thiserror 2.0.12",
 ]

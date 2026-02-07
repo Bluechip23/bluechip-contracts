@@ -46,6 +46,7 @@ pub enum ExecuteMsg {
         pool_ids: Option<Vec<u64>>,
         migrate_msg: Binary,
     },
+    CancelConfigUpdate {},
     ContinuePoolUpgrade {},
     UpdatePoolConfig {
         pool_id: u64,

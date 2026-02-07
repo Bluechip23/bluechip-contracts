@@ -40,6 +40,10 @@ pub struct PoolConfigUpdate {
     pub threshold_payout: Option<Binary>,
     pub cw20_token_contract_id: Option<u64>,
     pub cw721_nft_contract_id: Option<u64>,
+    pub lp_fee: Option<Decimal>,
+    pub min_commit_interval: Option<u64>,
+    pub usd_payment_tolerance_bps: Option<u16>,
+    pub oracle_address: Option<String>,
 }
 
 #[cw_serde]
