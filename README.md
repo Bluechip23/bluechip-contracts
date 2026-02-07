@@ -494,6 +494,6 @@ To deploy to Bluechip Mainnet:
 
 ## Links
 
-- Documentation: [docs link]
-- Discord: [discord link]
-- Twitter: [twitter link]
+- Website: https://www.bluechip.link/home
+- Discord: https://discord.gg/gfdWgHFY
+- Twitter: https://x.com/BlueChipCreate
