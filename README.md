@@ -95,7 +95,7 @@ Creators can launch their own token pool by calling the factory contract. Callin
 ```
 
 Each pool receives:
-- A unique CW20 token for the creator (mint cap: 1.5T)
+- A unique CW20 token for the creator (mint cap: 1,500,000)
 - A CW721 NFT contract for liquidity positions
 - Configurable fee structure (default: 1% protocol + 5% creator)
 - BLUECHIP tokens minted via the Expand Economy contract (up to 500M per creation, decreasing over time)
@@ -121,19 +121,19 @@ Before a pool reaches its $25,000 USD threshold, only **commit transactions** ar
 
 ### Threshold Crossing
 
-When total USD committed reaches the threshold ($25,000,000,000 default):
+When total USD committed reaches the threshold ($25,000 default):
 
-1. **Creator tokens minted**: ~1T creator tokens are minted and distributed
-2. **Creator reward**: 500B creator tokens sent to the creator's wallet
-3. **Protocol reward**: 500M creator tokens sent to the Bluechip protocol wallet
-4. **Pool seeded**: 2B creator tokens + committed BLUECHIP used to initialize AMM liquidity
-5. **Committer distribution**: 500B creator tokens distributed to committers proportionally
+1. **Creator tokens minted**: ~1,200,000 creator tokens are minted and distributed
+2. **Creator reward**: 325,000 creator tokens sent to the creator's wallet
+3. **Protocol reward**: 25,000 creator tokens sent to the Bluechip protocol wallet
+4. **Pool seeded**: 350,000 creator tokens + committed BLUECHIP used to initialize AMM liquidity
+5. **Committer distribution**: 500,000 creator tokens distributed to committers proportionally
 6. **Excess handling**: If BLUECHIP exceeds `max_bluechip_lock_per_pool`, excess is time-locked for the creator (see [Creator Limits](#creator-limits--excess-liquidity))
 7. **State transition**: Pool moves to active trading phase
 
 ```
 Token Distribution Formula:
-user_tokens = (user_usd_contribution / total_usd_committed) × 500,000,000,000
+user_tokens = (user_usd_contribution / total_usd_committed) × 500,000
 ```
 
 ### Phase 2: Post-Threshold (Active Trading)
@@ -423,7 +423,6 @@ Query the commit ledger to verify subscription status:
 ### Oracle Security
 - TWAP (3600-second window) prevents flash loan price manipulation
 - Multiple pool sampling (5 pools: 4 random + ATOM anchor) reduces single-point-of-failure risk
-- Minimum liquidity requirement (10B) for oracle-eligible pools
 - Price update rate-limited to every 300 seconds
 - Stale price detection (3000-second max age)
 - Pool rotation every 3600 seconds to prevent targeted manipulation
@@ -441,7 +440,6 @@ Query the commit ledger to verify subscription status:
 
 ### Payout Integrity Validation
 - All threshold payout components validated (no zero amounts)
-- Total payout capped at 10T tokens
 - No individual component can exceed total
 
 ---
@@ -450,16 +448,16 @@ Query the commit ledger to verify subscription status:
 
 ### Creator Token Supply
 
-Each creator pool mints a total of **1,002,500,000,000** (~1T) creator tokens at threshold crossing, distributed as follows:
+Each creator pool mints a total of **1,200,000** creator tokens at threshold crossing, distributed as follows:
 
 | Recipient | Amount | % of Total | Purpose |
 |-----------|--------|------------|---------|
-| Committers | 500,000,000,000 | ~49.9% | Proportional to USD committed |
-| Creator | 500,000,000,000 | ~49.9% | Creator reward |
-| Protocol (Bluechip Wallet) | 500,000,000 | ~0.05% | Protocol sustainability |
-| Pool Liquidity Seed | 2,000,000,000 | ~0.2% | Initial AMM liquidity |
+| Committers | 500,000 | ~41.7% | Proportional to USD committed |
+| Creator | 325,000 | ~27.1% | Creator reward |
+| Protocol (Bluechip Wallet) | 25,000 | ~2.1% | Protocol sustainability |
+| Pool Liquidity Seed | 350,000 | ~29.2% | Initial AMM liquidity |
 
-The CW20 token contract is instantiated with a mint cap of **1,500,000,000,000** (1.5T), allowing for future controlled minting beyond the initial threshold distribution.
+The CW20 token contract is instantiated with a mint cap of **1,500,000,**, allowing for future controlled minting beyond the initial threshold distribution.
 
 ### Fee Flow
 
@@ -507,7 +505,7 @@ Where:
 - **Result** is in whole tokens (multiplied by 10⁶ for micro-denomination)
 
 **Properties:**
-- **Maximum mint**: 500,000,000 (500M) `stake` tokens per pool creation
+- **Maximum mint**: 500 `stake` tokens per pool creation
 - **Decreasing curve**: Mint amount decreases as more pools are created
 - **Time decay**: Longer time between pool creations further reduces the mint
 - **Floor**: Mint amount cannot go below zero
@@ -648,16 +646,16 @@ The factory admin can pause individual pools, disabling all swap and liquidity o
 
 | Parameter | Value | Description |
 |-----------|-------|-------------|
-| Commit threshold (USD) | 25,000,000,000 | USD value required to activate pool |
+| Commit threshold (USD) | 25,000 | USD value required to activate pool |
 | Commit threshold (BLUECHIP) | 100,000,000 | BLUECHIP token threshold |
-| Creator token mint cap | 1,500,000,000,000 | Max CW20 supply per pool |
+| Creator token mint cap | 1,500,000 | Max CW20 supply per pool |
 | Max BLUECHIP lock per pool | 10,000,000,000 | Excess is time-locked for creator |
 | Creator excess lock period | 7 days | Time before creator can claim excess |
 | Commit fee (protocol) | 1% | Sent to Bluechip wallet |
 | Commit fee (creator) | 5% | Sent to creator wallet |
 | LP swap fee | 0.3% | Distributed to liquidity providers |
 | Min commit interval | 13 seconds | Rate limit per wallet |
-| Expand economy max mint | 500,000,000 | Max BLUECHIP minted per pool creation |
+| Expand economy max mint | 500 | Max BLUECHIP minted per pool creation |
 | Oracle TWAP window | 3600 seconds | Time-weighted average price window |
 | Oracle update interval | 300 seconds | Min time between price updates |
 | Oracle price max age | 3000 seconds | Price considered stale after this |
