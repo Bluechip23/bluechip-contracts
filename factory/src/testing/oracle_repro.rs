@@ -68,8 +68,9 @@ fn test_repro_token_sort_order_bug() {
     );
 
     // Calculate Price - Expected 1.0 (1_000_000 precision)
+    // No previous snapshots — will fall back to spot price
     let pools = vec![ATOM_BLUECHIP_ANCHOR_POOL.to_string()];
-    let (price, _) = calculate_weighted_price_with_atom(deps.as_ref(), &pools).unwrap();
+    let (price, _, _) = calculate_weighted_price_with_atom(deps.as_ref(), &pools, &[]).unwrap();
     assert_eq!(
         price.u128(),
         1_000_000,
@@ -102,7 +103,7 @@ fn test_repro_token_sort_order_bug() {
         )
         .unwrap();
 
-    let (price_inverted, _) = calculate_weighted_price_with_atom(deps.as_ref(), &pools).unwrap();
+    let (price_inverted, _, _) = calculate_weighted_price_with_atom(deps.as_ref(), &pools, &[]).unwrap();
 
     // With the fix, the oracle correctly identifies "BC" as Bluechip (as it fails addr validation)
     // and "atom_addr_123" as CreatorToken.

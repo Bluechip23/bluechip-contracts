@@ -47,6 +47,8 @@ pub enum ExecuteMsg {
         migrate_msg: Binary,
     },
     CancelConfigUpdate {},
+    ExecutePoolUpgrade {},
+    CancelPoolUpgrade {},
     ContinuePoolUpgrade {},
     UpdatePoolConfig {
         pool_id: u64,

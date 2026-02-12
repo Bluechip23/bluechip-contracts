@@ -23,7 +23,7 @@ pub fn calculate_unclaimed_fees(
     if fee_growth_global > fee_growth_inside_last {
         let fee_growth_delta = fee_growth_global - fee_growth_inside_last;
         //number of liquidity units * delta
-        liquidity * fee_growth_delta
+        liquidity.checked_mul_floor(fee_growth_delta).unwrap_or(Uint128::MAX)
     } else {
         Uint128::zero()
     }
@@ -38,9 +38,9 @@ pub fn calculate_fees_owed(
 ) -> Uint128 {
     if fee_growth_global >= fee_growth_last {
         let fee_growth_delta = fee_growth_global - fee_growth_last;
-        let earned_base = liquidity * fee_growth_delta;
+        let earned_base = liquidity.checked_mul_floor(fee_growth_delta).unwrap_or(Uint128::MAX);
         //apply size base multipliers
-        let earned_adjusted = earned_base * fee_multiplier;
+        let earned_adjusted = earned_base.checked_mul_floor(fee_multiplier).unwrap_or(Uint128::MAX);
         earned_adjusted
     } else {
         Uint128::zero()
@@ -67,10 +67,12 @@ pub fn integer_sqrt(value: Uint128) -> Uint128 {
         return Uint128::zero();
     }
     let mut x = value;
-    let mut y = (value + Uint128::one()) / Uint128::new(2);
+    // Safe: value is non-zero (checked above), so value + 1 won't overflow for any valid Uint128
+    // since we'd need value == Uint128::MAX, but sqrt(MAX) converges before that matters.
+    let mut y = value.saturating_add(Uint128::one()) / Uint128::new(2);
     while y < x {
         x = y;
-        y = (y + value / y) / Uint128::new(2);
+        y = (y.saturating_add(value / y)) / Uint128::new(2);
     }
     x
 }
@@ -201,7 +203,9 @@ pub fn execute_claim_creator_excess(
 
     // Generate position ID
     let position_counter =
-        NEXT_POSITION_ID.update(deps.storage, |n| -> StdResult<_> { Ok(n + 1) })?;
+        NEXT_POSITION_ID.update(deps.storage, |n| -> StdResult<_> {
+            n.checked_add(1).ok_or_else(|| StdError::generic_err("Position ID overflow"))
+        })?;
     let position_id = format!("position_{}", position_counter);
 
     // Create metadata for the NFT
@@ -244,8 +248,16 @@ pub fn execute_claim_creator_excess(
 
     LIQUIDITY_POSITIONS.save(deps.storage, &position_id, &position)?;
 
-    // Update pool total_liquidity to include this new position
+    // Update pool: add the excess tokens to reserves AND add liquidity
+    // The excess tokens were held by the pool contract but excluded from reserves
+    // until the creator claims them — now they become part of the active pool
     let mut pool_state = POOL_STATE.load(deps.storage)?;
+    pool_state.reserve0 = pool_state
+        .reserve0
+        .checked_add(excess_position.bluechip_amount)?;
+    pool_state.reserve1 = pool_state
+        .reserve1
+        .checked_add(excess_position.token_amount)?;
     pool_state.total_liquidity = pool_state.total_liquidity.checked_add(liquidity)?;
     POOL_STATE.save(deps.storage, &pool_state)?;
 

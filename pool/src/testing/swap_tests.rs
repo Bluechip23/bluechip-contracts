@@ -359,7 +359,11 @@ fn test_commit_crosses_threshold() {
     );
 
     let pool_state = POOL_STATE.load(&deps.storage).unwrap();
-    assert_eq!(pool_state.total_liquidity, Uint128::zero()); // Unowned seed liquidity
+    // D-1 fix: total_liquidity = sqrt(reserve0 * reserve1), unowned seed liquidity
+    assert!(
+        !pool_state.total_liquidity.is_zero(),
+        "Seed liquidity should be non-zero after threshold crossing"
+    );
 
     assert_eq!(
         COMMIT_LEDGER
@@ -459,40 +463,52 @@ fn test_threshold_payout_integrity_check() {
 }
 
 #[test]
-fn test_continue_distribution_rejects_external_call() {
+fn test_continue_distribution_is_permissionless() {
     let mut deps = mock_dependencies();
     setup_pool_storage(&mut deps);
 
+    for i in 0..3 {
+        COMMIT_LEDGER
+            .save(
+                &mut deps.storage,
+                &Addr::unchecked(format!("user{}", i)),
+                &Uint128::new(100),
+            )
+            .unwrap();
+    }
+
+    let env = mock_env();
     let dist_state = DistributionState {
         is_distributing: true,
         total_to_distribute: Uint128::new(1_000_000_000),
-        total_committed_usd: Uint128::new(1_000_000_000),
+        total_committed_usd: Uint128::new(300),
         last_processed_key: None,
-        distributions_remaining: 10,
+        distributions_remaining: 3,
         max_gas_per_tx: DEFAULT_MAX_GAS_PER_TX,
         estimated_gas_per_distribution: DEFAULT_ESTIMATED_GAS_PER_DISTRIBUTION,
         last_successful_batch_size: None,
         consecutive_failures: 0,
-        started_at: Timestamp::from_seconds(0),
-        last_updated: Timestamp::from_seconds(0),
+        started_at: env.block.time,
+        last_updated: env.block.time,
     };
     DISTRIBUTION_STATE
         .save(&mut deps.storage, &dist_state)
         .unwrap();
     let msg = ExecuteMsg::ContinueDistribution {};
+    // Any external user can call ContinueDistribution — it's permissionless
     let info = mock_info("random_user", &[]);
 
     let res = execute(deps.as_mut(), mock_env(), info, msg);
 
-    assert!(res.is_err());
     assert!(
-        matches!(res.unwrap_err(), ContractError::Unauthorized {}),
-        "Expected Unauthorized error"
+        res.is_ok(),
+        "ContinueDistribution should be permissionless, got: {:?}",
+        res.unwrap_err()
     );
 }
 
 #[test]
-fn test_continue_distribution_internal_self_call_succeeds() {
+fn test_continue_distribution_processes_batch() {
     let mut deps = mock_dependencies();
     setup_pool_storage(&mut deps);
 
@@ -516,7 +532,7 @@ fn test_continue_distribution_internal_self_call_succeeds() {
         estimated_gas_per_distribution: DEFAULT_ESTIMATED_GAS_PER_DISTRIBUTION,
         last_successful_batch_size: Some(3), // Test with previous successful batch size
         consecutive_failures: 0,
-        started_at: env.block.time, // Use current time
+        started_at: env.block.time,
         last_updated: env.block.time,
     };
     DISTRIBUTION_STATE
@@ -524,10 +540,11 @@ fn test_continue_distribution_internal_self_call_succeeds() {
         .unwrap();
 
     let env = mock_env();
-    let info = mock_info(env.contract.address.as_str(), &[]);
+    // Permissionless — any user can trigger
+    let info = mock_info("anyone", &[]);
 
     let msg = ExecuteMsg::ContinueDistribution {};
-    let res = execute(deps.as_mut(), env, info, msg).expect("internal self-call should succeed");
+    let res = execute(deps.as_mut(), env, info, msg).expect("permissionless call should succeed");
 
     assert!(
         res.attributes
@@ -535,6 +552,7 @@ fn test_continue_distribution_internal_self_call_succeeds() {
             .any(|a| a.value == "continue_distribution"),
         "Response should include continue_distribution attribute"
     );
+    // Only mint messages, no self-call ContinueDistribution messages
     assert!(
         res.messages.len() <= 3,
         "Should not exceed last successful batch size"
@@ -574,7 +592,7 @@ fn test_continue_distribution_batches() {
         .unwrap();
 
     let env = mock_env();
-    let info = mock_info(env.contract.address.as_str(), &[]);
+    let info = mock_info("anyone", &[]);
     let res = execute(
         deps.as_mut(),
         env.clone(),
@@ -600,11 +618,6 @@ fn test_continue_distribution_batches() {
         .count();
     let processed = 10 - committers_after;
 
-    println!(
-        "Debug: processed={}, expected={}, committers_after={}",
-        processed, actual_expected, committers_after
-    );
-
     assert_eq!(
         processed, actual_expected,
         "Should process exactly {} committers based on gas limits",
@@ -626,23 +639,12 @@ fn test_continue_distribution_batches() {
                 "Should record the actual batch size that was processed"
             );
 
-            let has_continue = res.messages.iter().any(|submsg| match &submsg.msg {
-                CosmosMsg::Wasm(WasmMsg::Execute { msg, .. }) => {
-                    from_json::<ExecuteMsg>(msg.clone()).map_or(false, |decoded| {
-                        matches!(decoded, ExecuteMsg::ContinueDistribution { .. })
-                    })
-                }
-                _ => false,
-            });
-            println!(
-                "Debug: new_state.distributions_remaining={}, has_continue={}",
-                new_state.distributions_remaining, has_continue
-            );
-
-            assert!(
-                has_continue,
-                "Should have continuation message when {} distributions remain",
-                new_state.distributions_remaining
+            // No self-call ContinueDistribution in response — external callers
+            // must trigger subsequent batches in separate transactions
+            assert_eq!(
+                res.messages.len(),
+                processed,
+                "Messages should only be mint messages, no self-call continuation"
             );
         }
         None => {
@@ -689,10 +691,9 @@ fn test_adaptive_batch_sizing_with_history() {
     let total_before = COMMIT_LEDGER
         .range(&deps.storage, None, None, Order::Ascending)
         .count();
-    println!("Total committers before: {}", total_before);
 
     let env = mock_env();
-    let info = mock_info(env.contract.address.as_str(), &[]);
+    let info = mock_info("anyone", &[]);
     let res = execute(
         deps.as_mut(),
         env.clone(),
@@ -705,40 +706,16 @@ fn test_adaptive_batch_sizing_with_history() {
     let total_after = COMMIT_LEDGER
         .range(&deps.storage, None, None, Order::Ascending)
         .count();
-    println!("Total committers after: {}", total_after);
-    println!("Processed: {}", total_before - total_after);
+    let actually_processed = total_before - total_after;
 
-    let all_messages = res.messages.len();
-    let continue_messages = res
-        .messages
-        .iter()
-        .filter(|submsg| match &submsg.msg {
-            CosmosMsg::Wasm(WasmMsg::Execute { msg, .. }) => {
-                msg.to_string().contains("ContinueDistribution")
-            }
-            _ => false,
-        })
-        .count();
-    let mint_messages = all_messages - continue_messages;
-
-    println!(
-        "Total messages: {}, Mint messages: {}, Continue messages: {}",
-        all_messages, mint_messages, continue_messages
+    // All response messages should be mint messages only (no self-call continuation)
+    assert_eq!(
+        res.messages.len(),
+        actually_processed,
+        "All messages should be mint messages, no self-call continuation"
     );
 
-    if let Ok(new_state) = DISTRIBUTION_STATE.load(&deps.storage) {
-        println!(
-            "New last_successful_batch_size: {:?}",
-            new_state.last_successful_batch_size
-        );
-        println!(
-            "Remaining distributions: {}",
-            new_state.distributions_remaining
-        );
-    }
-
     let expected = 10;
-    let actually_processed = total_before - total_after;
     assert_eq!(
         actually_processed, expected,
         "Should process exactly {} committers based on effective batch size",
@@ -818,7 +795,7 @@ fn test_batch_size_with_consecutive_failures() {
         .unwrap();
 
     let env = mock_env();
-    let info = mock_info(env.contract.address.as_str(), &[]);
+    let info = mock_info("anyone", &[]);
     let res = execute(
         deps.as_mut(),
         env.clone(),
@@ -827,7 +804,7 @@ fn test_batch_size_with_consecutive_failures() {
     )
     .unwrap();
 
-    // very conservative after failures
+    // very conservative after failures — only mint messages, no self-call continuation
     assert!(
         res.messages.len() <= 2,
         "Should use very small batch size after failures"
@@ -868,7 +845,7 @@ fn test_final_batch_completes_distribution() {
         .unwrap();
 
     let env = mock_env();
-    let info = mock_info(env.contract.address.as_str(), &[]);
+    let info = mock_info("anyone", &[]);
     let res = execute(
         deps.as_mut(),
         env.clone(),
@@ -884,16 +861,11 @@ fn test_final_batch_completes_distribution() {
         "Distribution state should be removed after completion"
     );
 
-    // no ContinueDistribution message since we're done
-    let has_continue_msg = res.messages.iter().any(|submsg| match &submsg.msg {
-        CosmosMsg::Wasm(WasmMsg::Execute { msg, .. }) => {
-            msg.to_string().contains("ContinueDistribution")
-        }
-        _ => false,
-    });
-    assert!(
-        !has_continue_msg,
-        "Should not trigger continuation when complete"
+    // All messages should be mint messages only
+    assert_eq!(
+        res.messages.len(),
+        3,
+        "Should have exactly 3 mint messages for 3 committers"
     );
 }
 

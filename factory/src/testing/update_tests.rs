@@ -140,6 +140,7 @@ fn test_upgrade_pools_with_registry() {
             .unwrap();
     }
 
+    let env = mock_env();
     let admin_info = mock_info("admin", &[]);
     let upgrade_msg = ExecuteMsg::UpgradePools {
         new_code_id: 200,
@@ -147,7 +148,41 @@ fn test_upgrade_pools_with_registry() {
         migrate_msg: to_json_binary(&Empty {}).unwrap(),
     };
 
-    let res = execute(deps.as_mut(), mock_env(), admin_info, upgrade_msg).unwrap();
+    // Step 1: Propose — no migrations yet, just saves pending upgrade
+    let res = execute(deps.as_mut(), env.clone(), admin_info.clone(), upgrade_msg).unwrap();
+    assert_eq!(res.messages.len(), 0); // No migrate messages on proposal
+    assert_eq!(res.attributes[0], ("action", "propose_pool_upgrade"));
+
+    let pending = PENDING_POOL_UPGRADE.load(&deps.storage).unwrap();
+    assert_eq!(pending.pools_to_upgrade.len(), 5);
+    assert_eq!(pending.new_code_id, 200);
+    assert!(pending.effective_after.seconds() > env.block.time.seconds());
+
+    // Step 2: Try to execute before timelock — should fail
+    let err = execute(
+        deps.as_mut(),
+        env.clone(),
+        admin_info.clone(),
+        ExecuteMsg::ExecutePoolUpgrade {},
+    )
+    .unwrap_err();
+    assert!(
+        err.to_string().contains("not yet effective"),
+        "Unexpected error: {}",
+        err
+    );
+
+    // Step 3: Execute after timelock — migrations happen
+    let mut later_env = env.clone();
+    later_env.block.time = pending.effective_after.plus_seconds(1);
+
+    let res = execute(
+        deps.as_mut(),
+        later_env,
+        admin_info,
+        ExecuteMsg::ExecutePoolUpgrade {},
+    )
+    .unwrap();
 
     assert_eq!(res.messages.len(), 5);
 
@@ -164,6 +199,9 @@ fn test_upgrade_pools_with_registry() {
             _ => panic!("Expected migrate message"),
         }
     }
+
+    // Pending upgrade should be cleaned up (all pools fit in one batch)
+    assert!(PENDING_POOL_UPGRADE.may_load(&deps.storage).unwrap().is_none());
 }
 
 #[test]
@@ -244,6 +282,7 @@ fn test_migration_with_large_pool_count() {
             .unwrap();
     }
 
+    let env = mock_env();
     let admin_info = mock_info("admin", &[]);
     let upgrade_msg = ExecuteMsg::UpgradePools {
         new_code_id: 300,
@@ -251,8 +290,27 @@ fn test_migration_with_large_pool_count() {
         migrate_msg: to_json_binary(&Empty {}).unwrap(),
     };
 
-    let res = execute(deps.as_mut(), mock_env(), admin_info, upgrade_msg).unwrap();
+    // Step 1: Propose — no messages, just saves pending
+    let res = execute(deps.as_mut(), env.clone(), admin_info.clone(), upgrade_msg).unwrap();
+    assert_eq!(res.messages.len(), 0);
 
+    let pending = PENDING_POOL_UPGRADE.load(&deps.storage).unwrap();
+    assert_eq!(pending.pools_to_upgrade.len(), 25);
+    assert_eq!(pending.upgraded_count, 0);
+
+    // Step 2: Execute after timelock — first batch of 10 + continuation
+    let mut later_env = env.clone();
+    later_env.block.time = pending.effective_after.plus_seconds(1);
+
+    let res = execute(
+        deps.as_mut(),
+        later_env,
+        admin_info,
+        ExecuteMsg::ExecutePoolUpgrade {},
+    )
+    .unwrap();
+
+    // 10 migrate messages + 1 ContinuePoolUpgrade self-call
     assert_eq!(res.messages.len(), 11);
 
     match &res.messages[10].msg {
@@ -265,7 +323,7 @@ fn test_migration_with_large_pool_count() {
 
     let pending = PENDING_POOL_UPGRADE.load(&deps.storage).unwrap();
     assert_eq!(pending.pools_to_upgrade.len(), 25);
-    assert_eq!(pending.upgraded_count, 0);
+    assert_eq!(pending.upgraded_count, 10);
 }
 #[test]
 fn test_continue_upgrade_unauthorized() {
@@ -282,6 +340,57 @@ fn test_continue_upgrade_unauthorized() {
     .unwrap_err();
 
     assert!(matches!(err, ContractError::Unauthorized {}));
+}
+
+#[test]
+fn test_cancel_pool_upgrade() {
+    let mut deps = mock_dependencies();
+    setup_factory(&mut deps);
+
+    for i in 1..=3 {
+        POOL_REGISTRY
+            .save(&mut deps.storage, i, &Addr::unchecked(format!("pool_{}", i)))
+            .unwrap();
+    }
+
+    let env = mock_env();
+    let admin_info = mock_info("admin", &[]);
+
+    // Propose upgrade
+    execute(
+        deps.as_mut(),
+        env.clone(),
+        admin_info.clone(),
+        ExecuteMsg::UpgradePools {
+            new_code_id: 999,
+            pool_ids: None,
+            migrate_msg: to_json_binary(&Empty {}).unwrap(),
+        },
+    )
+    .unwrap();
+
+    assert!(PENDING_POOL_UPGRADE.may_load(&deps.storage).unwrap().is_some());
+
+    // Unauthorized cancel should fail
+    let err = execute(
+        deps.as_mut(),
+        env.clone(),
+        mock_info("hacker", &[]),
+        ExecuteMsg::CancelPoolUpgrade {},
+    )
+    .unwrap_err();
+    assert!(err.to_string().contains("Only the admin"));
+
+    // Admin cancel should succeed
+    let res = execute(
+        deps.as_mut(),
+        env,
+        admin_info,
+        ExecuteMsg::CancelPoolUpgrade {},
+    )
+    .unwrap();
+    assert_eq!(res.attributes[0], ("action", "cancel_pool_upgrade"));
+    assert!(PENDING_POOL_UPGRADE.may_load(&deps.storage).unwrap().is_none());
 }
 
 fn setup_factory(deps: &mut OwnedDeps<MockStorage, MockApi, MockQuerier>) {

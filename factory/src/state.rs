@@ -115,4 +115,5 @@ pub struct PoolUpgrade {
     pub migrate_msg: Binary,
     pub pools_to_upgrade: Vec<u64>,
     pub upgraded_count: u32,
+    pub effective_after: Timestamp,
 }

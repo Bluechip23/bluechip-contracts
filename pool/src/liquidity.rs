@@ -133,7 +133,7 @@ pub fn execute_deposit_liquidity(
     }
     //incriment nft id
     let mut pos_id = NEXT_POSITION_ID.load(deps.storage)?;
-    pos_id += 1;
+    pos_id = pos_id.checked_add(1).ok_or_else(|| ContractError::Std(StdError::generic_err("Position ID overflow")))?;
     NEXT_POSITION_ID.save(deps.storage, &pos_id)?;
     let position_id = pos_id.to_string();
 
@@ -390,14 +390,14 @@ pub fn add_to_position(
         messages.push(CosmosMsg::Bank(refund_msg));
     }
     //update position with new liquidity
-    liquidity_position.liquidity += additional_liquidity;
+    liquidity_position.liquidity = liquidity_position.liquidity.checked_add(additional_liquidity)?;
     liquidity_position.fee_growth_inside_0_last = pool_fee_state.fee_growth_global_0;
     liquidity_position.fee_growth_inside_1_last = pool_fee_state.fee_growth_global_1;
     liquidity_position.last_fee_collection = env.block.time.seconds();
     liquidity_position.fee_size_multiplier =
         calculate_fee_size_multiplier(liquidity_position.liquidity);
 
-    pool_state.total_liquidity += additional_liquidity;
+    pool_state.total_liquidity = pool_state.total_liquidity.checked_add(additional_liquidity)?;
 
     update_price_accumulator(&mut pool_state, env.block.time.seconds())?;
     // subtract fees
@@ -477,6 +477,9 @@ pub fn remove_all_liquidity(
     let current_reserve0 = pool_state.reserve0;
     let current_reserve1 = pool_state.reserve1;
 
+    if pool_state.total_liquidity.is_zero() {
+        return Err(ContractError::Std(StdError::generic_err("Pool total liquidity is zero")));
+    }
     let user_share_0 =
         current_reserve0.multiply_ratio(liquidity_position.liquidity, pool_state.total_liquidity);
     let user_share_1 =
@@ -514,22 +517,28 @@ pub fn remove_all_liquidity(
                     let diff = actual_ratio
                         .checked_sub(expected_ratio)
                         .map_err(|_| StdError::generic_err("Ratio calculation overflow"))?;
-                    (diff
-                        .checked_mul(Decimal::from_ratio(10000u128, 1u128))
-                        .map_err(|_| StdError::generic_err("Deviation calculation overflow"))?
-                        / expected_ratio)
-                        .to_uint_floor()
-                        .u128() as u16
+                    {
+                        let raw = (diff
+                            .checked_mul(Decimal::from_ratio(10000u128, 1u128))
+                            .map_err(|_| StdError::generic_err("Deviation calculation overflow"))?
+                            / expected_ratio)
+                            .to_uint_floor()
+                            .u128();
+                        if raw > u16::MAX as u128 { u16::MAX } else { raw as u16 }
+                    }
                 } else {
                     let diff = expected_ratio
                         .checked_sub(actual_ratio)
                         .map_err(|_| StdError::generic_err("Ratio calculation overflow"))?;
-                    (diff
-                        .checked_mul(Decimal::from_ratio(10000u128, 1u128))
-                        .map_err(|_| StdError::generic_err("Deviation calculation overflow"))?
-                        / actual_ratio)
-                        .to_uint_floor()
-                        .u128() as u16
+                    {
+                        let raw = (diff
+                            .checked_mul(Decimal::from_ratio(10000u128, 1u128))
+                            .map_err(|_| StdError::generic_err("Deviation calculation overflow"))?
+                            / actual_ratio)
+                            .to_uint_floor()
+                            .u128();
+                        if raw > u16::MAX as u128 { u16::MAX } else { raw as u16 }
+                    }
                 };
 
                 if deviation_bps > max_deviation_bps {
@@ -560,8 +569,8 @@ pub fn remove_all_liquidity(
     let fees_owed_0 = fees_owed_0.min(pool_fee_state.fee_reserve_0);
     let fees_owed_1 = fees_owed_1.min(pool_fee_state.fee_reserve_1);
 
-    let total_amount_0 = user_share_0 + fees_owed_0;
-    let total_amount_1 = user_share_1 + fees_owed_1;
+    let total_amount_0 = user_share_0.checked_add(fees_owed_0)?;
+    let total_amount_1 = user_share_1.checked_add(fees_owed_1)?;
 
     let liquidity_to_subtract = liquidity_position.liquidity;
     pool_state.total_liquidity = pool_state
@@ -703,6 +712,9 @@ pub fn remove_partial_liquidity(
         liquidity_position.fee_growth_inside_1_last,
         liquidity_position.fee_size_multiplier,
     );
+    if pool_state.total_liquidity.is_zero() {
+        return Err(ContractError::Std(StdError::generic_err("Pool total liquidity is zero")));
+    }
     //finds total amount based on the amount of liquidity the user would like to remove.
     let withdrawal_amount_0 =
         current_reserve0.multiply_ratio(liquidity_to_remove, pool_state.total_liquidity);
@@ -752,22 +764,28 @@ pub fn remove_partial_liquidity(
                     let diff = actual_ratio
                         .checked_sub(expected_ratio)
                         .map_err(|_| StdError::generic_err("Ratio calculation overflow"))?;
-                    (diff
-                        .checked_mul(Decimal::from_ratio(10000u128, 1u128))
-                        .map_err(|_| StdError::generic_err("Deviation calculation overflow"))?
-                        / expected_ratio)
-                        .to_uint_floor()
-                        .u128() as u16
+                    {
+                        let raw = (diff
+                            .checked_mul(Decimal::from_ratio(10000u128, 1u128))
+                            .map_err(|_| StdError::generic_err("Deviation calculation overflow"))?
+                            / expected_ratio)
+                            .to_uint_floor()
+                            .u128();
+                        if raw > u16::MAX as u128 { u16::MAX } else { raw as u16 }
+                    }
                 } else {
                     let diff = expected_ratio
                         .checked_sub(actual_ratio)
                         .map_err(|_| StdError::generic_err("Ratio calculation overflow"))?;
-                    (diff
-                        .checked_mul(Decimal::from_ratio(10000u128, 1u128))
-                        .map_err(|_| StdError::generic_err("Deviation calculation overflow"))?
-                        / actual_ratio)
-                        .to_uint_floor()
-                        .u128() as u16
+                    {
+                        let raw = (diff
+                            .checked_mul(Decimal::from_ratio(10000u128, 1u128))
+                            .map_err(|_| StdError::generic_err("Deviation calculation overflow"))?
+                            / actual_ratio)
+                            .to_uint_floor()
+                            .u128();
+                        if raw > u16::MAX as u128 { u16::MAX } else { raw as u16 }
+                    }
                 };
 
                 if deviation_bps > max_deviation_bps {
@@ -782,8 +800,8 @@ pub fn remove_partial_liquidity(
         }
     }
     //add amounts to transfer back to user
-    let total_amount_0 = withdrawal_amount_0 + fees_owed_0;
-    let total_amount_1 = withdrawal_amount_1 + fees_owed_1;
+    let total_amount_0 = withdrawal_amount_0.checked_add(fees_owed_0)?;
+    let total_amount_1 = withdrawal_amount_1.checked_add(fees_owed_1)?;
     //update state
     //update state
     update_price_accumulator(&mut pool_state, env.block.time.seconds())?;
@@ -800,6 +818,10 @@ pub fn remove_partial_liquidity(
     POOL_FEE_STATE.save(deps.storage, &pool_fee_state)?;
 
     liquidity_position.last_fee_collection = env.block.time.seconds();
+    // Reset fee growth snapshots so remaining liquidity doesn't re-claim
+    // the same fee delta that was just paid out proportionally
+    liquidity_position.fee_growth_inside_0_last = pool_fee_state.fee_growth_global_0;
+    liquidity_position.fee_growth_inside_1_last = pool_fee_state.fee_growth_global_1;
 
     liquidity_position.liquidity = liquidity_position
         .liquidity

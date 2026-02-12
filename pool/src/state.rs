@@ -63,6 +63,10 @@ pub const DEFAULT_ESTIMATED_GAS_PER_DISTRIBUTION: u64 = 50_000;
 pub const DEFAULT_MAX_GAS_PER_TX: u64 = 2_000_000;
 pub const MAX_DISTRIBUTIONS_PER_TX: u32 = 40;
 pub const MINIMUM_LIQUIDITY: Uint128 = Uint128::new(1000);
+/// Small bounty paid from pool reserves to the caller of ContinueDistribution.
+/// Incentivizes external callers to drive distribution batches to completion.
+/// 1_000_000 = 1 bluechip token (6 decimal places), enough to cover gas costs.
+pub const DISTRIBUTION_BOUNTY: Uint128 = Uint128::new(1_000_000);
 
 #[cw_serde]
 pub struct DistributionState {

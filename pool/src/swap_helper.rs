@@ -157,12 +157,14 @@ pub fn compute_offer_amount(
 
     // Calculate ask_amount before commission is applied
     // ask_amount_with_commission = ask_amount / (1 - commission _rate)
-    let one_minus_commission = Decimal256::one() - commission_rate;
+    let one_minus_commission = Decimal256::one().checked_sub(commission_rate)
+        .map_err(|_| StdError::generic_err("Commission rate >= 100%"))?;
     let ask_amount_before_commission =
         (Decimal256::from_ratio(ask_amount, 1u8) / one_minus_commission).numerator()
             / Decimal256::one().denominator();
 
-    let cp: Uint256 = offer_pool * ask_pool;
+    let cp: Uint256 = offer_pool.checked_mul(ask_pool)
+        .map_err(|_| StdError::generic_err("Constant product overflow"))?;
     let new_ask_pool = ask_pool
         .checked_sub(ask_amount_before_commission)
         .map_err(|_| StdError::generic_err("Insufficient liquidity in pool"))?;
@@ -177,12 +179,20 @@ pub fn compute_offer_amount(
 
     // Calculate spread amount (price impact)
     // spread = offer_amount - (ask_amount_before_commission * offer_pool / ask_pool)
-    let expected_offer_amount = ask_amount_before_commission * offer_pool / ask_pool;
+    let expected_offer_amount = ask_amount_before_commission
+        .checked_mul(offer_pool)
+        .map_err(|_| StdError::generic_err("Expected offer amount overflow"))?
+        .checked_div(ask_pool)
+        .map_err(|_| StdError::generic_err("Expected offer amount division error"))?;
     let spread_amount: Uint256 = offer_amount.saturating_sub(expected_offer_amount);
 
     // Calculate commission on the ask amount
     let commission_amount: Uint256 =
-        ask_amount_before_commission * commission_rate.numerator() / commission_rate.denominator();
+        ask_amount_before_commission
+            .checked_mul(commission_rate.numerator())
+            .map_err(|_| StdError::generic_err("Commission calculation overflow"))?
+            .checked_div(commission_rate.denominator())
+            .map_err(|_| StdError::generic_err("Commission calculation division error"))?;
 
     Ok((
         //amount trader must offer
@@ -216,7 +226,11 @@ pub fn assert_max_spread(
             ContractError::Std(StdError::generic_err("Invalid belief price: zero"))
         })?;
 
-        let expected_return = offer_amount * inverse.numerator() / inverse.denominator();
+        let expected_return = offer_amount
+            .checked_mul(inverse.numerator())
+            .map_err(|_| ContractError::Std(StdError::generic_err("Expected return overflow")))?
+            .checked_div(inverse.denominator())
+            .map_err(|_| ContractError::Std(StdError::generic_err("Expected return division error")))?;
         let spread_amount = expected_return
             .checked_sub(return_amount)
             .unwrap_or_else(|_| Uint128::zero());
@@ -231,7 +245,8 @@ pub fn assert_max_spread(
             return Err(ContractError::MaxSpreadAssertion {});
         }
     } else {
-        let total_amount = return_amount + spread_amount;
+        let total_amount = return_amount.checked_add(spread_amount)
+            .map_err(|_| ContractError::Std(StdError::generic_err("Spread total overflow")))?;
         if total_amount.is_zero() {
             return Err(ContractError::MaxSpreadAssertion {});
         }

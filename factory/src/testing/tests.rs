@@ -1703,6 +1703,7 @@ fn test_get_bluechip_usd_price_with_pyth() {
         update_interval: 300,
         rotation_interval: 3600,
         last_rotation: 0,
+        pool_cumulative_snapshots: vec![],
     };
     INTERNAL_ORACLE
         .save(deps.as_mut().storage, &oracle)
@@ -1761,6 +1762,7 @@ fn test_bluechip_usd_price_with_different_atom_prices() {
         update_interval: 300,
         rotation_interval: 3600,
         last_rotation: 0,
+        pool_cumulative_snapshots: vec![],
     };
     INTERNAL_ORACLE
         .save(deps.as_mut().storage, &oracle)
@@ -1833,6 +1835,7 @@ fn test_conversion_functions_with_pyth() {
         update_interval: 300,
         rotation_interval: 3600,
         last_rotation: 0,
+        pool_cumulative_snapshots: vec![],
     };
     INTERNAL_ORACLE
         .save(deps.as_mut().storage, &oracle)

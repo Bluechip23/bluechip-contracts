@@ -72,7 +72,7 @@ pub fn calculate_and_mint_bluechip(
         return Ok(messages);
     }
 
-    let seconds_elapsed = env.block.time.seconds() - first_pool_time.seconds();
+    let seconds_elapsed = env.block.time.seconds().saturating_sub(first_pool_time.seconds());
 
     let mint_amount = calculate_mint_amount(seconds_elapsed, pool_count)?;
     let mut msgs = Vec::new();

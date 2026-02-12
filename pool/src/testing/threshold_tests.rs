@@ -688,7 +688,8 @@ fn test_distribution_timeout_triggers_error() {
     let mut env = mock_env();
     env.block.time = old_time.plus_seconds(7201); // Over 2 hours later
 
-    let info = mock_info(env.contract.address.as_str(), &[]);
+    // Permissionless — anyone can call ContinueDistribution
+    let info = mock_info("anyone", &[]);
     let res = execute(
         deps.as_mut(),
         env,
@@ -778,20 +779,34 @@ fn test_accumulated_bluechips_respected() {
 
     execute(deps.as_mut(), env.clone(), info, msg).unwrap();
 
-    // Total bluechips should be 48,000 + 2,000 = 50,000
-    // Threshold config is 25,000 USD (which is 25,000 bluechips at .00 standard rate)
+    // Total bluechips = 48,000 + 2,000 = 50,000, after 6% fees = ~47,000
     // Max bluechip lock is 100,000 (from setup_pool_with_excess_config)
+    // Since 47,000,000,000 > 100,000 cap, excess path triggers
+    // Reserves should only contain the CAPPED amount, not the full amount
+    // Excess is held separately in CREATOR_EXCESS_POSITION until creator claims
 
     let pool_state = POOL_STATE.load(&deps.storage).unwrap();
 
-    // The pool should have the FULL 50,000 bluechips (minus fees)
-    // Fees are 6% (1% + 5%)
-    // 50,000 * 0.94 = 47,000
-
     println!("Reserve0: {}", pool_state.reserve0);
+    // Reserves should be at the cap, NOT the full accumulated amount
+    assert_eq!(
+        pool_state.reserve0,
+        Uint128::new(100_000),
+        "Pool reserves should be capped at max_bluechip_lock_per_pool"
+    );
+
+    // The excess should be stored in the creator excess position
+    let excess = crate::state::CREATOR_EXCESS_POSITION
+        .load(&deps.storage)
+        .unwrap();
     assert!(
-        pool_state.reserve0 > Uint128::new(40_000_000_000),
-        "Pool should have accumulated extra bluechips from low price"
+        excess.bluechip_amount > Uint128::zero(),
+        "Excess bluechip should be stored for creator to claim later"
+    );
+    // Total (capped reserves + excess) should account for all accumulated bluechips
+    assert!(
+        pool_state.reserve0 + excess.bluechip_amount > Uint128::new(40_000_000_000),
+        "Total bluechips (reserves + excess) should reflect accumulated amount"
     );
 }
 

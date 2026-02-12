@@ -1,6 +1,7 @@
 #![allow(non_snake_case)]
 use crate::error::ContractError;
-use crate::msg::{CommitFeeInfo, ExecuteMsg};
+use crate::liquidity_helpers::integer_sqrt;
+use crate::msg::CommitFeeInfo;
 use crate::state::{
     CommitLimitInfo, PoolFeeState, PoolInfo, PoolSpecs, ThresholdPayoutAmounts, COMMIT_LEDGER,
     DEFAULT_ESTIMATED_GAS_PER_DISTRIBUTION, DEFAULT_MAX_GAS_PER_TX, POOL_FEE_STATE, POOL_STATE,
@@ -33,13 +34,15 @@ pub fn update_pool_fee_growth(
 
     if offer_contract_addressx == 0 {
         // Token0 offered → Token1 is ask → fees in token1
-        pool_fee_state.fee_growth_global_1 += fee_growth;
-        pool_fee_state.total_fees_collected_1 += commission_amt;
+        pool_fee_state.fee_growth_global_1 = pool_fee_state.fee_growth_global_1.checked_add(fee_growth)
+            .map_err(|_| ContractError::Std(StdError::generic_err("Fee growth overflow")))?;
+        pool_fee_state.total_fees_collected_1 = pool_fee_state.total_fees_collected_1.checked_add(commission_amt)?;
         pool_fee_state.fee_reserve_1 = pool_fee_state.fee_reserve_1.checked_add(commission_amt)?;
     } else {
         // Token1 offered → Token0 is ask → fees in token0
-        pool_fee_state.fee_growth_global_0 += fee_growth;
-        pool_fee_state.total_fees_collected_0 += commission_amt;
+        pool_fee_state.fee_growth_global_0 = pool_fee_state.fee_growth_global_0.checked_add(fee_growth)
+            .map_err(|_| ContractError::Std(StdError::generic_err("Fee growth overflow")))?;
+        pool_fee_state.total_fees_collected_0 = pool_fee_state.total_fees_collected_0.checked_add(commission_amt)?;
         pool_fee_state.fee_reserve_0 = pool_fee_state.fee_reserve_0.checked_add(commission_amt)?;
     }
 
@@ -53,10 +56,10 @@ pub fn check_rate_limit(
     sender: &Addr,
 ) -> Result<(), ContractError> {
     if let Some(last_commit_time) = USER_LAST_COMMIT.may_load(deps.storage, sender)? {
-        let time_since_last = env.block.time.seconds() - last_commit_time;
+        let time_since_last = env.block.time.seconds().saturating_sub(last_commit_time);
 
         if time_since_last < pool_specs.min_commit_interval {
-            let wait_time = pool_specs.min_commit_interval - time_since_last;
+            let wait_time = pool_specs.min_commit_interval.saturating_sub(time_since_last);
             return Err(ContractError::TooFrequentCommits { wait_time });
         }
     }
@@ -126,9 +129,9 @@ pub fn validate_pool_threshold_payments(
 
     // Verify total
     let total = params.creator_reward_amount
-        + params.bluechip_reward_amount
-        + params.pool_seed_amount
-        + params.commit_return_amount;
+        .checked_add(params.bluechip_reward_amount)?
+        .checked_add(params.pool_seed_amount)?
+        .checked_add(params.commit_return_amount)?;
     //throw error if anything of them is off - there is also a max mint number to help with the exactness
     if total != Uint128::new(EXPECTED_TOTAL) {
         return Err(ContractError::InvalidThresholdParams {
@@ -152,9 +155,12 @@ pub fn trigger_threshold_payout(
     let mut msgs = Vec::new();
 
     let total = payout.creator_reward_amount
-        + payout.bluechip_reward_amount
-        + payout.pool_seed_amount
-        + payout.commit_return_amount;
+        .checked_add(payout.bluechip_reward_amount)
+        .map_err(StdError::overflow)?
+        .checked_add(payout.pool_seed_amount)
+        .map_err(StdError::overflow)?
+        .checked_add(payout.commit_return_amount)
+        .map_err(StdError::overflow)?;
 
     if total != Uint128::new(1_200_000_000_000) {
         return Err(StdError::generic_err(
@@ -193,7 +199,8 @@ pub fn trigger_threshold_payout(
     let batch_size = if estimated_gas_per_distribution == 0 {
         1u32
     } else {
-        (max_gas_per_tx / estimated_gas_per_distribution).max(1) as u32
+        let raw = (max_gas_per_tx / estimated_gas_per_distribution).max(1);
+        if raw > u32::MAX as u64 { u32::MAX } else { raw as u32 }
     };
 
     if total_committers == 0 {
@@ -235,7 +242,7 @@ pub fn trigger_threshold_payout(
             total_to_distribute: payout.commit_return_amount,
             total_committed_usd: commit_config.commit_amount_for_threshold_usd,
             last_processed_key: None,
-            distributions_remaining: total_committers as u32,
+            distributions_remaining: if total_committers > u32::MAX as usize { u32::MAX } else { total_committers as u32 },
             estimated_gas_per_distribution: DEFAULT_ESTIMATED_GAS_PER_DISTRIBUTION,
             max_gas_per_tx: DEFAULT_MAX_GAS_PER_TX,
             last_successful_batch_size: None,
@@ -251,26 +258,22 @@ pub fn trigger_threshold_payout(
             ));
         }
 
-        match process_distribution_batch(storage, pool_info, env) {
-            Ok(batch_msgs) => {
-                msgs.extend(batch_msgs);
-            }
-            Err(e) => {
-                DISTRIBUTION_STATE.remove(storage);
-                return Err(StdError::generic_err(format!(
-                    "Distribution initialization failed: {}. Threshold crossed but distributions pending manual recovery.", 
-                    e
-                )));
-            }
-        }
+        // All committer distributions are deferred to external ContinueDistribution calls.
+        // This keeps the threshold-crossing tx lightweight (only mints creator/bluechip/pool tokens)
+        // and avoids gas limit issues even with a large first batch.
     }
 
-    let total_fee_rate = fee_info.commit_fee_bluechip + fee_info.commit_fee_creator;
+    let total_fee_rate = fee_info.commit_fee_bluechip.checked_add(fee_info.commit_fee_creator)
+        .map_err(|_| StdError::generic_err("Fee rate overflow"))?;
     let total_bluechip_raised = crate::state::NATIVE_RAISED_FROM_COMMIT.load(storage)?;
-    let pools_bluechip_seed = total_bluechip_raised * (Decimal::one() - total_fee_rate);
+    let one_minus_fee = Decimal::one().checked_sub(total_fee_rate)
+        .map_err(|_| StdError::generic_err("Fee rate >= 100%"))?;
+    let pools_bluechip_seed = total_bluechip_raised.checked_mul_floor(one_minus_fee)
+        .map_err(|_| StdError::generic_err("Fee deduction overflow"))?;
 
     if pools_bluechip_seed > commit_config.max_bluechip_lock_per_pool {
-        let excess_bluechip = pools_bluechip_seed - commit_config.max_bluechip_lock_per_pool;
+        let excess_bluechip = pools_bluechip_seed.checked_sub(commit_config.max_bluechip_lock_per_pool)
+            .map_err(StdError::overflow)?;
 
         // Calculate proportional creator tokens for the excess
         // (excess_bluechip / total_bluechip) * total_creator_tokens
@@ -293,18 +296,20 @@ pub fn trigger_threshold_payout(
             },
         )?;
 
-        // Set capped reserves for dead liquidity
+        // Set reserves to ONLY the capped amounts — excess is held separately
+        // and will be added to reserves when the creator claims their excess position
         pool_state.reserve0 = commit_config.max_bluechip_lock_per_pool;
-        pool_state.reserve1 = payout.pool_seed_amount - excess_creator_tokens;
-
-        // Add excess to reserves (tracked but owned by creator after unlock)
-        pool_state.reserve0 += excess_bluechip;
-        pool_state.reserve1 += excess_creator_tokens;
+        pool_state.reserve1 = payout.pool_seed_amount.checked_sub(excess_creator_tokens)
+            .map_err(StdError::overflow)?;
     } else {
         pool_state.reserve0 = pools_bluechip_seed;
         pool_state.reserve1 = payout.pool_seed_amount;
     }
-    pool_state.total_liquidity = Uint128::zero();
+    // Set virtual "unowned" liquidity so that the first depositor cannot inflate
+    // their share against the seed reserves. No position holds this liquidity —
+    // it acts as a permanent base that makes subsequent deposits proportional.
+    let seed_liquidity = integer_sqrt(pool_state.reserve0.checked_mul(pool_state.reserve1)?);
+    pool_state.total_liquidity = seed_liquidity;
 
     pool_fee_state.fee_growth_global_0 = Decimal::zero();
     pool_fee_state.fee_growth_global_1 = Decimal::zero();
@@ -327,7 +332,7 @@ pub fn process_distribution_batch(
         Some(state) => state,
         None => return Ok(vec![]), // No distribution in progress
     };
-    let time_since_update = env.block.time.seconds() - dist_state.last_updated.seconds();
+    let time_since_update = env.block.time.seconds().saturating_sub(dist_state.last_updated.seconds());
     if time_since_update > 7200 {
         // 2 hours timeout
         dist_state.consecutive_failures = 99; // Mark as failed
@@ -408,13 +413,7 @@ pub fn process_distribution_batch(
                     last_updated: env.block.time, // Update timestamp
                 };
                 DISTRIBUTION_STATE.save(storage, &updated_state)?;
-
-                // Trigger continuation
-                msgs.push(CosmosMsg::Wasm(WasmMsg::Execute {
-                    contract_addr: env.contract.address.to_string(),
-                    msg: to_json_binary(&ExecuteMsg::ContinueDistribution {})?,
-                    funds: vec![],
-                }));
+                // Remaining batches will be processed by external ContinueDistribution calls
             } else {
                 // No progress made - increment failure counter
                 dist_state.consecutive_failures += 1;
@@ -432,13 +431,7 @@ pub fn process_distribution_batch(
                     // Save with incremented failure count
                     dist_state.last_updated = env.block.time;
                     DISTRIBUTION_STATE.save(storage, &dist_state)?;
-
-                    // Still try to continue (maybe next batch will work)
-                    msgs.push(CosmosMsg::Wasm(WasmMsg::Execute {
-                        contract_addr: env.contract.address.to_string(),
-                        msg: to_json_binary(&ExecuteMsg::ContinueDistribution {})?,
-                        funds: vec![],
-                    }));
+                    // Next external ContinueDistribution call will retry
                 }
             }
         }
@@ -476,7 +469,10 @@ pub fn calculate_effective_batch_size(dist_state: &DistributionState) -> u32 {
     let base_batch_size = if dist_state.estimated_gas_per_distribution == 0 {
         1u32
     } else {
-        (dist_state.max_gas_per_tx / dist_state.estimated_gas_per_distribution) as u32
+        {
+            let raw = dist_state.max_gas_per_tx / dist_state.estimated_gas_per_distribution;
+            if raw > u32::MAX as u64 { u32::MAX } else { raw as u32 }
+        }
     };
 
     // If record of successful batch size, use it as reference

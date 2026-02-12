@@ -67,7 +67,9 @@ pub fn execute(
             new_code_id,
             pool_ids,
             migrate_msg,
-        } => execute_upgrade_pools(deps, env, info, new_code_id, pool_ids, migrate_msg),
+        } => execute_propose_pool_upgrade(deps, env, info, new_code_id, pool_ids, migrate_msg),
+        ExecuteMsg::ExecutePoolUpgrade {} => execute_apply_pool_upgrade(deps, env, info),
+        ExecuteMsg::CancelPoolUpgrade {} => execute_cancel_pool_upgrade(deps, info),
         ExecuteMsg::ContinuePoolUpgrade {} => execute_continue_pool_upgrade(deps, env, info),
         ExecuteMsg::UpdatePoolConfig {
             pool_id,
@@ -167,7 +169,7 @@ fn execute_create_creator_pool(
         })?,
         //no initial balance. waits until threshold is crossed to mint creator tokens.
         funds: vec![],
-        admin: Some(info.sender.to_string()),
+        admin: Some(env.contract.address.to_string()),
         label: token_info.name,
     };
     //set the trackingfor pool creation
@@ -208,7 +210,7 @@ pub fn pool_creation_reply(deps: DepsMut, env: Env, msg: Reply) -> Result<Respon
     }
 }
 
-pub fn execute_upgrade_pools(
+pub fn execute_propose_pool_upgrade(
     deps: DepsMut,
     env: Env,
     info: MessageInfo,
@@ -218,50 +220,114 @@ pub fn execute_upgrade_pools(
 ) -> Result<Response, ContractError> {
     assert_correct_factory_address(deps.as_ref(), info)?;
 
+    // Reject if there's already a pending upgrade
+    if PENDING_POOL_UPGRADE.may_load(deps.storage)?.is_some() {
+        return Err(ContractError::Std(StdError::generic_err(
+            "A pool upgrade is already pending. Cancel it first.",
+        )));
+    }
+
     let pools_to_upgrade = if let Some(ids) = pool_ids {
         ids
     } else {
-        // Get all pool IDs
         POOL_REGISTRY
             .keys(deps.storage, None, None, Order::Ascending)
             .collect::<StdResult<Vec<_>>>()?
     };
 
+    let effective_after = env.block.time.plus_seconds(86400 * 2); // 48 hour delay
+
     PENDING_POOL_UPGRADE.save(
         deps.storage,
         &PoolUpgrade {
             new_code_id,
-            migrate_msg: migrate_msg.clone(),
+            migrate_msg,
             pools_to_upgrade: pools_to_upgrade.clone(),
             upgraded_count: 0,
+            effective_after,
         },
     )?;
+
+    Ok(Response::new()
+        .add_attribute("action", "propose_pool_upgrade")
+        .add_attribute("new_code_id", new_code_id.to_string())
+        .add_attribute("pool_count", pools_to_upgrade.len().to_string())
+        .add_attribute("effective_after", effective_after.to_string()))
+}
+
+pub fn execute_apply_pool_upgrade(
+    deps: DepsMut,
+    env: Env,
+    info: MessageInfo,
+) -> Result<Response, ContractError> {
+    assert_correct_factory_address(deps.as_ref(), info)?;
+
+    let upgrade = PENDING_POOL_UPGRADE.load(deps.storage)?;
+
+    // Enforce timelock
+    if env.block.time < upgrade.effective_after {
+        return Err(ContractError::TimelockNotExpired {
+            effective_after: upgrade.effective_after,
+        });
+    }
+
+    // Must not have started yet
+    if upgrade.upgraded_count > 0 {
+        return Err(ContractError::Std(StdError::generic_err(
+            "Upgrade already in progress. Use ContinuePoolUpgrade.",
+        )));
+    }
 
     let batch_size = 10;
     let mut messages = vec![];
 
-    for pool_id in pools_to_upgrade.iter().take(batch_size) {
+    for pool_id in upgrade.pools_to_upgrade.iter().take(batch_size) {
         let pool_addr = POOL_REGISTRY.load(deps.storage, *pool_id)?;
         messages.push(CosmosMsg::Wasm(WasmMsg::Migrate {
             contract_addr: pool_addr.to_string(),
-            new_code_id,
-            msg: migrate_msg.clone(),
+            new_code_id: upgrade.new_code_id,
+            msg: upgrade.migrate_msg.clone(),
         }));
     }
 
-    if pools_to_upgrade.len() > batch_size {
+    // Save progress
+    let mut upgrade = upgrade;
+    upgrade.upgraded_count = messages.len() as u32;
+    PENDING_POOL_UPGRADE.save(deps.storage, &upgrade)?;
+
+    if upgrade.pools_to_upgrade.len() > batch_size {
         messages.push(CosmosMsg::Wasm(WasmMsg::Execute {
             contract_addr: env.contract.address.to_string(),
             msg: to_json_binary(&ExecuteMsg::ContinuePoolUpgrade {})?,
             funds: vec![],
         }));
+    } else {
+        // All pools fit in one batch, clean up
+        PENDING_POOL_UPGRADE.remove(deps.storage);
     }
 
     Ok(Response::new()
         .add_messages(messages)
-        .add_attribute("action", "upgrade_pools")
-        .add_attribute("new_code_id", new_code_id.to_string())
-        .add_attribute("pool_count", pools_to_upgrade.len().to_string()))
+        .add_attribute("action", "execute_pool_upgrade")
+        .add_attribute("new_code_id", upgrade.new_code_id.to_string())
+        .add_attribute("pool_count", upgrade.pools_to_upgrade.len().to_string()))
+}
+
+pub fn execute_cancel_pool_upgrade(
+    deps: DepsMut,
+    info: MessageInfo,
+) -> Result<Response, ContractError> {
+    assert_correct_factory_address(deps.as_ref(), info)?;
+
+    let upgrade = PENDING_POOL_UPGRADE.may_load(deps.storage)?;
+    if upgrade.is_none() {
+        return Err(ContractError::Std(StdError::generic_err(
+            "No pending pool upgrade to cancel",
+        )));
+    }
+
+    PENDING_POOL_UPGRADE.remove(deps.storage);
+    Ok(Response::new().add_attribute("action", "cancel_pool_upgrade"))
 }
 
 pub fn execute_update_pool_config(
