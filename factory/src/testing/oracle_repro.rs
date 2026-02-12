@@ -1,6 +1,10 @@
+use crate::asset::TokenType;
 use crate::internal_bluechip_price_oracle::calculate_weighted_price_with_atom;
 use crate::mock_querier::mock_dependencies;
-use crate::state::{FactoryInstantiate, FACTORYINSTANTIATEINFO, POOLS_BY_CONTRACT_ADDRESS};
+use crate::pool_struct::PoolDetails;
+use crate::state::{
+    FactoryInstantiate, FACTORYINSTANTIATEINFO, POOLS_BY_CONTRACT_ADDRESS, POOLS_BY_ID,
+};
 use cosmwasm_std::{Addr, Decimal, Uint128};
 use pool_factory_interfaces::PoolStateResponseForFactory;
 
@@ -32,9 +36,25 @@ fn test_repro_token_sort_order_bug() {
         .save(deps.as_mut().storage, &config)
         .unwrap();
 
+    // Register pool in POOLS_BY_ID so the oracle can determine token ordering.
+    // Pool 1: Bluechip is asset[0], CreatorToken (ATOM) is asset[1]
+    let pool_details = PoolDetails {
+        pool_id: 1,
+        pool_token_info: [
+            TokenType::Bluechip {
+                denom: "BC".to_string(),
+            },
+            TokenType::CreatorToken {
+                contract_addr: Addr::unchecked("atom_addr_123"),
+            },
+        ],
+        creator_pool_addr: Addr::unchecked(ATOM_BLUECHIP_ANCHOR_POOL),
+    };
+    POOLS_BY_ID
+        .save(deps.as_mut().storage, 1, &pool_details)
+        .unwrap();
+
     // Setup ATOM Pool
-    // Assume 1 Bluechip = 1 ATOM for simplicity
-    // Reserves: 100B Bluechip, 100B ATOM (Total 200B > 10B Min)
     let atom_pool_state = PoolStateResponseForFactory {
         pool_contract_address: Addr::unchecked(ATOM_BLUECHIP_ANCHOR_POOL),
         nft_ownership_accepted: true,
@@ -44,7 +64,7 @@ fn test_repro_token_sort_order_bug() {
         block_time_last: 0,
         price0_cumulative_last: Uint128::zero(),
         price1_cumulative_last: Uint128::zero(),
-        assets: vec!["BC".to_string(), "atom_addr_123".to_string()], // "BC" fails addr_validate (too short)
+        assets: vec!["BC".to_string(), "atom_addr_123".to_string()],
     };
     POOLS_BY_CONTRACT_ADDRESS
         .save(
@@ -54,21 +74,7 @@ fn test_repro_token_sort_order_bug() {
         )
         .unwrap();
 
-    // Verify storage manually
-    let valid_addr = deps
-        .as_ref()
-        .api
-        .addr_validate(ATOM_BLUECHIP_ANCHOR_POOL)
-        .unwrap();
-    let loaded = POOLS_BY_CONTRACT_ADDRESS.load(deps.as_ref().storage, valid_addr);
-    assert!(
-        loaded.is_ok(),
-        "Failed to load pool from storage in test setup: {:?}",
-        loaded.err()
-    );
-
     // Calculate Price - Expected 1.0 (1_000_000 precision)
-    // No previous snapshots — will fall back to spot price
     let pools = vec![ATOM_BLUECHIP_ANCHOR_POOL.to_string()];
     let (price, _, _) = calculate_weighted_price_with_atom(deps.as_ref(), &pools, &[]).unwrap();
     assert_eq!(
@@ -78,22 +84,34 @@ fn test_repro_token_sort_order_bug() {
     );
 
     // NOW: Simulate "Inverted" Pool
-    // reserve0 = ATOM (200B).
-    // reserve1 = Bluechip (100B).
-    // Correct Price: BC / ATOM = 100 / 200 = 0.5.
-    // If bug exists: returns 200 / 100 = 2.0.
+    // reserve0 = ATOM (200B), reserve1 = Bluechip (100B).
+    // Update POOLS_BY_ID to reflect the inverted token order.
+    let inverted_pool_details = PoolDetails {
+        pool_id: 1,
+        pool_token_info: [
+            TokenType::CreatorToken {
+                contract_addr: Addr::unchecked("atom_addr_123"),
+            },
+            TokenType::Bluechip {
+                denom: "BC".to_string(),
+            },
+        ],
+        creator_pool_addr: Addr::unchecked(ATOM_BLUECHIP_ANCHOR_POOL),
+    };
+    POOLS_BY_ID
+        .save(deps.as_mut().storage, 1, &inverted_pool_details)
+        .unwrap();
 
-    // Let's modify the ATOM pool state to simulate inversion
     let inverted_state = PoolStateResponseForFactory {
         pool_contract_address: Addr::unchecked(ATOM_BLUECHIP_ANCHOR_POOL),
         nft_ownership_accepted: true,
-        reserve0: Uint128::new(200_000_000_000), // Assumed ATOM (address)
-        reserve1: Uint128::new(100_000_000_000), // Assumed Bluechip (BC)
+        reserve0: Uint128::new(200_000_000_000),
+        reserve1: Uint128::new(100_000_000_000),
         total_liquidity: Uint128::new(300_000_000_000),
         block_time_last: 0,
         price0_cumulative_last: Uint128::zero(),
         price1_cumulative_last: Uint128::zero(),
-        assets: vec!["atom_addr_123".to_string(), "BC".to_string()], // "atom_addr_123" is valid addr, "BC" is invalid
+        assets: vec!["atom_addr_123".to_string(), "BC".to_string()],
     };
     POOLS_BY_CONTRACT_ADDRESS
         .save(
@@ -103,11 +121,11 @@ fn test_repro_token_sort_order_bug() {
         )
         .unwrap();
 
-    let (price_inverted, _, _) = calculate_weighted_price_with_atom(deps.as_ref(), &pools, &[]).unwrap();
+    let (price_inverted, _, _) =
+        calculate_weighted_price_with_atom(deps.as_ref(), &pools, &[]).unwrap();
 
-    // With the fix, the oracle correctly identifies "BC" as Bluechip (as it fails addr validation)
-    // and "atom_addr_123" as CreatorToken.
-    // So it swaps reserves: Bluechip = reserve1 (100B), Other = reserve0 (200B).
+    // With the fix, the oracle looks up POOLS_BY_ID to determine that asset[0] is
+    // CreatorToken => is_bluechip_second = true => bluechip is reserve1 (100B).
     // Price = 100 / 200 = 0.5 (500_000).
     assert_eq!(
         price_inverted.u128(),

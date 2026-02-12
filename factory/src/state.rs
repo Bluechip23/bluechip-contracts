@@ -7,7 +7,12 @@ use pool_factory_interfaces::PoolStateResponseForFactory;
 //states used during the pool and factory creation process.
 //there is TEMPdata to keep the creation process going, TEMPdata is eventually removed after sucessful pool creation
 pub const FACTORYINSTANTIATEINFO: Item<FactoryInstantiate> = Item::new("config");
-pub const TEMP_POOL_CREATION: Item<TempPoolCreation> = Item::new("temp_pool_creation");
+/// Per-pool temporary creation state, keyed by pool_id to prevent concurrent pool
+/// creations from overwriting each other (was previously a singleton Item).
+pub const TEMP_POOL_CREATION: Map<u64, TempPoolCreation> = Map::new("temp_pool_creation_v2");
+/// Tracks the pool_id of the pool currently being created in the SubMsg reply chain.
+/// Used by reply handlers to look up the correct TEMP_POOL_CREATION entry.
+pub const CREATING_POOL_ID: Item<u64> = Item::new("creating_pool_id");
 pub const PENDING_CONFIG: Item<PendingConfig> = Item::new("pending_config");
 pub const POOL_COUNTER: Item<u64> = Item::new("pool_counter");
 //setting the commit field inside the pool
@@ -27,12 +32,15 @@ pub const PYTH_CONTRACT_ADDR: &str =
 //pub const ATOM_USD_PRICE_FEED_ID: &str =
 //  "0xb00b60f88b03a6a625a8d1c048c3f66653edf217439983d037e7222c4e612819";
 pub const ATOM_USD_PRICE_FEED_ID: &str = "ATOM_USD";
-pub const MAX_PRICE_AGE_SECONDS_BEFORE_STALE: u64 = 3000;
+pub const MAX_PRICE_AGE_SECONDS_BEFORE_STALE: u64 = 300; // 5 minutes
 pub const ATOM_BLUECHIP_ANCHOR_POOL_ADDRESS: Item<Addr> = Item::new("atom_pool_address");
 pub const POOL_REGISTRY: Map<u64, Addr> = Map::new("pool_registry");
 pub const POOL_CODE_ID: Item<u64> = Item::new("pool_code_id");
 pub const PENDING_POOL_UPGRADE: Item<PoolUpgrade> = Item::new("pending_upgrade");
 pub const FIRST_POOL_TIMESTAMP: Item<Timestamp> = Item::new("first_pool_timestamp");
+/// Tracks which pools have already triggered their bluechip mint on threshold crossing.
+/// Prevents double-minting if NotifyThresholdCrossed is called multiple times.
+pub const POOL_THRESHOLD_MINTED: Map<u64, bool> = Map::new("pool_threshold_minted");
 
 #[cw_serde]
 pub struct FactoryInstantiate {

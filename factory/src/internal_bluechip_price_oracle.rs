@@ -284,11 +284,21 @@ pub fn calculate_weighted_price_with_atom(
                     continue;
                 }
 
-                // Determine if Bluechip is reserve0 or reserve1 based on assets
-                let is_bluechip_second = if pool_state.assets.len() >= 2 {
-                    deps.api.addr_validate(&pool_state.assets[0]).is_ok()
-                } else {
-                    false
+                // Determine if Bluechip is reserve0 or reserve1 by looking up the
+                // registered pool token types from POOLS_BY_ID. This is reliable because
+                // the TokenType enum explicitly tags Bluechip vs CreatorToken.
+                let is_bluechip_second = {
+                    let mut found = false;
+                    for result in POOLS_BY_ID.range(deps.storage, None, None, Order::Ascending) {
+                        if let Ok((_id, pool_details)) = result {
+                            if pool_details.creator_pool_addr.as_str() == pool_address.as_str() {
+                                // asset_infos[0] is CreatorToken => bluechip is second (index 1)
+                                found = matches!(pool_details.pool_token_info[0], TokenType::CreatorToken { .. });
+                                break;
+                            }
+                        }
+                    }
+                    found
                 };
 
                 // Save cumulative snapshot for next update cycle.

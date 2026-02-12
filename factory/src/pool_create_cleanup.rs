@@ -7,10 +7,13 @@ use pool_factory_interfaces::cw721_msgs::{Action, Cw721ExecuteMsg};
 
 use crate::error::ContractError;
 use crate::execute::{BURN_ADDRESS, CLEANUP_NFT_REPLY_ID, CLEANUP_TOKEN_REPLY_ID};
-use crate::state::{CreationStatus, PoolCreationState, POOL_CREATION_STATES, TEMP_POOL_CREATION};
+use crate::state::{
+    CreationStatus, PoolCreationState, CREATING_POOL_ID, POOL_CREATION_STATES, TEMP_POOL_CREATION,
+};
 
-pub fn cleanup_temp_state(storage: &mut dyn Storage) -> StdResult<()> {
-    TEMP_POOL_CREATION.remove(storage);
+pub fn cleanup_temp_state(storage: &mut dyn Storage, pool_id: u64) -> StdResult<()> {
+    TEMP_POOL_CREATION.remove(storage, pool_id);
+    CREATING_POOL_ID.remove(storage);
     Ok(())
 }
 
@@ -51,16 +54,14 @@ pub fn handle_cleanup_reply(
 ) -> Result<Response, ContractError> {
     match msg.result {
         SubMsgResult::Ok(_) => {
-            if let Ok(temp_state) = TEMP_POOL_CREATION.load(deps.storage) {
-                let pool_id = temp_state.pool_id;
+            if let Ok(pool_id) = CREATING_POOL_ID.load(deps.storage) {
                 POOL_CREATION_STATES.remove(deps.storage, pool_id);
-                cleanup_temp_state(deps.storage)?;
+                cleanup_temp_state(deps.storage, pool_id)?;
             }
             Ok(Response::new().add_attribute("action", "cleanup_completed"))
         }
         SubMsgResult::Err(err) => {
-            if let Ok(temp_state) = TEMP_POOL_CREATION.load(deps.storage) {
-                let pool_id = temp_state.pool_id;
+            if let Ok(pool_id) = CREATING_POOL_ID.load(deps.storage) {
                 if let Ok(mut state) = POOL_CREATION_STATES.load(deps.storage, pool_id) {
                     state.status = CreationStatus::Failed;
                     state.retry_count += 1;
@@ -75,8 +76,8 @@ pub fn handle_cleanup_reply(
     }
 }
 
-pub fn extract_contract_address(result: &SubMsgResponse) -> Result<Addr, ContractError> {
-    result
+pub fn extract_contract_address(deps: &DepsMut, result: &SubMsgResponse) -> Result<Addr, ContractError> {
+    let addr_str = result
         .events
         .iter()
         .find(|event| event.ty == "instantiate")
@@ -87,8 +88,14 @@ pub fn extract_contract_address(result: &SubMsgResponse) -> Result<Addr, Contrac
                 .find(|attr| attr.key == "_contract_address")
                 .map(|attr| attr.value.clone())
         })
-        .ok_or_else(|| ContractError::ContractAddressNotFound {})
-        .and_then(|addr_str| Ok(Addr::unchecked(addr_str)))
+        .ok_or_else(|| ContractError::ContractAddressNotFound {})?;
+
+    deps.api.addr_validate(&addr_str).map_err(|e| {
+        ContractError::Std(cosmwasm_std::StdError::generic_err(format!(
+            "Invalid contract address from instantiate event: {}",
+            e
+        )))
+    })
 }
 
 pub fn give_pool_ownership_cw20_and_nft(

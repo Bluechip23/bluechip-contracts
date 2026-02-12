@@ -115,6 +115,35 @@ pub fn update_price_accumulator(
     Ok(())
 }
 
+/// Maximum age (in seconds) for an oracle price to be considered valid in commits.
+/// If the oracle price was last updated more than this many seconds ago, commits will be rejected.
+pub const MAX_ORACLE_STALENESS_SECONDS: u64 = 600; // 10 minutes
+
+pub fn get_usd_value_with_staleness_check(
+    deps: Deps,
+    bluechip_amount: Uint128,
+    current_block_time: u64,
+) -> StdResult<Uint128> {
+    let factory_address = POOL_INFO.load(deps.storage)?;
+
+    let response: ConversionResponse = deps.querier.query_wasm_smart(
+        factory_address.factory_addr.clone(),
+        &FactoryQueryWrapper::InternalBlueChipOracleQuery(FactoryQueryMsg::ConvertBluechipToUsd {
+            amount: bluechip_amount,
+        }),
+    )?;
+
+    // Check staleness: reject if oracle price is too old
+    if response.timestamp > 0 && current_block_time > response.timestamp + MAX_ORACLE_STALENESS_SECONDS {
+        return Err(StdError::generic_err(format!(
+            "Oracle price is stale: last updated at {}, current time {}, max age {}s",
+            response.timestamp, current_block_time, MAX_ORACLE_STALENESS_SECONDS
+        )));
+    }
+
+    Ok(response.amount)
+}
+
 pub fn get_usd_value(deps: Deps, bluechip_amount: Uint128) -> StdResult<Uint128> {
     let factory_address = POOL_INFO.load(deps.storage)?;
 

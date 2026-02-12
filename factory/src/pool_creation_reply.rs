@@ -9,8 +9,9 @@ use crate::{
     },
     pool_struct::{CommitFeeInfo, PoolDetails, ThresholdPayoutAmounts},
     state::{
-        CommitInfo, CreationStatus, FACTORYINSTANTIATEINFO, POOLS_BY_CONTRACT_ADDRESS,
-        POOLS_BY_ID, POOL_CREATION_STATES, POOL_REGISTRY, SETCOMMIT, TEMP_POOL_CREATION,
+        CommitInfo, CreationStatus, CREATING_POOL_ID, FACTORYINSTANTIATEINFO,
+        POOLS_BY_CONTRACT_ADDRESS, POOLS_BY_ID, POOL_CREATION_STATES, POOL_REGISTRY, SETCOMMIT,
+        TEMP_POOL_CREATION,
     },
 };
 use cosmwasm_std::{
@@ -21,18 +22,19 @@ use pool_factory_interfaces::cw721_msgs::Cw721InstantiateMsg;
 // pool_creation_reply.rs
 
 pub fn set_tokens(deps: DepsMut, env: Env, msg: Reply) -> Result<Response, ContractError> {
-    // Load the consolidated context
-    let mut pool_context = TEMP_POOL_CREATION.load(deps.storage)?;
+    // Load the consolidated context using the tracked pool_id
+    let creating_pool_id = CREATING_POOL_ID.load(deps.storage)?;
+    let mut pool_context = TEMP_POOL_CREATION.load(deps.storage, creating_pool_id)?;
     let pool_id = pool_context.pool_id;
     let mut creation_state = POOL_CREATION_STATES.load(deps.storage, pool_id)?;
 
     match msg.result {
         SubMsgResult::Ok(result) => {
-            let token_address = extract_contract_address(&result)?;
+            let token_address = extract_contract_address(&deps, &result)?;
 
             // Update both context and creation state
             pool_context.creator_token_addr = Some(token_address.clone());
-            TEMP_POOL_CREATION.save(deps.storage, &pool_context)?;
+            TEMP_POOL_CREATION.save(deps.storage, pool_id, &pool_context)?;
 
             creation_state.creator_token_address = Some(token_address.clone());
             creation_state.status = CreationStatus::TokenCreated;
@@ -64,7 +66,7 @@ pub fn set_tokens(deps: DepsMut, env: Env, msg: Reply) -> Result<Response, Contr
         SubMsgResult::Err(err) => {
             creation_state.status = CreationStatus::Failed;
             POOL_CREATION_STATES.save(deps.storage, pool_id, &creation_state)?;
-            cleanup_temp_state(deps.storage)?;
+            cleanup_temp_state(deps.storage, pool_id)?;
 
             Err(ContractError::TokenCreationFailed {
                 pool_id,
@@ -75,17 +77,18 @@ pub fn set_tokens(deps: DepsMut, env: Env, msg: Reply) -> Result<Response, Contr
 }
 
 pub fn mint_create_pool(deps: DepsMut, env: Env, msg: Reply) -> Result<Response, ContractError> {
-    let mut pool_context = TEMP_POOL_CREATION.load(deps.storage)?;
+    let creating_pool_id = CREATING_POOL_ID.load(deps.storage)?;
+    let mut pool_context = TEMP_POOL_CREATION.load(deps.storage, creating_pool_id)?;
     let pool_id = pool_context.pool_id;
     let mut creation_state = POOL_CREATION_STATES.load(deps.storage, pool_id)?;
 
     match msg.result {
         SubMsgResult::Ok(result) => {
-            let nft_address = extract_contract_address(&result)?;
+            let nft_address = extract_contract_address(&deps, &result)?;
 
             // Update context
             pool_context.nft_addr = Some(nft_address.clone());
-            TEMP_POOL_CREATION.save(deps.storage, &pool_context)?;
+            TEMP_POOL_CREATION.save(deps.storage, pool_id, &pool_context)?;
 
             creation_state.mint_new_position_nft_address = Some(nft_address.clone());
             creation_state.status = CreationStatus::NftCreated;
@@ -169,13 +172,14 @@ pub fn mint_create_pool(deps: DepsMut, env: Env, msg: Reply) -> Result<Response,
 }
 
 pub fn finalize_pool(deps: DepsMut, _env: Env, msg: Reply) -> Result<Response, ContractError> {
-    let pool_context = TEMP_POOL_CREATION.load(deps.storage)?;
+    let creating_pool_id = CREATING_POOL_ID.load(deps.storage)?;
+    let pool_context = TEMP_POOL_CREATION.load(deps.storage, creating_pool_id)?;
     let pool_id = pool_context.pool_id;
     let mut creation_state = POOL_CREATION_STATES.load(deps.storage, pool_id)?;
 
     match msg.result {
         SubMsgResult::Ok(result) => {
-            let pool_address = extract_contract_address(&result)?;
+            let pool_address = extract_contract_address(&deps, &result)?;
 
             creation_state.pool_address = Some(pool_address.clone());
             creation_state.status = CreationStatus::PoolCreated;
@@ -217,7 +221,7 @@ pub fn finalize_pool(deps: DepsMut, _env: Env, msg: Reply) -> Result<Response, C
             POOL_CREATION_STATES.save(deps.storage, pool_id, &creation_state)?;
 
             // Clean up temporary state
-            cleanup_temp_state(deps.storage)?;
+            cleanup_temp_state(deps.storage, pool_id)?;
             POOL_REGISTRY.save(deps.storage, pool_id, &pool_address)?;
 
             // Register pool for oracle eligibility and factory queries

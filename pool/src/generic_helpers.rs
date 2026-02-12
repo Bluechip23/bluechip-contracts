@@ -154,6 +154,16 @@ pub fn trigger_threshold_payout(
 ) -> StdResult<Vec<CosmosMsg>> {
     let mut msgs = Vec::new();
 
+    // Notify the factory that this pool's threshold has been crossed,
+    // triggering the bluechip mint for this pool (instead of at pool creation time).
+    msgs.push(CosmosMsg::Wasm(WasmMsg::Execute {
+        contract_addr: pool_info.factory_addr.to_string(),
+        msg: to_json_binary(&pool_factory_interfaces::FactoryExecuteMsg::NotifyThresholdCrossed {
+            pool_id: pool_info.pool_id,
+        })?,
+        funds: vec![],
+    }));
+
     let total = payout.creator_reward_amount
         .checked_add(payout.bluechip_reward_amount)
         .map_err(StdError::overflow)?

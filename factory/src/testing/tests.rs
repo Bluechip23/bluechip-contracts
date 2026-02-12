@@ -485,9 +485,9 @@ fn test_multiple_pool_creation() {
             "Response should contain pool_id attribute"
         );
 
-        // Load the pool context that was just created
-        let pool_context = TEMP_POOL_CREATION.load(&deps.storage).unwrap();
-        let pool_id = pool_context.pool_id;
+        // Load the pool context that was just created (use loop index as pool_id)
+        let pool_id = i;
+        let pool_context = TEMP_POOL_CREATION.load(&deps.storage, pool_id).unwrap();
         let creator = pool_context.temp_creator_wallet.clone();
 
         // Verify this is a new unique ID
@@ -515,7 +515,7 @@ fn test_multiple_pool_creation() {
         assert_eq!(final_state.status, CreationStatus::Completed);
 
         assert!(
-            TEMP_POOL_CREATION.load(&deps.storage).is_err(),
+            TEMP_POOL_CREATION.load(&deps.storage, pool_id).is_err(),
             "Temp storage should be cleaned up after pool creation"
         );
     }
@@ -603,8 +603,8 @@ fn test_complete_pool_creation_flow() {
         res.messages.len()
     );
 
-    let pool_context = TEMP_POOL_CREATION.load(&deps.storage).unwrap();
-    let pool_id = pool_context.pool_id;
+    let pool_id = crate::state::CREATING_POOL_ID.load(&deps.storage).unwrap();
+    let pool_context = TEMP_POOL_CREATION.load(&deps.storage, pool_id).unwrap();
     let creator = pool_context.temp_creator_wallet.clone();
 
     assert!(pool_id > 0);
@@ -616,7 +616,7 @@ fn test_complete_pool_creation_flow() {
     let res = pool_creation_reply(deps.as_mut(), env.clone(), token_reply).unwrap();
 
     // Reload context and check token was set
-    let pool_context = TEMP_POOL_CREATION.load(&deps.storage).unwrap();
+    let pool_context = TEMP_POOL_CREATION.load(&deps.storage, pool_id).unwrap();
     assert_eq!(
         pool_context.creator_token_addr,
         Some(Addr::unchecked("token_address"))
@@ -634,7 +634,7 @@ fn test_complete_pool_creation_flow() {
     let nft_reply = create_instantiate_reply(MINT_CREATE_POOL, "nft_address");
     let res = pool_creation_reply(deps.as_mut(), env.clone(), nft_reply).unwrap();
 
-    let pool_context = TEMP_POOL_CREATION.load(&deps.storage).unwrap();
+    let pool_context = TEMP_POOL_CREATION.load(&deps.storage, pool_id).unwrap();
     assert_eq!(pool_context.nft_addr, Some(Addr::unchecked("nft_address")));
     assert_eq!(res.messages.len(), 1);
 
@@ -662,7 +662,7 @@ fn test_complete_pool_creation_flow() {
         Addr::unchecked("pool_address")
     );
 
-    assert!(TEMP_POOL_CREATION.load(&deps.storage).is_err());
+    assert!(TEMP_POOL_CREATION.load(&deps.storage, pool_id).is_err());
 
     let final_state = POOL_CREATION_STATES.load(&deps.storage, pool_id).unwrap();
     assert_eq!(final_state.status, CreationStatus::Completed);
@@ -796,7 +796,10 @@ fn test_reply_handling() {
     };
 
     TEMP_POOL_CREATION
-        .save(deps.as_mut().storage, &pool_context)
+        .save(deps.as_mut().storage, pool_id, &pool_context)
+        .unwrap();
+    crate::state::CREATING_POOL_ID
+        .save(deps.as_mut().storage, &pool_id)
         .unwrap();
 
     // Set up the creation state
@@ -843,7 +846,7 @@ fn test_reply_handling() {
         Some(Addr::unchecked(contract_addr))
     );
 
-    let updated_context = TEMP_POOL_CREATION.load(deps.as_ref().storage).unwrap();
+    let updated_context = TEMP_POOL_CREATION.load(deps.as_ref().storage, pool_id).unwrap();
     assert_eq!(
         updated_context.creator_token_addr,
         Some(Addr::unchecked(contract_addr))
@@ -1871,7 +1874,7 @@ fn test_mint_formula() {
 }
 
 #[test]
-fn test_bluechip_minting_on_pool_creation() {
+fn test_bluechip_minting_on_threshold_crossing() {
     let mut deps = mock_dependencies(&[]);
 
     setup_atom_pool(&mut deps);
@@ -1897,7 +1900,7 @@ fn test_bluechip_minting_on_pool_creation() {
     let info = mock_info(ADMIN, &[]);
     instantiate(deps.as_mut(), env.clone(), info, msg).unwrap();
 
-    // Create first pool - should set timestamp and mint ~500 tokens
+    // Create first pool - should NOT mint (minting moved to threshold crossing)
     let create_msg = ExecuteMsg::Create {
         pool_msg: create_test_pool_msg(),
         token_info: CreatorTokenInfo {
@@ -1910,9 +1913,29 @@ fn test_bluechip_minting_on_pool_creation() {
     let info = mock_info(ADMIN, &[]);
     let res = execute(deps.as_mut(), env.clone(), info, create_msg).unwrap();
 
-    let first_timestamp = FIRST_POOL_TIMESTAMP.load(&deps.storage).unwrap();
-    assert_eq!(first_timestamp, env.block.time);
+    // Pool creation should NOT have a mint BankMsg anymore
+    let mint_msg = res
+        .messages
+        .iter()
+        .find(|m| matches!(m.msg, CosmosMsg::Bank(BankMsg::Send { .. })));
 
+    assert!(
+        mint_msg.is_none(),
+        "Pool creation should NOT mint bluechip tokens (moved to threshold crossing)"
+    );
+
+    // Register pool 1 in POOL_REGISTRY so NotifyThresholdCrossed can verify caller
+    let pool_addr = Addr::unchecked("pool_contract_1");
+    crate::state::POOL_REGISTRY
+        .save(deps.as_mut().storage, 1, &pool_addr)
+        .unwrap();
+
+    // Now simulate the pool notifying threshold crossed
+    let notify_msg = ExecuteMsg::NotifyThresholdCrossed { pool_id: 1 };
+    let pool_info = mock_info(pool_addr.as_str(), &[]);
+    let res = execute(deps.as_mut(), env.clone(), pool_info, notify_msg).unwrap();
+
+    // Should now have a mint message
     let mint_msg = res
         .messages
         .iter()
@@ -1920,60 +1943,26 @@ fn test_bluechip_minting_on_pool_creation() {
 
     assert!(
         mint_msg.is_some(),
-        "Should have mint message for first pool"
+        "NotifyThresholdCrossed should trigger bluechip mint"
     );
 
     if let CosmosMsg::Bank(BankMsg::Send { to_address, amount }) = &mint_msg.unwrap().msg {
         assert_eq!(to_address, "bluechip_wallet");
         assert_eq!(amount.len(), 1);
         assert_eq!(amount[0].denom, "ubluechip");
-        // First pool (x=1, s=0) should mint close to 500 tokens
         assert!(amount[0].amount > Uint128::new(499_000_000));
         assert!(amount[0].amount <= Uint128::new(500_000_000));
     }
 
-    // Create second pool after 1 hour
-    let mut env2 = mock_env();
-    env2.block.time = env.block.time.plus_seconds(3600);
-
-    let create_msg2 = ExecuteMsg::Create {
-        pool_msg: create_test_pool_msg(),
-        token_info: CreatorTokenInfo {
-            name: "Second Token".to_string(),
-            symbol: "SECOND".to_string(),
-            decimal: 6,
-        },
-    };
-
-    let info = mock_info(ADMIN, &[]);
-    let res = execute(deps.as_mut(), env2.clone(), info, create_msg2).unwrap();
-
-    // Check mint message for second pool
-    let mint_msg2 = res
-        .messages
-        .iter()
-        .find(|m| matches!(m.msg, CosmosMsg::Bank(BankMsg::Send { .. })));
-
-    assert!(
-        mint_msg2.is_some(),
-        "Should have mint message for second pool"
-    );
-
-    if let CosmosMsg::Bank(BankMsg::Send { amount, .. }) = &mint_msg2.unwrap().msg {
-        assert!(amount[0].amount <= Uint128::new(500_000_000));
-        assert!(amount[0].amount > Uint128::new(495_000_000));
-    }
-
-    // Verify first pool timestamp hasn't changed
-    let first_timestamp_after = FIRST_POOL_TIMESTAMP.load(&deps.storage).unwrap();
-    assert_eq!(
-        first_timestamp_after, first_timestamp,
-        "First timestamp should not change"
-    );
+    // Verify double-minting is prevented
+    let notify_msg2 = ExecuteMsg::NotifyThresholdCrossed { pool_id: 1 };
+    let pool_info2 = mock_info(pool_addr.as_str(), &[]);
+    let err = execute(deps.as_mut(), env.clone(), pool_info2, notify_msg2);
+    assert!(err.is_err(), "Should reject duplicate threshold notification");
 
     // Verify pool counter incremented correctly
     let pool_count = POOL_COUNTER.load(&deps.storage).unwrap();
-    assert_eq!(pool_count, 2);
+    assert_eq!(pool_count, 1);
 }
 
 #[test]
