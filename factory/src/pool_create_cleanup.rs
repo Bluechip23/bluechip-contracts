@@ -6,19 +6,19 @@ use cw20::Cw20ExecuteMsg;
 use pool_factory_interfaces::cw721_msgs::{Action, Cw721ExecuteMsg};
 
 use crate::error::ContractError;
-use crate::execute::{BURN_ADDRESS, CLEANUP_NFT_REPLY_ID, CLEANUP_TOKEN_REPLY_ID};
+use crate::execute::{encode_reply_id, BURN_ADDRESS, CLEANUP_NFT_STEP, CLEANUP_TOKEN_STEP};
 use crate::state::{
-    CreationStatus, PoolCreationState, CREATING_POOL_ID, POOL_CREATION_STATES, TEMP_POOL_CREATION,
+    CreationStatus, PoolCreationState, POOL_CREATION_STATES, TEMP_POOL_CREATION,
 };
 
 pub fn cleanup_temp_state(storage: &mut dyn Storage, pool_id: u64) -> StdResult<()> {
     TEMP_POOL_CREATION.remove(storage, pool_id);
-    CREATING_POOL_ID.remove(storage);
     Ok(())
 }
 
 pub fn create_cleanup_messages(
     creation_state: &PoolCreationState,
+    pool_id: u64,
 ) -> Result<Vec<SubMsg>, ContractError> {
     let mut messages = vec![];
     if let Some(token_addr) = &creation_state.creator_token_address {
@@ -27,7 +27,7 @@ pub fn create_cleanup_messages(
             msg: to_json_binary(&Cw20ExecuteMsg::UpdateMinter { new_minter: None })?,
             funds: vec![],
         };
-        let sub_msg: SubMsg = SubMsg::reply_on_error(disable_token_msg, CLEANUP_TOKEN_REPLY_ID);
+        let sub_msg: SubMsg = SubMsg::reply_on_error(disable_token_msg, encode_reply_id(pool_id, CLEANUP_TOKEN_STEP));
         messages.push(sub_msg);
     }
     if let Some(nft_addr) = &creation_state.mint_new_position_nft_address {
@@ -41,7 +41,7 @@ pub fn create_cleanup_messages(
             ))?,
             funds: vec![],
         };
-        let sub_msg: SubMsg = SubMsg::reply_on_error(disable_nft_msg, CLEANUP_NFT_REPLY_ID);
+        let sub_msg: SubMsg = SubMsg::reply_on_error(disable_nft_msg, encode_reply_id(pool_id, CLEANUP_NFT_STEP));
         messages.push(sub_msg);
     }
 
@@ -51,22 +51,19 @@ pub fn handle_cleanup_reply(
     deps: DepsMut,
     _env: Env,
     msg: Reply,
+    pool_id: u64,
 ) -> Result<Response, ContractError> {
     match msg.result {
         SubMsgResult::Ok(_) => {
-            if let Ok(pool_id) = CREATING_POOL_ID.load(deps.storage) {
-                POOL_CREATION_STATES.remove(deps.storage, pool_id);
-                cleanup_temp_state(deps.storage, pool_id)?;
-            }
+            POOL_CREATION_STATES.remove(deps.storage, pool_id);
+            cleanup_temp_state(deps.storage, pool_id)?;
             Ok(Response::new().add_attribute("action", "cleanup_completed"))
         }
         SubMsgResult::Err(err) => {
-            if let Ok(pool_id) = CREATING_POOL_ID.load(deps.storage) {
-                if let Ok(mut state) = POOL_CREATION_STATES.load(deps.storage, pool_id) {
-                    state.status = CreationStatus::Failed;
-                    state.retry_count += 1;
-                    POOL_CREATION_STATES.save(deps.storage, pool_id, &state)?;
-                }
+            if let Ok(mut state) = POOL_CREATION_STATES.load(deps.storage, pool_id) {
+                state.status = CreationStatus::Failed;
+                state.retry_count += 1;
+                POOL_CREATION_STATES.save(deps.storage, pool_id, &state)?;
             }
 
             Ok(Response::new()

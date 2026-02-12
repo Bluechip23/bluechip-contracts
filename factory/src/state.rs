@@ -10,9 +10,6 @@ pub const FACTORYINSTANTIATEINFO: Item<FactoryInstantiate> = Item::new("config")
 /// Per-pool temporary creation state, keyed by pool_id to prevent concurrent pool
 /// creations from overwriting each other (was previously a singleton Item).
 pub const TEMP_POOL_CREATION: Map<u64, TempPoolCreation> = Map::new("temp_pool_creation_v2");
-/// Tracks the pool_id of the pool currently being created in the SubMsg reply chain.
-/// Used by reply handlers to look up the correct TEMP_POOL_CREATION entry.
-pub const CREATING_POOL_ID: Item<u64> = Item::new("creating_pool_id");
 pub const PENDING_CONFIG: Item<PendingConfig> = Item::new("pending_config");
 pub const POOL_COUNTER: Item<u64> = Item::new("pool_counter");
 //setting the commit field inside the pool

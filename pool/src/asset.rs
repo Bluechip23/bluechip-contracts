@@ -19,6 +19,19 @@ use cw_utils::must_pay;
 
 pub const UBLUECHIP_DENOM: &str = "ubluechip";
 
+/// Extracts the native bluechip denom from a pool's asset_infos array.
+/// Returns the denom string from whichever asset is `TokenType::Bluechip`.
+pub fn get_bluechip_denom(asset_infos: &[TokenType; 2]) -> StdResult<String> {
+    for asset in asset_infos {
+        if let TokenType::Bluechip { denom } = asset {
+            return Ok(denom.clone());
+        }
+    }
+    Err(StdError::generic_err(
+        "No bluechip (native) asset found in pool asset_infos",
+    ))
+}
+
 #[cw_serde]
 pub struct TokenInfo {
     // which token is being used (bluechip or creator token)

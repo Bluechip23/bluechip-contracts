@@ -1,7 +1,7 @@
 use crate::{
     asset::TokenType,
     error::ContractError,
-    execute::{FINALIZE_POOL, MINT_CREATE_POOL},
+    execute::{encode_reply_id, FINALIZE_POOL, MINT_CREATE_POOL},
     msg::CreatePoolReplyMsg,
     pool_create_cleanup::{
         cleanup_temp_state, create_cleanup_messages, extract_contract_address,
@@ -9,7 +9,7 @@ use crate::{
     },
     pool_struct::{CommitFeeInfo, PoolDetails, ThresholdPayoutAmounts},
     state::{
-        CommitInfo, CreationStatus, CREATING_POOL_ID, FACTORYINSTANTIATEINFO,
+        CommitInfo, CreationStatus, FACTORYINSTANTIATEINFO,
         POOLS_BY_CONTRACT_ADDRESS, POOLS_BY_ID, POOL_CREATION_STATES, POOL_REGISTRY, SETCOMMIT,
         TEMP_POOL_CREATION,
     },
@@ -21,11 +21,8 @@ use pool_factory_interfaces::cw721_msgs::Cw721InstantiateMsg;
 
 // pool_creation_reply.rs
 
-pub fn set_tokens(deps: DepsMut, env: Env, msg: Reply) -> Result<Response, ContractError> {
-    // Load the consolidated context using the tracked pool_id
-    let creating_pool_id = CREATING_POOL_ID.load(deps.storage)?;
-    let mut pool_context = TEMP_POOL_CREATION.load(deps.storage, creating_pool_id)?;
-    let pool_id = pool_context.pool_id;
+pub fn set_tokens(deps: DepsMut, env: Env, msg: Reply, pool_id: u64) -> Result<Response, ContractError> {
+    let mut pool_context = TEMP_POOL_CREATION.load(deps.storage, pool_id)?;
     let mut creation_state = POOL_CREATION_STATES.load(deps.storage, pool_id)?;
 
     match msg.result {
@@ -55,7 +52,7 @@ pub fn set_tokens(deps: DepsMut, env: Env, msg: Reply) -> Result<Response, Contr
                 label: format!("AMM-LP-NFT-{}", token_address),
             };
 
-            let sub_msg = SubMsg::reply_on_success(nft_msg, MINT_CREATE_POOL);
+            let sub_msg = SubMsg::reply_on_success(nft_msg, encode_reply_id(pool_id, MINT_CREATE_POOL));
 
             Ok(Response::new()
                 .add_attribute("action", "token_created_successfully")
@@ -76,10 +73,8 @@ pub fn set_tokens(deps: DepsMut, env: Env, msg: Reply) -> Result<Response, Contr
     }
 }
 
-pub fn mint_create_pool(deps: DepsMut, env: Env, msg: Reply) -> Result<Response, ContractError> {
-    let creating_pool_id = CREATING_POOL_ID.load(deps.storage)?;
-    let mut pool_context = TEMP_POOL_CREATION.load(deps.storage, creating_pool_id)?;
-    let pool_id = pool_context.pool_id;
+pub fn mint_create_pool(deps: DepsMut, env: Env, msg: Reply, pool_id: u64) -> Result<Response, ContractError> {
+    let mut pool_context = TEMP_POOL_CREATION.load(deps.storage, pool_id)?;
     let mut creation_state = POOL_CREATION_STATES.load(deps.storage, pool_id)?;
 
     match msg.result {
@@ -148,7 +143,7 @@ pub fn mint_create_pool(deps: DepsMut, env: Env, msg: Reply) -> Result<Response,
                 label: format!("Pool-{}", pool_id),
             };
 
-            let sub_msg = SubMsg::reply_on_success(pool_msg, FINALIZE_POOL);
+            let sub_msg = SubMsg::reply_on_success(pool_msg, encode_reply_id(pool_id, FINALIZE_POOL));
 
             Ok(Response::new()
                 .add_attribute("action", "nft_created_successfully")
@@ -160,7 +155,7 @@ pub fn mint_create_pool(deps: DepsMut, env: Env, msg: Reply) -> Result<Response,
             creation_state.status = CreationStatus::CleaningUp;
             POOL_CREATION_STATES.save(deps.storage, pool_id, &creation_state)?;
 
-            let cleanup_msgs = create_cleanup_messages(&creation_state)?;
+            let cleanup_msgs = create_cleanup_messages(&creation_state, pool_id)?;
 
             Ok(Response::new()
                 .add_submessages(cleanup_msgs)
@@ -171,10 +166,8 @@ pub fn mint_create_pool(deps: DepsMut, env: Env, msg: Reply) -> Result<Response,
     }
 }
 
-pub fn finalize_pool(deps: DepsMut, _env: Env, msg: Reply) -> Result<Response, ContractError> {
-    let creating_pool_id = CREATING_POOL_ID.load(deps.storage)?;
-    let pool_context = TEMP_POOL_CREATION.load(deps.storage, creating_pool_id)?;
-    let pool_id = pool_context.pool_id;
+pub fn finalize_pool(deps: DepsMut, _env: Env, msg: Reply, pool_id: u64) -> Result<Response, ContractError> {
+    let pool_context = TEMP_POOL_CREATION.load(deps.storage, pool_id)?;
     let mut creation_state = POOL_CREATION_STATES.load(deps.storage, pool_id)?;
 
     match msg.result {
@@ -258,7 +251,7 @@ pub fn finalize_pool(deps: DepsMut, _env: Env, msg: Reply) -> Result<Response, C
         SubMsgResult::Err(err) => {
             creation_state.status = CreationStatus::CleaningUp;
             POOL_CREATION_STATES.save(deps.storage, pool_id, &creation_state)?;
-            let cleanup_msgs = create_cleanup_messages(&creation_state)?;
+            let cleanup_msgs = create_cleanup_messages(&creation_state, pool_id)?;
             Ok(Response::new()
                 .add_submessages(cleanup_msgs)
                 .add_attribute("action", "pool_creation_failed_cleanup")
