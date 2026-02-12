@@ -9,7 +9,7 @@ use crate::pool_creation_reply::{finalize_pool, mint_create_pool, set_tokens};
 use crate::pool_struct::{CreatePool, PoolConfigUpdate, TempPoolCreation};
 use crate::state::{
     CreationStatus, FactoryInstantiate, PendingConfig, PoolCreationState, PoolUpgrade,
-    CREATING_POOL_ID, FACTORYINSTANTIATEINFO, PENDING_CONFIG, PENDING_POOL_UPGRADE, POOL_COUNTER,
+    FACTORYINSTANTIATEINFO, PENDING_CONFIG, PENDING_POOL_UPGRADE, POOL_COUNTER,
     POOL_CREATION_STATES, POOL_REGISTRY, POOL_THRESHOLD_MINTED, TEMP_POOL_CREATION,
 };
 #[cfg(not(feature = "library"))]
@@ -24,11 +24,23 @@ use std::env;
 const CONTRACT_NAME: &str = "crates.io:factory";
 const CONTRACT_VERSION: &str = env!("CARGO_PKG_VERSION");
 pub const BURN_ADDRESS: &str = "cosmos1qqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqnrql8a";
+/// Reply step constants (stored in low 8 bits of reply ID).
 pub const SET_TOKENS: u64 = 1;
 pub const MINT_CREATE_POOL: u64 = 2;
 pub const FINALIZE_POOL: u64 = 3;
-pub const CLEANUP_TOKEN_REPLY_ID: u64 = 100;
-pub const CLEANUP_NFT_REPLY_ID: u64 = 101;
+pub const CLEANUP_TOKEN_STEP: u64 = 100;
+pub const CLEANUP_NFT_STEP: u64 = 101;
+
+/// Encodes a pool_id and a step into a single SubMsg reply ID.
+/// Layout: upper 56 bits = pool_id, lower 8 bits = step.
+pub fn encode_reply_id(pool_id: u64, step: u64) -> u64 {
+    (pool_id << 8) | (step & 0xFF)
+}
+
+/// Decodes a reply ID back into (pool_id, step).
+pub fn decode_reply_id(reply_id: u64) -> (u64, u64) {
+    (reply_id >> 8, reply_id & 0xFF)
+}
 
 #[cfg_attr(not(feature = "library"), entry_point)]
 pub fn instantiate(
@@ -158,8 +170,6 @@ fn execute_create_creator_pool(
             nft_addr: None,
         },
     )?;
-    // Track which pool_id is being created so reply handlers can look it up
-    CREATING_POOL_ID.save(deps.storage, &pool_id)?;
     let msg = WasmMsg::Instantiate {
         code_id: factory_cw20.cw20_token_contract_id,
         //creating the creator token only, no minting.
@@ -191,7 +201,7 @@ fn execute_create_creator_pool(
         retry_count: 0,
     };
     POOL_CREATION_STATES.save(deps.storage, pool_id, &creation_state)?;
-    let sub_msg = vec![SubMsg::reply_on_success(msg, SET_TOKENS)];
+    let sub_msg = vec![SubMsg::reply_on_success(msg, encode_reply_id(pool_id, SET_TOKENS))];
 
     Ok(Response::new()
         .add_attribute("action", "create")
@@ -206,12 +216,12 @@ pub fn reply(deps: DepsMut, env: Env, msg: Reply) -> Result<Response, ContractEr
 }
 
 pub fn pool_creation_reply(deps: DepsMut, env: Env, msg: Reply) -> Result<Response, ContractError> {
-    match msg.id {
-        SET_TOKENS => set_tokens(deps, env, msg),
-        MINT_CREATE_POOL => mint_create_pool(deps, env, msg),
-        FINALIZE_POOL => finalize_pool(deps, env, msg),
-        CLEANUP_TOKEN_REPLY_ID => handle_cleanup_reply(deps, env, msg),
-        CLEANUP_NFT_REPLY_ID => handle_cleanup_reply(deps, env, msg),
+    let (pool_id, step) = decode_reply_id(msg.id);
+    match step {
+        SET_TOKENS => set_tokens(deps, env, msg, pool_id),
+        MINT_CREATE_POOL => mint_create_pool(deps, env, msg, pool_id),
+        FINALIZE_POOL => finalize_pool(deps, env, msg, pool_id),
+        CLEANUP_TOKEN_STEP | CLEANUP_NFT_STEP => handle_cleanup_reply(deps, env, msg, pool_id),
         _ => Err(ContractError::UnknownReplyId { id: msg.id }),
     }
 }

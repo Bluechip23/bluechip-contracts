@@ -11,7 +11,8 @@ use cosmwasm_std::{
 
 use crate::asset::{TokenInfo, TokenType};
 use crate::execute::{
-    execute, instantiate, pool_creation_reply, FINALIZE_POOL, MINT_CREATE_POOL, SET_TOKENS,
+    encode_reply_id, execute, instantiate, pool_creation_reply, FINALIZE_POOL, MINT_CREATE_POOL,
+    SET_TOKENS,
 };
 use crate::internal_bluechip_price_oracle::{
     bluechip_to_usd, calculate_twap, get_bluechip_usd_price, query_pyth_atom_usd_price,
@@ -420,13 +421,13 @@ fn simulate_complete_reply_chain(
     env: Env,
     pool_id: u64,
 ) {
-    let token_reply = create_instantiate_reply(SET_TOKENS, &format!("token_address_{}", pool_id));
+    let token_reply = create_instantiate_reply(encode_reply_id(pool_id, SET_TOKENS), &format!("token_address_{}", pool_id));
     pool_creation_reply(deps.as_mut(), env.clone(), token_reply).unwrap();
 
-    let nft_reply = create_instantiate_reply(MINT_CREATE_POOL, &format!("nft_address_{}", pool_id));
+    let nft_reply = create_instantiate_reply(encode_reply_id(pool_id, MINT_CREATE_POOL), &format!("nft_address_{}", pool_id));
     pool_creation_reply(deps.as_mut(), env.clone(), nft_reply).unwrap();
 
-    let pool_reply = create_instantiate_reply(FINALIZE_POOL, &format!("pool_address_{}", pool_id));
+    let pool_reply = create_instantiate_reply(encode_reply_id(pool_id, FINALIZE_POOL), &format!("pool_address_{}", pool_id));
     pool_creation_reply(deps.as_mut(), env.clone(), pool_reply).unwrap();
 }
 
@@ -603,7 +604,7 @@ fn test_complete_pool_creation_flow() {
         res.messages.len()
     );
 
-    let pool_id = crate::state::CREATING_POOL_ID.load(&deps.storage).unwrap();
+    let pool_id = POOL_COUNTER.load(&deps.storage).unwrap();
     let pool_context = TEMP_POOL_CREATION.load(&deps.storage, pool_id).unwrap();
     let creator = pool_context.temp_creator_wallet.clone();
 
@@ -612,7 +613,7 @@ fn test_complete_pool_creation_flow() {
     assert!(pool_context.creator_token_addr.is_none());
     assert!(pool_context.nft_addr.is_none());
 
-    let token_reply = create_instantiate_reply(SET_TOKENS, "token_address");
+    let token_reply = create_instantiate_reply(encode_reply_id(pool_id, SET_TOKENS), "token_address");
     let res = pool_creation_reply(deps.as_mut(), env.clone(), token_reply).unwrap();
 
     // Reload context and check token was set
@@ -631,7 +632,7 @@ fn test_complete_pool_creation_flow() {
     );
 
     // Step 2: NFT Creation Reply
-    let nft_reply = create_instantiate_reply(MINT_CREATE_POOL, "nft_address");
+    let nft_reply = create_instantiate_reply(encode_reply_id(pool_id, MINT_CREATE_POOL), "nft_address");
     let res = pool_creation_reply(deps.as_mut(), env.clone(), nft_reply).unwrap();
 
     let pool_context = TEMP_POOL_CREATION.load(&deps.storage, pool_id).unwrap();
@@ -646,7 +647,7 @@ fn test_complete_pool_creation_flow() {
     );
 
     // Step 3: Pool Finalization Reply
-    let pool_reply = create_instantiate_reply(FINALIZE_POOL, "pool_address");
+    let pool_reply = create_instantiate_reply(encode_reply_id(pool_id, FINALIZE_POOL), "pool_address");
     let res = pool_creation_reply(deps.as_mut(), env.clone(), pool_reply).unwrap();
 
     let commit_info = SETCOMMIT.load(&deps.storage, &creator.to_string()).unwrap();
@@ -798,9 +799,6 @@ fn test_reply_handling() {
     TEMP_POOL_CREATION
         .save(deps.as_mut().storage, pool_id, &pool_context)
         .unwrap();
-    crate::state::CREATING_POOL_ID
-        .save(deps.as_mut().storage, &pool_id)
-        .unwrap();
 
     // Set up the creation state
     let creation_state = PoolCreationState {
@@ -819,9 +817,9 @@ fn test_reply_handling() {
 
     let contract_addr = "token_contract_address";
 
-    // Create the reply message
+    // Create the reply message with pool_id encoded in the reply ID
     let reply_msg = Reply {
-        id: SET_TOKENS,
+        id: encode_reply_id(pool_id, SET_TOKENS),
         result: SubMsgResult::Ok(SubMsgResponse {
             events: vec![
                 Event::new("instantiate").add_attribute("_contract_address", contract_addr)
