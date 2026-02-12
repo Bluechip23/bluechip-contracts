@@ -5,6 +5,7 @@ use crate::liquidity_helpers::{
     calc_liquidity_for_deposit, calculate_fee_size_multiplier, calculate_fees_owed,
     verify_position_ownership,
 };
+use crate::asset::get_bluechip_denom;
 use crate::state::{
     PoolSpecs, MINIMUM_LIQUIDITY, POOL_FEE_STATE, POOL_INFO, POOL_PAUSED, POOL_SPECS, POOL_STATE,
     RATE_LIMIT_GUARD,
@@ -33,11 +34,12 @@ pub fn execute_deposit_liquidity(
 ) -> Result<Response, ContractError> {
     enforce_transaction_deadline(env.block.time, transaction_deadline)?;
 
-    const NATIVE_DENOM: &str = "ubluechip";
+    let pool_info = POOL_INFO.load(deps.storage)?;
+    let native_denom = get_bluechip_denom(&pool_info.pool_info.asset_infos)?;
     let paid_bluechip = info
         .funds
         .iter()
-        .find(|c| c.denom == NATIVE_DENOM)
+        .find(|c| c.denom == native_denom)
         .map(|c| c.amount)
         .unwrap_or_default();
     // calculate actual amounts needed to maintain pool ratio
@@ -77,7 +79,6 @@ pub fn execute_deposit_liquidity(
     }
 
     let mut pool_state = POOL_STATE.load(deps.storage)?;
-    let pool_info = POOL_INFO.load(deps.storage)?;
     let pool_fee_state = POOL_FEE_STATE.load(deps.storage)?;
 
     let mut messages = vec![];
@@ -125,7 +126,7 @@ pub fn execute_deposit_liquidity(
         let refund_msg = BankMsg::Send {
             to_address: info.sender.to_string(),
             amount: vec![Coin {
-                denom: NATIVE_DENOM.to_string(),
+                denom: native_denom.clone(),
                 amount: refund_amount,
             }],
         };
@@ -250,10 +251,11 @@ pub fn execute_collect_fees(
         .add_attribute("fees_1", fees_owed_1);
 
     if !fees_owed_0.is_zero() {
+        let native_denom = get_bluechip_denom(&pool_info.pool_info.asset_infos)?;
         let bluechip_msg = BankMsg::Send {
             to_address: info.sender.to_string(),
             amount: vec![Coin {
-                denom: "ubluechip".to_string(),
+                denom: native_denom,
                 amount: fees_owed_0,
             }],
         };
@@ -292,16 +294,16 @@ pub fn add_to_position(
 ) -> Result<Response, ContractError> {
     enforce_transaction_deadline(env.block.time, transaction_deadline)?;
 
-    const NATIVE_DENOM: &str = "ubluechip";
+    let pool_info = POOL_INFO.load(deps.storage)?;
+    let native_denom = get_bluechip_denom(&pool_info.pool_info.asset_infos)?;
     let paid_bluechip = info
         .funds
         .iter()
-        .find(|c| c.denom == NATIVE_DENOM)
+        .find(|c| c.denom == native_denom)
         .map(|c| c.amount)
         .unwrap_or_default();
 
     let mut pool_fee_state = POOL_FEE_STATE.load(deps.storage)?;
-    let pool_info = POOL_INFO.load(deps.storage)?;
     let mut pool_state = POOL_STATE.load(deps.storage)?;
     //make sure position belongs to wallet sending new funds
     verify_position_ownership(
@@ -383,7 +385,7 @@ pub fn add_to_position(
         let refund_msg = BankMsg::Send {
             to_address: info.sender.to_string(),
             amount: vec![Coin {
-                denom: NATIVE_DENOM.to_string(),
+                denom: native_denom.clone(),
                 amount: refund_amount,
             }],
         };
@@ -429,7 +431,7 @@ pub fn add_to_position(
         let bluechip_msg = BankMsg::Send {
             to_address: user.to_string(),
             amount: vec![Coin {
-                denom: NATIVE_DENOM.to_string(),
+                denom: native_denom.clone(),
                 amount: fees_owed_0,
             }],
         };
@@ -622,10 +624,11 @@ pub fn remove_all_liquidity(
         .add_attribute("total_1", total_amount_1);
     //redeem the tokens correlated with the users positions
     if !total_amount_0.is_zero() {
+        let native_denom = get_bluechip_denom(&pool_info.pool_info.asset_infos)?;
         let bluechip_msg = BankMsg::Send {
             to_address: info.sender.to_string(),
             amount: vec![Coin {
-                denom: "ubluechip".to_string(),
+                denom: native_denom,
                 amount: total_amount_0,
             }],
         };
@@ -848,10 +851,11 @@ pub fn remove_partial_liquidity(
         .add_attribute("total_1", total_amount_1);
     //send assets back to user.
     if !total_amount_0.is_zero() {
+        let native_denom = get_bluechip_denom(&pool_info.pool_info.asset_infos)?;
         let bluechip_msg = BankMsg::Send {
             to_address: info.sender.to_string(),
             amount: vec![Coin {
-                denom: "ubluechip".to_string(),
+                denom: native_denom,
                 amount: total_amount_0,
             }],
         };
