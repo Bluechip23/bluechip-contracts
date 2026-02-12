@@ -54,6 +54,11 @@ pub enum ExecuteMsg {
         pool_id: u64,
         pool_config: PoolConfigUpdate,
     },
+    /// Called by a pool contract when its commit threshold has been crossed.
+    /// Triggers the bluechip mint for this pool (only fires once per pool).
+    NotifyThresholdCrossed {
+        pool_id: u64,
+    },
 }
 
 #[cw_serde]

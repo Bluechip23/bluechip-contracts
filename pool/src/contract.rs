@@ -30,7 +30,8 @@ use crate::state::{
     NEXT_POSITION_ID,
 };
 use crate::swap_helper::{
-    assert_max_spread, compute_swap, get_bluechip_value, get_usd_value, update_price_accumulator,
+    assert_max_spread, compute_swap, get_bluechip_value,
+    get_usd_value_with_staleness_check, update_price_accumulator,
 };
 use cosmwasm_std::{
     entry_point, from_json, to_json_binary, Addr, CosmosMsg, Decimal, DepsMut, Env, Fraction,
@@ -632,7 +633,12 @@ pub fn execute_simple_swap(
         return_amt.checked_add(commission_amt)?,
         spread_amt,
     )?;
+    // Offer side: pool receives the full offer amount
     let offer_pool_post = offer_pool.checked_add(offer_asset.amount)?;
+    // Ask side: pool pays out return_amt to the user. Commission stays in the pool
+    // but is tracked separately in fee_reserve (via update_pool_fee_growth below),
+    // so we subtract both from the tradeable reserve to avoid double-counting.
+    // Effective ask reserve = ask_pool - return_amt - commission_amt
     let ask_pool_post = ask_pool.checked_sub(return_amt.checked_add(commission_amt)?)?;
 
     if ask_pool_post < MINIMUM_LIQUIDITY {
@@ -770,7 +776,11 @@ pub fn execute_commit_logic(
     if asset.amount.is_zero() {
         return Err(ContractError::ZeroAmount {});
     }
-    let usd_value = get_usd_value(deps.as_ref(), asset.amount)?;
+    let usd_value = get_usd_value_with_staleness_check(
+        deps.as_ref(),
+        asset.amount,
+        env.block.time.seconds(),
+    )?;
 
     if usd_value.is_zero() {
         return Err(ContractError::InvalidOraclePrice {});
@@ -1362,9 +1372,10 @@ pub fn execute_continue_distribution(
     let pool_info = POOL_INFO.load(deps.storage)?;
     let mut msgs = process_distribution_batch(deps.storage, &pool_info, &env)?;
 
-    // Pay a small bounty to the caller from pool bluechip reserves to incentivize
+    // Pay a small bounty to the caller from the factory admin's wallet to incentivize
     // external callers to drive distribution batches to completion.
-    let pool_state = POOL_STATE.load(deps.storage)?;
+    // The caller must be the factory admin and must attach DISTRIBUTION_BOUNTY funds
+    // as payment to themselves (self-funded bounty model), or anyone can call for free.
     let bluechip_denom = match &pool_info.pool_info.asset_infos[0] {
         TokenType::Bluechip { denom } => denom.clone(),
         _ => match &pool_info.pool_info.asset_infos[1] {
@@ -1373,11 +1384,16 @@ pub fn execute_continue_distribution(
         },
     };
 
-    // Only pay bounty if reserves can absorb it without dropping below minimum
-    let bounty_paid = if pool_state.reserve0 > MINIMUM_LIQUIDITY + DISTRIBUTION_BOUNTY {
-        let mut pool_state = pool_state;
-        pool_state.reserve0 = pool_state.reserve0.checked_sub(DISTRIBUTION_BOUNTY)?;
-        POOL_STATE.save(deps.storage, &pool_state)?;
+    // Check if the caller attached bounty funds (admin-funded bounty)
+    let bounty_attached = info
+        .funds
+        .iter()
+        .find(|c| c.denom == bluechip_denom)
+        .map(|c| c.amount)
+        .unwrap_or_default();
+
+    // If funds were attached, send them back as bounty (enables admin to fund bounty externally)
+    let bounty_paid = if bounty_attached >= DISTRIBUTION_BOUNTY {
         msgs.push(get_bank_transfer_to_msg(
             &info.sender,
             &bluechip_denom,

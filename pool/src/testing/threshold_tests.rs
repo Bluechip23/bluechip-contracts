@@ -70,7 +70,7 @@ fn test_threshold_with_excess_creates_position() {
             let response = ConversionResponse {
                 amount: Uint128::new(1_000_000_000),
                 rate_used: Uint128::new(1_000_000_000),
-                timestamp: 1234567890u64,
+                timestamp: 1571797419u64, // matches mock_env block time
             };
             SystemResult::Ok(ContractResult::Ok(to_json_binary(&response).unwrap()))
         }
@@ -272,7 +272,7 @@ fn test_no_excess_when_under_cap() {
             let response = ConversionResponse {
                 amount: Uint128::new(1_000_000),
                 rate_used: Uint128::new(1_000_000),
-                timestamp: 1234567890u64,
+                timestamp: 1571797419u64, // matches mock_env block time
             };
             SystemResult::Ok(ContractResult::Ok(to_json_binary(&response).unwrap()))
         }
@@ -750,7 +750,7 @@ fn test_accumulated_bluechips_respected() {
             let response = ConversionResponse {
                 amount: Uint128::new(2_000_000_000), // 000 = 2000 bluechips
                 rate_used: Uint128::new(500_000),    // /bin/bash.50
-                timestamp: 1234567890u64,
+                timestamp: 1571797419u64, // matches mock_env block time
             };
             SystemResult::Ok(ContractResult::Ok(to_json_binary(&response).unwrap()))
         }

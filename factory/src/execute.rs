@@ -9,8 +9,8 @@ use crate::pool_creation_reply::{finalize_pool, mint_create_pool, set_tokens};
 use crate::pool_struct::{CreatePool, PoolConfigUpdate, TempPoolCreation};
 use crate::state::{
     CreationStatus, FactoryInstantiate, PendingConfig, PoolCreationState, PoolUpgrade,
-    FACTORYINSTANTIATEINFO, PENDING_CONFIG, PENDING_POOL_UPGRADE, POOL_COUNTER,
-    POOL_CREATION_STATES, POOL_REGISTRY, TEMP_POOL_CREATION,
+    CREATING_POOL_ID, FACTORYINSTANTIATEINFO, PENDING_CONFIG, PENDING_POOL_UPGRADE, POOL_COUNTER,
+    POOL_CREATION_STATES, POOL_REGISTRY, POOL_THRESHOLD_MINTED, TEMP_POOL_CREATION,
 };
 #[cfg(not(feature = "library"))]
 use cosmwasm_std::{
@@ -55,7 +55,7 @@ pub fn execute(
         ExecuteMsg::ProposeConfigUpdate {
             config: factory_instantiate,
         } => execute_propose_factory_config_update(deps, env, info, factory_instantiate),
-        ExecuteMsg::UpdateConfig {} => execute_update_factory_config(deps, env),
+        ExecuteMsg::UpdateConfig {} => execute_update_factory_config(deps, env, info),
         ExecuteMsg::CancelConfigUpdate {} => execute_cancel_factory_config_update(deps, info),
         ExecuteMsg::Create {
             pool_msg,
@@ -75,6 +75,9 @@ pub fn execute(
             pool_id,
             pool_config,
         } => execute_update_pool_config(deps, env, info, pool_id, pool_config),
+        ExecuteMsg::NotifyThresholdCrossed { pool_id } => {
+            execute_notify_threshold_crossed(deps, env, info, pool_id)
+        }
     }
 }
 
@@ -90,7 +93,9 @@ pub fn assert_correct_factory_address(deps: Deps, info: MessageInfo) -> StdResul
     Ok(true)
 }
 
-pub fn execute_update_factory_config(deps: DepsMut, env: Env) -> Result<Response, ContractError> {
+pub fn execute_update_factory_config(deps: DepsMut, env: Env, info: MessageInfo) -> Result<Response, ContractError> {
+    assert_correct_factory_address(deps.as_ref(), info)?;
+
     let pending = PENDING_CONFIG.load(deps.storage)?;
 
     if env.block.time < pending.effective_after {
@@ -131,7 +136,7 @@ pub fn execute_cancel_factory_config_update(
 }
 
 fn execute_create_creator_pool(
-    mut deps: DepsMut,
+    deps: DepsMut,
     env: Env,
     info: MessageInfo,
     pool_msg: CreatePool,
@@ -142,9 +147,9 @@ fn execute_create_creator_pool(
     let pool_counter = POOL_COUNTER.load(deps.storage).unwrap_or(0);
     let pool_id = pool_counter + 1;
     POOL_COUNTER.save(deps.storage, &pool_id)?;
-    let mint_messages = calculate_and_mint_bluechip(&mut deps, env.clone(), pool_id)?;
     TEMP_POOL_CREATION.save(
         deps.storage,
+        pool_id,
         &TempPoolCreation {
             temp_pool_info: pool_msg,
             temp_creator_wallet: info.sender.clone(),
@@ -153,6 +158,8 @@ fn execute_create_creator_pool(
             nft_addr: None,
         },
     )?;
+    // Track which pool_id is being created so reply handlers can look it up
+    CREATING_POOL_ID.save(deps.storage, &pool_id)?;
     let msg = WasmMsg::Instantiate {
         code_id: factory_cw20.cw20_token_contract_id,
         //creating the creator token only, no minting.
@@ -187,7 +194,6 @@ fn execute_create_creator_pool(
     let sub_msg = vec![SubMsg::reply_on_success(msg, SET_TOKENS)];
 
     Ok(Response::new()
-        .add_messages(mint_messages)
         .add_attribute("action", "create")
         .add_attribute("creator", sender.to_string())
         .add_attribute("pool_id", pool_id.to_string())
@@ -419,4 +425,48 @@ pub fn execute_continue_pool_upgrade(
         .add_attribute("action", "continue_upgrade")
         .add_attribute("upgraded_in_batch", messages.len().to_string())
         .add_attribute("total_upgraded", upgrade.upgraded_count.to_string()))
+}
+
+/// Called by a pool when its commit threshold has been crossed.
+/// Triggers the bluechip mint for this pool (only once per pool).
+pub fn execute_notify_threshold_crossed(
+    mut deps: DepsMut,
+    env: Env,
+    info: MessageInfo,
+    pool_id: u64,
+) -> Result<Response, ContractError> {
+    // Verify the caller is the registered pool contract for this pool_id
+    let pool_addr = POOL_REGISTRY.load(deps.storage, pool_id).map_err(|_| {
+        ContractError::Std(StdError::generic_err(format!(
+            "Pool {} not found in registry",
+            pool_id
+        )))
+    })?;
+
+    if info.sender != pool_addr {
+        return Err(ContractError::Std(StdError::generic_err(
+            "Only the registered pool contract can notify threshold crossed",
+        )));
+    }
+
+    // Check if this pool has already triggered its mint
+    if POOL_THRESHOLD_MINTED
+        .may_load(deps.storage, pool_id)?
+        .unwrap_or(false)
+    {
+        return Err(ContractError::Std(StdError::generic_err(
+            "Bluechip mint already triggered for this pool",
+        )));
+    }
+
+    // Mark as minted before executing to prevent reentrancy
+    POOL_THRESHOLD_MINTED.save(deps.storage, pool_id, &true)?;
+
+    // Trigger the bluechip mint using pool_id as the count parameter
+    let mint_messages = calculate_and_mint_bluechip(&mut deps, env, pool_id)?;
+
+    Ok(Response::new()
+        .add_messages(mint_messages)
+        .add_attribute("action", "threshold_crossed_mint")
+        .add_attribute("pool_id", pool_id.to_string()))
 }
