@@ -10,7 +10,7 @@ use crate::state::{
     PoolSpecs, MINIMUM_LIQUIDITY, POOL_FEE_STATE, POOL_INFO, POOL_PAUSED, POOL_SPECS, POOL_STATE,
     RATE_LIMIT_GUARD,
 };
-use crate::state::{Position, TokenMetadata, LIQUIDITY_POSITIONS, NEXT_POSITION_ID};
+use crate::state::{Position, TokenMetadata, LIQUIDITY_POSITIONS, NEXT_POSITION_ID, OWNER_POSITIONS};
 use crate::swap_helper::update_price_accumulator;
 use cosmwasm_std::{
     to_json_binary, Addr, BankMsg, Coin, CosmosMsg, Decimal, DepsMut, Env, MessageInfo, Response,
@@ -166,6 +166,7 @@ pub fn execute_deposit_liquidity(
     };
 
     LIQUIDITY_POSITIONS.save(deps.storage, &position_id, &position)?;
+    OWNER_POSITIONS.save(deps.storage, (&user, &position_id), &true)?;
 
     pool_state.reserve0 = pool_state.reserve0.checked_add(actual_amount0)?;
     pool_state.reserve1 = pool_state.reserve1.checked_add(actual_amount1)?;
@@ -220,14 +221,14 @@ pub fn execute_collect_fees(
         pool_fee_state.fee_growth_global_0,
         liquidity_position.fee_growth_inside_0_last,
         liquidity_position.fee_size_multiplier,
-    );
+    )?;
 
     let fees_owed_1 = calculate_fees_owed(
         liquidity_position.liquidity,
         pool_fee_state.fee_growth_global_1,
         liquidity_position.fee_growth_inside_1_last,
         liquidity_position.fee_size_multiplier,
-    );
+    )?;
 
     let fees_owed_0 = fees_owed_0.min(pool_fee_state.fee_reserve_0);
     let fees_owed_1 = fees_owed_1.min(pool_fee_state.fee_reserve_1);
@@ -330,14 +331,14 @@ pub fn add_to_position(
         pool_fee_state.fee_growth_global_0,
         liquidity_position.fee_growth_inside_0_last,
         liquidity_position.fee_size_multiplier,
-    );
+    )?;
 
     let fees_owed_1 = calculate_fees_owed(
         liquidity_position.liquidity,
         pool_fee_state.fee_growth_global_1,
         liquidity_position.fee_growth_inside_1_last,
         liquidity_position.fee_size_multiplier,
-    );
+    )?;
 
     let fees_owed_0 = fees_owed_0.min(pool_fee_state.fee_reserve_0);
     let fees_owed_1 = fees_owed_1.min(pool_fee_state.fee_reserve_1);
@@ -560,14 +561,14 @@ pub fn remove_all_liquidity(
         pool_fee_state.fee_growth_global_0,
         liquidity_position.fee_growth_inside_0_last,
         liquidity_position.fee_size_multiplier,
-    );
+    )?;
 
     let fees_owed_1 = calculate_fees_owed(
         liquidity_position.liquidity,
         pool_fee_state.fee_growth_global_1,
         liquidity_position.fee_growth_inside_1_last,
         liquidity_position.fee_size_multiplier,
-    );
+    )?;
     let fees_owed_0 = fees_owed_0.min(pool_fee_state.fee_reserve_0);
     let fees_owed_1 = fees_owed_1.min(pool_fee_state.fee_reserve_1);
 
@@ -606,6 +607,7 @@ pub fn remove_all_liquidity(
 
     POOL_STATE.save(deps.storage, &pool_state)?;
     LIQUIDITY_POSITIONS.remove(deps.storage, &position_id);
+    OWNER_POSITIONS.remove(deps.storage, (&info.sender, &position_id));
     POOL_FEE_STATE.save(deps.storage, &pool_fee_state)?;
 
     let mut response = Response::new()
@@ -705,7 +707,7 @@ pub fn remove_partial_liquidity(
         pool_fee_state.fee_growth_global_0,
         liquidity_position.fee_growth_inside_0_last,
         liquidity_position.fee_size_multiplier,
-    );
+    )?;
 
     let fees_owed_1 = calculate_fees_owed(
         //only considers the amount of liquidity being removed when collecting fees
@@ -714,7 +716,7 @@ pub fn remove_partial_liquidity(
         pool_fee_state.fee_growth_global_1,
         liquidity_position.fee_growth_inside_1_last,
         liquidity_position.fee_size_multiplier,
-    );
+    )?;
     if pool_state.total_liquidity.is_zero() {
         return Err(ContractError::Std(StdError::generic_err("Pool total liquidity is zero")));
     }

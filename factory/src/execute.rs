@@ -51,6 +51,14 @@ pub fn instantiate(
 ) -> Result<Response, ContractError> {
     cw2::set_contract_version(deps.storage, CONTRACT_NAME, CONTRACT_VERSION)?;
 
+    // M-1 FIX: Validate all address fields during instantiation
+    deps.api.addr_validate(msg.factory_admin_address.as_str())?;
+    deps.api.addr_validate(msg.bluechip_wallet_address.as_str())?;
+    deps.api.addr_validate(msg.atom_bluechip_anchor_pool_address.as_str())?;
+    if let Some(ref mint_addr) = msg.bluechip_mint_contract_address {
+        deps.api.addr_validate(mint_addr.as_str())?;
+    }
+
     FACTORYINSTANTIATEINFO.save(deps.storage, &msg)?;
     initialize_internal_bluechip_oracle(deps, env)?;
     Ok(Response::new().add_attribute("action", "init_contract"))
