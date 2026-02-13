@@ -101,13 +101,16 @@ pub fn update_price_accumulator(
             .map_err(ContractError::from)?
             .checked_div(pool_state.reserve1)
             .map_err(|_| ContractError::DivideByZero)?;
-        //add to cumulative accumulators
+        // M-3 FIX: Use saturating_add instead of checked_add for TWAP accumulators.
+        // checked_add would cause pool operations to fail permanently on overflow.
+        // saturating_add caps at Uint128::MAX which is safe for TWAP delta calculations
+        // since the delta between two snapshots remains valid.
         pool_state.price0_cumulative_last = pool_state
             .price0_cumulative_last
-            .checked_add(price0_increment)?;
+            .saturating_add(price0_increment);
         pool_state.price1_cumulative_last = pool_state
             .price1_cumulative_last
-            .checked_add(price1_increment)?;
+            .saturating_add(price1_increment);
         //update time for next check
         pool_state.block_time_last = current_time;
     }

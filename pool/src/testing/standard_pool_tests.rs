@@ -111,16 +111,17 @@ fn test_standard_pool_immediate_swap_and_deposit() {
     assert_eq!(err, ContractError::InsufficientReserves {});
 
     // Try a deposit (should NOT return ShortOfThreshold error)
+    // M-4 FIX: Use larger amounts since first deposit now locks MINIMUM_LIQUIDITY (1000)
     let deposit_info = mock_info(
         "provider",
         &[Coin {
             denom: "ubluechip".to_string(),
-            amount: Uint128::new(1000),
+            amount: Uint128::new(100_000),
         }],
     );
     let deposit_msg = ExecuteMsg::DepositLiquidity {
-        amount0: Uint128::new(1000),
-        amount1: Uint128::new(1000),
+        amount0: Uint128::new(100_000),
+        amount1: Uint128::new(100_000),
         min_amount0: None,
         min_amount1: None,
         transaction_deadline: None,

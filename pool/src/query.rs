@@ -8,10 +8,10 @@ use crate::msg::{
     SimulationResponse,
 };
 use crate::state::{
-    PoolDetails, COMMITFEEINFO, COMMIT_LIMIT_INFO, IS_THRESHOLD_HIT, POOLS, POOL_FEE_STATE,
+    PoolDetails, COMMITFEEINFO, COMMIT_LIMIT_INFO, IS_THRESHOLD_HIT, POOL_FEE_STATE,
     POOL_INFO, POOL_SPECS, POOL_STATE, USD_RAISED_FROM_COMMIT,
 };
-use crate::state::{COMMIT_INFO, LIQUIDITY_POSITIONS, NEXT_POSITION_ID};
+use crate::state::{COMMIT_INFO, LIQUIDITY_POSITIONS, NEXT_POSITION_ID, OWNER_POSITIONS};
 use crate::swap_helper::{compute_offer_amount, compute_swap, update_price_accumulator};
 use cosmwasm_std::{
     entry_point, to_json_binary, Addr, Binary, Deps, Env, Order, StdError, StdResult, Uint128,
@@ -268,12 +268,12 @@ pub fn query_position(deps: Deps, position_id: String) -> StdResult<PositionResp
         liquidity_position.liquidity,
         liquidity_position.fee_growth_inside_0_last,
         pool_fee_state.fee_growth_global_0,
-    );
+    )?;
     let unclaimed_fees_1 = calculate_unclaimed_fees(
         liquidity_position.liquidity,
         liquidity_position.fee_growth_inside_1_last,
         pool_fee_state.fee_growth_global_1,
-    );
+    )?;
 
     Ok(PositionResponse {
         position_id,
@@ -310,6 +310,8 @@ pub fn query_positions(
     })
 }
 
+/// H-5 FIX: Use secondary OWNER_POSITIONS index for efficient owner-based lookups
+/// instead of scanning all positions and filtering client-side.
 pub fn query_positions_by_owner(
     deps: Deps,
     owner: String,
@@ -318,18 +320,16 @@ pub fn query_positions_by_owner(
 ) -> StdResult<PositionsResponse> {
     let owner_addr = deps.api.addr_validate(&owner)?;
     let limit = limit.unwrap_or(10).min(30) as usize;
-    let start = start_after.as_ref().map(|s| Bound::exclusive(s.as_str()));
+    let start = start_after
+        .as_ref()
+        .map(|s| Bound::<&str>::exclusive(s.as_str()));
 
-    let positions: StdResult<Vec<_>> = LIQUIDITY_POSITIONS
+    let positions: StdResult<Vec<_>> = OWNER_POSITIONS
+        .prefix(&owner_addr)
         .range(deps.storage, start, None, Order::Ascending)
-        .filter(|item| {
-            item.as_ref()
-                .map(|(_, position)| position.owner == owner_addr)
-                .unwrap_or(false)
-        })
         .take(limit)
         .map(|item| {
-            let (position_id, _position) = item?;
+            let (position_id, _) = item?;
             query_position(deps, position_id)
         })
         .collect();

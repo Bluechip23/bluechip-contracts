@@ -49,6 +49,8 @@ pub const NEXT_POSITION_ID: Item<u64> = Item::new("next_position_id");
 pub const DISTRIBUTION_STATE: Item<DistributionState> = Item::new("distribution_state");
 //information liquiidty positions in pools
 pub const LIQUIDITY_POSITIONS: Map<&str, Position> = Map::new("positions");
+/// H-5 FIX: Secondary index mapping (owner_addr, position_id) -> empty for efficient owner lookups
+pub const OWNER_POSITIONS: Map<(&Addr, &str), bool> = Map::new("owner_positions");
 //commit limit and amount of bluechips that will be stored in pool
 pub const COMMIT_LIMIT_INFO: Item<CommitLimitInfo> = Item::new("commit_config");
 //symbol orcale is trakcing along with its price
@@ -58,6 +60,17 @@ pub const POOL_FEE_STATE: Item<PoolFeeState> = Item::new("pool_fee_state");
 pub const POOLS: Map<&str, PoolState> = Map::new("pools");
 pub const CREATOR_EXCESS_POSITION: Item<CreatorExcessLiquidity> = Item::new("creator_excess");
 pub const POOL_PAUSED: Item<bool> = Item::new("pool_paused");
+/// H-3 FIX: Track emergency withdrawal details so LPs know where funds went
+pub const EMERGENCY_WITHDRAWAL: Item<EmergencyWithdrawalInfo> = Item::new("emergency_withdrawal");
+
+#[cw_serde]
+pub struct EmergencyWithdrawalInfo {
+    pub withdrawn_at: u64,
+    pub recipient: Addr,
+    pub amount0: Uint128,
+    pub amount1: Uint128,
+    pub total_liquidity_at_withdrawal: Uint128,
+}
 pub const LAST_THRESHOLD_ATTEMPT: Item<Timestamp> = Item::new("last_threshold_attempt");
 pub const DEFAULT_ESTIMATED_GAS_PER_DISTRIBUTION: u64 = 50_000;
 pub const DEFAULT_MAX_GAS_PER_TX: u64 = 2_000_000;
@@ -86,7 +99,8 @@ pub struct DistributionState {
 pub enum RecoveryType {
     StuckThreshold,
     StuckDistribution,
-    Both, // Check and clear both if needed
+    StuckReentrancyGuard, // C-3 FIX: Reset reentrancy guard if stuck
+    Both,                 // Check and clear all stuck states
 }
 
 #[cw_serde]

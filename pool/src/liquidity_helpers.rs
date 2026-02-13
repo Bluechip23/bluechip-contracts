@@ -1,8 +1,8 @@
 use std::str::FromStr;
 
 use crate::state::{
-    Position, TokenMetadata, LIQUIDITY_POSITIONS, NEXT_POSITION_ID, POOL_FEE_STATE, POOL_INFO,
-    POOL_STATE,
+    Position, TokenMetadata, LIQUIDITY_POSITIONS, MINIMUM_LIQUIDITY, NEXT_POSITION_ID,
+    OWNER_POSITIONS, POOL_FEE_STATE, POOL_INFO, POOL_STATE,
 };
 use crate::{error::ContractError, state::CREATOR_EXCESS_POSITION};
 use cosmwasm_std::{
@@ -13,37 +13,44 @@ use pool_factory_interfaces::cw721_msgs::Cw721ExecuteMsg;
 pub const OPTIMAL_LIQUIDITY: Uint128 = Uint128::new(1_000_000);
 // 10% fees for tiny positions
 pub const MIN_MULTIPLIER: &str = "0.1";
+/// H-2 FIX: Returns StdResult instead of silently returning Uint128::MAX on overflow.
 pub fn calculate_unclaimed_fees(
     liquidity: Uint128,
     //the fee_growth_global number the last time the position collected fees
     fee_growth_inside_last: Decimal,
     //fee growth of pool PER liquidty unit
     fee_growth_global: Decimal,
-) -> Uint128 {
+) -> StdResult<Uint128> {
     if fee_growth_global > fee_growth_inside_last {
         let fee_growth_delta = fee_growth_global - fee_growth_inside_last;
         //number of liquidity units * delta
-        liquidity.checked_mul_floor(fee_growth_delta).unwrap_or(Uint128::MAX)
+        liquidity.checked_mul_floor(fee_growth_delta).map_err(|e| {
+            StdError::generic_err(format!("Fee calculation overflow: {}", e))
+        })
     } else {
-        Uint128::zero()
+        Ok(Uint128::zero())
     }
 }
 
-//find fee growth per unit of liquidity and then multiply it by the amount of liquidity units owned by the postiion.
+/// H-2 FIX: Returns Result instead of silently returning Uint128::MAX on overflow.
 pub fn calculate_fees_owed(
     liquidity: Uint128,
     fee_growth_global: Decimal,
     fee_growth_last: Decimal,
     fee_multiplier: Decimal,
-) -> Uint128 {
+) -> Result<Uint128, ContractError> {
     if fee_growth_global >= fee_growth_last {
         let fee_growth_delta = fee_growth_global - fee_growth_last;
-        let earned_base = liquidity.checked_mul_floor(fee_growth_delta).unwrap_or(Uint128::MAX);
+        let earned_base = liquidity.checked_mul_floor(fee_growth_delta).map_err(|e| {
+            ContractError::Std(StdError::generic_err(format!("Fee base overflow: {}", e)))
+        })?;
         //apply size base multipliers
-        let earned_adjusted = earned_base.checked_mul_floor(fee_multiplier).unwrap_or(Uint128::MAX);
-        earned_adjusted
+        let earned_adjusted = earned_base.checked_mul_floor(fee_multiplier).map_err(|e| {
+            ContractError::Std(StdError::generic_err(format!("Fee multiplier overflow: {}", e)))
+        })?;
+        Ok(earned_adjusted)
     } else {
-        Uint128::zero()
+        Ok(Uint128::zero())
     }
 }
 //used to protect against many small liquidity positions
@@ -116,7 +123,21 @@ pub fn calc_liquidity_for_deposit(
         }
 
         let product = final_amount0.checked_mul(final_amount1)?;
-        let liquidity = integer_sqrt(product).max(Uint128::new(1));
+        let raw_liquidity = integer_sqrt(product).max(Uint128::new(1));
+
+        // M-4 FIX: For first deposits (true first, not post-threshold with reserves),
+        // lock MINIMUM_LIQUIDITY to prevent first-depositor inflation attacks.
+        // The locked amount stays unowned in the pool and can never be withdrawn.
+        let liquidity = if current_reserve0.is_zero() && current_reserve1.is_zero() {
+            // True first deposit - subtract minimum liquidity (locked permanently)
+            if raw_liquidity <= MINIMUM_LIQUIDITY {
+                return Err(ContractError::InsufficientLiquidityMinted {});
+            }
+            raw_liquidity.checked_sub(MINIMUM_LIQUIDITY)?
+        } else {
+            // Post-threshold first LP deposit (reserves exist from seed) - no lock needed
+            raw_liquidity
+        };
 
         if liquidity.is_zero() {
             return Err(ContractError::InsufficientLiquidityMinted {});
@@ -247,6 +268,7 @@ pub fn execute_claim_creator_excess(
     };
 
     LIQUIDITY_POSITIONS.save(deps.storage, &position_id, &position)?;
+    OWNER_POSITIONS.save(deps.storage, (&excess_position.creator, &position_id), &true)?;
 
     // Update pool: add the excess tokens to reserves AND add liquidity
     // The excess tokens were held by the pool contract but excluded from reserves

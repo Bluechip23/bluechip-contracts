@@ -17,13 +17,14 @@ use crate::msg::{Cw20HookMsg, ExecuteMsg, MigrateMsg, PoolConfigUpdate, PoolInst
 use crate::query::query_check_commit;
 // use crate::response::MsgInstantiateContractResponse;
 use crate::state::{
-    CommitLimitInfo, DistributionState, ExpectedFactory, OracleInfo, PoolDetails, PoolFeeState,
-    PoolInfo, PoolSpecs, RecoveryType, ThresholdPayoutAmounts, COMMITFEEINFO, COMMIT_LEDGER,
-    COMMIT_LIMIT_INFO, DEFAULT_ESTIMATED_GAS_PER_DISTRIBUTION, DEFAULT_MAX_GAS_PER_TX,
-    DISTRIBUTION_BOUNTY, DISTRIBUTION_STATE, EXPECTED_FACTORY, IS_THRESHOLD_HIT,
-    LAST_THRESHOLD_ATTEMPT, MINIMUM_LIQUIDITY, NATIVE_RAISED_FROM_COMMIT, ORACLE_INFO,
-    POOL_FEE_STATE, POOL_INFO, POOL_PAUSED, POOL_SPECS, POOL_STATE, RATE_LIMIT_GUARD,
-    THRESHOLD_PAYOUT_AMOUNTS, THRESHOLD_PROCESSING, USD_RAISED_FROM_COMMIT,
+    CommitLimitInfo, DistributionState, EmergencyWithdrawalInfo, ExpectedFactory, OracleInfo,
+    PoolDetails, PoolFeeState, PoolInfo, PoolSpecs, RecoveryType, ThresholdPayoutAmounts,
+    COMMITFEEINFO, COMMIT_LEDGER, COMMIT_LIMIT_INFO, DEFAULT_ESTIMATED_GAS_PER_DISTRIBUTION,
+    DEFAULT_MAX_GAS_PER_TX, DISTRIBUTION_BOUNTY, DISTRIBUTION_STATE, EMERGENCY_WITHDRAWAL,
+    EXPECTED_FACTORY, IS_THRESHOLD_HIT, LAST_THRESHOLD_ATTEMPT, MINIMUM_LIQUIDITY,
+    NATIVE_RAISED_FROM_COMMIT, ORACLE_INFO, OWNER_POSITIONS, POOL_FEE_STATE, POOL_INFO,
+    POOL_PAUSED, POOL_SPECS, POOL_STATE, RATE_LIMIT_GUARD, THRESHOLD_PAYOUT_AMOUNTS,
+    THRESHOLD_PROCESSING, USD_RAISED_FROM_COMMIT,
 };
 use crate::state::{
     Commiting, PoolState, Position, COMMIT_INFO, CREATOR_EXCESS_POSITION, LIQUIDITY_POSITIONS,
@@ -179,6 +180,7 @@ pub fn instantiate(
     THRESHOLD_PAYOUT_AMOUNTS.save(deps.storage, &threshold_payout_amounts)?;
     COMMIT_LIMIT_INFO.save(deps.storage, &commit_config)?;
     LIQUIDITY_POSITIONS.save(deps.storage, "0", &liquidity_position)?;
+    OWNER_POSITIONS.save(deps.storage, (&env.contract.address, "0"), &true)?;
     ORACLE_INFO.save(deps.storage, &oracle_info)?;
     // Create the LP token contract
     Ok(Response::new()
@@ -386,10 +388,15 @@ pub fn execute_recover_stuck_states(
         RecoveryType::StuckDistribution => {
             recover_distribution(deps.storage, &env, &mut recovered_items)?;
         }
+        RecoveryType::StuckReentrancyGuard => {
+            // C-3 FIX: Allow factory admin to reset a stuck reentrancy guard
+            recover_reentrancy_guard(deps.storage, &mut recovered_items)?;
+        }
         RecoveryType::Both => {
-            // Try to recover both, don't fail if one isn't stuck
+            // Try to recover all, don't fail if one isn't stuck
             let _ = recover_threshold(deps.storage, &env, &mut recovered_items);
             let _ = recover_distribution(deps.storage, &env, &mut recovered_items);
+            let _ = recover_reentrancy_guard(deps.storage, &mut recovered_items);
         }
     }
 
@@ -466,6 +473,21 @@ fn recover_distribution(
     }
     Ok(())
 }
+
+/// C-3 FIX: Reset the reentrancy guard if it gets stuck in `true` state.
+/// This can only be called by the factory admin via RecoverStuckStates.
+fn recover_reentrancy_guard(
+    storage: &mut dyn Storage,
+    recovered: &mut Vec<String>,
+) -> StdResult<()> {
+    let guard = RATE_LIMIT_GUARD.may_load(storage)?.unwrap_or(false);
+    if guard {
+        RATE_LIMIT_GUARD.save(storage, &false)?;
+        recovered.push("reentrancy_guard".to_string());
+    }
+    Ok(())
+}
+
 pub fn execute_swap_cw20(
     deps: DepsMut,
     env: Env,
@@ -859,7 +881,7 @@ pub fn execute_commit_logic(
             if amount_after_fees.is_zero() {
                 return Err(ContractError::InvalidFee {});
             }
-            let total_fee_rate = fee_info.commit_fee_bluechip.checked_add(fee_info.commit_fee_creator)
+            let _total_fee_rate = fee_info.commit_fee_bluechip.checked_add(fee_info.commit_fee_creator)
                 .map_err(|_| ContractError::Std(StdError::generic_err("Fee rate overflow")))?;
             // Create fee transfer messages
             if !commit_fee_bluechip_amt.is_zero() {
@@ -943,12 +965,20 @@ pub fn execute_commit_logic(
                         // Calculate the bluechip amount that corresponds to reaching exactly $25k
                         let bluechip_to_threshold =
                             get_bluechip_value(deps.as_ref(), usd_to_threshold)?;
+                        // Pre-fee excess (for accounting/tracking only)
                         let bluechip_excess = asset.amount.checked_sub(bluechip_to_threshold)?;
-                        // Deduct fees from excess (fees were sent from pool balance via BankMsg)
-                        let one_minus_fee = Decimal::one().checked_sub(total_fee_rate)
-                            .map_err(|_| ContractError::Std(StdError::generic_err("Fee rate >= 100%")))?;
-                        let effective_bluechip_excess = bluechip_excess.checked_mul_floor(one_minus_fee)
-                            .map_err(|_| ContractError::Std(StdError::generic_err("Fee deduction overflow")))?;
+                        // C-2 FIX: Fees were already deducted from the full `amount` and sent
+                        // via BankMsg above (lines 865-893). The post-fee funds remaining in
+                        // the contract are `amount_after_fees`. We must split that into the
+                        // threshold portion and the excess portion proportionally, rather
+                        // than deducting fees again from the excess.
+                        let threshold_portion_after_fees = if amount.is_zero() {
+                            Uint128::zero()
+                        } else {
+                            amount_after_fees.multiply_ratio(bluechip_to_threshold, amount)
+                        };
+                        let effective_bluechip_excess = amount_after_fees
+                            .checked_sub(threshold_portion_after_fees)?;
                         let usd_excess = usd_value.checked_sub(usd_to_threshold)?;
                         // Update commit ledger with only the threshold portion
                         COMMIT_LEDGER.update::<_, ContractError>(deps.storage, &sender, |v| {
@@ -1372,10 +1402,8 @@ pub fn execute_continue_distribution(
     let pool_info = POOL_INFO.load(deps.storage)?;
     let mut msgs = process_distribution_batch(deps.storage, &pool_info, &env)?;
 
-    // Pay a small bounty to the caller from the factory admin's wallet to incentivize
-    // external callers to drive distribution batches to completion.
-    // The caller must be the factory admin and must attach DISTRIBUTION_BOUNTY funds
-    // as payment to themselves (self-funded bounty model), or anyone can call for free.
+    // M-5 FIX: Pay bounty from the pool's fee reserves (bluechip side) to actually
+    // incentivize external callers. The previous self-funded model provided no incentive.
     let bluechip_denom = match &pool_info.pool_info.asset_infos[0] {
         TokenType::Bluechip { denom } => denom.clone(),
         _ => match &pool_info.pool_info.asset_infos[1] {
@@ -1384,16 +1412,13 @@ pub fn execute_continue_distribution(
         },
     };
 
-    // Check if the caller attached bounty funds (admin-funded bounty)
-    let bounty_attached = info
-        .funds
-        .iter()
-        .find(|c| c.denom == bluechip_denom)
-        .map(|c| c.amount)
-        .unwrap_or_default();
-
-    // If funds were attached, send them back as bounty (enables admin to fund bounty externally)
-    let bounty_paid = if bounty_attached >= DISTRIBUTION_BOUNTY {
+    let mut pool_fee_state = POOL_FEE_STATE.load(deps.storage)?;
+    let bounty_paid = if pool_fee_state.fee_reserve_0 >= DISTRIBUTION_BOUNTY {
+        // Pay bounty from fee reserves to the caller
+        pool_fee_state.fee_reserve_0 = pool_fee_state
+            .fee_reserve_0
+            .checked_sub(DISTRIBUTION_BOUNTY)?;
+        POOL_FEE_STATE.save(deps.storage, &pool_fee_state)?;
         msgs.push(get_bank_transfer_to_msg(
             &info.sender,
             &bluechip_denom,
@@ -1401,6 +1426,7 @@ pub fn execute_continue_distribution(
         )?);
         DISTRIBUTION_BOUNTY
     } else {
+        // Not enough in fee reserves; distribution still proceeds without bounty
         Uint128::zero()
     };
 
@@ -1415,8 +1441,13 @@ pub fn execute_continue_distribution(
 pub fn migrate(deps: DepsMut, _env: Env, msg: MigrateMsg) -> StdResult<Response> {
     match msg {
         MigrateMsg::UpdateFees { new_fees } => {
-            if new_fees >= Decimal::one() {
-                return Err(StdError::generic_err("lp_fee must be less than 100%"));
+            // M-6 FIX: Add reasonable fee bounds (max 10%) to prevent
+            // migration from setting abusive fee levels
+            let max_lp_fee = Decimal::percent(10);
+            if new_fees > max_lp_fee {
+                return Err(StdError::generic_err(
+                    "lp_fee must not exceed 10% (0.1)",
+                ));
             }
             POOL_SPECS.update(deps.storage, |mut specs| -> StdResult<_> {
                 specs.lp_fee = new_fees;
@@ -1507,7 +1538,7 @@ pub fn execute_unpause(deps: DepsMut, info: MessageInfo) -> Result<Response, Con
 
 pub fn execute_emergency_withdraw(
     deps: DepsMut,
-    _env: Env,
+    env: Env,
     info: MessageInfo,
 ) -> Result<Response, ContractError> {
     let pool_info = POOL_INFO.load(deps.storage)?;
@@ -1539,6 +1570,22 @@ pub fn execute_emergency_withdraw(
         CREATOR_EXCESS_POSITION.remove(deps.storage);
     }
 
+    // H-3 FIX: Send funds to the bluechip wallet (protocol-controlled address)
+    // instead of the factory sender. This ensures funds go to a known safe
+    // address. Also record withdrawal info so LPs can track where funds went.
+    let fee_info = COMMITFEEINFO.load(deps.storage)?;
+    let recipient = fee_info.bluechip_wallet_address.clone();
+
+    // Record emergency withdrawal details for LP transparency
+    let withdrawal_info = EmergencyWithdrawalInfo {
+        withdrawn_at: env.block.time.seconds(),
+        recipient: recipient.clone(),
+        amount0: total0,
+        amount1: total1,
+        total_liquidity_at_withdrawal: pool_state.total_liquidity,
+    };
+    EMERGENCY_WITHDRAWAL.save(deps.storage, &withdrawal_info)?;
+
     // 3. Zero out all state
     pool_state.reserve0 = Uint128::zero();
     pool_state.reserve1 = Uint128::zero();
@@ -1548,7 +1595,7 @@ pub fn execute_emergency_withdraw(
     pool_fee_state.fee_reserve_1 = Uint128::zero();
     POOL_FEE_STATE.save(deps.storage, &pool_fee_state)?;
 
-    // 4. Send ALL funds to factory (sender)
+    // 4. Send ALL funds to bluechip wallet
     let mut messages = vec![];
 
     if !total0.is_zero() {
@@ -1557,7 +1604,7 @@ pub fn execute_emergency_withdraw(
                 info: pool_info.pool_info.asset_infos[0].clone(),
                 amount: total0,
             }
-            .into_msg(&deps.querier, info.sender.clone())?,
+            .into_msg(&deps.querier, recipient.clone())?,
         );
     }
 
@@ -1567,13 +1614,15 @@ pub fn execute_emergency_withdraw(
                 info: pool_info.pool_info.asset_infos[1].clone(),
                 amount: total1,
             }
-            .into_msg(&deps.querier, info.sender.clone())?,
+            .into_msg(&deps.querier, recipient.clone())?,
         );
     }
 
     Ok(Response::new()
         .add_messages(messages)
         .add_attribute("action", "emergency_withdraw")
+        .add_attribute("recipient", recipient)
         .add_attribute("amount0", total0)
-        .add_attribute("amount1", total1))
+        .add_attribute("amount1", total1)
+        .add_attribute("total_liquidity", withdrawal_info.total_liquidity_at_withdrawal))
 }
