@@ -17,9 +17,7 @@ pub struct TokenMetadata {
 pub const USD_RAISED_FROM_COMMIT: Item<Uint128> = Item::new("usd_raised");
 pub const COMMIT_INFO: Map<&Addr, Commiting> = Map::new("sub_info");
 //5 minutes, oracle will expire due to stale prices
-pub const MAX_ORACLE_AGE: u64 = 3000000;
-//fee infor for commit transactions
-//fee infor for commit transactions
+//fee info for commit transactions
 pub const COMMITFEEINFO: Item<CommitFeeInfo> = Item::new("fee_info");
 //amount of bluechips raised for the pool
 pub const NATIVE_RAISED_FROM_COMMIT: Item<Uint128> = Item::new("bluechip_raised");
@@ -27,7 +25,7 @@ pub const NATIVE_RAISED_FROM_COMMIT: Item<Uint128> = Item::new("bluechip_raised"
 pub const RATE_LIMIT_GUARD: Item<bool> = Item::new("rate_limit_guard");
 //Has the threshold been hit for this pool
 pub const IS_THRESHOLD_HIT: Item<bool> = Item::new("threshold_hit");
-//store all the commiters and the amount they have commited to the pool prior to the threshold being hit
+//store all the committers and the amount they have committed to the pool prior to the threshold being hit
 pub const COMMIT_LEDGER: cw_storage_plus::Map<&Addr, Uint128> =
     cw_storage_plus::Map::new("commit_usd");
 //the contract of the factory being used for pool creation
@@ -41,23 +39,22 @@ pub const POOL_STATE: Item<PoolState> = Item::new("pool_state");
 pub const POOL_SPECS: Item<PoolSpecs> = Item::new("pool_specs");
 //used to handle races cases when the threshold is being crossed
 pub const THRESHOLD_PROCESSING: Item<bool> = Item::new("threshold_processing");
-//amounts that get sent to designated areas when threhsold is crossed
+//amounts that get sent to designated areas when threshold is crossed
 pub const THRESHOLD_PAYOUT_AMOUNTS: Item<ThresholdPayoutAmounts> =
     Item::new("threshold_payout_amounts");
-//pool identifier incriments by 1 every pool
+//pool identifier increments by 1 every pool
 pub const NEXT_POSITION_ID: Item<u64> = Item::new("next_position_id");
 pub const DISTRIBUTION_STATE: Item<DistributionState> = Item::new("distribution_state");
-//information liquiidty positions in pools
+//information for liquidity positions in pools
 pub const LIQUIDITY_POSITIONS: Map<&str, Position> = Map::new("positions");
 /// H-5 FIX: Secondary index mapping (owner_addr, position_id) -> empty for efficient owner lookups
 pub const OWNER_POSITIONS: Map<(&Addr, &str), bool> = Map::new("owner_positions");
 //commit limit and amount of bluechips that will be stored in pool
 pub const COMMIT_LIMIT_INFO: Item<CommitLimitInfo> = Item::new("commit_config");
-//symbol orcale is trakcing along with its price
+//symbol oracle is tracking along with its price
 pub const ORACLE_INFO: Item<OracleInfo> = Item::new("oracle_info");
 //tracking the global fee growth and total fees collected for the poolS
 pub const POOL_FEE_STATE: Item<PoolFeeState> = Item::new("pool_fee_state");
-pub const POOLS: Map<&str, PoolState> = Map::new("pools");
 pub const CREATOR_EXCESS_POSITION: Item<CreatorExcessLiquidity> = Item::new("creator_excess");
 pub const POOL_PAUSED: Item<bool> = Item::new("pool_paused");
 /// H-3 FIX: Track emergency withdrawal details so LPs know where funds went
@@ -112,9 +109,9 @@ pub struct Commiting {
     pub total_paid_usd: Uint128,
     //amount of bluechips used to pay for the transaction
     pub total_paid_bluechip: Uint128,
-    //last time someone commited to pool
+    //last time someone committed to pool
     pub last_commited: Timestamp,
-    //last amount of bluechips commited
+    //last amount of bluechips committed
     pub last_payment_bluechip: Uint128,
     //last amount converted to USD
     pub last_payment_usd: Uint128,
@@ -135,13 +132,13 @@ pub struct PoolState {
 
 #[cw_serde]
 pub struct PoolFeeState {
-    //the amount of fees per unit of liquidty - is used as a baseline to track fees for liquidity positions - asset 0
+    //the amount of fees per unit of liquidity - is used as a baseline to track fees for liquidity positions - asset 0
     pub fee_growth_global_0: Decimal,
-    //the amount of fees per unit of liquidty - is used as a baseline to track fees for liquidity positions - asset 1
+    //the amount of fees per unit of liquidity - is used as a baseline to track fees for liquidity positions - asset 1
     pub fee_growth_global_1: Decimal,
     //the total amount of fees collected from pool for asset 0
     pub total_fees_collected_0: Uint128,
-    //total amount fo fees collected from pool for asset 1
+    //total amount of fees collected from pool for asset 1
     pub total_fees_collected_1: Uint128,
     pub fee_reserve_0: Uint128,
     pub fee_reserve_1: Uint128,
@@ -181,7 +178,7 @@ pub struct PoolDetails {
 
 #[cw_serde]
 pub struct OracleInfo {
-    //oracle contract addresss
+    //oracle contract address
     pub oracle_addr: Addr,
 }
 
@@ -193,7 +190,7 @@ pub struct ThresholdPayoutAmounts {
     pub bluechip_reward_amount: Uint128,
     // once the threshold is crossed, the amount distributed directly to the newly formed creator pool
     pub pool_seed_amount: Uint128,
-    //the total sum of tokens sent back to commiters who commited prior to the threshold being crossed
+    //the total sum of tokens sent back to committers who committed prior to the threshold being crossed
     pub commit_return_amount: Uint128,
 }
 
@@ -215,9 +212,9 @@ pub struct CreatorExcessLiquidity {
 
 #[cw_serde]
 pub struct Position {
-    //amount of liqudity units in the liquidity position
+    //amount of liquidity units in the liquidity position
     pub liquidity: Uint128,
-    //wallet address of lqiuidity owner
+    //wallet address of liquidity owner
     pub owner: Addr,
     //last time the user collected fees in terms of fee accumulation fee_growth_global_0 - fee_growth_inside_0_last = fees owed for asset 0
     pub fee_growth_inside_0_last: Decimal,

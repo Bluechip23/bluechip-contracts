@@ -380,7 +380,6 @@ pub fn query_pool_commiters(
     let start = start_addr.as_ref().map(Bound::exclusive);
 
     let mut commiters = vec![];
-    let mut count = 0;
 
     for item in COMMIT_INFO.range(deps.storage, start, None, Order::Ascending) {
         let (commiter_addr, commiting) = item?;
@@ -412,16 +411,15 @@ pub fn query_pool_commiters(
             total_paid_bluechip: commiting.total_paid_bluechip,
         });
 
-        count += 1;
-
         // Stop if we've collected enough
         if commiters.len() >= limit {
             break;
         }
     }
 
+    // L-7 FIX: Use commiters.len() directly instead of redundant counter
     Ok(PoolCommitResponse {
-        total_count: count,
+        total_count: commiters.len() as u32,
         commiters,
     })
 }

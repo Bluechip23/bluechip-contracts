@@ -222,8 +222,9 @@ impl TokenType {
     }
 }
 
+// L-5 FIX: Renamed from PoolDetails to PoolPairInfo to avoid collision with state::PoolDetails
 #[cw_serde]
-pub struct PoolDetails {
+pub struct PoolPairInfo {
     // information for the two token in the pool
     pub asset_infos: [TokenType; 2],
     // Pair contract address
@@ -233,7 +234,7 @@ pub struct PoolDetails {
     pub assets: [TokenInfo; 2],
 }
 
-impl PoolDetails {
+impl PoolPairInfo {
     pub fn query_pools(
         &self,
         querier: &QuerierWrapper,
@@ -281,12 +282,12 @@ pub fn token_asset_info(contract_addr: Addr) -> TokenType {
     TokenType::CreatorToken { contract_addr }
 }
 
-pub fn pair_info_by_pool(deps: Deps, pool: Addr) -> StdResult<PoolDetails> {
+pub fn pair_info_by_pool(deps: Deps, pool: Addr) -> StdResult<PoolPairInfo> {
     let minter_info: MinterResponse = deps
         .querier
         .query_wasm_smart(pool, &Cw20QueryMsg::Minter {})?;
 
-    let pair_info: PoolDetails = deps
+    let pair_info: PoolPairInfo = deps
         .querier
         .query_wasm_smart(minter_info.minter, &QueryMsg::Pair {})?;
 

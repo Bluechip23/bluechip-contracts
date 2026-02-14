@@ -5,7 +5,7 @@ use crate::error::ContractError;
 use crate::generic_helpers::{
     check_rate_limit, enforce_transaction_deadline, get_bank_transfer_to_msg,
     process_distribution_batch, trigger_threshold_payout, update_pool_fee_growth,
-    validate_factory_address, validate_pool_threshold_payments,
+    validate_pool_threshold_payments,
 };
 use crate::liquidity::{
     execute_add_to_position, execute_collect_fees, execute_deposit_liquidity,
@@ -59,17 +59,14 @@ pub fn instantiate(
     info: MessageInfo,
     msg: PoolInstantiateMsg,
 ) -> Result<Response, ContractError> {
-    //ensure the correct factory contract address was used in creating the pool
+    // M-1 FIX: Removed circular validate_factory_address call (was saving then loading
+    // the same address and comparing it to itself). The real security check is below:
+    // pools are instantiated via SubMsg from the factory, so info.sender IS the factory.
     let cfg = ExpectedFactory {
         expected_factory_address: msg.used_factory_addr.clone(),
     };
     EXPECTED_FACTORY.save(deps.storage, &cfg)?;
-    let real_factory = EXPECTED_FACTORY.load(deps.storage)?;
-    validate_factory_address(
-        &real_factory.expected_factory_address,
-        &msg.used_factory_addr,
-    )?;
-    if info.sender != real_factory.expected_factory_address {
+    if info.sender != cfg.expected_factory_address {
         return Err(ContractError::Unauthorized {});
     }
     msg.pool_token_info[0].check(deps.api)?;
@@ -562,10 +559,7 @@ pub fn reply(deps: DepsMut, _env: Env, msg: Reply) -> Result<Response, ContractE
 
         let lp: Addr = deps.api.addr_validate(&res.contract_address)?;
 
-        POOL_INFO.update(deps.storage, |pool_info| -> Result<_, ContractError> {
-            Ok(pool_info)
-        })?;
-
+        // M-2 FIX: Removed no-op POOL_INFO.update that loaded and saved unchanged state.
         return Ok(Response::new().add_attribute("lp_token", lp));
     }
 
@@ -930,9 +924,9 @@ pub fn execute_commit_logic(
                         false // a different transaction is processing
                     } else {
                         THRESHOLD_PROCESSING.save(deps.storage, &true)?;
-                        true // commiters transaction get to be the threshold crosser WHICH wins them nothing.
+                        true // committer's transaction gets to be the threshold crosser WHICH wins them nothing.
                     };
-                    //logic if a different transaction indeed triggered the threhsold crossing.
+                    //logic if a different transaction indeed triggered the threshold crossing.
                     if !can_process {
                         //double check to handle race conditions
                         if IS_THRESHOLD_HIT.load(deps.storage)? {
@@ -1067,8 +1061,10 @@ pub fn execute_commit_logic(
                             update_price_accumulator(&mut pool_state, env.block.time.seconds())?;
 
                             // Update reserves with fee-adjusted amount (actual tokens remaining in pool)
+                            // C-1 FIX: Subtract both return_amt AND commission_amt from ask reserve
+                            // to avoid double-counting commission in both reserve1 and fee_reserve_1.
                             pool_state.reserve0 = offer_pool.checked_add(effective_bluechip_excess)?;
-                            pool_state.reserve1 = ask_pool.checked_sub(return_amt)?;
+                            pool_state.reserve1 = ask_pool.checked_sub(return_amt.checked_add(commission_amt)?)?;
 
                             // Update fee growth
                             update_pool_fee_growth(
@@ -1223,7 +1219,7 @@ pub fn execute_commit_logic(
     }
 }
 
-//commit transaction priot to threhold being crossed. commit to ledger and store values for return mint
+//commit transaction prior to threshold being crossed. commit to ledger and store values for return mint
 fn process_pre_threshold_commit(
     deps: &mut DepsMut,
     env: Env,
@@ -1312,8 +1308,10 @@ fn process_post_threshold_commit(
     // Accumulate price with OLD reserves before updating
     update_price_accumulator(&mut pool_state, env.block.time.seconds())?;
     // Update reserves with fee-adjusted amount (actual tokens remaining in pool)
+    // C-1 FIX: Subtract both return_amt AND commission_amt from ask reserve
+    // to avoid double-counting commission in both reserve1 and fee_reserve_1.
     pool_state.reserve0 = offer_pool.checked_add(swap_amount)?;
-    pool_state.reserve1 = ask_pool.checked_sub(return_amt)?;
+    pool_state.reserve1 = ask_pool.checked_sub(return_amt.checked_add(commission_amt)?)?;
     // Update fee growth
     update_pool_fee_growth(&mut pool_fee_state, &pool_state, 0, commission_amt)?;
     POOL_FEE_STATE.save(deps.storage, &pool_fee_state)?;

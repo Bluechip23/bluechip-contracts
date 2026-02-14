@@ -139,6 +139,8 @@ pub fn execute_withdraw(
     }
 
     let target = recipient.unwrap_or_else(|| info.sender.to_string());
+    // H-2 FIX: Validate the recipient address before sending funds
+    deps.api.addr_validate(&target)?;
 
     let send_msg = BankMsg::Send {
         to_address: target.clone(),

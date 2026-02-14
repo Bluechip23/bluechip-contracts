@@ -205,8 +205,9 @@ fn test_claim_excess_after_unlock_succeeds() {
         _ => panic!("Expected Wasm Execute message"),
     }
 
+    // L-3 FIX: Position IDs now use plain numeric format (consistent with execute_deposit_liquidity)
     let position = LIQUIDITY_POSITIONS
-        .load(&deps.storage, "position_1")
+        .load(&deps.storage, "1")
         .unwrap();
     assert_eq!(position.owner, Addr::unchecked("creator"));
     assert!(position.liquidity > Uint128::zero());

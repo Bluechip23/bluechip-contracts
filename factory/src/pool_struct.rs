@@ -63,12 +63,12 @@ pub struct ThresholdPayoutAmounts {
     pub bluechip_reward_amount: Uint128,
     // once the threshold is crossed, the amount distributed directly to the newly formed creator pool
     pub pool_seed_amount: Uint128,
-    // once the threshold is crossed, the amount distributed directly to the commiters before the threshold was crossed in proportion to the amount they commited.
+    // once the threshold is crossed, the amount distributed directly to the committers before the threshold was crossed in proportion to the amount they committed.
     pub commit_return_amount: Uint128,
 }
 #[cw_serde]
 pub struct CommitFeeInfo {
-    //addres bluechip fees from commits accumulate
+    //address bluechip fees from commits accumulate
     pub bluechip_wallet_address: Addr,
     //address creator fees from commits accumulate
     pub creator_wallet_address: Addr,

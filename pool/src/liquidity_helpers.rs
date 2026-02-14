@@ -18,7 +18,7 @@ pub fn calculate_unclaimed_fees(
     liquidity: Uint128,
     //the fee_growth_global number the last time the position collected fees
     fee_growth_inside_last: Decimal,
-    //fee growth of pool PER liquidty unit
+    //fee growth of pool PER liquidity unit
     fee_growth_global: Decimal,
 ) -> StdResult<Uint128> {
     if fee_growth_global > fee_growth_inside_last {
@@ -55,7 +55,7 @@ pub fn calculate_fees_owed(
 }
 //used to protect against many small liquidity positions
 pub fn calculate_fee_size_multiplier(liquidity: Uint128) -> Decimal {
-    //if position has optimal liquidty they will not be punished
+    //if position has optimal liquidity they will not be punished
 
     if liquidity >= OPTIMAL_LIQUIDITY {
         //provide full fees for optimal size
@@ -227,7 +227,8 @@ pub fn execute_claim_creator_excess(
         NEXT_POSITION_ID.update(deps.storage, |n| -> StdResult<_> {
             n.checked_add(1).ok_or_else(|| StdError::generic_err("Position ID overflow"))
         })?;
-    let position_id = format!("position_{}", position_counter);
+    // L-3 FIX: Use plain numeric ID format consistent with execute_deposit_liquidity
+    let position_id = position_counter.to_string();
 
     // Create metadata for the NFT
     let metadata = TokenMetadata {

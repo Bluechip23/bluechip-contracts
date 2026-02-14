@@ -1,4 +1,4 @@
-use crate::asset::{PoolDetails, TokenInfo, TokenType};
+use crate::asset::{PoolPairInfo, TokenInfo, TokenType};
 use crate::state::{Commiting, RecoveryType};
 use cosmwasm_schema::{cw_serde, QueryResponses};
 use cosmwasm_std::{Addr, Binary, Decimal, Timestamp, Uint128};
@@ -109,7 +109,7 @@ pub enum Cw20HookMsg {
 #[cw_serde]
 #[derive(QueryResponses)]
 pub enum QueryMsg {
-    #[returns(PoolDetails)]
+    #[returns(PoolPairInfo)]
     Pair {},
     #[returns(ConfigResponse)]
     Config {},
@@ -189,9 +189,9 @@ pub struct PoolInstantiateMsg {
 
 #[cw_serde]
 pub struct PoolCommitResponse {
-    //numbe of total commits
+    //number of total commits
     pub total_count: u32,
-    //lists of wallets commited
+    //lists of wallets committed
     pub commiters: Vec<CommiterInfo>,
 }
 
@@ -226,11 +226,11 @@ pub struct CommiterInfo {
 pub struct CommitFeeInfo {
     //BlueChip wallet
     pub bluechip_wallet_address: Addr,
-    //pool creatpr wallet
+    //pool creator wallet
     pub creator_wallet_address: Addr,
     //amount of commit that goes to BlueChip
     pub commit_fee_bluechip: Decimal,
-    //amount of commit taht goes to pool creator
+    //amount of commit that goes to pool creator
     pub commit_fee_creator: Decimal,
 }
 
