@@ -120,7 +120,7 @@ pub fn validate_pool_threshold_payments(
             msg: format!("Pool amount must be {}", EXPECTED_POOL),
         });
     }
-    //amount sent back to origincal commiters
+    //amount sent back to original committers
     if params.commit_return_amount != Uint128::new(EXPECTED_COMMIT) {
         return Err(ContractError::InvalidThresholdParams {
             msg: format!("Commit amount must be {}", EXPECTED_COMMIT),
@@ -426,22 +426,40 @@ pub fn process_distribution_batch(
                 // Remaining batches will be processed by external ContinueDistribution calls
             } else {
                 // No progress made - increment failure counter
-                dist_state.consecutive_failures += 1;
+                // M-4 FIX: Only count failures when the batch was non-empty.
+                // An empty batch means distribution is actually complete (all
+                // entries processed), not a failure that should count toward
+                // the consecutive_failures threshold.
+                let recheck_start = dist_state
+                    .last_processed_key
+                    .as_ref()
+                    .map(|addr| Bound::exclusive(addr));
+                let remaining_entries: Vec<_> = COMMIT_LEDGER
+                    .range(storage, recheck_start, None, Order::Ascending)
+                    .take(1)
+                    .collect::<StdResult<Vec<_>>>()?;
 
-                // Check if we should give up
-                if dist_state.consecutive_failures >= 5 {
-                    // Too many failures, mark for manual recovery
-                    dist_state.is_distributing = false; // Pause distribution
-                    DISTRIBUTION_STATE.save(storage, &dist_state)?;
-
-                    return Err(StdError::generic_err(
-                        "Distribution failed too many times - manual recovery needed",
-                    ));
+                if remaining_entries.is_empty() {
+                    // No entries left — distribution is complete
+                    DISTRIBUTION_STATE.remove(storage);
                 } else {
-                    // Save with incremented failure count
-                    dist_state.last_updated = env.block.time;
-                    DISTRIBUTION_STATE.save(storage, &dist_state)?;
-                    // Next external ContinueDistribution call will retry
+                    dist_state.consecutive_failures += 1;
+
+                    // Check if we should give up
+                    if dist_state.consecutive_failures >= 5 {
+                        // Too many failures, mark for manual recovery
+                        dist_state.is_distributing = false; // Pause distribution
+                        DISTRIBUTION_STATE.save(storage, &dist_state)?;
+
+                        return Err(StdError::generic_err(
+                            "Distribution failed too many times - manual recovery needed",
+                        ));
+                    } else {
+                        // Save with incremented failure count
+                        dist_state.last_updated = env.block.time;
+                        DISTRIBUTION_STATE.save(storage, &dist_state)?;
+                        // Next external ContinueDistribution call will retry
+                    }
                 }
             }
         }

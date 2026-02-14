@@ -46,11 +46,6 @@ pub fn execute_deposit_liquidity(
     let (liquidity, actual_amount0, actual_amount1) =
         calc_liquidity_for_deposit(deps.as_ref(), amount0, amount1)?;
 
-    deps.api.debug(&format!(
-        "DEBUG_DEPOSIT: paid={}, actual0={}",
-        paid_bluechip, actual_amount0
-    ));
-
     // Ensure the user sent enough bluechip tokens
     if paid_bluechip < actual_amount0 {
         return Err(ContractError::InvalidNativeAmount {
@@ -110,12 +105,6 @@ pub fn execute_deposit_liquidity(
     }
 
     // Refund excess bluechip tokens
-    // Handle edge case where paid might be slightly less than actual due to rounding
-    deps.api.debug(&format!(
-        "DEBUG_REFUND: paid={}, actual0={}",
-        paid_bluechip, actual_amount0
-    ));
-
     let refund_amount = if paid_bluechip > actual_amount0 {
         paid_bluechip - actual_amount0
     } else {
@@ -132,7 +121,7 @@ pub fn execute_deposit_liquidity(
         };
         messages.push(CosmosMsg::Bank(refund_msg));
     }
-    //incriment nft id
+    //increment nft id
     let mut pos_id = NEXT_POSITION_ID.load(deps.storage)?;
     pos_id = pos_id.checked_add(1).ok_or_else(|| ContractError::Std(StdError::generic_err("Position ID overflow")))?;
     NEXT_POSITION_ID.save(deps.storage, &pos_id)?;
@@ -278,7 +267,7 @@ pub fn execute_collect_fees(
     Ok(response)
 }
 
-//add liquidity to an already exisitnng position and collects fees for accounting
+//add liquidity to an already existing position and collects fees for accounting
 pub fn add_to_position(
     deps: &mut DepsMut,
     env: Env,
