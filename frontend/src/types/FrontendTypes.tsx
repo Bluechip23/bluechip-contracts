@@ -49,10 +49,20 @@ export const hasBalance = (token: ModalToken): token is PortfolioToken => {
 export interface PoolDetails {
     asset_infos: [TokenType, TokenType];
     contract_addr: string;
-    pool_type: string;
+    pool_type: { xyk: Record<string, never> } | { stable: Record<string, never> };
 }
 
+// Response from pool contract's `pool_state` query
 export interface PoolStateResponse {
+    nft_ownership_accepted: boolean;
+    reserve0: string;
+    reserve1: string;
+    total_liquidity: string;
+    block_time_last: number;
+}
+
+// Response from factory/pool communication (includes additional fields)
+export interface PoolStateResponseForFactory {
     pool_contract_address: string;
     nft_ownership_accepted: boolean;
     reserve0: string;
@@ -61,19 +71,22 @@ export interface PoolStateResponse {
     block_time_last: number;
     price0_cumulative_last: string;
     price1_cumulative_last: string;
+    assets: string[];
 }
 
 export interface AllPoolsResponse {
-    pools: [string, PoolStateResponse][];
+    pools: [string, PoolStateResponseForFactory][];
 }
 
 
+// On-chain CommitStatus enum: unit variant serializes as string "fully_committed",
+// struct variant serializes as { in_progress: { raised, target } }
 export type CommitStatus =
-    | { fully_committed: Record<string, never> }
+    | 'fully_committed'
     | { in_progress: { raised: string; target: string } };
 
 export const isThresholdReached = (status: CommitStatus): boolean => {
-    return 'fully_committed' in status;
+    return status === 'fully_committed';
 };
 
 
@@ -161,9 +174,44 @@ export const DEFAULT_CHAIN_CONFIG: ChainConfig = {
     rpc: 'http://localhost:26657',
     rest: 'http://localhost:1317',
     factoryAddress: 'cosmos1factory...', // Replace with actual
-    nativeDenom: 'stake',
+    nativeDenom: 'ubluechip',
     coinDecimals: 6,
 };
+
+// ============================================
+// On-chain Position Types (pool contract)
+// ============================================
+
+export interface PositionResponse {
+    position_id: string;
+    liquidity: string;
+    owner: string;
+    fee_growth_inside_0_last: string;
+    fee_growth_inside_1_last: string;
+    created_at: number;
+    last_fee_collection: number;
+    unclaimed_fees_0: string;
+    unclaimed_fees_1: string;
+}
+
+export interface PositionsResponse {
+    positions: PositionResponse[];
+}
+
+// Pool fee state from `fee_state` query
+export interface PoolFeeStateResponse {
+    fee_growth_global_0: string;
+    fee_growth_global_1: string;
+    total_fees_collected_0: string;
+    total_fees_collected_1: string;
+}
+
+// Combined pool info from `pool_info` query
+export interface PoolInfoResponse {
+    pool_state: PoolStateResponse;
+    fee_state: PoolFeeStateResponse;
+    total_positions: number;
+}
 
 // ============================================
 // Utility Functions

@@ -54,30 +54,21 @@ const CommitModal: React.FC<TokenModalProps> = ({
                 is_fully_commited: {}
             });
             const isThresholdCrossed = thresholdStatus === 'fully_committed';
-            const commitMsg: {
-                asset: {
-                    info: { bluechip: { denom: string } };
-                    amount: string;
-                };
-                amount: string;
-                transaction_deadline?: string;
-                max_spread?: string;
-            } = {
+            const deadlineInNs = deadline && parseFloat(deadline) > 0
+                ? ((Date.now() + parseFloat(deadline) * 60 * 1000) * 1_000_000).toString()
+                : null;
+
+            const commitMsg = {
                 asset: {
                     info: { bluechip: { denom: DEFAULT_CHAIN_CONFIG.nativeDenom } },
                     amount: amountInMicroUnits
                 },
-                amount: amountInMicroUnits
+                amount: amountInMicroUnits,
+                transaction_deadline: deadlineInNs,
+                belief_price: null as string | null,
+                max_spread: (isThresholdCrossed && maxSpread && parseFloat(maxSpread) > 0)
+                    ? maxSpread : null as string | null
             };
-
-            if (deadline && parseFloat(deadline) > 0) {
-                const deadlineInNs = (Date.now() + parseFloat(deadline) * 60 * 1000) * 1_000_000;
-                commitMsg.transaction_deadline = deadlineInNs.toString();
-            }
-
-            if (isThresholdCrossed && maxSpread && parseFloat(maxSpread) > 0) {
-                commitMsg.max_spread = maxSpread;
-            }
 
             const msg = { commit: commitMsg };
             const funds = [{ denom: DEFAULT_CHAIN_CONFIG.nativeDenom, amount: amountInMicroUnits }];
@@ -86,7 +77,7 @@ const CommitModal: React.FC<TokenModalProps> = ({
                 address,
                 token.poolAddress,
                 msg,
-                { amount: [], gas: '500000' },
+                { amount: [], gas: '600000' },
                 'Commit',
                 funds
             );

@@ -31,7 +31,7 @@ import CommitModal from '../components/modals/CommitModal';
 import TokenInfoModal from '../components/modals/TokenInfoModal';
 import SellModal from '../components/modals/SellModal';
 
-const FACTORY_ADDRESS = 'cosmos1factory...'; // Replace with your factory address
+const FACTORY_ADDRESS = import.meta.env.VITE_FACTORY_ADDRESS || 'cosmos1factory...'; // Replace with your factory address
 
 interface TokenType {
     creator_token?: { contract_addr: string };
@@ -180,6 +180,19 @@ const PortfolioPage: React.FC = () => {
     const [loading, setLoading] = useState(false);
     const [error, setError] = useState<string>('');
 
+    // Liquidity positions data
+    interface PositionData {
+        positionId: string;
+        poolAddress: string;
+        liquidity: string;
+        unclaimedFees0: string;
+        unclaimedFees1: string;
+        createdAt: number;
+    }
+    const [positions, setPositions] = useState<PositionData[]>([]);
+    const [positionsLoading, setPositionsLoading] = useState(false);
+    const [positionsError, setPositionsError] = useState<string>('');
+
     // Modal states
     const [buyModalOpen, setBuyModalOpen] = useState(false);
     const [sellModalOpen, setSellModalOpen] = useState(false);
@@ -208,7 +221,7 @@ const PortfolioPage: React.FC = () => {
 
                     // Get pool details to find creator token address
                     const poolDetails: PoolDetails = await client.queryContractSmart(poolAddress, {
-                        pair_info: {}
+                        pair: {}
                     });
 
                     // Find the creator token in asset_infos
@@ -230,14 +243,14 @@ const PortfolioPage: React.FC = () => {
                             token_info: {}
                         }),
                         client.queryContractSmart(poolAddress, {
-                            check_threshold_limit: {}
+                            is_fully_commited: {}
                         })
                     ]);
 
                     // Only include if user has balance
                     if (balanceResponse.balance === '0') return null;
 
-                    const thresholdReached = 'fully_committed' in thresholdStatus;
+                    const thresholdReached = thresholdStatus === 'fully_committed';
 
                     return {
                         tokenAddress,
@@ -267,12 +280,66 @@ const PortfolioPage: React.FC = () => {
         }
     }, [client, address]);
 
+    // Fetch liquidity positions across all known pools using positions_by_owner query (H-5 audit optimization)
+    const fetchPositions = useCallback(async () => {
+        if (!client || !address) return;
+
+        setPositionsLoading(true);
+        setPositionsError('');
+
+        try {
+            // Get pools from tokens we already know about
+            const poolAddresses = tokens.map(t => t.poolAddress);
+            const allPositions: PositionData[] = [];
+
+            for (const poolAddress of poolAddresses) {
+                try {
+                    const response = await client.queryContractSmart(poolAddress, {
+                        positions_by_owner: {
+                            owner: address,
+                            limit: 30
+                        }
+                    });
+
+                    if (response.positions) {
+                        for (const pos of response.positions) {
+                            allPositions.push({
+                                positionId: pos.position_id,
+                                poolAddress,
+                                liquidity: pos.liquidity,
+                                unclaimedFees0: pos.unclaimed_fees_0,
+                                unclaimedFees1: pos.unclaimed_fees_1,
+                                createdAt: pos.created_at,
+                            });
+                        }
+                    }
+                } catch (err) {
+                    console.error(`Error fetching positions for pool ${poolAddress}:`, err);
+                }
+            }
+
+            setPositions(allPositions);
+        } catch (err) {
+            console.error('Error fetching positions:', err);
+            setPositionsError('Failed to load positions: ' + (err as Error).message);
+        } finally {
+            setPositionsLoading(false);
+        }
+    }, [client, address, tokens]);
+
     // Fetch tokens when wallet connects
     useEffect(() => {
         if (client && address) {
             fetchPortfolioTokens();
         }
     }, [client, address, fetchPortfolioTokens]);
+
+    // Fetch positions after tokens are loaded
+    useEffect(() => {
+        if (client && address && tokens.length > 0) {
+            fetchPositions();
+        }
+    }, [client, address, tokens, fetchPositions]);
 
     const handleBuyClick = (token: PortfolioToken) => {
         setSelectedToken(token);
@@ -372,10 +439,51 @@ const PortfolioPage: React.FC = () => {
                 </TabPanel>
 
                 <TabPanel value={tabValue} index={1}>
-                    <Box sx={{ p: 3, textAlign: 'center' }}>
-                        <Typography color="text.secondary">
-                            Liquidity positions coming soon...
-                        </Typography>
+                    <Box sx={{ px: 2, pb: 2 }}>
+                        {!client || !address ? (
+                            <Alert severity="info">Connect your wallet to view your liquidity positions</Alert>
+                        ) : positionsLoading ? (
+                            <Box sx={{ display: 'flex', justifyContent: 'center', py: 4 }}>
+                                <CircularProgress />
+                            </Box>
+                        ) : positionsError ? (
+                            <Alert severity="error">{positionsError}</Alert>
+                        ) : positions.length === 0 ? (
+                            <Alert severity="info">No liquidity positions found</Alert>
+                        ) : (
+                            <TableContainer>
+                                <Table>
+                                    <TableHead>
+                                        <TableRow>
+                                            <TableCell>Position ID</TableCell>
+                                            <TableCell>Pool</TableCell>
+                                            <TableCell>Liquidity</TableCell>
+                                            <TableCell>Unclaimed Fees (Asset 0)</TableCell>
+                                            <TableCell>Unclaimed Fees (Asset 1)</TableCell>
+                                        </TableRow>
+                                    </TableHead>
+                                    <TableBody>
+                                        {positions.map((pos) => (
+                                            <TableRow key={`${pos.poolAddress}-${pos.positionId}`}>
+                                                <TableCell>
+                                                    <Typography variant="body2" sx={{ fontFamily: 'monospace' }}>
+                                                        {pos.positionId}
+                                                    </Typography>
+                                                </TableCell>
+                                                <TableCell>
+                                                    <Typography variant="body2" sx={{ fontFamily: 'monospace' }}>
+                                                        {pos.poolAddress.slice(0, 12)}...{pos.poolAddress.slice(-6)}
+                                                    </Typography>
+                                                </TableCell>
+                                                <TableCell>{(parseInt(pos.liquidity) / 1_000_000).toLocaleString()}</TableCell>
+                                                <TableCell>{(parseInt(pos.unclaimedFees0) / 1_000_000).toLocaleString()}</TableCell>
+                                                <TableCell>{(parseInt(pos.unclaimedFees1) / 1_000_000).toLocaleString()}</TableCell>
+                                            </TableRow>
+                                        ))}
+                                    </TableBody>
+                                </Table>
+                            </TableContainer>
+                        )}
                     </Box>
                 </TabPanel>
             </Paper>
