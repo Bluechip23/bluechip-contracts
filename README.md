@@ -41,7 +41,7 @@ The protocol consists of three main contracts:
 │  - Creates new creator pools                                 │
 │  - Manages global configuration                              │
 │  - Handles CW20 and CW721 contract instantiation            │
-│  - Internal oracle for BLUECHIP/USD pricing                  │
+│  - Internal oracle for bluechip/USD pricing                  │
 │  - Triggers expand economy on pool creation                  │
 └─────────────────────────────────────────────────────────────┘
                     │                       │
@@ -49,7 +49,7 @@ The protocol consists of three main contracts:
                     ▼                       ▼
 ┌──────────────────────────────┐  ┌──────────────────────────────┐
 │        POOL CONTRACT         │  │    EXPAND ECONOMY CONTRACT   │
-│  - Handles commits           │  │  - Mints BLUECHIP tokens on  │
+│  - Handles commits           │  │  - Mints bluechip tokens on  │
 │  - Manages threshold         │  │    pool creation             │
 │  - Executes swaps & LP ops   │  │  - Decreasing supply curve   │
 │  - Mints NFT LP positions    │  │  - Factory-gated access      │
@@ -98,7 +98,7 @@ Each pool receives:
 - A unique CW20 token for the creator (mint cap: 1,500,000)
 - A CW721 NFT contract for liquidity positions
 - Configurable fee structure (default: 1% protocol + 5% creator)
-- BLUECHIP tokens minted via the Expand Economy contract (up to 500M per creation, decreasing over time)
+- bluechip tokens minted via the Expand Economy contract (up to 500M per creation, decreasing over time)
 
 ---
 
@@ -114,7 +114,7 @@ Before a pool reaches its $25,000 USD threshold, only **commit transactions** ar
 - Prevents liquidity provision and normal swaps
 
 **During this phase:**
-- Users send BLUECHIP tokens to subscribe/commit
+- Users send bluechip tokens to subscribe/commit
 - Commits are tracked by their USD value at time of commitment
 - 6% fee is collected (1% protocol + 5% creator)
 - All committers are recorded for proportional token distribution
@@ -126,9 +126,9 @@ When total USD committed reaches the threshold ($25,000 default):
 1. **Creator tokens minted**: ~1,200,000 creator tokens are minted and distributed
 2. **Creator reward**: 325,000 creator tokens sent to the creator's wallet
 3. **Protocol reward**: 25,000 creator tokens sent to the Bluechip protocol wallet
-4. **Pool seeded**: 350,000 creator tokens + committed BLUECHIP used to initialize AMM liquidity
+4. **Pool seeded**: 350,000 creator tokens + committed bluechip used to initialize AMM liquidity
 5. **Committer distribution**: 500,000 creator tokens distributed to committers proportionally
-6. **Excess handling**: If BLUECHIP exceeds `max_bluechip_lock_per_pool`, excess is time-locked for the creator (see [Creator Limits](#creator-limits--excess-liquidity))
+6. **Excess handling**: If bluechip exceeds `max_bluechip_lock_per_pool`, excess is time-locked for the creator (see [Creator Limits](#creator-limits--excess-liquidity))
 7. **State transition**: Pool moves to active trading phase
 
 ```
@@ -161,7 +161,7 @@ The commit function is the core user interaction for subscriptions:
 }
 ```
 
-**Send with:** Native BLUECHIP tokens attached to the transaction. Commit transactions can only be carried out with BLUECHIP tokens.
+**Send with:** Native bluechip tokens attached to the transaction. Commit transactions can only be carried out with bluechip tokens.
 
 ### What Happens When You Commit
 
@@ -263,7 +263,7 @@ Partial removal keeps the NFT; full removal burns it.
 
 ## Internal Oracle System
 
-Bluechip uses an internal oracle to price the native BLUECHIP token in USD.
+Bluechip uses an internal oracle to price the native bluechip token in USD.
 
 ### Architecture
 
@@ -275,7 +275,7 @@ Bluechip uses an internal oracle to price the native BLUECHIP token in USD.
                               │
                               ▼
 ┌─────────────────────────────────────────────────────────────┐
-│                 ATOM/BLUECHIP POOL                           │
+│                 ATOM/bluechip POOL                           │
 │              (Primary Price Reference)                       │
 └─────────────────────────────────────────────────────────────┘
                               │
@@ -290,9 +290,9 @@ Bluechip uses an internal oracle to price the native BLUECHIP token in USD.
 
 ### Price Calculation
 
-1. **ATOM/BLUECHIP** price from the primary liquidity pool
+1. **ATOM/bluechip** price from the primary liquidity pool
 2. **ATOM/USD** price from Pyth Network oracle
-3. **BLUECHIP/USD** = ATOM/USD × ATOM/BLUECHIP
+3. **bluechip/USD** = ATOM/USD × ATOM/bluechip
 
 ### Manipulation Resistance
 
@@ -354,7 +354,7 @@ Bluechip uses an internal oracle to price the native BLUECHIP token in USD.
 ```json
 {
   "position_id": "123",
-  "owner": "cosmos1...",
+  "owner": "bluechip1...",
   "liquidity": "1000000",
   "fee_growth_inside_0_last": "0.001",
   "fee_growth_inside_1_last": "0.002"
@@ -407,7 +407,7 @@ Query the commit ledger to verify subscription status:
 ```json
 {
   "get_commit_info": {
-    "address": "cosmos1..."
+    "address": "bluechip1..."
   }
 }
 ```
@@ -462,7 +462,7 @@ The CW20 token contract is instantiated with a mint cap of **1,500,000,**, allow
 ### Fee Flow
 
 ```
-Commit Transaction (5000 BLUECHIP)
+Commit Transaction (5000 bluechip)
         │
         ├── 1% (50) → Protocol Wallet
         ├── 5% (250) → Creator Wallet
@@ -473,7 +473,7 @@ Commit Transaction (5000 BLUECHIP)
 
 ## Expand Economy
 
-The Expand Economy contract manages BLUECHIP token inflation by minting new tokens each time a creator pool is created. This incentivizes early adoption while gradually reducing emissions as the ecosystem grows.
+The Expand Economy contract manages bluechip token inflation by minting new tokens each time a creator pool is created. This incentivizes early adoption while gradually reducing emissions as the ecosystem grows.
 
 ### How It Works
 
@@ -484,14 +484,14 @@ The Expand Economy contract manages BLUECHIP token inflation by minting new toke
 └──────────────┘         └───────────────────┘         └──────────────────┘
                                                                │
                                                                ▼
-                                                    Mints BLUECHIP tokens
+                                                    Mints bluechip tokens
                                                     to protocol wallet
 ```
 
 1. A creator calls the factory to create a new pool
 2. The factory calculates a mint amount based on time elapsed and total pools created
 3. The factory sends a `RequestExpansion` message to the Expand Economy contract
-4. The Expand Economy contract sends the calculated amount of BLUECHIP (`stake`) tokens to the protocol wallet
+4. The Expand Economy contract sends the calculated amount of bluechip (`stake`) tokens to the protocol wallet
 
 ### Mint Formula
 
@@ -536,21 +536,21 @@ Returns the contract's balance of the specified denomination.
 
 ### Maximum Bluechip Lock Per Pool
 
-Each pool enforces a maximum amount of BLUECHIP tokens that can be locked as liquidity (`max_bluechip_lock_per_pool`). When the BLUECHIP tokens committed to a pool exceed this limit at threshold crossing, the excess is not lost — it is held in a time-locked escrow for the creator.
+Each pool enforces a maximum amount of bluechip tokens that can be locked as liquidity upon the threshold being crossed. This is to preotect the ecosystem from having all the bluechips getting locked in unowned liquidity positions (`max_bluechip_lock_per_pool`). When the bluechip tokens committed to a pool exceed this limit at threshold crossing, the excess is not lost, it is held in a time-locked escrow for the creator. The maximum amount of bluechips is therefore, also used as an incentive for creators to join the network while bluechips are lower in value. 
 
 ### Creator Excess Liquidity
 
 When bluechips exceed the per-pool maximum:
 
-1. The excess BLUECHIP and proportional creator tokens are stored in a `CreatorExcessLiquidity` record
+1. The excess bluechip and proportional creator tokens are stored in a `CreatorExcessLiquidity` record
 2. An unlock timestamp is set based on `creator_excess_liquidity_lock_days` (configured at the factory level)
 3. After the lock period expires, the creator can claim the excess
 
 ```
-Threshold Crossing (e.g., 15B BLUECHIP committed, 10B max per pool)
+Threshold Crossing (e.g., 15M bluechip committed, 10M max per pool)
         │
-        ├── 10B BLUECHIP → Pool liquidity (immediate)
-        └── 5B BLUECHIP + proportional creator tokens → Locked
+        ├── 10B bluechip → Pool liquidity (immediate)
+        └── 5B bluechip + proportional creator tokens → Locked
                 │
                 └── Unlocks after X days → Creator calls ClaimCreatorExcessLiquidity
 ```
@@ -572,7 +572,7 @@ Threshold Crossing (e.g., 15B BLUECHIP committed, 10B max per pool)
 
 | Parameter | Default | Description |
 |-----------|---------|-------------|
-| `max_bluechip_lock_per_pool` | 10,000,000,000 (10B) | Max BLUECHIP tokens locked as liquidity in a single pool |
+| `max_bluechip_lock_per_pool` | 10,000,000,000 (10B) | Max bluechip tokens locked as liquidity in a single pool |
 | `creator_excess_liquidity_lock_days` | 7 days | Time lock before creator can claim excess |
 
 ---
@@ -647,15 +647,15 @@ The factory admin can pause individual pools, disabling all swap and liquidity o
 | Parameter | Value | Description |
 |-----------|-------|-------------|
 | Commit threshold (USD) | 25,000 | USD value required to activate pool |
-| Commit threshold (BLUECHIP) | 100,000,000 | BLUECHIP token threshold |
+| Commit threshold (bluechip) | 100,000,000 | bluechip token threshold |
 | Creator token mint cap | 1,500,000 | Max CW20 supply per pool |
-| Max BLUECHIP lock per pool | 10,000,000,000 | Excess is time-locked for creator |
+| Max bluechip lock per pool | 10,000,000,000 | Excess is time-locked for creator |
 | Creator excess lock period | 7 days | Time before creator can claim excess |
 | Commit fee (protocol) | 1% | Sent to Bluechip wallet |
 | Commit fee (creator) | 5% | Sent to creator wallet |
 | LP swap fee | 0.3% | Distributed to liquidity providers |
 | Min commit interval | 13 seconds | Rate limit per wallet |
-| Expand economy max mint | 500 | Max BLUECHIP minted per pool creation |
+| Expand economy max mint | 500 | Max bluechip minted per pool creation |
 | Oracle TWAP window | 3600 seconds | Time-weighted average price window |
 | Oracle update interval | 300 seconds | Min time between price updates |
 | Oracle price max age | 3000 seconds | Price considered stale after this |
@@ -693,7 +693,7 @@ cargo test
 2. Deploy CW721-base contract (store code)
 3. Deploy Expand Economy contract
 4. Deploy Factory contract with code IDs and Expand Economy address
-5. Create ATOM/BLUECHIP oracle pool first
+5. Create ATOM/bluechip oracle pool first
 6. Initialize internal oracle
 7. Creators can now create pools
 
