@@ -84,6 +84,14 @@ pub fn query(deps: Deps, env: Env, msg: QueryMsg) -> StdResult<Binary> {
             let info = COMMIT_INFO.may_load(deps.storage, &addr)?;
             to_json_binary(&info)
         }
+        // C-NEW-1 FIX: dispatch factory-facing queries through the entry point so
+        // the factory oracle's query_wasm_smart(PoolQueryMsg::GetPoolState) calls succeed.
+        QueryMsg::GetPoolState { pool_contract_address } => {
+            query_for_factory(deps, env, PoolQueryMsg::GetPoolState { pool_contract_address })
+        }
+        QueryMsg::GetAllPools {} => {
+            query_for_factory(deps, env, PoolQueryMsg::GetAllPools {})
+        }
     }
 }
 

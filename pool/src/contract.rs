@@ -21,10 +21,10 @@ use crate::state::{
     PoolDetails, PoolFeeState, PoolInfo, PoolSpecs, RecoveryType, ThresholdPayoutAmounts,
     COMMITFEEINFO, COMMIT_LEDGER, COMMIT_LIMIT_INFO, DEFAULT_ESTIMATED_GAS_PER_DISTRIBUTION,
     DEFAULT_MAX_GAS_PER_TX, DISTRIBUTION_BOUNTY, DISTRIBUTION_STATE, EMERGENCY_WITHDRAWAL,
-    EXPECTED_FACTORY, IS_THRESHOLD_HIT, LAST_THRESHOLD_ATTEMPT, MINIMUM_LIQUIDITY,
-    NATIVE_RAISED_FROM_COMMIT, ORACLE_INFO, OWNER_POSITIONS, POOL_FEE_STATE, POOL_INFO,
-    POOL_PAUSED, POOL_SPECS, POOL_STATE, RATE_LIMIT_GUARD, THRESHOLD_PAYOUT_AMOUNTS,
-    THRESHOLD_PROCESSING, USD_RAISED_FROM_COMMIT,
+    EMERGENCY_WITHDRAW_DELAY_SECONDS, EXPECTED_FACTORY, IS_THRESHOLD_HIT, LAST_THRESHOLD_ATTEMPT,
+    MINIMUM_LIQUIDITY, NATIVE_RAISED_FROM_COMMIT, ORACLE_INFO, OWNER_POSITIONS, PENDING_EMERGENCY_WITHDRAW,
+    POOL_FEE_STATE, POOL_INFO, POOL_PAUSED, POOL_SPECS, POOL_STATE, RATE_LIMIT_GUARD,
+    THRESHOLD_PAYOUT_AMOUNTS, THRESHOLD_PROCESSING, USD_RAISED_FROM_COMMIT,
 };
 use crate::state::{
     Commiting, PoolState, Position, COMMIT_INFO, CREATOR_EXCESS_POSITION, LIQUIDITY_POSITIONS,
@@ -199,6 +199,7 @@ pub fn execute(
         ExecuteMsg::Pause {} => execute_pause(deps, info),
         ExecuteMsg::Unpause {} => execute_unpause(deps, info),
         ExecuteMsg::EmergencyWithdraw {} => execute_emergency_withdraw(deps, env, info),
+        ExecuteMsg::CancelEmergencyWithdraw {} => execute_cancel_emergency_withdraw(deps, info),
         ExecuteMsg::RecoverStuckStates { recovery_type } => {
             execute_recover_stuck_states(deps, env, info, recovery_type)
         }
@@ -1475,9 +1476,12 @@ pub fn execute_update_config_from_factory(
     let mut attributes = vec![("action", "update_config")];
 
     if let Some(fee) = update.lp_fee {
-        if fee >= Decimal::one() {
+        // H-NEW-1 FIX: apply the same 10% cap used in migrate() so the config-update
+        // path cannot silently set extractive fees that steal from traders.
+        let max_lp_fee = Decimal::percent(10);
+        if fee > max_lp_fee {
             return Err(ContractError::Std(StdError::generic_err(
-                "lp_fee must be less than 100%",
+                "lp_fee must not exceed 10% (0.1)",
             )));
         }
         POOL_SPECS.update(deps.storage, |mut specs| -> StdResult<_> {
@@ -1534,6 +1538,19 @@ pub fn execute_unpause(deps: DepsMut, info: MessageInfo) -> Result<Response, Con
     Ok(Response::new().add_attribute("action", "unpause"))
 }
 
+/// H-3 FIX (timelock): Two-phase emergency withdraw.
+///
+/// **Phase 1 — initiate** (first call, no pending state):
+///   Pauses the pool and records a pending withdrawal that becomes
+///   executable 24 hours later.  No funds are moved yet, giving LPs a
+///   window to observe the pending action on-chain.
+///
+/// **Phase 2 — execute** (second call, after timelock):
+///   Drains all reserves, fee reserves, and creator excess to the
+///   protocol-controlled `bluechip_wallet_address`.
+///
+/// The factory admin can cancel a pending-but-unexecuted withdrawal with
+/// `CancelEmergencyWithdraw {}`.
 pub fn execute_emergency_withdraw(
     deps: DepsMut,
     env: Env,
@@ -1544,83 +1561,116 @@ pub fn execute_emergency_withdraw(
         return Err(ContractError::Unauthorized {});
     }
 
-    // 1. Pause the pool to prevent further activity
+    let now = env.block.time;
+
+    // --- Phase 2: execute if timelock has elapsed ---
+    if let Some(effective_after) = PENDING_EMERGENCY_WITHDRAW.may_load(deps.storage)? {
+        if now < effective_after {
+            return Err(ContractError::Std(StdError::generic_err(format!(
+                "Emergency withdraw timelock not yet elapsed. Executable after: {}",
+                effective_after
+            ))));
+        }
+
+        // Timelock passed — execute the drain.
+        PENDING_EMERGENCY_WITHDRAW.remove(deps.storage);
+
+        let mut pool_state = POOL_STATE.load(deps.storage)?;
+        let mut pool_fee_state = POOL_FEE_STATE.load(deps.storage)?;
+
+        let mut total0 = pool_state.reserve0;
+        let mut total1 = pool_state.reserve1;
+
+        total0 = total0.checked_add(pool_fee_state.fee_reserve_0)?;
+        total1 = total1.checked_add(pool_fee_state.fee_reserve_1)?;
+
+        if let Ok(excess) = CREATOR_EXCESS_POSITION.load(deps.storage) {
+            total0 = total0.checked_add(excess.bluechip_amount)?;
+            total1 = total1.checked_add(excess.token_amount)?;
+            CREATOR_EXCESS_POSITION.remove(deps.storage);
+        }
+
+        let fee_info = COMMITFEEINFO.load(deps.storage)?;
+        let recipient = fee_info.bluechip_wallet_address.clone();
+
+        let withdrawal_info = EmergencyWithdrawalInfo {
+            withdrawn_at: now.seconds(),
+            recipient: recipient.clone(),
+            amount0: total0,
+            amount1: total1,
+            total_liquidity_at_withdrawal: pool_state.total_liquidity,
+        };
+        EMERGENCY_WITHDRAWAL.save(deps.storage, &withdrawal_info)?;
+
+        pool_state.reserve0 = Uint128::zero();
+        pool_state.reserve1 = Uint128::zero();
+        POOL_STATE.save(deps.storage, &pool_state)?;
+
+        pool_fee_state.fee_reserve_0 = Uint128::zero();
+        pool_fee_state.fee_reserve_1 = Uint128::zero();
+        POOL_FEE_STATE.save(deps.storage, &pool_fee_state)?;
+
+        let mut messages = vec![];
+
+        if !total0.is_zero() {
+            messages.push(
+                TokenInfo {
+                    info: pool_info.pool_info.asset_infos[0].clone(),
+                    amount: total0,
+                }
+                .into_msg(&deps.querier, recipient.clone())?,
+            );
+        }
+
+        if !total1.is_zero() {
+            messages.push(
+                TokenInfo {
+                    info: pool_info.pool_info.asset_infos[1].clone(),
+                    amount: total1,
+                }
+                .into_msg(&deps.querier, recipient.clone())?,
+            );
+        }
+
+        return Ok(Response::new()
+            .add_messages(messages)
+            .add_attribute("action", "emergency_withdraw")
+            .add_attribute("recipient", recipient)
+            .add_attribute("amount0", total0)
+            .add_attribute("amount1", total1)
+            .add_attribute("total_liquidity", withdrawal_info.total_liquidity_at_withdrawal));
+    }
+
+    // --- Phase 1: initiate — pause pool and set timelock ---
     POOL_PAUSED.save(deps.storage, &true)?;
-
-    // 2. Collect ALL token balances tracked by the contract:
-    //    - Pool reserves (tradeable liquidity)
-    //    - Fee reserves (collected but unclaimed LP fees)
-    //    - Creator excess position (locked excess from threshold crossing)
-    let mut pool_state = POOL_STATE.load(deps.storage)?;
-    let mut pool_fee_state = POOL_FEE_STATE.load(deps.storage)?;
-
-    let mut total0 = pool_state.reserve0;
-    let mut total1 = pool_state.reserve1;
-
-    // Include unclaimed fee reserves
-    total0 = total0.checked_add(pool_fee_state.fee_reserve_0)?;
-    total1 = total1.checked_add(pool_fee_state.fee_reserve_1)?;
-
-    // Include creator excess position if it exists
-    if let Ok(excess) = CREATOR_EXCESS_POSITION.load(deps.storage) {
-        total0 = total0.checked_add(excess.bluechip_amount)?;
-        total1 = total1.checked_add(excess.token_amount)?;
-        CREATOR_EXCESS_POSITION.remove(deps.storage);
-    }
-
-    // H-3 FIX: Send funds to the bluechip wallet (protocol-controlled address)
-    // instead of the factory sender. This ensures funds go to a known safe
-    // address. Also record withdrawal info so LPs can track where funds went.
-    let fee_info = COMMITFEEINFO.load(deps.storage)?;
-    let recipient = fee_info.bluechip_wallet_address.clone();
-
-    // Record emergency withdrawal details for LP transparency
-    let withdrawal_info = EmergencyWithdrawalInfo {
-        withdrawn_at: env.block.time.seconds(),
-        recipient: recipient.clone(),
-        amount0: total0,
-        amount1: total1,
-        total_liquidity_at_withdrawal: pool_state.total_liquidity,
-    };
-    EMERGENCY_WITHDRAWAL.save(deps.storage, &withdrawal_info)?;
-
-    // 3. Zero out all state
-    pool_state.reserve0 = Uint128::zero();
-    pool_state.reserve1 = Uint128::zero();
-    POOL_STATE.save(deps.storage, &pool_state)?;
-
-    pool_fee_state.fee_reserve_0 = Uint128::zero();
-    pool_fee_state.fee_reserve_1 = Uint128::zero();
-    POOL_FEE_STATE.save(deps.storage, &pool_fee_state)?;
-
-    // 4. Send ALL funds to bluechip wallet
-    let mut messages = vec![];
-
-    if !total0.is_zero() {
-        messages.push(
-            TokenInfo {
-                info: pool_info.pool_info.asset_infos[0].clone(),
-                amount: total0,
-            }
-            .into_msg(&deps.querier, recipient.clone())?,
-        );
-    }
-
-    if !total1.is_zero() {
-        messages.push(
-            TokenInfo {
-                info: pool_info.pool_info.asset_infos[1].clone(),
-                amount: total1,
-            }
-            .into_msg(&deps.querier, recipient.clone())?,
-        );
-    }
+    let effective_after = now.plus_seconds(EMERGENCY_WITHDRAW_DELAY_SECONDS);
+    PENDING_EMERGENCY_WITHDRAW.save(deps.storage, &effective_after)?;
 
     Ok(Response::new()
-        .add_messages(messages)
-        .add_attribute("action", "emergency_withdraw")
-        .add_attribute("recipient", recipient)
-        .add_attribute("amount0", total0)
-        .add_attribute("amount1", total1)
-        .add_attribute("total_liquidity", withdrawal_info.total_liquidity_at_withdrawal))
+        .add_attribute("action", "emergency_withdraw_initiated")
+        .add_attribute("effective_after", effective_after.to_string()))
+}
+
+/// Cancels a pending emergency withdrawal before its timelock elapses.
+/// Only callable by the factory admin.
+pub fn execute_cancel_emergency_withdraw(
+    deps: DepsMut,
+    info: MessageInfo,
+) -> Result<Response, ContractError> {
+    let pool_info = POOL_INFO.load(deps.storage)?;
+    if info.sender != pool_info.factory_addr {
+        return Err(ContractError::Unauthorized {});
+    }
+
+    if PENDING_EMERGENCY_WITHDRAW.may_load(deps.storage)?.is_none() {
+        return Err(ContractError::Std(StdError::generic_err(
+            "No pending emergency withdrawal to cancel",
+        )));
+    }
+
+    PENDING_EMERGENCY_WITHDRAW.remove(deps.storage);
+    // Un-pause the pool so trading can resume.
+    POOL_PAUSED.save(deps.storage, &false)?;
+
+    Ok(Response::new().add_attribute("action", "emergency_withdraw_cancelled"))
 }

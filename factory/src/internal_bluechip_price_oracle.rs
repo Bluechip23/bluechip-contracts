@@ -78,10 +78,35 @@ pub fn select_random_pools_with_atom(
         all_pools.push(atom_pool_contract_contract_address);
         return Ok(all_pools);
     }
+    // H-1 FIX: mix in oracle state that a validator cannot predict or control
+    // at block-production time: the last stored TWAP price and last update
+    // timestamp are set by the *previous* oracle update call, so they are
+    // determined before the current block is chosen.  Block time/height alone
+    // are computable in advance by a colluding validator, so they remain
+    // necessary but insufficient on their own.
+    let oracle_state = INTERNAL_ORACLE.may_load(deps.storage)?.unwrap_or_else(|| {
+        BlueChipPriceInternalOracle {
+            selected_pools: vec![],
+            atom_pool_contract_address: factory_config.atom_bluechip_anchor_pool_address.clone(),
+            last_rotation: 0,
+            rotation_interval: ROTATION_INTERVAL,
+            pool_cumulative_snapshots: vec![],
+            bluechip_price_cache: PriceCache {
+                last_price: Uint128::zero(),
+                last_update: 0,
+                twap_observations: vec![],
+            },
+            update_interval: UPDATE_INTERVAL,
+        }
+    });
     let mut hasher = Sha256::new();
     hasher.update(env.block.time.seconds().to_be_bytes());
     hasher.update(env.block.height.to_be_bytes());
     hasher.update(env.block.chain_id.as_bytes());
+    // Unpredictable at block-production time: determined by previous oracle update
+    hasher.update(oracle_state.bluechip_price_cache.last_price.u128().to_be_bytes());
+    hasher.update(oracle_state.bluechip_price_cache.last_update.to_be_bytes());
+    hasher.update((oracle_state.bluechip_price_cache.twap_observations.len() as u64).to_be_bytes());
     let hash = hasher.finalize();
 
     let mut selected = Vec::new();
