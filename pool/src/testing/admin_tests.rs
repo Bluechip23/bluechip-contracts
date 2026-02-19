@@ -102,46 +102,117 @@ fn test_emergency_withdraw() {
     let mut deps = mock_dependencies();
     let msg = mock_instantiate_msg();
     let info = mock_info("factory_addr", &[]);
-    instantiate(deps.as_mut(), mock_env(), info.clone(), msg).unwrap();
+    let base_env = mock_env();
+    instantiate(deps.as_mut(), base_env.clone(), info.clone(), msg).unwrap();
 
-    // Inject some liquidity mock manually for testing since DepositLiquidity is complex to setup here
+    // Inject some liquidity mock manually for testing.
     let mut pool_state = POOL_STATE.load(&deps.storage).unwrap();
     pool_state.reserve0 = Uint128::new(1000); // 1000 ublue
     pool_state.reserve1 = Uint128::new(2000); // 2000 creator token
     POOL_STATE.save(&mut deps.storage, &pool_state).unwrap();
 
-    // Also mock query handler to handle bank Msg for withdraw?
-    // The test framework mocks bank sends, we just check response messages.
+    // --- Phase 1: initiate the emergency withdrawal ---
+    // H-3 FIX: EmergencyWithdraw is now two-phase. The first call pauses the
+    // pool and sets a 24-hour timelock; no funds are moved yet.
+    let initiate_res = execute(
+        deps.as_mut(),
+        base_env.clone(),
+        info.clone(),
+        ExecuteMsg::EmergencyWithdraw {},
+    )
+    .unwrap();
 
-    // Call EmergencyWithdraw from factory
-    let withdraw_msg = ExecuteMsg::EmergencyWithdraw {};
-    let res = execute(deps.as_mut(), mock_env(), info.clone(), withdraw_msg).unwrap();
+    let action = initiate_res.attributes.iter().find(|a| a.key == "action").unwrap();
+    assert_eq!(action.value, "emergency_withdraw_initiated");
 
-    // Verify attributes
-    let action = res.attributes.iter().find(|a| a.key == "action").unwrap();
+    // Pool should be paused immediately on initiation.
+    assert!(POOL_PAUSED.load(&deps.storage).unwrap());
+
+    // No funds moved yet — reserves are still intact.
+    let ps = POOL_STATE.load(&deps.storage).unwrap();
+    assert_eq!(ps.reserve0, Uint128::new(1000));
+    assert_eq!(ps.reserve1, Uint128::new(2000));
+
+    // Calling again before timelock should fail.
+    let early_err = execute(
+        deps.as_mut(),
+        base_env.clone(),
+        info.clone(),
+        ExecuteMsg::EmergencyWithdraw {},
+    )
+    .unwrap_err();
+    assert!(format!("{:?}", early_err).contains("timelock not yet elapsed"));
+
+    // --- Phase 2: execute after the 24-hour delay ---
+    let mut env_after = base_env.clone();
+    env_after.block.time = env_after.block.time.plus_seconds(86_401); // 24 h + 1 s
+
+    let exec_res = execute(
+        deps.as_mut(),
+        env_after,
+        info.clone(),
+        ExecuteMsg::EmergencyWithdraw {},
+    )
+    .unwrap();
+
+    let action = exec_res.attributes.iter().find(|a| a.key == "action").unwrap();
     assert_eq!(action.value, "emergency_withdraw");
 
-    let amount0 = res.attributes.iter().find(|a| a.key == "amount0").unwrap();
+    let amount0 = exec_res.attributes.iter().find(|a| a.key == "amount0").unwrap();
     assert_eq!(amount0.value, "1000");
 
-    let amount1 = res.attributes.iter().find(|a| a.key == "amount1").unwrap();
+    let amount1 = exec_res.attributes.iter().find(|a| a.key == "amount1").unwrap();
     assert_eq!(amount1.value, "2000");
 
-    // Verify state: Paused and Empty Reserves
-    let is_paused = POOL_PAUSED.load(&deps.storage).unwrap();
-    assert!(is_paused);
-
+    // Reserves zeroed.
     let pool_state = POOL_STATE.load(&deps.storage).unwrap();
     assert_eq!(pool_state.reserve0, Uint128::zero());
     assert_eq!(pool_state.reserve1, Uint128::zero());
 
-    // Verify messages: Should be 2 bank sends/cw20 sends
-    // Current implementation uses TokenInfo.into_msg.
-    // ublue is Bluechip (native usually in tests? Or defined in TokenInfo).
-    // In mock_instantiate, ublue is Bluechip (native), creator_token is Cw20.
+    // Two transfer messages (native bluechip + CW20 creator token).
+    assert_eq!(exec_res.messages.len(), 2);
+}
 
-    assert_eq!(res.messages.len(), 2);
-    // basic check
+#[test]
+fn test_cancel_emergency_withdraw() {
+    let mut deps = mock_dependencies();
+    let msg = mock_instantiate_msg();
+    let info = mock_info("factory_addr", &[]);
+    instantiate(deps.as_mut(), mock_env(), info.clone(), msg).unwrap();
+
+    // Inject reserves.
+    let mut pool_state = POOL_STATE.load(&deps.storage).unwrap();
+    pool_state.reserve0 = Uint128::new(500);
+    pool_state.reserve1 = Uint128::new(1000);
+    POOL_STATE.save(&mut deps.storage, &pool_state).unwrap();
+
+    // Phase 1: initiate
+    execute(
+        deps.as_mut(),
+        mock_env(),
+        info.clone(),
+        ExecuteMsg::EmergencyWithdraw {},
+    )
+    .unwrap();
+    assert!(POOL_PAUSED.load(&deps.storage).unwrap());
+
+    // Cancel — pool should be unpaused and no drain occurs.
+    let cancel_res = execute(
+        deps.as_mut(),
+        mock_env(),
+        info.clone(),
+        ExecuteMsg::CancelEmergencyWithdraw {},
+    )
+    .unwrap();
+
+    let action = cancel_res.attributes.iter().find(|a| a.key == "action").unwrap();
+    assert_eq!(action.value, "emergency_withdraw_cancelled");
+
+    // Pool unpaused, reserves intact.
+    assert!(!POOL_PAUSED.load(&deps.storage).unwrap());
+    let ps = POOL_STATE.load(&deps.storage).unwrap();
+    assert_eq!(ps.reserve0, Uint128::new(500));
+    assert_eq!(ps.reserve1, Uint128::new(1000));
 }
 
 #[test]

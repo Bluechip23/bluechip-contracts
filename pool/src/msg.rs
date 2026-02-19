@@ -3,6 +3,8 @@ use crate::state::{Commiting, RecoveryType};
 use cosmwasm_schema::{cw_serde, QueryResponses};
 use cosmwasm_std::{Addr, Binary, Decimal, Timestamp, Uint128};
 use cw20::Cw20ReceiveMsg;
+// C-NEW-1 FIX: import types needed for factory-facing query variants
+use pool_factory_interfaces::{AllPoolsResponse, PoolStateResponseForFactory};
 
 #[cw_serde]
 pub enum ExecuteMsg {
@@ -73,6 +75,10 @@ pub enum ExecuteMsg {
         max_ratio_deviation_bps: Option<u16>,
     },
     ClaimCreatorExcessLiquidity {},
+    // H-3 FIX: two-phase emergency withdraw — first call initiates timelock,
+    // second call (after 24 h) executes the drain.
+    // CancelEmergencyWithdraw cancels a pending initiation before it executes.
+    CancelEmergencyWithdraw {},
 }
 
 #[cw_serde]
@@ -164,6 +170,14 @@ pub enum QueryMsg {
 
     #[returns(PoolInfoResponse)]
     PoolInfo {},
+
+    // C-NEW-1 FIX: expose factory-facing queries through the main entry point so
+    // that the factory oracle can call query_wasm_smart with PoolQueryMsg variants.
+    #[returns(PoolStateResponseForFactory)]
+    GetPoolState { pool_contract_address: String },
+
+    #[returns(AllPoolsResponse)]
+    GetAllPools {},
 }
 
 #[cw_serde]

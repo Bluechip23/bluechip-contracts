@@ -136,6 +136,16 @@ pub fn execute_propose_factory_config_update(
 ) -> Result<Response, ContractError> {
     assert_correct_factory_address(deps.as_ref(), info)?;
 
+    // H-NEW-2 FIX: validate all address fields in the proposed config before
+    // committing to the 48-hour timelock. Without this a typo/wrong-prefix address
+    // would silently pass the proposal and brick the factory after the delay.
+    deps.api.addr_validate(config.factory_admin_address.as_str())?;
+    deps.api.addr_validate(config.bluechip_wallet_address.as_str())?;
+    deps.api.addr_validate(config.atom_bluechip_anchor_pool_address.as_str())?;
+    if let Some(ref mint_addr) = config.bluechip_mint_contract_address {
+        deps.api.addr_validate(mint_addr.as_str())?;
+    }
+
     let pending = PendingConfig {
         new_config: config,
         effective_after: env.block.time.plus_seconds(86400 * 2), // 48 hour delay

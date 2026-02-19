@@ -59,6 +59,11 @@ pub const CREATOR_EXCESS_POSITION: Item<CreatorExcessLiquidity> = Item::new("cre
 pub const POOL_PAUSED: Item<bool> = Item::new("pool_paused");
 /// H-3 FIX: Track emergency withdrawal details so LPs know where funds went
 pub const EMERGENCY_WITHDRAWAL: Item<EmergencyWithdrawalInfo> = Item::new("emergency_withdrawal");
+/// H-3 FIX (timelock): timestamp after which the pending emergency withdrawal
+/// may be executed.  Set on initiation; cleared on execution or cancellation.
+pub const PENDING_EMERGENCY_WITHDRAW: Item<Timestamp> = Item::new("pending_emergency_withdraw");
+/// Timelock duration for emergency withdrawal: 24 hours.
+pub const EMERGENCY_WITHDRAW_DELAY_SECONDS: u64 = 86_400;
 
 #[cw_serde]
 pub struct EmergencyWithdrawalInfo {
