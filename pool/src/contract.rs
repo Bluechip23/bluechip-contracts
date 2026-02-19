@@ -1484,6 +1484,15 @@ pub fn execute_update_config_from_factory(
                 "lp_fee must not exceed 10% (0.1)",
             )));
         }
+        // L-1 FIX: enforce a minimum fee so LPs always earn something from swaps.
+        // A fee of zero makes providing liquidity economically irrational and will
+        // drain the pool through impermanent loss over time.
+        let min_lp_fee = Decimal::permille(1); // 0.1%
+        if fee < min_lp_fee {
+            return Err(ContractError::Std(StdError::generic_err(
+                "lp_fee must be at least 0.1% (0.001)",
+            )));
+        }
         POOL_SPECS.update(deps.storage, |mut specs| -> StdResult<_> {
             specs.lp_fee = fee;
             Ok(specs)
@@ -1492,6 +1501,14 @@ pub fn execute_update_config_from_factory(
     }
 
     if let Some(interval) = update.min_commit_interval {
+        // M-9 FIX: cap at 1 day so an admin cannot freeze the pool by setting an
+        // absurdly large interval (e.g. u64::MAX would prevent all future commits).
+        const MAX_COMMIT_INTERVAL: u64 = 86_400; // 24 hours
+        if interval > MAX_COMMIT_INTERVAL {
+            return Err(ContractError::Std(StdError::generic_err(
+                "min_commit_interval must not exceed 86400 seconds (1 day)",
+            )));
+        }
         POOL_SPECS.update(deps.storage, |mut specs| -> StdResult<_> {
             specs.min_commit_interval = interval;
             Ok(specs)
