@@ -365,11 +365,11 @@ fn test_commit_crosses_threshold() {
         "Seed liquidity should be non-zero after threshold crossing"
     );
 
-    assert_eq!(
-        COMMIT_LEDGER
-            .keys(&deps.storage, None, None, Order::Ascending)
-            .count(),
-        0
+    // H-1 FIX: Distribution is now always batched; COMMIT_LEDGER entries are paid
+    // out via ContinueDistribution calls, not inline at threshold crossing.
+    assert!(
+        DISTRIBUTION_STATE.may_load(&deps.storage).unwrap().is_some(),
+        "Distribution state should be initialized for batched payout"
     );
 }
 
@@ -552,10 +552,12 @@ fn test_continue_distribution_processes_batch() {
             .any(|a| a.value == "continue_distribution"),
         "Response should include continue_distribution attribute"
     );
-    // Only mint messages, no self-call ContinueDistribution messages
+    // M-1 FIX: Batch size is now gas-based (DEFAULT_MAX_GAS_PER_TX /
+    // DEFAULT_ESTIMATED_GAS_PER_DISTRIBUTION = 40). `last_successful_batch_size`
+    // no longer shrinks the batch size. All 5 committers are processed in one batch.
     assert!(
-        res.messages.len() <= 3,
-        "Should not exceed last successful batch size"
+        res.messages.len() >= 5,
+        "All 5 committers should be processed in one batch with gas-based batch size"
     );
 }
 
@@ -715,10 +717,13 @@ fn test_adaptive_batch_sizing_with_history() {
         "All messages should be mint messages, no self-call continuation"
     );
 
-    let expected = 10;
+    // M-1 FIX: Batch size is min(max_gas_per_tx / estimated_gas_per_distribution,
+    // MAX_DISTRIBUTIONS_PER_TX) = min(1000/50, 40) = 20.
+    // The `(last_successful * 9) / 10` shrinking heuristic has been removed.
+    let expected = 20;
     assert_eq!(
         actually_processed, expected,
-        "Should process exactly {} committers based on effective batch size",
+        "Should process exactly {} committers based on gas-based batch size",
         expected
     );
 }
@@ -741,7 +746,10 @@ fn test_calculate_effective_batch_size() {
 
     let batch_size = calculate_effective_batch_size(&dist_state);
 
-    assert_eq!(batch_size, 10, "Should use 90% of last successful");
+    // M-1 FIX: Batch size is min(max_gas_per_tx / estimated_gas_per_distribution,
+    // MAX_DISTRIBUTIONS_PER_TX) = min(1000/50, 40) = 20.
+    // `last_successful_batch_size` is no longer used in the calculation.
+    assert_eq!(batch_size, 20, "Should use gas-based estimate, ignoring last_successful_batch_size");
 
     let dist_state_no_history = DistributionState {
         is_distributing: true,
@@ -759,7 +767,8 @@ fn test_calculate_effective_batch_size() {
 
     let batch_size = calculate_effective_batch_size(&dist_state_no_history);
 
-    assert_eq!(batch_size, 10, "Should be conservative on first run");
+    // M-1 FIX: Same gas-based calculation regardless of whether there is history.
+    assert_eq!(batch_size, 20, "Should use gas-based estimate regardless of history");
 }
 
 #[test]
@@ -804,10 +813,12 @@ fn test_batch_size_with_consecutive_failures() {
     )
     .unwrap();
 
-    // very conservative after failures — only mint messages, no self-call continuation
+    // M-1 FIX: Batch size is min(max_gas_per_tx / estimated_gas_per_distribution,
+    // MAX_DISTRIBUTIONS_PER_TX) = min(1000/200, 40) = 5. The consecutive_failures
+    // counter no longer shrinks the batch; the gas estimate governs it.
     assert!(
-        res.messages.len() <= 2,
-        "Should use very small batch size after failures"
+        res.messages.len() <= 5,
+        "Should process at most 5 committers per batch based on gas estimate (1000/200=5)"
     );
 }
 
@@ -2269,11 +2280,17 @@ fn test_concurrent_commits_both_recorded() {
 
     execute(deps.as_mut(), env.clone(), alice_info.clone(), alice_msg).unwrap();
 
+    // H-1 FIX: Distribution is now always batched. Alice's commit-ledger entry is
+    // retained until a ContinueDistribution call pays her out.
     assert!(
         COMMIT_LEDGER
             .load(&deps.storage, &alice_info.sender)
-            .is_err(),
-        "Alice should have been cleared from ledger after threshold"
+            .is_ok(),
+        "Alice should remain in commit ledger pending batched distribution"
+    );
+    assert!(
+        DISTRIBUTION_STATE.may_load(&deps.storage).unwrap().is_some(),
+        "Distribution state should be active for batched payout"
     );
 
     let bob_amount = Uint128::new(100_000_000);

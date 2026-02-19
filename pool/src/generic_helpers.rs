@@ -4,8 +4,8 @@ use crate::liquidity_helpers::integer_sqrt;
 use crate::msg::CommitFeeInfo;
 use crate::state::{
     CommitLimitInfo, PoolFeeState, PoolInfo, PoolSpecs, ThresholdPayoutAmounts, COMMIT_LEDGER,
-    DEFAULT_ESTIMATED_GAS_PER_DISTRIBUTION, DEFAULT_MAX_GAS_PER_TX, POOL_FEE_STATE, POOL_STATE,
-    USER_LAST_COMMIT,
+    DEFAULT_ESTIMATED_GAS_PER_DISTRIBUTION, DEFAULT_MAX_GAS_PER_TX, MAX_DISTRIBUTIONS_PER_TX,
+    POOL_FEE_STATE, POOL_STATE, USER_LAST_COMMIT,
 };
 use crate::state::{
     CreatorExcessLiquidity, DistributionState, PoolState, CREATOR_EXCESS_POSITION,
@@ -196,63 +196,28 @@ pub fn trigger_threshold_payout(
         payout.pool_seed_amount,
     )?);
 
-    let total_committers = COMMIT_LEDGER
-        .keys(storage, None, None, Order::Ascending)
-        .count();
+    // H-1 FIX: Replaced O(n) COMMIT_LEDGER.keys().count() scan with a single-entry
+    // peek. The previous full scan charged storage-read gas for every committer and
+    // could exhaust the block gas limit with enough participants, permanently
+    // preventing threshold crossing. Distribution is now unconditionally deferred
+    // to batched ContinueDistribution calls; the inline path has been removed.
+    // Termination is driven by cursor-exhaustion in process_distribution_batch:
+    // when a batch finds no entries after the last cursor it removes DistributionState.
+    let has_committers = COMMIT_LEDGER
+        .range(storage, None, None, Order::Ascending)
+        .next()
+        .is_some();
 
-    let (estimated_gas_per_distribution, max_gas_per_tx) = {
-        let default_estimated = DEFAULT_ESTIMATED_GAS_PER_DISTRIBUTION;
-        let default_max_gas = DEFAULT_MAX_GAS_PER_TX;
-        (default_estimated, default_max_gas)
-    };
-
-    let batch_size = if estimated_gas_per_distribution == 0 {
-        1u32
-    } else {
-        let raw = (max_gas_per_tx / estimated_gas_per_distribution).max(1);
-        if raw > u32::MAX as u64 { u32::MAX } else { raw as u32 }
-    };
-
-    if total_committers == 0 {
-        // No committers to pay
-    } else if total_committers <= batch_size as usize {
-        let committers: Vec<(Addr, Uint128)> = COMMIT_LEDGER
-            .range(storage, None, None, Order::Ascending)
-            .map(|r| r.map_err(|e| StdError::generic_err(e.to_string())))
-            .collect::<StdResult<Vec<_>>>()?;
-
-        for (payer, usd_paid) in committers {
-            let reward = calculate_committer_reward(
-                usd_paid,
-                payout.commit_return_amount,
-                commit_config.commit_amount_for_threshold_usd,
-            )?;
-
-            if !reward.is_zero() {
-                msgs.push(mint_tokens(&pool_info.token_address, &payer, reward)?);
-            }
-
-            COMMIT_LEDGER.remove(storage, &payer);
-        }
-    } else {
-        // Too many committers, need batched distribution
-
-        let test_batch: Vec<_> = COMMIT_LEDGER
-            .range(storage, None, None, Order::Ascending)
-            .take(1)
-            .collect::<StdResult<Vec<_>>>()
-            .map_err(|e| StdError::generic_err(format!("Failed to read committers: {}", e)))?;
-
-        if test_batch.is_empty() {
-            // No committers but count said there were - data inconsistency
-            return Err(StdError::generic_err("Committer count mismatch"));
-        }
+    if has_committers {
         let dist_state = DistributionState {
             is_distributing: true,
             total_to_distribute: payout.commit_return_amount,
             total_committed_usd: commit_config.commit_amount_for_threshold_usd,
             last_processed_key: None,
-            distributions_remaining: if total_committers > u32::MAX as usize { u32::MAX } else { total_committers as u32 },
+            // Set to u32::MAX because committers are no longer counted at crossing
+            // time. The batch loop terminates via cursor-exhaustion (finding no entries
+            // after the last processed key), not by decrementing this counter to zero.
+            distributions_remaining: u32::MAX,
             estimated_gas_per_distribution: DEFAULT_ESTIMATED_GAS_PER_DISTRIBUTION,
             max_gas_per_tx: DEFAULT_MAX_GAS_PER_TX,
             last_successful_batch_size: None,
@@ -260,17 +225,7 @@ pub fn trigger_threshold_payout(
             started_at: env.block.time,
             last_updated: env.block.time,
         };
-        let save_result = DISTRIBUTION_STATE.save(storage, &dist_state);
-        if save_result.is_err() {
-            // If we can't save state, don't try to process
-            return Err(StdError::generic_err(
-                "Failed to initialize distribution state",
-            ));
-        }
-
-        // All committer distributions are deferred to external ContinueDistribution calls.
-        // This keeps the threshold-crossing tx lightweight (only mints creator/bluechip/pool tokens)
-        // and avoids gas limit issues even with a large first batch.
+        DISTRIBUTION_STATE.save(storage, &dist_state)?;
     }
 
     let total_fee_rate = fee_info.commit_fee_bluechip.checked_add(fee_info.commit_fee_creator)
@@ -382,20 +337,22 @@ pub fn process_distribution_batch(
                 match reward_result {
                     Ok(reward) => {
                         if !reward.is_zero() {
-                            // Try to create mint message
-                            match mint_tokens(&pool_info.token_address, payer, reward) {
-                                Ok(msg) => msgs.push(msg),
-                                Err(_e) => {
-                                    continue;
-                                }
-                            }
+                            // M-2 FIX: Propagate construction errors instead of silently
+                            // skipping the entry. A skipped entry that falls behind the
+                            // advancing cursor is permanently stranded — it is never
+                            // revisited because subsequent batches start after the last
+                            // successfully-processed key. Returning an error here increments
+                            // consecutive_failures and eventually triggers manual recovery,
+                            // which is far preferable to silently losing a committer's funds.
+                            msgs.push(mint_tokens(&pool_info.token_address, payer, reward)?);
                         }
                         COMMIT_LEDGER.remove(storage, payer);
                         last_processed = Some(payer.clone());
                         processed_count += 1;
                     }
-                    Err(_) => {
-                        continue;
+                    Err(e) => {
+                        // M-2 FIX: Same rationale — propagate rather than skip.
+                        return Err(e);
                     }
                 }
             }
@@ -493,25 +450,23 @@ pub fn process_distribution_batch(
 }
 
 pub fn calculate_effective_batch_size(dist_state: &DistributionState) -> u32 {
-    // Base calculation from gas estimates
+    // M-1 FIX: The previous logic applied `(last_successful * 9) / 10` on every
+    // call, causing the batch size to shrink geometrically toward 1 after the
+    // first batch (10 → 9 → 8 → … → 1). Combined with the conservative first-run
+    // cap of 10, this made distribution progressively slower with each call and
+    // completely defeated the gas-based estimate for all subsequent batches.
+    //
+    // Now: derive the batch size purely from the gas estimate and cap it at
+    // MAX_DISTRIBUTIONS_PER_TX. This is stable across calls and respects the
+    // actual gas budget rather than a decaying heuristic.
     let base_batch_size = if dist_state.estimated_gas_per_distribution == 0 {
         1u32
     } else {
-        {
-            let raw = dist_state.max_gas_per_tx / dist_state.estimated_gas_per_distribution;
-            if raw > u32::MAX as u64 { u32::MAX } else { raw as u32 }
-        }
+        let raw = dist_state.max_gas_per_tx / dist_state.estimated_gas_per_distribution;
+        if raw > u32::MAX as u64 { u32::MAX } else { raw as u32 }
     };
 
-    // If record of successful batch size, use it as reference
-    if let Some(last_successful) = dist_state.last_successful_batch_size {
-        // Use 90% of last successful to be safe
-        let safe_size = (last_successful * 9) / 10;
-        base_batch_size.min(safe_size).max(1)
-    } else {
-        // First run or no history - be conservative
-        base_batch_size.min(10).max(1)
-    }
+    base_batch_size.min(MAX_DISTRIBUTIONS_PER_TX).max(1)
 }
 
 fn calculate_committer_reward(

@@ -428,7 +428,16 @@ fn test_commit_threshold_overshoot_split() {
         Uint128::new(25_000_000_000)
     );
 
-    assert!(COMMIT_LEDGER.load(&deps.storage, &info.sender).is_err());
+    // H-1 FIX: Distribution is now always batched. The threshold-crosser's entry is
+    // retained in COMMIT_LEDGER until ContinueDistribution pays them out.
+    assert!(
+        COMMIT_LEDGER.load(&deps.storage, &info.sender).is_ok(),
+        "Threshold-crosser's entry should remain in ledger pending batched distribution"
+    );
+    assert!(
+        DISTRIBUTION_STATE.may_load(&deps.storage).unwrap().is_some(),
+        "Distribution state should be initialized for batched payout"
+    );
 
     let attrs = &res.attributes;
     assert_eq!(
