@@ -699,7 +699,7 @@ pub fn get_price_with_staleness_check(
     let oracle = INTERNAL_ORACLE.load(deps.storage)?;
     let current_time = env.block.time.seconds();
 
-    if current_time > oracle.bluechip_price_cache.last_update + max_staleness {
+    if current_time > oracle.bluechip_price_cache.last_update.saturating_add(max_staleness) {
         return Err(StdError::generic_err("Price is stale"));
     }
 
@@ -773,6 +773,9 @@ pub fn execute_force_rotate_pools(
     let new_pools = select_random_pools_with_atom(deps.as_ref(), env.clone(), ORACLE_POOL_COUNT)?;
     oracle.selected_pools = new_pools.clone();
     oracle.last_rotation = env.block.time.seconds();
+    // Clear snapshots so the next update starts fresh against the new pool set,
+    // consistent with what update_internal_oracle_price does on a normal rotation.
+    oracle.pool_cumulative_snapshots = vec![];
 
     INTERNAL_ORACLE.save(deps.storage, &oracle)?;
 
