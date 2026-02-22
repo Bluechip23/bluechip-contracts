@@ -272,16 +272,20 @@ pub fn query_position(deps: Deps, position_id: String) -> StdResult<PositionResp
     let liquidity_position = LIQUIDITY_POSITIONS.load(deps.storage, &position_id)?;
 
     let pool_fee_state = POOL_FEE_STATE.load(deps.storage)?;
+    // Total claimable = currently-accumulating delta + fees preserved from
+    // prior partial removals (stored in unclaimed_fees_0/1 on the position).
     let unclaimed_fees_0 = calculate_unclaimed_fees(
         liquidity_position.liquidity,
         liquidity_position.fee_growth_inside_0_last,
         pool_fee_state.fee_growth_global_0,
-    )?;
+    )?
+    .checked_add(liquidity_position.unclaimed_fees_0)?;
     let unclaimed_fees_1 = calculate_unclaimed_fees(
         liquidity_position.liquidity,
         liquidity_position.fee_growth_inside_1_last,
         pool_fee_state.fee_growth_global_1,
-    )?;
+    )?
+    .checked_add(liquidity_position.unclaimed_fees_1)?;
 
     Ok(PositionResponse {
         position_id,

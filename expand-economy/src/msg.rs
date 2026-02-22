@@ -17,11 +17,20 @@ pub enum ExecuteMsg {
         owner: Option<String>,
     },
 
-    Withdraw {
+    /// Step 1 of the two-phase withdrawal: records intent and starts the 48-hour
+    /// timelock. Only the owner may call this.
+    ProposeWithdrawal {
         amount: Uint128,
         denom: String,
         recipient: Option<String>,
     },
+
+    /// Step 2: executes the previously proposed withdrawal after the timelock has
+    /// elapsed. Only the owner may call this.
+    ExecuteWithdrawal {},
+
+    /// Cancels a pending withdrawal before it executes. Only the owner may call this.
+    CancelWithdrawal {},
 }
 
 #[cw_serde]

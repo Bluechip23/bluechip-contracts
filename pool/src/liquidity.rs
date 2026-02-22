@@ -152,6 +152,8 @@ pub fn execute_deposit_liquidity(
         created_at: env.block.time.seconds(),
         last_fee_collection: env.block.time.seconds(),
         fee_size_multiplier,
+        unclaimed_fees_0: Uint128::zero(),
+        unclaimed_fees_1: Uint128::zero(),
     };
 
     LIQUIDITY_POSITIONS.save(deps.storage, &position_id, &position)?;
@@ -210,14 +212,17 @@ pub fn execute_collect_fees(
         pool_fee_state.fee_growth_global_0,
         liquidity_position.fee_growth_inside_0_last,
         liquidity_position.fee_size_multiplier,
-    )?;
+    )?
+    // Include fees preserved from any prior partial removals.
+    .checked_add(liquidity_position.unclaimed_fees_0)?;
 
     let fees_owed_1 = calculate_fees_owed(
         liquidity_position.liquidity,
         pool_fee_state.fee_growth_global_1,
         liquidity_position.fee_growth_inside_1_last,
         liquidity_position.fee_size_multiplier,
-    )?;
+    )?
+    .checked_add(liquidity_position.unclaimed_fees_1)?;
 
     let fees_owed_0 = fees_owed_0.min(pool_fee_state.fee_reserve_0);
     let fees_owed_1 = fees_owed_1.min(pool_fee_state.fee_reserve_1);
@@ -225,6 +230,9 @@ pub fn execute_collect_fees(
     liquidity_position.fee_growth_inside_0_last = pool_fee_state.fee_growth_global_0;
     liquidity_position.fee_growth_inside_1_last = pool_fee_state.fee_growth_global_1;
     liquidity_position.last_fee_collection = env.block.time.seconds();
+    // Clear stored unclaimed fees — they've been included in this payout.
+    liquidity_position.unclaimed_fees_0 = Uint128::zero();
+    liquidity_position.unclaimed_fees_1 = Uint128::zero();
 
     update_price_accumulator(&mut pool_state, env.block.time.seconds())?;
     pool_fee_state.fee_reserve_0 = pool_fee_state.fee_reserve_0.checked_sub(fees_owed_0)?;
@@ -320,14 +328,17 @@ pub fn add_to_position(
         pool_fee_state.fee_growth_global_0,
         liquidity_position.fee_growth_inside_0_last,
         liquidity_position.fee_size_multiplier,
-    )?;
+    )?
+    // Include fees preserved from any prior partial removals.
+    .checked_add(liquidity_position.unclaimed_fees_0)?;
 
     let fees_owed_1 = calculate_fees_owed(
         liquidity_position.liquidity,
         pool_fee_state.fee_growth_global_1,
         liquidity_position.fee_growth_inside_1_last,
         liquidity_position.fee_size_multiplier,
-    )?;
+    )?
+    .checked_add(liquidity_position.unclaimed_fees_1)?;
 
     let fees_owed_0 = fees_owed_0.min(pool_fee_state.fee_reserve_0);
     let fees_owed_1 = fees_owed_1.min(pool_fee_state.fee_reserve_1);
@@ -388,6 +399,9 @@ pub fn add_to_position(
     liquidity_position.last_fee_collection = env.block.time.seconds();
     liquidity_position.fee_size_multiplier =
         calculate_fee_size_multiplier(liquidity_position.liquidity);
+    // Clear stored unclaimed fees — they've been included in this payout.
+    liquidity_position.unclaimed_fees_0 = Uint128::zero();
+    liquidity_position.unclaimed_fees_1 = Uint128::zero();
 
     pool_state.total_liquidity = pool_state.total_liquidity.checked_add(additional_liquidity)?;
 
@@ -550,14 +564,17 @@ pub fn remove_all_liquidity(
         pool_fee_state.fee_growth_global_0,
         liquidity_position.fee_growth_inside_0_last,
         liquidity_position.fee_size_multiplier,
-    )?;
+    )?
+    // Include fees preserved from any prior partial removals.
+    .checked_add(liquidity_position.unclaimed_fees_0)?;
 
     let fees_owed_1 = calculate_fees_owed(
         liquidity_position.liquidity,
         pool_fee_state.fee_growth_global_1,
         liquidity_position.fee_growth_inside_1_last,
         liquidity_position.fee_size_multiplier,
-    )?;
+    )?
+    .checked_add(liquidity_position.unclaimed_fees_1)?;
     let fees_owed_0 = fees_owed_0.min(pool_fee_state.fee_reserve_0);
     let fees_owed_1 = fees_owed_1.min(pool_fee_state.fee_reserve_1);
 
@@ -706,6 +723,25 @@ pub fn remove_partial_liquidity(
         liquidity_position.fee_growth_inside_1_last,
         liquidity_position.fee_size_multiplier,
     )?;
+
+    // Preserve the fees that belong to the portion NOT being removed. Without
+    // this, resetting the snapshot below would discard them permanently. They
+    // are added to unclaimed_fees_0/1 on the position so the LP can collect
+    // them on any future CollectFees, AddToPosition, or Remove call.
+    let remaining_liquidity = liquidity_position.liquidity.checked_sub(liquidity_to_remove)?;
+    let preserved_fees_0 = calculate_fees_owed(
+        remaining_liquidity,
+        pool_fee_state.fee_growth_global_0,
+        liquidity_position.fee_growth_inside_0_last,
+        liquidity_position.fee_size_multiplier,
+    )?;
+    let preserved_fees_1 = calculate_fees_owed(
+        remaining_liquidity,
+        pool_fee_state.fee_growth_global_1,
+        liquidity_position.fee_growth_inside_1_last,
+        liquidity_position.fee_size_multiplier,
+    )?;
+
     if pool_state.total_liquidity.is_zero() {
         return Err(ContractError::Std(StdError::generic_err("Pool total liquidity is zero")));
     }
@@ -812,10 +848,17 @@ pub fn remove_partial_liquidity(
     POOL_FEE_STATE.save(deps.storage, &pool_fee_state)?;
 
     liquidity_position.last_fee_collection = env.block.time.seconds();
-    // Reset fee growth snapshots so remaining liquidity doesn't re-claim
-    // the same fee delta that was just paid out proportionally
+    // Reset fee growth snapshots. The fees earned on the removed portion have
+    // been paid out above; the fees earned on the remaining portion have been
+    // stored in unclaimed_fees_0/1 so they won't be lost.
     liquidity_position.fee_growth_inside_0_last = pool_fee_state.fee_growth_global_0;
     liquidity_position.fee_growth_inside_1_last = pool_fee_state.fee_growth_global_1;
+
+    // Accumulate preserved fees — multiple partial removals stack correctly.
+    liquidity_position.unclaimed_fees_0 = liquidity_position.unclaimed_fees_0
+        .checked_add(preserved_fees_0)?;
+    liquidity_position.unclaimed_fees_1 = liquidity_position.unclaimed_fees_1
+        .checked_add(preserved_fees_1)?;
 
     liquidity_position.liquidity = liquidity_position
         .liquidity
@@ -838,6 +881,8 @@ pub fn remove_partial_liquidity(
         .add_attribute("principal_1", withdrawal_amount_1)
         .add_attribute("fees_0", fees_owed_0)
         .add_attribute("fees_1", fees_owed_1)
+        .add_attribute("preserved_fees_0", preserved_fees_0)
+        .add_attribute("preserved_fees_1", preserved_fees_1)
         .add_attribute("total_0", total_amount_0)
         .add_attribute("total_1", total_amount_1);
     //send assets back to user.

@@ -738,7 +738,7 @@ pub fn get_price_with_staleness_check(
     let oracle = INTERNAL_ORACLE.load(deps.storage)?;
     let current_time = env.block.time.seconds();
 
-    if current_time > oracle.bluechip_price_cache.last_update + max_staleness {
+    if current_time > oracle.bluechip_price_cache.last_update.saturating_add(max_staleness) {
         return Err(StdError::generic_err("Price is stale"));
     }
 

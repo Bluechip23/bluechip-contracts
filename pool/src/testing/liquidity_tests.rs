@@ -1464,7 +1464,9 @@ pub fn create_test_position(
         fee_growth_inside_1_last: Decimal::zero(),
         created_at: 1_600_000_000,
         last_fee_collection: 1_600_000_000,
-        fee_size_multiplier: calculate_fee_size_multiplier(liquidity)
+        fee_size_multiplier: calculate_fee_size_multiplier(liquidity),
+        unclaimed_fees_0: Uint128::zero(),
+        unclaimed_fees_1: Uint128::zero(),
     };
     
     LIQUIDITY_POSITIONS.save(&mut deps.storage, &position_id.to_string(), &position).unwrap();

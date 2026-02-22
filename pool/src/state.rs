@@ -229,6 +229,13 @@ pub struct Position {
     pub last_fee_collection: u64,
     //when positions are too small, they take a liquidity accumulation penalty.
     pub fee_size_multiplier: Decimal,
+    // Fees preserved from past partial removals. When remove_partial_liquidity
+    // pays proportional fees and resets the snapshot, the remaining portion's
+    // accrued-but-not-yet-paid fees are stored here so they can be collected later.
+    #[serde(default)]
+    pub unclaimed_fees_0: Uint128,
+    #[serde(default)]
+    pub unclaimed_fees_1: Uint128,
 }
 
 impl PoolDetails {

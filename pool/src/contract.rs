@@ -125,6 +125,8 @@ pub fn instantiate(
         created_at: env.block.time.seconds(),
         last_fee_collection: env.block.time.seconds(),
         fee_size_multiplier: Decimal::one(),
+        unclaimed_fees_0: Uint128::zero(),
+        unclaimed_fees_1: Uint128::zero(),
     };
 
     let pool_specs = PoolSpecs {
