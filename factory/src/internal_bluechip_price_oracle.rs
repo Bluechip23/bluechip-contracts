@@ -39,6 +39,12 @@ pub struct PriceCache {
     pub last_price: Uint128,
     pub last_update: u64,
     pub twap_observations: Vec<PriceObservation>,
+    /// Cached ATOM/USD price from the last successful Pyth query.
+    /// Used as fallback when Pyth is stale but the internal TWAP is fresh.
+    #[serde(default)]
+    pub cached_pyth_price: Uint128,
+    #[serde(default)]
+    pub cached_pyth_timestamp: u64,
 }
 #[cw_serde]
 pub struct PriceObservation {
@@ -95,6 +101,8 @@ pub fn select_random_pools_with_atom(
                 last_price: Uint128::zero(),
                 last_update: 0,
                 twap_observations: vec![],
+                cached_pyth_price: Uint128::zero(),
+                cached_pyth_timestamp: 0,
             },
             update_interval: UPDATE_INTERVAL,
         }
@@ -160,6 +168,8 @@ pub fn initialize_internal_bluechip_oracle(
             last_price: Uint128::zero(),
             last_update: 0,
             twap_observations: vec![],
+            cached_pyth_price: Uint128::zero(),
+            cached_pyth_timestamp: 0,
         },
         update_interval: UPDATE_INTERVAL,
     };
@@ -260,6 +270,13 @@ pub fn update_internal_oracle_price(deps: DepsMut, env: Env) -> Result<Response,
     let twap_price = calculate_twap(&oracle.bluechip_price_cache.twap_observations)?;
     oracle.bluechip_price_cache.last_price = twap_price;
     oracle.bluechip_price_cache.last_update = current_time;
+
+    // Cache the Pyth ATOM/USD price alongside the TWAP update so that
+    // commits can still proceed when Pyth goes stale but the TWAP is fresh.
+    if let Ok(pyth_price) = query_pyth_atom_usd_price(deps.as_ref(), env) {
+        oracle.bluechip_price_cache.cached_pyth_price = pyth_price;
+        oracle.bluechip_price_cache.cached_pyth_timestamp = current_time;
+    }
 
     INTERNAL_ORACLE.save(deps.storage, &oracle)?;
 
@@ -587,7 +604,29 @@ pub fn query_pyth_atom_usd_price(deps: Deps, env: Env) -> StdResult<Uint128> {
 }
 
 pub fn get_bluechip_usd_price(deps: Deps, env: Env) -> StdResult<Uint128> {
-    let atom_usd_price = query_pyth_atom_usd_price(deps, env.clone())?;
+    // Try live Pyth price first; fall back to cached price if Pyth is stale.
+    let atom_usd_price = match query_pyth_atom_usd_price(deps, env.clone()) {
+        Ok(price) => price,
+        Err(_) => {
+            // Pyth query failed (likely stale). Use the cached price if it
+            // was captured within 2x the staleness window so we don't rely
+            // on an arbitrarily old value.
+            let oracle = INTERNAL_ORACLE
+                .load(deps.storage)
+                .map_err(|_| StdError::generic_err("Internal oracle not initialized"))?;
+            let cache = &oracle.bluechip_price_cache;
+            let current_time = env.block.time.seconds();
+            let max_cache_age = crate::state::MAX_PRICE_AGE_SECONDS_BEFORE_STALE * 2;
+            if cache.cached_pyth_price.is_zero()
+                || current_time.saturating_sub(cache.cached_pyth_timestamp) > max_cache_age
+            {
+                return Err(StdError::generic_err(
+                    "Pyth price stale and no valid cached price available",
+                ));
+            }
+            cache.cached_pyth_price
+        }
+    };
 
     // Check for Mock/Local Mode
     let factory_config = FACTORYINSTANTIATEINFO.load(deps.storage)?;

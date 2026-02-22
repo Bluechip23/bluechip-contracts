@@ -1700,6 +1700,8 @@ fn test_get_bluechip_usd_price_with_pyth() {
             last_price: Uint128::new(10_000_000), // 10.0 ratio
             last_update: 1000,
             twap_observations: vec![],
+            cached_pyth_price: Uint128::new(10_000_000),
+            cached_pyth_timestamp: 1000,
         },
         update_interval: 300,
         rotation_interval: 3600,
@@ -1759,6 +1761,8 @@ fn test_bluechip_usd_price_with_different_atom_prices() {
             last_price: Uint128::new(10_000_000), // 10.0 ratio
             last_update: 1000,
             twap_observations: vec![],
+            cached_pyth_price: Uint128::new(10_000_000),
+            cached_pyth_timestamp: 1000,
         },
         update_interval: 300,
         rotation_interval: 3600,
@@ -1832,6 +1836,8 @@ fn test_conversion_functions_with_pyth() {
             last_price: Uint128::new(1_000_000), // $1.00
             last_update: 1000,
             twap_observations: vec![],
+            cached_pyth_price: Uint128::new(10_000_000),
+            cached_pyth_timestamp: 1000,
         },
         update_interval: 300,
         rotation_interval: 3600,

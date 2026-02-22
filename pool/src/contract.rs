@@ -1287,6 +1287,11 @@ fn process_post_threshold_commit(
     belief_price: Option<Decimal>,
     max_spread: Option<Decimal>,
 ) -> Result<Response, ContractError> {
+    let is_paused = POOL_PAUSED.may_load(deps.storage)?.unwrap_or(false);
+    if is_paused {
+        return Err(ContractError::PoolPausedLowLiquidity {});
+    }
+
     let pool_info = POOL_INFO.load(deps.storage)?;
     let pool_specs = POOL_SPECS.load(deps.storage)?;
     let mut pool_state = POOL_STATE.load(deps.storage)?;
