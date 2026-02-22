@@ -3,6 +3,7 @@ import { Card, CardContent, Typography, TextField, Button, Box, Alert, Tabs, Tab
 import ContentCopyIcon from '@mui/icons-material/ContentCopy';
 import CommitTracker from './CommitTracker';
 import { SigningCosmWasmClient } from '@cosmjs/cosmwasm-stargate';
+import { DEFAULT_CHAIN_CONFIG } from '../types/FrontendTypes';
 
 interface CommitProps {
     client: SigningCosmWasmClient | null;
@@ -46,7 +47,7 @@ const Commit = ({ client, address }: CommitProps) => {
             const commitMsg = {
                 asset: {
                     info: {
-                        bluechip: { denom: 'ubluechip' }
+                        bluechip: { denom: DEFAULT_CHAIN_CONFIG.nativeDenom }
                     },
                     amount: amountInMicroUnits
                 },
@@ -61,7 +62,7 @@ const Commit = ({ client, address }: CommitProps) => {
                 commit: commitMsg
             };
 
-            const funds = [{ denom: 'ubluechip', amount: amountInMicroUnits }];
+            const funds = [{ denom: DEFAULT_CHAIN_CONFIG.nativeDenom, amount: amountInMicroUnits }];
 
             console.log('Sending commit message:', JSON.stringify(msg, null, 2));
             console.log('With funds:', funds);
