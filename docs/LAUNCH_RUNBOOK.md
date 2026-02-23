@@ -260,9 +260,17 @@ echo "Expand Economy: $EXP_ADDR"
 
 ---
 
-## Step 6: Deploy Factory Contract
+## Step 6: Deploy Factory Contract (Mock Mode)
 
 The Factory needs all code IDs and the Expand Economy address. This is the central contract that everything else revolves around.
+
+**Critical: Mock Mode.** The Factory is deployed with `atom_bluechip_anchor_pool_address` set to `$DEPLOYER` (the admin address). The Factory code detects this (`anchor_pool == admin`) and enters "mock mode" which:
+
+- **Bypasses the internal oracle** — uses raw Pyth ATOM/USD price instead (see `internal_bluechip_price_oracle.rs:633`)
+- **Skips Expand Economy minting** on pool creation (see `mint_bluechips_pool_creation.rs:71`)
+- **Returns mock pool list** for oracle sampling (see `internal_bluechip_price_oracle.rs:74`)
+
+This allows the Factory to function and create pools (including the anchor pool itself) before the oracle infrastructure is ready.
 
 ```bash
 FACTORY_MSG=$(python3 -c "
@@ -425,19 +433,19 @@ $BIN query bank balances $DEPLOYER --node $NODE --output json
 
 ---
 
-## Step 8: Launch ATOM/Bluechip Anchor Pool
+## Step 8: Create ATOM/Bluechip Anchor Pool (via Factory)
 
-This is the **most critical pool** — it provides the price reference that the internal oracle uses. The pricing chain is:
+The Factory is already running in **mock mode** (Step 6), so it can create pools without a functioning oracle. We use this window to create the ATOM/Bluechip anchor pool — the very pool the oracle will depend on.
+
+This is the **most critical pool** — it provides the price reference that the internal oracle uses:
 
 ```
 Pyth ATOM/USD  →  ATOM/Bluechip pool  →  Bluechip/USD price
 ```
 
-Without this pool, no creator pool can price commits.
+### 8a. Create the Anchor Pool
 
-### 8a. Create the ATOM/Bluechip Pool via Factory
-
-This pool is created with `is_standard_pool: true` to mark it as the oracle anchor:
+Create a pool with `is_standard_pool: true` to mark it as the oracle anchor:
 
 ```bash
 ANCHOR_MSG=$(python3 -c "
@@ -503,25 +511,87 @@ $BIN tx wasm execute $ANCHOR_POOL \
   --from deployer $TX_FLAGS
 ```
 
-### 8c. Update Factory to Point to Anchor Pool
+---
+
+## Step 9: Switch Factory from Mock Mode to Live Mode
+
+Now that the anchor pool exists and has liquidity, update the Factory config to point to it. This disables mock mode and activates the full oracle + Expand Economy minting.
+
+> **48-HOUR TIMELOCK WARNING:** The Factory config update uses a 48-hour timelock
+> (see `execute.rs:150`). You must propose the change, wait 48 hours, then apply it.
+> Plan your launch timeline accordingly — Steps 1-8 should be completed at least
+> 48 hours before you want creator pool creation to go live with real oracle pricing.
+
+### 9a. Propose the Config Update
+
+You must submit the **full** `FactoryInstantiate` config (not just the changed field):
 
 ```bash
-# First propose the config update
-$BIN tx wasm execute $FACTORY_ADDR \
-  "{\"propose_config_update\":{\"atom_bluechip_anchor_pool_address\":\"$ANCHOR_POOL\"}}" \
-  --from deployer $TX_FLAGS
+PROPOSED_CONFIG=$(python3 -c "
+import json
+print(json.dumps({
+    'propose_factory_config_update': {
+        'config': {
+            'factory_admin_address':              '$DEPLOYER',
+            'commit_amount_for_threshold_bluechip': '0',
+            'commit_threshold_limit_usd':         '25000',
+            'pyth_contract_addr_for_conversions': '$ORACLE_ADDR',
+            'pyth_atom_usd_price_feed_id':        'ATOM_USD',
+            'cw20_token_contract_id':             int('$CW20_CODE'),
+            'cw721_nft_contract_id':              int('$CW721_CODE'),
+            'create_pool_wasm_contract_id':       int('$POOL_CODE'),
+            'bluechip_wallet_address':            '$BLUECHIP_WALLET',
+            'commit_fee_bluechip':                '0.01',
+            'commit_fee_creator':                 '0.05',
+            'max_bluechip_lock_per_pool':         '10000000000',
+            'creator_excess_liquidity_lock_days': 7,
+            'atom_bluechip_anchor_pool_address':  '$ANCHOR_POOL',
+            'bluechip_mint_contract_address':     '$EXP_ADDR',
+        }
+    }
+}))
+")
 
-# Wait for timelock to expire (1 second), then apply
-sleep 2
-
-$BIN tx wasm execute $FACTORY_ADDR \
-  '{"update_config":{}}' \
+$BIN tx wasm execute $FACTORY_ADDR "$PROPOSED_CONFIG" \
   --from deployer $TX_FLAGS
 ```
 
+The tx response will include an `effective_after` timestamp. Note it.
+
+### 9b. Wait 48 Hours
+
+```bash
+# Check remaining time:
+$BIN query wasm contract-state smart $FACTORY_ADDR '{"get_pending_config":{}}' \
+  --node $NODE --output json
+# Look at "effective_after" — config cannot be applied until after this time
+```
+
+### 9c. Apply the Config Update
+
+After the 48-hour timelock has expired:
+
+```bash
+$BIN tx wasm execute $FACTORY_ADDR '{"update_config":{}}' \
+  --from deployer $TX_FLAGS
+```
+
+### 9d. Verify Factory Left Mock Mode
+
+```bash
+$BIN query wasm contract-state smart $FACTORY_ADDR '{"get_config":{}}' \
+  --node $NODE --output json
+# atom_bluechip_anchor_pool_address should now equal $ANCHOR_POOL (not $DEPLOYER)
+```
+
+**At this point the Factory is fully live:**
+- Internal oracle derives Bluechip/USD from the anchor pool + Pyth
+- Expand Economy mints tokens on pool creation
+- Creator pools can be created with real pricing
+
 ---
 
-## Step 9: Initialize Internal Oracle
+## Step 10: Verify Oracle is Live
 
 The factory's internal oracle uses the ATOM/Bluechip anchor pool + Pyth ATOM/USD feed to derive Bluechip/USD pricing.
 
@@ -540,15 +610,15 @@ $BIN query wasm contract-state smart $FACTORY_ADDR '{"get_bluechip_price":{}}' \
 If the oracle returns stale/zero prices, check:
 1. Pyth contract is deployed and has ATOM/USD feed
 2. Anchor pool has sufficient liquidity
-3. Factory's `atom_bluechip_anchor_pool_address` is correct
+3. Factory's `atom_bluechip_anchor_pool_address` is correct (not still set to deployer)
 
 ---
 
-## Step 10: Rewire Frontend for Mainnet
+## Step 11: Rewire Frontend for Mainnet
 
 Update all frontend configuration to point to mainnet contracts and endpoints.
 
-### 10a. Create `.env` File
+### 11a. Create `.env` File
 
 Create `frontend/.env`:
 
@@ -558,7 +628,7 @@ VITE_ORACLE_ADDRESS=<ORACLE_ADDR>
 VITE_POOL_ADDRESSES=<ANCHOR_POOL>
 ```
 
-### 10b. Values to Verify in Frontend Code
+### 11b. Values to Verify in Frontend Code
 
 | File | What to Check |
 |------|---------------|
@@ -567,7 +637,7 @@ VITE_POOL_ADDRESSES=<ANCHOR_POOL>
 | `src/pages/Portfolio.tsx` | `VITE_FACTORY_ADDRESS` fallback, `VITE_POOL_ADDRESSES` |
 | `src/types/FrontendTypes.tsx` | `DEFAULT_CHAIN_CONFIG` — update `chainId`, `rpc`, `rest`, `factoryAddress`, `nativeDenom` |
 
-### 10c. Key Config Changes
+### 11c. Key Config Changes
 
 **`src/types/FrontendTypes.tsx`** — Update `DEFAULT_CHAIN_CONFIG`:
 
@@ -593,7 +663,7 @@ const DEFAULT_CONFIG = {
 };
 ```
 
-### 10d. Build and Deploy Frontend
+### 11d. Build and Deploy Frontend
 
 ```bash
 cd frontend
@@ -627,13 +697,17 @@ Run through these checks to confirm everything is working:
 Chain Live
   └─► Store Code: CW20, CW721, Pool, Expand Economy, Factory
         ├─► Instantiate Expand Economy (temp factory = deployer)
-        ├─► Instantiate Factory (needs: CW20 code, CW721 code, Pool code, Expand Economy addr)
+        ├─► Instantiate Factory in MOCK MODE (anchor_pool = deployer)
+        │     Mock mode: oracle bypassed, Expand Economy minting skipped
         ├─► Update Expand Economy → real Factory address
-        └─► Hermes (IBC relayer for ATOM)
-              └─► Create ATOM/Bluechip Anchor Pool (via Factory)
-                    └─► Update Factory config → anchor pool address
-                          └─► Oracle functional → creators can create pools
-                                └─► Rewire frontend
+        ├─► Hermes (IBC relayer for ATOM)
+        └─► Create ATOM/Bluechip Anchor Pool (via Factory, while in mock mode)
+              └─► Seed anchor pool with liquidity
+                    └─► Propose Factory config update (anchor_pool = real pool)
+                          └─► ⏳ 48-HOUR TIMELOCK ⏳
+                                └─► Apply config update → Factory leaves mock mode
+                                      └─► Oracle live → creators can create pools
+                                            └─► Rewire frontend
 ```
 
 ---
