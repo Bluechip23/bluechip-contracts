@@ -2,6 +2,7 @@ import React, { useState } from 'react';
 import { Card, CardContent, Typography, TextField, Button, Box, Alert, IconButton, Tooltip } from '@mui/material';
 import ContentCopyIcon from '@mui/icons-material/ContentCopy';
 import { SigningCosmWasmClient } from '@cosmjs/cosmwasm-stargate';
+import { DEFAULT_CHAIN_CONFIG } from '../types/FrontendTypes';
 
 // Factory contract address - configured during deployment. Will need to make dynamic
 const FACTORY_ADDRESS = import.meta.env.VITE_FACTORY_ADDRESS || 'cosmos1yvgh8xeju5dyr0zxlkvq09htvhjj20fncp5g58np4u25g8rkpgjst8ghg8';
@@ -64,7 +65,7 @@ const CreatePool = ({ client, address }: CreatePoolProps) => {
                 create: {
                     pool_msg: {
                         pool_token_info: [
-                            { bluechip: { denom: 'ubluechip' } },
+                            { bluechip: { denom: DEFAULT_CHAIN_CONFIG.nativeDenom } },
                             { creator_token: { contract_addr: 'WILL_BE_CREATED_BY_FACTORY' } }
                         ],
                         cw20_token_contract_id: DEFAULT_CONFIG.cw20CodeId,

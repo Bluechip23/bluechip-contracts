@@ -31,7 +31,14 @@ import CommitModal from '../components/modals/CommitModal';
 import TokenInfoModal from '../components/modals/TokenInfoModal';
 import SellModal from '../components/modals/SellModal';
 
-const FACTORY_ADDRESS = import.meta.env.VITE_FACTORY_ADDRESS || 'cosmos1factory...'; // Replace with your factory address
+const FACTORY_ADDRESS = import.meta.env.VITE_FACTORY_ADDRESS || 'cosmos1factory...';
+// Comma-separated list of known pool contract addresses for discovery.
+// The factory contract does not expose a query to enumerate all pools,
+// so pool addresses must be provided via this env var.
+const POOL_ADDRESSES: string[] = (import.meta.env.VITE_POOL_ADDRESSES || '')
+    .split(',')
+    .map((a: string) => a.trim())
+    .filter((a: string) => a.length > 0);
 
 interface TokenType {
     creator_token?: { contract_addr: string };
@@ -41,7 +48,7 @@ interface TokenType {
 interface PoolDetails {
     asset_infos: [TokenType, TokenType];
     contract_addr: string;
-    pool_type: string;
+    pool_type: { xyk: Record<string, never> } | { stable: Record<string, never> };
 }
 
 interface PortfolioToken {
@@ -207,19 +214,16 @@ const PortfolioPage: React.FC = () => {
         setError('');
 
         try {
-            // 1. Get all pools from factory
-            const allPoolsResponse = await client.queryContractSmart(FACTORY_ADDRESS, {
-                get_all_pools: {}
-            });
+            if (POOL_ADDRESSES.length === 0) {
+                setError('No pool addresses configured. Set VITE_POOL_ADDRESSES env var with comma-separated pool contract addresses.');
+                setLoading(false);
+                return;
+            }
 
-            const pools: [string, { pool_contract_address: string }][] = allPoolsResponse.pools;
-
-            // 2. For each pool, get details and token info in parallel
-            const tokenPromises = pools.map(async ([_poolId, poolState]) => {
+            // Query each known pool contract directly using the pool's pair query
+            const tokenPromises = POOL_ADDRESSES.map(async (poolAddress) => {
                 try {
-                    const poolAddress = poolState.pool_contract_address;
-
-                    // Get pool details to find creator token address
+                    // Get pool details to find creator token address (pool query: pair {})
                     const poolDetails: PoolDetails = await client.queryContractSmart(poolAddress, {
                         pair: {}
                     });
@@ -263,7 +267,7 @@ const PortfolioPage: React.FC = () => {
                     } as PortfolioToken;
 
                 } catch (err) {
-                    console.error('Error fetching pool data:', err);
+                    console.error(`Error fetching pool data for ${poolAddress}:`, err);
                     return null;
                 }
             });

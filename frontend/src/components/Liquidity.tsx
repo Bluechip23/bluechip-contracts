@@ -1,7 +1,7 @@
 import React, { useState } from 'react';
 import { Card, CardContent, Typography, TextField, Button, Box, Alert, Tabs, Tab } from '@mui/material';
-import { coins } from '@cosmjs/stargate';
 import { SigningCosmWasmClient } from '@cosmjs/cosmwasm-stargate';
+import { DEFAULT_CHAIN_CONFIG } from '../types/FrontendTypes';
 
 interface LiquidityProps {
     client: SigningCosmWasmClient | null;
@@ -16,7 +16,7 @@ const Liquidity: React.FC<LiquidityProps> = ({ client, address }) => {
     const [removeAmount, setRemoveAmount] = useState('');
     const [slippage, setSlippage] = useState('1'); // Default 1%
     const [deadline, setDeadline] = useState('20'); // Default 20 minutes
-    const [removeMode, setRemoveMode] = useState('amount'); // 'amount' or 'percent'
+    const [removeMode, setRemoveMode] = useState('amount'); // 'amount', 'percent', or 'all'
     const [removePercent, setRemovePercent] = useState('');
     const [targetContractAddress, setTargetContractAddress] = useState('');
     const [status, setStatus] = useState('');
@@ -80,15 +80,17 @@ const Liquidity: React.FC<LiquidityProps> = ({ client, address }) => {
             const amount0Micro = Math.ceil(amount0Val * 1_000_000).toString();
             const amount1Micro = Math.ceil(amount1Val * 1_000_000).toString();
 
-            // 1. Get Token Address from Pool
+            // 1. Get Token Address and Bluechip denom from Pool
             setStatus('Fetching pool info...');
             const pairInfo = await client.queryContractSmart(targetContractAddress, { pair: {} });
             let tokenAddress = null;
-            // Iterate through asset_infos to find the CreatorToken
+            let bluechipDenom = DEFAULT_CHAIN_CONFIG.nativeDenom;
             for (const asset of pairInfo.asset_infos) {
                 if (asset.creator_token) {
                     tokenAddress = asset.creator_token.contract_addr;
-                    break;
+                }
+                if (asset.bluechip) {
+                    bluechipDenom = asset.bluechip.denom;
                 }
             }
 
@@ -150,11 +152,11 @@ const Liquidity: React.FC<LiquidityProps> = ({ client, address }) => {
                 targetContractAddress,
                 msg,
                 {
-                    amount: [], // Fee amount (can be empty or auto-calculated usually)
-                    gas: "500000" // Explicit gas limit
+                    amount: [],
+                    gas: "500000"
                 },
                 "Deposit Liquidity",
-                [{ denom: 'ubluechip', amount: amount0Micro }] // Funds to transfer
+                [{ denom: bluechipDenom, amount: amount0Micro }]
             );
             console.log("Transaction Hash:", result.transactionHash);
             setStatus(`Success! Tx Hash: ${result.transactionHash}`);
@@ -194,7 +196,17 @@ const Liquidity: React.FC<LiquidityProps> = ({ client, address }) => {
                 : null;
 
             let msg;
-            if (removeMode === 'amount') {
+            if (removeMode === 'all') {
+                msg = {
+                    remove_all_liquidity: {
+                        position_id: positionId,
+                        min_amount0: null,
+                        min_amount1: null,
+                        max_ratio_deviation_bps: deviationBps,
+                        transaction_deadline: deadlineInNs ? deadlineInNs.toString() : null
+                    }
+                };
+            } else if (removeMode === 'amount') {
                 // Convert remove amount to micro-units
                 const removeVal = parseFloat(removeAmount);
                 if (isNaN(removeVal) || removeVal <= 0) {
@@ -273,15 +285,17 @@ const Liquidity: React.FC<LiquidityProps> = ({ client, address }) => {
             const amount0Micro = Math.floor(amount0Val * 1_000_000).toString();
             const amount1Micro = Math.floor(amount1Val * 1_000_000).toString();
 
-            // 1. Get Token Address from Pool
+            // 1. Get Token Address and Bluechip denom from Pool
             setStatus('Fetching pool info...');
             const pairInfo = await client.queryContractSmart(targetContractAddress, { pair: {} });
             let tokenAddress = null;
-            // Iterate through asset_infos to find the CreatorToken
+            let bluechipDenom = DEFAULT_CHAIN_CONFIG.nativeDenom;
             for (const asset of pairInfo.asset_infos) {
                 if (asset.creator_token) {
                     tokenAddress = asset.creator_token.contract_addr;
-                    break;
+                }
+                if (asset.bluechip) {
+                    bluechipDenom = asset.bluechip.denom;
                 }
             }
 
@@ -345,10 +359,10 @@ const Liquidity: React.FC<LiquidityProps> = ({ client, address }) => {
                 msg,
                 {
                     amount: [],
-                    gas: "500000" // Explicit gas limit
+                    gas: "500000"
                 },
                 "Add to Position",
-                [{ denom: 'ubluechip', amount: amount0Micro }]
+                [{ denom: bluechipDenom, amount: amount0Micro }]
             );
             console.log("Transaction Hash:", result.transactionHash);
             setStatus(`Success! Tx Hash: ${result.transactionHash}`);
@@ -477,6 +491,12 @@ const Liquidity: React.FC<LiquidityProps> = ({ client, address }) => {
                             >
                                 Percentage
                             </Button>
+                            <Button
+                                variant={removeMode === 'all' ? 'contained' : 'outlined'}
+                                onClick={() => setRemoveMode('all')}
+                            >
+                                Remove All
+                            </Button>
                         </Box>
 
                         {removeMode === 'amount' ? (
@@ -486,7 +506,7 @@ const Liquidity: React.FC<LiquidityProps> = ({ client, address }) => {
                                 onChange={(e) => setRemoveAmount(e.target.value)}
                                 type="number"
                             />
-                        ) : (
+                        ) : removeMode === 'percent' ? (
                             <TextField
                                 label="Percentage to Remove (0-100)"
                                 value={removePercent}
@@ -494,7 +514,7 @@ const Liquidity: React.FC<LiquidityProps> = ({ client, address }) => {
                                 type="number"
                                 inputProps={{ min: 0, max: 100 }}
                             />
-                        )}
+                        ) : null}
 
                         <TextField
                             label="Max Ratio Deviation (%)"
