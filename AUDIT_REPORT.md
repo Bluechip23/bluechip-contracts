@@ -114,29 +114,17 @@ Uses `saturating_add` which prevents bricking. When saturated, TWAP delta collap
 
 **Recommendation:** Deprecate this endpoint with documentation directing callers to query pool contracts directly, or proxy the query to the pool's live state.
 
-### M-NEW-2 — TWAP Window Strict `>` Discards Boundary Observations ⚠️ STILL OPEN
-**File:** `factory/src/internal_bluechip_price_oracle.rs:264-268`
-```rust
-.retain(|obs| obs.timestamp > cutoff_time);  // should be >=
-```
-An observation at exactly `cutoff_time` is pruned. When the oracle is updated at exactly 1-hour intervals, this reduces the TWAP to a single-point price, degrading manipulation resistance.
+### M-NEW-2 — TWAP Window Strict `>` Discards Boundary Observations ✅ FIXED
+**File:** `factory/src/internal_bluechip_price_oracle.rs:268`
 
-**Impact:** Low probability in practice since block times are not exact. The 5-minute `UPDATE_INTERVAL` means observations typically accumulate well within the 3600s window.
+**Fix:** Changed `.retain(|obs| obs.timestamp > cutoff_time)` to `>=`. Boundary observations at exactly the TWAP window edge are now retained, preventing single-point TWAP degradation.
 
-**Recommendation:** Change `>` to `>=`.
+### M-NEW-3 — Oracle Falls Back to Spot Price After Pool Rotation ✅ FIXED
+**File:** `factory/src/internal_bluechip_price_oracle.rs`
 
-### M-NEW-3 — Oracle Falls Back to Spot Price After Pool Rotation 🟡 NEW
-**File:** `factory/src/internal_bluechip_price_oracle.rs:401-408`
-When a pool has no previous cumulative snapshot (cleared after rotation at line 247), the oracle falls back to raw spot price from reserves:
-```rust
-// No previous snapshot — first observation, use spot price as baseline
-calculate_price_from_reserves(bluechip_reserve, other_reserve)?
-```
-This creates a one-update window after each pool rotation where spot-price manipulation via large swaps can influence the oracle. The TWAP weighting across multiple pools and the ATOM anchor pool partially mitigate this, but the first post-rotation observation for any newly-selected pool is unprotected.
-
-**Impact:** An attacker who manipulates reserves in a newly-selected pool and triggers `UpdateOraclePrice` in the same block can inject a manipulated price into the TWAP window. The damage is bounded by the pool's liquidity weight and the presence of other TWAP-protected pools.
-
-**Recommendation:** Skip pools without a prior cumulative snapshot for price calculation (use them only to establish a baseline), or require 2+ observation cycles before including a pool's price in the weighted average.
+**Fix (two parts):**
+1. On rotation, snapshots are now retained for pools that remain in the new selection (e.g., the always-selected ATOM anchor pool) instead of being blanket-cleared. This preserves TWAP continuity for re-selected pools.
+2. Pools without a prior cumulative snapshot are now skipped from the weighted price average (instead of falling back to manipulable spot price). They still record a snapshot for the next update cycle. The bootstrap case (very first oracle update with no prior snapshots at all) correctly falls back to spot price since no TWAP data exists yet.
 
 ### M-NEW-4 — Pyth Confidence Interval Not Validated 🟡 NEW
 **File:** `factory/src/internal_bluechip_price_oracle.rs:570-594`
@@ -146,16 +134,10 @@ The Pyth price response includes a `conf` (confidence interval) field that is av
 
 **Recommendation:** Reject prices where `conf * PRICE_PRECISION / price > threshold` (e.g., 5%).
 
-### M-NEW-5 — `SETCOMMIT` Key Collision for Multi-Pool Creators 🟡 NEW
-**File:** `factory/src/pool_creation_reply.rs:202-206`
-`SETCOMMIT` is keyed by creator wallet address. If the same creator creates multiple pools, each subsequent pool **overwrites** the commit info for all prior pools by that creator:
-```rust
-SETCOMMIT.save(deps.storage, &pool_context.temp_creator_wallet.to_string(), &commit_info)?;
-```
+### M-NEW-5 — `SETCOMMIT` Key Collision for Multi-Pool Creators ✅ FIXED
+**File:** `factory/src/state.rs:16`, `factory/src/pool_creation_reply.rs:202`
 
-**Impact:** The `SETCOMMIT` mapping for the creator's first pool is silently lost when they create a second pool. Any logic depending on this state for the earlier pool will read the wrong pool's commit info.
-
-**Recommendation:** Key `SETCOMMIT` by `pool_id` or a composite key of `(creator_addr, pool_id)`.
+**Fix:** Changed `SETCOMMIT` map key type from `&str` (creator wallet address) to `u64` (pool_id). Each pool's commit info is now stored under its unique pool ID, preventing overwrite when the same creator creates multiple pools.
 
 ---
 
@@ -190,11 +172,10 @@ When the admin force-rotates oracle pools, `pool_cumulative_snapshots` is not cl
 
 **Recommendation:** Add `oracle.pool_cumulative_snapshots = vec![];` to `execute_force_rotate_pools`.
 
-### L-NEW-8 — Factory Migration `CONTRACT_NAME` Mismatch
-**File:** `factory/src/execute.rs:23` vs `factory/src/migrate.rs:7`
-`instantiate` writes `"crates.io:factory"` via `cw2::set_contract_version`, but `migrate` writes `"crates.io:bluechip-factory"`. After migration, the contract name changes. Future migrations that check the stored contract name would fail unexpectedly.
+### L-NEW-8 — Factory Migration `CONTRACT_NAME` Mismatch ✅ FIXED
+**File:** `factory/src/execute.rs:23`
 
-**Recommendation:** Use a single shared `CONTRACT_NAME` constant.
+**Fix:** Changed `execute.rs` CONTRACT_NAME from `"crates.io:factory"` to `"crates.io:bluechip-factory"` to match `migrate.rs`. Both files now use the same contract name.
 
 ### L-NEW-9 — Pool Selection Hash Uses Overlapping Byte Windows
 **File:** `factory/src/internal_bluechip_price_oracle.rs:123-133`
@@ -228,16 +209,16 @@ The pool selection loop extracts 8-byte seeds from overlapping regions of the SH
 | M-5 | Distribution bounty self-funded | MEDIUM | ✅ FIXED |
 | M-6 | Migration fee bounds missing | MEDIUM | ✅ FIXED |
 | M-NEW-1 | Factory `query_pool` returns stale zeroed data | MEDIUM | 🟡 OPEN |
-| M-NEW-2 | TWAP window strict `>` discards boundary | MEDIUM | 🟡 OPEN |
-| M-NEW-3 | Oracle spot-price fallback after rotation | MEDIUM | 🟡 NEW |
+| M-NEW-2 | TWAP window strict `>` discards boundary | MEDIUM | ✅ FIXED |
+| M-NEW-3 | Oracle spot-price fallback after rotation | MEDIUM | ✅ FIXED |
 | M-NEW-4 | Pyth confidence interval not validated | MEDIUM | 🟡 NEW |
-| M-NEW-5 | `SETCOMMIT` key collision for multi-pool creators | MEDIUM | 🟡 NEW |
+| M-NEW-5 | `SETCOMMIT` key collision for multi-pool creators | MEDIUM | ✅ FIXED |
 | L-1 | Hardcoded `"ubluechip"` denom | LOW | 🟡 OPEN |
 | L-NEW-1 | `query_token_balance` swallows errors silently | LOW | 🟡 OPEN |
 | L-5 | `ContinuePoolUpgrade` attribute off-by-one | LOW | 🟡 OPEN |
 | L-NEW-6 | Linear scan in `is_bluechip_second` | LOW | 🟡 NEW |
 | L-NEW-7 | Force-rotate doesn't clear snapshots | LOW | 🟡 NEW |
-| L-NEW-8 | Factory migration `CONTRACT_NAME` mismatch | LOW | 🟡 NEW |
+| L-NEW-8 | Factory migration `CONTRACT_NAME` mismatch | LOW | ✅ FIXED |
 | L-NEW-9 | Pool selection hash overlapping byte windows | LOW | 🟡 NEW |
 
 ---

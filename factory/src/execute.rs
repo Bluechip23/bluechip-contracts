@@ -20,7 +20,7 @@ use cosmwasm_std::{Binary, CosmosMsg, Order};
 use cw20::MinterResponse;
 use std::env;
 
-const CONTRACT_NAME: &str = "crates.io:factory";
+const CONTRACT_NAME: &str = "crates.io:bluechip-factory";
 const CONTRACT_VERSION: &str = env!("CARGO_PKG_VERSION");
 pub const BURN_ADDRESS: &str = "cosmos1qqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqnrql8a";
 /// Reply step constants (stored in low 8 bits of reply ID).

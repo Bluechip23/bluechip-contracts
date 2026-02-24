@@ -201,7 +201,7 @@ pub fn finalize_pool(deps: DepsMut, _env: Env, msg: Reply, pool_id: u64) -> Resu
 
             SETCOMMIT.save(
                 deps.storage,
-                &pool_context.temp_creator_wallet.to_string(),
+                pool_id,
                 &commit_info,
             )?;
             POOLS_BY_ID.save(deps.storage, pool_id, &pool_details)?;

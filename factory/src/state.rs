@@ -12,8 +12,9 @@ pub const FACTORYINSTANTIATEINFO: Item<FactoryInstantiate> = Item::new("config")
 pub const TEMP_POOL_CREATION: Map<u64, TempPoolCreation> = Map::new("temp_pool_creation_v2");
 pub const PENDING_CONFIG: Item<PendingConfig> = Item::new("pending_config");
 pub const POOL_COUNTER: Item<u64> = Item::new("pool_counter");
-//setting the commit field inside the pool
-pub const SETCOMMIT: Map<&str, CommitInfo> = Map::new("commit_info");
+// Commit info per pool, keyed by pool_id (not creator address, to avoid
+// collisions when the same creator makes multiple pools).
+pub const SETCOMMIT: Map<u64, CommitInfo> = Map::new("commit_info");
 //tracking pool id for querys etc
 //used in querys to grab multiple pools
 pub const POOLS_BY_ID: Map<u64, PoolDetails> = Map::new("pools_by_id");

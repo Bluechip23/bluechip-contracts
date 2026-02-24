@@ -650,7 +650,7 @@ fn test_complete_pool_creation_flow() {
     let pool_reply = create_instantiate_reply(encode_reply_id(pool_id, FINALIZE_POOL), "pool_address");
     let res = pool_creation_reply(deps.as_mut(), env.clone(), pool_reply).unwrap();
 
-    let commit_info = SETCOMMIT.load(&deps.storage, &creator.to_string()).unwrap();
+    let commit_info = SETCOMMIT.load(&deps.storage, pool_id).unwrap();
     assert_eq!(commit_info.pool_id, pool_id);
     assert_eq!(
         commit_info.creator_pool_addr,
@@ -1205,8 +1205,11 @@ fn test_oracle_twap_observations_max_length() {
             env.block.time.seconds()
         );
 
-        if i <= 10 {
-            // Before hitting the max, should keep growing
+        if i <= 11 {
+            // With 360s intervals and a 3600s TWAP window, the boundary
+            // observation (exactly window-width old) is retained by the
+            // >= comparison, so the window can hold up to 11 observations
+            // (10 intervals + both endpoints).
             assert_eq!(
                 observations.len(),
                 i as usize,
@@ -1216,8 +1219,8 @@ fn test_oracle_twap_observations_max_length() {
             // After hitting max, should stay at max
             assert_eq!(
                 observations.len(),
-                10,
-                "Observation count should stay at max of 10"
+                11,
+                "Observation count should stay at max of 11"
             );
         }
     }
@@ -1226,13 +1229,13 @@ fn test_oracle_twap_observations_max_length() {
     let observations = &oracle.bluechip_price_cache.twap_observations;
 
     assert!(
-        observations.len() <= 10,
+        observations.len() <= 11,
         "TWAP observations should not exceed max length, got: {}",
         observations.len()
     );
 
     // Verify oldest observations were pruned (most recent should be kept)
-    if observations.len() == 10 {
+    if observations.len() == 11 {
         let last_timestamp = observations.last().unwrap().timestamp;
         assert_eq!(last_timestamp, env.block.time.seconds());
     }
