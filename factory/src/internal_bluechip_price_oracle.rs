@@ -243,8 +243,13 @@ pub fn update_internal_oracle_price(deps: DepsMut, env: Env) -> Result<Response,
             select_random_pools_with_atom(deps.as_ref(), env.clone(), ORACLE_POOL_COUNT)?;
         oracle.selected_pools = pools_to_use.clone();
         oracle.last_rotation = current_time;
-        // Clear snapshots on rotation — new pools need fresh baseline
-        oracle.pool_cumulative_snapshots = vec![];
+        // Retain snapshots only for pools that remain in the new selection
+        // (e.g. the ATOM anchor pool which is always selected). This avoids
+        // falling back to manipulable spot prices for pools that already have
+        // TWAP history.
+        oracle
+            .pool_cumulative_snapshots
+            .retain(|s| pools_to_use.contains(&s.pool_address));
     }
     let (weighted_price, atom_price, new_snapshots) =
         calculate_weighted_price_with_atom(
@@ -265,7 +270,7 @@ pub fn update_internal_oracle_price(deps: DepsMut, env: Env) -> Result<Response,
     oracle
         .bluechip_price_cache
         .twap_observations
-        .retain(|obs| obs.timestamp > cutoff_time);
+        .retain(|obs| obs.timestamp >= cutoff_time);
 
     let twap_price = calculate_twap(&oracle.bluechip_price_cache.twap_observations)?;
     oracle.bluechip_price_cache.last_price = twap_price;
@@ -398,14 +403,21 @@ pub fn calculate_weighted_price_with_atom(
                         };
                         calculate_price_from_reserves(bluechip_reserve, other_reserve)?
                     }
-                } else {
-                    // No previous snapshot — first observation, use spot price as baseline
+                } else if prev_snapshots.is_empty() {
+                    // Bootstrap case: very first oracle update — no prior snapshots
+                    // exist for any pool.  Spot price is the only option.
                     let (bluechip_reserve, other_reserve) = if is_bluechip_second {
                         (pool_state.reserve1, pool_state.reserve0)
                     } else {
                         (pool_state.reserve0, pool_state.reserve1)
                     };
                     calculate_price_from_reserves(bluechip_reserve, other_reserve)?
+                } else {
+                    // Post-rotation: this pool is newly selected and has no prior
+                    // snapshot. Skip it from price weighting to avoid using
+                    // manipulable spot prices. The snapshot was already recorded
+                    // above, so TWAP data will be available on the next update.
+                    continue;
                 };
 
                 let (bluechip_reserve, _) = if is_bluechip_second {
