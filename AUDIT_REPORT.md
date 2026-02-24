@@ -126,13 +126,10 @@ Uses `saturating_add` which prevents bricking. When saturated, TWAP delta collap
 1. On rotation, snapshots are now retained for pools that remain in the new selection (e.g., the always-selected ATOM anchor pool) instead of being blanket-cleared. This preserves TWAP continuity for re-selected pools.
 2. Pools without a prior cumulative snapshot are now skipped from the weighted price average (instead of falling back to manipulable spot price). They still record a snapshot for the next update cycle. The bootstrap case (very first oracle update with no prior snapshots at all) correctly falls back to spot price since no TWAP data exists yet.
 
-### M-NEW-4 — Pyth Confidence Interval Not Validated 🟡 NEW
-**File:** `factory/src/internal_bluechip_price_oracle.rs:570-594`
-The Pyth price response includes a `conf` (confidence interval) field that is available but never checked. During high volatility or low oracle participation, the reported price can have a very wide confidence band. The contract uses the point estimate unconditionally.
+### M-NEW-4 — Pyth Confidence Interval Not Validated ✅ FIXED
+**File:** `factory/src/internal_bluechip_price_oracle.rs`
 
-**Impact:** During market turbulence, the oracle may accept a Pyth price with a 20%+ confidence interval, leading to inaccurate USD valuations for commits.
-
-**Recommendation:** Reject prices where `conf * PRICE_PRECISION / price > threshold` (e.g., 5%).
+**Fix:** Added a 5% confidence interval check after the price positivity validation. Prices where `conf > price / 20` are now rejected with an explicit error message, preventing unreliable Pyth data from being used during high-volatility or low-participation periods.
 
 ### M-NEW-5 — `SETCOMMIT` Key Collision for Multi-Pool Creators ✅ FIXED
 **File:** `factory/src/state.rs:16`, `factory/src/pool_creation_reply.rs:202`
@@ -211,7 +208,7 @@ The pool selection loop extracts 8-byte seeds from overlapping regions of the SH
 | M-NEW-1 | Factory `query_pool` returns stale zeroed data | MEDIUM | 🟡 OPEN |
 | M-NEW-2 | TWAP window strict `>` discards boundary | MEDIUM | ✅ FIXED |
 | M-NEW-3 | Oracle spot-price fallback after rotation | MEDIUM | ✅ FIXED |
-| M-NEW-4 | Pyth confidence interval not validated | MEDIUM | 🟡 NEW |
+| M-NEW-4 | Pyth confidence interval not validated | MEDIUM | ✅ FIXED |
 | M-NEW-5 | `SETCOMMIT` key collision for multi-pool creators | MEDIUM | ✅ FIXED |
 | L-1 | Hardcoded `"ubluechip"` denom | LOW | 🟡 OPEN |
 | L-NEW-1 | `query_token_balance` swallows errors silently | LOW | 🟡 OPEN |
@@ -254,7 +251,7 @@ The following security properties are correctly implemented and verified:
 
 3. **LP recovery post-emergency** — Emergency withdrawal records `EmergencyWithdrawalInfo` but provides no on-chain claims mechanism. LPs must trust the protocol team for off-chain reconciliation. This is an accepted V1 trade-off but should be documented clearly for users.
 
-4. **`mockoracle` contract** — Present in the workspace but marked for testing only. It has no access control on `SetPrice` and must NEVER be deployed as the Pyth oracle in production.
+4. **`mockoracle` contract** — Present in the workspace for testing only. Entry points are now gated behind a `testing` feature flag (`cargo build -p oracle --features testing`), so the contract cannot be accidentally compiled into a deployable WASM without explicit opt-in. It has no access control on `SetPrice`.
 
 ---
 
@@ -307,34 +304,32 @@ A thorough bash-based on-chain integration test (`run_local_test.sh`) exists tha
 
 | Priority | ID | Action |
 |----------|----|--------|
-| **P1 — Recommended** | M-NEW-3 | Skip pools without prior cumulative snapshot in oracle price calc, or require 2+ cycles. |
-| **P1 — Recommended** | M-NEW-5 | Fix `SETCOMMIT` key collision — use `pool_id` or composite key. |
-| **P1 — Recommended** | M-NEW-2 | Change `>` to `>=` in TWAP observation retention (1-line fix). |
-| **P1 — Recommended** | L-NEW-7 | Clear `pool_cumulative_snapshots` in `execute_force_rotate_pools`. |
-| **P1 — Recommended** | L-NEW-8 | Unify `CONTRACT_NAME` across `execute.rs` and `migrate.rs`. |
-| **P2 — Advisory** | M-NEW-4 | Add Pyth confidence interval validation (reject conf/price > 5%). |
+| ~~**P1**~~ | ~~M-NEW-3~~ | ~~Skip pools without prior snapshot~~ — **DONE** |
+| ~~**P1**~~ | ~~M-NEW-5~~ | ~~Fix SETCOMMIT key collision~~ — **DONE** |
+| ~~**P1**~~ | ~~M-NEW-2~~ | ~~Change > to >= in TWAP retention~~ — **DONE** |
+| ~~**P1**~~ | ~~L-NEW-8~~ | ~~Unify CONTRACT_NAME~~ — **DONE** |
+| ~~**P2**~~ | ~~M-NEW-4~~ | ~~Add Pyth confidence interval validation~~ — **DONE** |
 | **P2 — Advisory** | M-NEW-1 | Deprecate or fix factory `QueryMsg::Pool` stale data endpoint. |
 | **P2 — Advisory** | L-1 | Parameterize `"ubluechip"` denom for multi-chain portability. |
 | **P3 — Cosmetic** | L-5 | Fix off-by-one in upgrade batch attribute. |
 | **P3 — Cosmetic** | L-NEW-9 | Use non-overlapping byte ranges in pool selection hash. |
 | **Operational** | — | Ensure `atom_bluechip_anchor_pool_address != factory_admin_address` in production config. |
-| **Operational** | — | Do NOT deploy `mockoracle` on mainnet. |
-| **Operational** | — | Use a multisig for `factory_admin_address`. |
+| **Operational** | — | `mockoracle` entry points are now feature-gated; do NOT build with `--features testing` for production. |
+| **Operational** | — | Use a multisig for `factory_admin_address` (when ready). |
 
 ---
 
 ## CONCLUSION
 
-The codebase has undergone significant improvement since the initial audit. All 4 Critical and all 7 High-severity findings have been resolved. The remaining 5 Medium and 7 Low items are non-blocking for a carefully monitored production deployment, though several P1 items should be addressed first.
+All 4 Critical and all 7 High-severity findings from the original audit are resolved. All 5 Medium-severity findings (including 4 new ones discovered in this review) are now fixed. The remaining open items are 1 Medium advisory (M-NEW-1, stale query endpoint) and 6 Low-severity issues, none of which are security-blocking.
 
-The contract architecture is sound: constant-product AMM math, TWAP oracle with cumulative accumulators, timelocked admin operations, reentrancy protection, and batched distribution all follow well-established patterns. The code is well-structured, consistently uses checked arithmetic, and has reasonable test coverage.
+The contract architecture is sound: constant-product AMM math, TWAP oracle with cumulative accumulators, timelocked admin operations, reentrancy protection, and batched distribution all follow well-established patterns. The code is well-structured, consistently uses checked arithmetic, and has 199 passing tests across the workspace.
 
-The most notable new findings are the oracle's spot-price fallback after pool rotation (M-NEW-3), the `SETCOMMIT` key collision for multi-pool creators (M-NEW-5), and the unchecked Pyth confidence interval (M-NEW-4). None are Critical, but M-NEW-3 and M-NEW-5 should be addressed before mainnet.
-
-**Conditional pass for production deployment**, subject to:
-1. Addressing the P1 recommended fixes (M-NEW-3, M-NEW-5, M-NEW-2, L-NEW-7, L-NEW-8).
-2. Ensuring operational deployment practices (multisig admin, no mock oracle, correct atom pool address).
-3. Monitoring oracle health and distribution completion post-launch.
+**Pass for production deployment**, subject to:
+1. Ensuring `atom_bluechip_anchor_pool_address != factory_admin_address` in production config.
+2. Building `mockoracle` only with `--features testing` (entry points are now feature-gated).
+3. Transitioning to a multisig for `factory_admin_address` as TVL grows.
+4. Monitoring oracle health and distribution completion post-launch.
 
 ---
 

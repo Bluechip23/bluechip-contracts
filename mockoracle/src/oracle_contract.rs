@@ -1,3 +1,14 @@
+// ============================================================================
+// MOCK ORACLE — FOR TESTING ONLY
+//
+// This contract has NO access control on SetPrice. Anyone can set any price.
+// Entry points are gated behind the "testing" feature flag to prevent
+// accidental deployment to production.
+//
+// To build for local testing:
+//   cargo build -p oracle --features testing
+// ============================================================================
+
 use crate::msg::{ExecuteMsg, InstantiateMsg, PriceResponse, PythQueryMsg, PriceFeedResponse, PriceFeed, PythPriceRetrievalResponse};
 use cosmwasm_std::{
     entry_point, to_json_binary, Binary, Deps, DepsMut, Env, MessageInfo, Response, StdError,
@@ -7,6 +18,7 @@ use cw_storage_plus::Map;
 
 pub const PRICES: Map<&str, PriceResponse> = Map::new("prices");
 
+#[cfg(feature = "testing")]
 #[cfg_attr(not(feature = "library"), entry_point)]
 pub fn instantiate(
     _deps: DepsMut,
@@ -17,6 +29,7 @@ pub fn instantiate(
     Ok(Response::default())
 }
 
+#[cfg(feature = "testing")]
 #[cfg_attr(not(feature = "library"), entry_point)]
 pub fn execute(
     deps: DepsMut,
@@ -38,6 +51,7 @@ pub fn execute(
     }
 }
 
+#[cfg(feature = "testing")]
 #[cfg_attr(not(feature = "library"), entry_point)]
 pub fn query(deps: Deps, env: Env, msg: PythQueryMsg) -> StdResult<Binary> {
     match msg {

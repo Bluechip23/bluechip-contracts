@@ -22,6 +22,10 @@ crate-type = ["cdylib", "rlib"]
 backtraces = []
 # use library feature to disable all instantiate/execute/query exports
 library = []
+# REQUIRED to compile entry points. Without this feature, the contract
+# cannot be instantiated on-chain, preventing accidental production deployment.
+# Usage: cargo build -p oracle --features testing
+testing = []
 
 [package.metadata.scripts]
 optimize = { workspace = true }
