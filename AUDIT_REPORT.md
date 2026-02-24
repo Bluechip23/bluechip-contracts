@@ -277,19 +277,48 @@ The following security properties are correctly implemented and verified:
 
 ---
 
+## TEST COVERAGE ASSESSMENT
+
+**All 131 tests pass** (0.21s runtime).
+
+### What Is Well-Tested
+- Authorization checks (admin, factory sender, owner) across all contracts
+- Audit regression tests for C-1, C-3, M-4, M-5, M-6 findings
+- Pool: commit lifecycle (pre/post-threshold), swap math, liquidity operations, fee accounting, rate limiting, reentrancy guard, emergency withdraw (two-phase), position queries, deadline enforcement
+- Factory: oracle initialization, TWAP calculation, outlier filtering, pool creation flow, config timelock (propose/cancel/execute), pool upgrade batching, threshold notification (unauthorized/double-call)
+- Expand-economy: withdrawal timelock lifecycle, authorization, zero-amount edge cases
+
+### Coverage Gaps (Ordered by Risk)
+1. **No multi-contract integration tests** — `cw-multi-test` is declared as a dev-dependency but never used. All tests use `mock_dependencies()`. The full factory→pool→expand-economy→oracle round-trip is never tested end-to-end in a simulated chain environment.
+2. **No property-based / fuzz testing** — `proptest` is declared but unused. AMM math (constant product, fee calculation, liquidity shares) is particularly well-suited for property-based testing to catch edge cases.
+3. **Factory migration untested** — `factory/src/migrate.rs` has no dedicated tests. The `CONTRACT_NAME` mismatch (L-NEW-8) would have been caught by a migration test.
+4. **`ContinuePoolUpgrade` second+ batches** — Only the first batch of 10 is tested; continuation execution is not.
+5. **Oracle staleness/manipulation** — No test for stale Pyth prices or the spot-price fallback after rotation (M-NEW-3).
+6. **`mockoracle` has zero tests.**
+
+### Local Integration Testing
+A thorough bash-based on-chain integration test (`run_local_test.sh`) exists that covers 7 phases including 9 security attack vectors. This requires a local chain binary and is not CI-integrated, but it does validate the full protocol on a real chain.
+
+---
+
 ## BUILD & DEPLOYMENT READINESS
 
 | Criterion | Status |
 |-----------|--------|
 | `cargo build` compiles | ✅ |
-| `cargo test` passes | ✅ (pool, factory, expand-economy) |
+| `cargo test` passes (131/131) | ✅ |
 | Optimizer script present (`optimize.sh`) | ✅ |
 | `cw2` contract versioning | ✅ (pool, factory, expand-economy) |
 | Migration support | ✅ (`MigrateMsg` with `UpdateFees`, `UpdateVersion`) |
 | No `unwrap()` in production paths | ✅ (only in test code) |
 | No `panic!()` in production paths | ✅ |
 | Checked math throughout | ✅ |
+| Release profile (LTO, opt-level z, overflow-checks) | ✅ |
+| CI/CD pipeline | ❌ None (no GitHub Actions, no automated test runs) |
+| Multi-contract integration tests | ❌ `cw-multi-test` declared but unused |
+| Property-based / fuzz testing | ❌ `proptest` declared but unused |
 | Admin key management | ⚠️ Single address — multisig recommended |
+| Docker optimizer version consistency | ⚠️ Makefile uses 0.16.0, `optimize.sh` uses 0.15.0 |
 
 ---
 
