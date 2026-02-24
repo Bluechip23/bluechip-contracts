@@ -28,8 +28,8 @@ This is the **third audit** of the bluechip-contracts codebase. The development 
 |----------|-----------------|----------|------------|----------|
 | Critical | 4 | **4 fixed** | 0 | **0** |
 | High | 7 | **7 fixed** | 0 | **0** |
-| Medium | 8 | 6 fixed, 2 partial | 2 | **2** |
-| Low | 13 | 8 fixed | 3 | **3 + 2 new** |
+| Medium | 8 | 6 fixed, 2 partial | 2 + 3 new | **5** |
+| Low | 13 | 8 fixed | 3 + 4 new | **7** |
 
 ---
 
@@ -125,6 +125,38 @@ An observation at exactly `cutoff_time` is pruned. When the oracle is updated at
 
 **Recommendation:** Change `>` to `>=`.
 
+### M-NEW-3 — Oracle Falls Back to Spot Price After Pool Rotation 🟡 NEW
+**File:** `factory/src/internal_bluechip_price_oracle.rs:401-408`
+When a pool has no previous cumulative snapshot (cleared after rotation at line 247), the oracle falls back to raw spot price from reserves:
+```rust
+// No previous snapshot — first observation, use spot price as baseline
+calculate_price_from_reserves(bluechip_reserve, other_reserve)?
+```
+This creates a one-update window after each pool rotation where spot-price manipulation via large swaps can influence the oracle. The TWAP weighting across multiple pools and the ATOM anchor pool partially mitigate this, but the first post-rotation observation for any newly-selected pool is unprotected.
+
+**Impact:** An attacker who manipulates reserves in a newly-selected pool and triggers `UpdateOraclePrice` in the same block can inject a manipulated price into the TWAP window. The damage is bounded by the pool's liquidity weight and the presence of other TWAP-protected pools.
+
+**Recommendation:** Skip pools without a prior cumulative snapshot for price calculation (use them only to establish a baseline), or require 2+ observation cycles before including a pool's price in the weighted average.
+
+### M-NEW-4 — Pyth Confidence Interval Not Validated 🟡 NEW
+**File:** `factory/src/internal_bluechip_price_oracle.rs:570-594`
+The Pyth price response includes a `conf` (confidence interval) field that is available but never checked. During high volatility or low oracle participation, the reported price can have a very wide confidence band. The contract uses the point estimate unconditionally.
+
+**Impact:** During market turbulence, the oracle may accept a Pyth price with a 20%+ confidence interval, leading to inaccurate USD valuations for commits.
+
+**Recommendation:** Reject prices where `conf * PRICE_PRECISION / price > threshold` (e.g., 5%).
+
+### M-NEW-5 — `SETCOMMIT` Key Collision for Multi-Pool Creators 🟡 NEW
+**File:** `factory/src/pool_creation_reply.rs:202-206`
+`SETCOMMIT` is keyed by creator wallet address. If the same creator creates multiple pools, each subsequent pool **overwrites** the commit info for all prior pools by that creator:
+```rust
+SETCOMMIT.save(deps.storage, &pool_context.temp_creator_wallet.to_string(), &commit_info)?;
+```
+
+**Impact:** The `SETCOMMIT` mapping for the creator's first pool is silently lost when they create a second pool. Any logic depending on this state for the earlier pool will read the wrong pool's commit info.
+
+**Recommendation:** Key `SETCOMMIT` by `pool_id` or a composite key of `(creator_addr, pool_id)`.
+
 ---
 
 ## LOW FINDINGS
@@ -158,6 +190,20 @@ When the admin force-rotates oracle pools, `pool_cumulative_snapshots` is not cl
 
 **Recommendation:** Add `oracle.pool_cumulative_snapshots = vec![];` to `execute_force_rotate_pools`.
 
+### L-NEW-8 — Factory Migration `CONTRACT_NAME` Mismatch
+**File:** `factory/src/execute.rs:23` vs `factory/src/migrate.rs:7`
+`instantiate` writes `"crates.io:factory"` via `cw2::set_contract_version`, but `migrate` writes `"crates.io:bluechip-factory"`. After migration, the contract name changes. Future migrations that check the stored contract name would fail unexpectedly.
+
+**Recommendation:** Use a single shared `CONTRACT_NAME` constant.
+
+### L-NEW-9 — Pool Selection Hash Uses Overlapping Byte Windows
+**File:** `factory/src/internal_bluechip_price_oracle.rs:123-133`
+The pool selection loop extracts 8-byte seeds from overlapping regions of the SHA256 hash (`hash[i..i+7]`, `hash[i+1..i+8]`, etc.). With `ORACLE_POOL_COUNT = 5` (4 random pools needed), the byte windows overlap by 7 bytes, creating correlated selections. This slightly reduces the effective randomness of pool selection.
+
+**Impact:** Marginal. The `used_indices` deduplication (line 137) prevents duplicate selection, and the eligible pool set is typically small enough that the correlation is not exploitable.
+
+**Recommendation:** Use non-overlapping byte ranges: `hash[i*8..(i+1)*8]`.
+
 ---
 
 ## FULL STATUS TABLE — ALL FINDINGS
@@ -183,11 +229,16 @@ When the admin force-rotates oracle pools, `pool_cumulative_snapshots` is not cl
 | M-6 | Migration fee bounds missing | MEDIUM | ✅ FIXED |
 | M-NEW-1 | Factory `query_pool` returns stale zeroed data | MEDIUM | 🟡 OPEN |
 | M-NEW-2 | TWAP window strict `>` discards boundary | MEDIUM | 🟡 OPEN |
+| M-NEW-3 | Oracle spot-price fallback after rotation | MEDIUM | 🟡 NEW |
+| M-NEW-4 | Pyth confidence interval not validated | MEDIUM | 🟡 NEW |
+| M-NEW-5 | `SETCOMMIT` key collision for multi-pool creators | MEDIUM | 🟡 NEW |
 | L-1 | Hardcoded `"ubluechip"` denom | LOW | 🟡 OPEN |
 | L-NEW-1 | `query_token_balance` swallows errors silently | LOW | 🟡 OPEN |
 | L-5 | `ContinuePoolUpgrade` attribute off-by-one | LOW | 🟡 OPEN |
 | L-NEW-6 | Linear scan in `is_bluechip_second` | LOW | 🟡 NEW |
 | L-NEW-7 | Force-rotate doesn't clear snapshots | LOW | 🟡 NEW |
+| L-NEW-8 | Factory migration `CONTRACT_NAME` mismatch | LOW | 🟡 NEW |
+| L-NEW-9 | Pool selection hash overlapping byte windows | LOW | 🟡 NEW |
 
 ---
 
@@ -246,11 +297,16 @@ The following security properties are correctly implemented and verified:
 
 | Priority | ID | Action |
 |----------|----|--------|
+| **P1 — Recommended** | M-NEW-3 | Skip pools without prior cumulative snapshot in oracle price calc, or require 2+ cycles. |
+| **P1 — Recommended** | M-NEW-5 | Fix `SETCOMMIT` key collision — use `pool_id` or composite key. |
 | **P1 — Recommended** | M-NEW-2 | Change `>` to `>=` in TWAP observation retention (1-line fix). |
 | **P1 — Recommended** | L-NEW-7 | Clear `pool_cumulative_snapshots` in `execute_force_rotate_pools`. |
+| **P1 — Recommended** | L-NEW-8 | Unify `CONTRACT_NAME` across `execute.rs` and `migrate.rs`. |
+| **P2 — Advisory** | M-NEW-4 | Add Pyth confidence interval validation (reject conf/price > 5%). |
 | **P2 — Advisory** | M-NEW-1 | Deprecate or fix factory `QueryMsg::Pool` stale data endpoint. |
 | **P2 — Advisory** | L-1 | Parameterize `"ubluechip"` denom for multi-chain portability. |
 | **P3 — Cosmetic** | L-5 | Fix off-by-one in upgrade batch attribute. |
+| **P3 — Cosmetic** | L-NEW-9 | Use non-overlapping byte ranges in pool selection hash. |
 | **Operational** | — | Ensure `atom_bluechip_anchor_pool_address != factory_admin_address` in production config. |
 | **Operational** | — | Do NOT deploy `mockoracle` on mainnet. |
 | **Operational** | — | Use a multisig for `factory_admin_address`. |
@@ -259,12 +315,14 @@ The following security properties are correctly implemented and verified:
 
 ## CONCLUSION
 
-The codebase has undergone significant improvement since the initial audit. All 4 Critical and all 7 High-severity findings have been resolved. The remaining 2 Medium and 5 Low items are non-blocking for a monitored production deployment.
+The codebase has undergone significant improvement since the initial audit. All 4 Critical and all 7 High-severity findings have been resolved. The remaining 5 Medium and 7 Low items are non-blocking for a carefully monitored production deployment, though several P1 items should be addressed first.
 
 The contract architecture is sound: constant-product AMM math, TWAP oracle with cumulative accumulators, timelocked admin operations, reentrancy protection, and batched distribution all follow well-established patterns. The code is well-structured, consistently uses checked arithmetic, and has reasonable test coverage.
 
+The most notable new findings are the oracle's spot-price fallback after pool rotation (M-NEW-3), the `SETCOMMIT` key collision for multi-pool creators (M-NEW-5), and the unchecked Pyth confidence interval (M-NEW-4). None are Critical, but M-NEW-3 and M-NEW-5 should be addressed before mainnet.
+
 **Conditional pass for production deployment**, subject to:
-1. Addressing the two P1 recommended fixes (both are 1-2 line changes).
+1. Addressing the P1 recommended fixes (M-NEW-3, M-NEW-5, M-NEW-2, L-NEW-7, L-NEW-8).
 2. Ensuring operational deployment practices (multisig admin, no mock oracle, correct atom pool address).
 3. Monitoring oracle health and distribution completion post-launch.
 
