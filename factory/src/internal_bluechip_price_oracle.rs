@@ -581,6 +581,17 @@ pub fn query_pyth_atom_usd_price(deps: Deps, env: Env) -> StdResult<Uint128> {
             return Err(StdError::generic_err("Invalid negative or zero price"));
         }
 
+        // Reject prices with wide confidence intervals (> 5% of price).
+        // During low oracle participation or extreme volatility, Pyth may
+        // report prices with very wide bands that are unreliable.
+        let conf_threshold = (price_data.price as u64) / 20; // 5%
+        if price_data.conf > conf_threshold {
+            return Err(StdError::generic_err(format!(
+                "Pyth confidence interval too wide: conf={} exceeds 5% of price={}",
+                price_data.conf, price_data.price
+            )));
+        }
+
         let price_u128 = price_data.price as u128;
         let expo = price_data.expo;
 
