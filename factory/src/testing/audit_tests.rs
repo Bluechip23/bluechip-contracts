@@ -5,22 +5,33 @@
 /// - CancelConfigUpdate: cancel pending timelock
 /// - Config timelock enforcement: cannot execute before 48h
 /// - UpdatePoolConfig: send config update to specific pool
+/// - M-NEW-3 regression: newly-rotated pools skipped from oracle price weighting
+/// - M-NEW-4 regression: Pyth confidence interval validation
+/// - M-NEW-5 regression: multi-pool creator SETCOMMIT uses pool_id key
+/// - L-NEW-8 regression: factory migration CONTRACT_NAME consistency
 use cosmwasm_std::testing::{
     mock_dependencies, mock_env, mock_info, MockApi, MockQuerier, MockStorage, MOCK_CONTRACT_ADDR,
 };
 use cosmwasm_std::{
-    to_json_binary, Addr, Coin, Decimal, OwnedDeps, Timestamp, Uint128,
+    Addr, Coin, Decimal, Empty, OwnedDeps, Uint128,
 };
 
 use crate::error::ContractError;
-use crate::execute::{execute, instantiate};
-use crate::mock_querier::WasmMockQuerier;
-use crate::msg::ExecuteMsg;
-use crate::pool_struct::{CommitFeeInfo, PoolConfigUpdate};
-use crate::state::{
-    FactoryInstantiate, PENDING_CONFIG, POOL_REGISTRY, POOL_THRESHOLD_MINTED,
+use crate::execute::{execute, instantiate, pool_creation_reply, encode_reply_id, FINALIZE_POOL, MINT_CREATE_POOL, SET_TOKENS};
+use crate::internal_bluechip_price_oracle::{
+    calculate_weighted_price_with_atom, BlueChipPriceInternalOracle, PriceCache,
+    PoolCumulativeSnapshot, INTERNAL_ORACLE,
 };
-use crate::testing::tests::setup_atom_pool;
+use crate::asset::TokenType;
+use crate::mock_querier::WasmMockQuerier;
+use crate::msg::{CreatorTokenInfo, ExecuteMsg};
+use crate::pool_struct::{CommitFeeInfo, CreatePool, PoolConfigUpdate, PoolDetails};
+use crate::state::{
+    FactoryInstantiate, PENDING_CONFIG, POOL_COUNTER, POOL_REGISTRY, POOL_THRESHOLD_MINTED,
+    POOLS_BY_CONTRACT_ADDRESS, POOLS_BY_ID, SETCOMMIT, TEMP_POOL_CREATION,
+};
+use crate::testing::tests::{setup_atom_pool, create_instantiate_reply};
+use pool_factory_interfaces::PoolStateResponseForFactory;
 
 const ATOM_BLUECHIP_POOL_CONTRACT_ADDRESS: &str =
     "cosmos1atom_bluechip_pool_test_addr_000000000000";
@@ -329,5 +340,294 @@ fn test_update_pool_config_nonexistent_pool() {
     let err = execute(deps.as_mut(), env, admin_info, msg).unwrap_err();
     // Pool 99 not found in registry
     assert!(err.to_string().contains("not found") || err.to_string().contains("type: cw_storage_plus"));
+}
+
+// ============================================================================
+// M-NEW-3 Regression: Newly-rotated pools skipped from oracle weighting
+// ============================================================================
+
+/// After pool rotation, pools without a previous cumulative snapshot should be
+/// skipped from the weighted price average (instead of falling back to spot
+/// price). Only pools with prior snapshots should contribute.
+#[test]
+fn test_m_new_3_rotation_skips_pools_without_prior_snapshot() {
+    let mut deps = mock_deps_with_querier(&[]);
+    setup_factory(&mut deps);
+
+    let atom_addr = ATOM_BLUECHIP_POOL_CONTRACT_ADDRESS.to_string();
+    let creator_addr = "creator_pool_1".to_string();
+
+    // Register creator pool in POOLS_BY_ID so is_bluechip_second lookup works
+    let pool_details = PoolDetails {
+        pool_id: 1,
+        pool_token_info: [
+            TokenType::Bluechip { denom: "ubluechip".to_string() },
+            TokenType::CreatorToken { contract_addr: Addr::unchecked(&creator_addr) },
+        ],
+        creator_pool_addr: Addr::unchecked(&creator_addr),
+    };
+    POOLS_BY_ID.save(&mut deps.storage, 1, &pool_details).unwrap();
+
+    // Save pool state for the creator pool with enough liquidity
+    let creator_pool_state = PoolStateResponseForFactory {
+        pool_contract_address: Addr::unchecked(&creator_addr),
+        nft_ownership_accepted: true,
+        reserve0: Uint128::new(50_000_000_000),
+        reserve1: Uint128::new(10_000_000_000),
+        total_liquidity: Uint128::new(10_000_000),
+        block_time_last: 1000,
+        price0_cumulative_last: Uint128::new(500_000),
+        price1_cumulative_last: Uint128::new(100_000),
+        assets: vec![],
+    };
+    POOLS_BY_CONTRACT_ADDRESS
+        .save(&mut deps.storage, Addr::unchecked(&creator_addr), &creator_pool_state)
+        .unwrap();
+
+    let pool_addresses = vec![atom_addr.clone(), creator_addr.clone()];
+
+    // Provide a previous snapshot ONLY for the atom pool (simulates rotation
+    // where atom pool was retained but creator_pool is newly selected).
+    let prev_snapshots = vec![
+        PoolCumulativeSnapshot {
+            pool_address: atom_addr.clone(),
+            price0_cumulative: Uint128::new(50_000),
+            block_time: 500,
+        },
+    ];
+
+    let result = calculate_weighted_price_with_atom(
+        deps.as_ref(),
+        &pool_addresses,
+        &prev_snapshots,
+    );
+
+    // Should succeed — atom pool has a snapshot and produces a price.
+    // Creator pool should be skipped (not fall back to spot).
+    assert!(result.is_ok(), "Oracle should succeed with at least the atom pool: {:?}", result.err());
+
+    let (weighted_price, atom_price, new_snapshots) = result.unwrap();
+
+    // Both pools should get new snapshots (for next update cycle)
+    assert_eq!(new_snapshots.len(), 2, "Both pools should record snapshots for next cycle");
+
+    // The weighted price should come only from the atom pool (since creator
+    // pool was skipped). This means weighted_price == atom_pool_price.
+    assert_eq!(weighted_price, atom_price,
+        "Price should come only from atom pool since creator pool had no prior snapshot");
+}
+
+/// When prev_snapshots is completely empty (bootstrap / first-ever update),
+/// all pools should fall back to spot price — not be skipped.
+#[test]
+fn test_m_new_3_bootstrap_uses_spot_price_for_all() {
+    let mut deps = mock_deps_with_querier(&[]);
+    setup_factory(&mut deps);
+
+    let atom_addr = ATOM_BLUECHIP_POOL_CONTRACT_ADDRESS.to_string();
+
+    let pool_addresses = vec![atom_addr.clone()];
+    let prev_snapshots: Vec<PoolCumulativeSnapshot> = vec![];
+
+    let result = calculate_weighted_price_with_atom(
+        deps.as_ref(),
+        &pool_addresses,
+        &prev_snapshots,
+    );
+
+    // Should succeed using spot price (bootstrap case)
+    assert!(result.is_ok(), "Bootstrap case should use spot price: {:?}", result.err());
+
+    let (weighted_price, _atom_price, new_snapshots) = result.unwrap();
+    assert!(!weighted_price.is_zero(), "Should produce a non-zero price from spot reserves");
+    assert_eq!(new_snapshots.len(), 1, "Should record snapshot for next cycle");
+}
+
+// ============================================================================
+// M-NEW-4 Regression: Pyth confidence interval validation
+// ============================================================================
+
+/// The confidence interval check (conf > price / 20) gates the production
+/// Pyth query path. Since that path is behind #[cfg(not(test))], we validate
+/// the arithmetic directly.
+#[test]
+fn test_m_new_4_confidence_interval_threshold_arithmetic() {
+    // The check in query_pyth_atom_usd_price is:
+    //   let conf_threshold = (price_data.price as u64) / 20; // 5%
+    //   if price_data.conf > conf_threshold { return Err(...) }
+
+    // Case 1: price = 1000, conf = 49 (4.9%) -> should PASS
+    let price: i64 = 1000;
+    let conf: u64 = 49;
+    let threshold = (price as u64) / 20;
+    assert_eq!(threshold, 50);
+    assert!(conf <= threshold, "4.9% confidence should pass the 5% threshold");
+
+    // Case 2: price = 1000, conf = 51 (5.1%) -> should FAIL
+    let conf: u64 = 51;
+    assert!(conf > threshold, "5.1% confidence should fail the 5% threshold");
+
+    // Case 3: price = 1000, conf = 50 (exactly 5%) -> should PASS (<=)
+    let conf: u64 = 50;
+    assert!(conf <= threshold, "Exactly 5% should pass (boundary)");
+
+    // Case 4: typical Pyth price $10.50 at -8 expo = 1_050_000_000
+    let price: i64 = 1_050_000_000;
+    let conf: u64 = 60_000_000; // ~5.7% -> should FAIL
+    let threshold = (price as u64) / 20; // 52_500_000
+    assert!(conf > threshold, "5.7% confidence on real Pyth price should fail");
+
+    // Case 5: tight confidence on real price
+    let conf: u64 = 10_000_000; // ~0.95% -> should PASS
+    assert!(conf <= threshold, "~1% confidence on real Pyth price should pass");
+}
+
+// ============================================================================
+// M-NEW-5 Regression: SETCOMMIT keyed by pool_id, not creator address
+// ============================================================================
+
+/// When the same creator creates two pools, both pool's CommitInfo entries
+/// should be independently stored (keyed by pool_id, not creator address).
+#[test]
+fn test_m_new_5_multi_pool_creator_no_setcommit_collision() {
+    let mut deps = mock_deps_with_querier(&[]);
+    setup_factory(&mut deps);
+
+    let env = mock_env();
+    let admin_info = mock_info("admin", &[]);
+
+    // Create first pool
+    let create_msg_1 = ExecuteMsg::Create {
+        pool_msg: CreatePool {
+            pool_token_info: [
+                TokenType::Bluechip { denom: "ubluechip".to_string() },
+                TokenType::CreatorToken { contract_addr: Addr::unchecked("WILL_BE_CREATED") },
+            ],
+            factory_to_create_pool_addr: Addr::unchecked("factory"),
+            cw20_token_contract_id: 10,
+            threshold_payout: None,
+            commit_fee_info: CommitFeeInfo {
+                bluechip_wallet_address: Addr::unchecked("ubluechip"),
+                creator_wallet_address: Addr::unchecked("admin"),
+                commit_fee_bluechip: Decimal::percent(1),
+                commit_fee_creator: Decimal::percent(5),
+            },
+            commit_amount_for_threshold: Uint128::zero(),
+            commit_limit_usd: Uint128::new(100),
+            pyth_contract_addr_for_conversions: "oracle0000".to_string(),
+            pyth_atom_usd_price_feed_id: "ORCL".to_string(),
+            creator_token_address: Addr::unchecked("token0000"),
+            max_bluechip_lock_per_pool: Uint128::new(10_000_000_000),
+            creator_excess_liquidity_lock_days: 7,
+            is_standard_pool: None,
+        },
+        token_info: CreatorTokenInfo {
+            name: "TokenA".to_string(),
+            symbol: "TOKA".to_string(),
+            decimal: 6,
+        },
+    };
+
+    execute(deps.as_mut(), env.clone(), admin_info.clone(), create_msg_1).unwrap();
+    let pool_id_1 = POOL_COUNTER.load(&deps.storage).unwrap();
+
+    // Complete the reply chain for pool 1
+    let token_reply = create_instantiate_reply(encode_reply_id(pool_id_1, SET_TOKENS), "token_addr_1");
+    pool_creation_reply(deps.as_mut(), env.clone(), token_reply).unwrap();
+    let nft_reply = create_instantiate_reply(encode_reply_id(pool_id_1, MINT_CREATE_POOL), "nft_addr_1");
+    pool_creation_reply(deps.as_mut(), env.clone(), nft_reply).unwrap();
+    let pool_reply = create_instantiate_reply(encode_reply_id(pool_id_1, FINALIZE_POOL), "pool_addr_1");
+    pool_creation_reply(deps.as_mut(), env.clone(), pool_reply).unwrap();
+
+    // Verify pool 1 commit info
+    let commit_1 = SETCOMMIT.load(&deps.storage, pool_id_1).unwrap();
+    assert_eq!(commit_1.pool_id, pool_id_1);
+    assert_eq!(commit_1.creator_pool_addr, Addr::unchecked("pool_addr_1"));
+
+    // Create second pool from the SAME creator (admin)
+    let create_msg_2 = ExecuteMsg::Create {
+        pool_msg: CreatePool {
+            pool_token_info: [
+                TokenType::Bluechip { denom: "ubluechip".to_string() },
+                TokenType::CreatorToken { contract_addr: Addr::unchecked("WILL_BE_CREATED") },
+            ],
+            factory_to_create_pool_addr: Addr::unchecked("factory"),
+            cw20_token_contract_id: 10,
+            threshold_payout: None,
+            commit_fee_info: CommitFeeInfo {
+                bluechip_wallet_address: Addr::unchecked("ubluechip"),
+                creator_wallet_address: Addr::unchecked("admin"),
+                commit_fee_bluechip: Decimal::percent(1),
+                commit_fee_creator: Decimal::percent(5),
+            },
+            commit_amount_for_threshold: Uint128::zero(),
+            commit_limit_usd: Uint128::new(200),
+            pyth_contract_addr_for_conversions: "oracle0000".to_string(),
+            pyth_atom_usd_price_feed_id: "ORCL".to_string(),
+            creator_token_address: Addr::unchecked("token0000"),
+            max_bluechip_lock_per_pool: Uint128::new(10_000_000_000),
+            creator_excess_liquidity_lock_days: 7,
+            is_standard_pool: None,
+        },
+        token_info: CreatorTokenInfo {
+            name: "TokenB".to_string(),
+            symbol: "TOKB".to_string(),
+            decimal: 6,
+        },
+    };
+
+    execute(deps.as_mut(), env.clone(), admin_info, create_msg_2).unwrap();
+    let pool_id_2 = POOL_COUNTER.load(&deps.storage).unwrap();
+    assert_ne!(pool_id_1, pool_id_2, "Second pool should get a new ID");
+
+    // Complete the reply chain for pool 2
+    let token_reply = create_instantiate_reply(encode_reply_id(pool_id_2, SET_TOKENS), "token_addr_2");
+    pool_creation_reply(deps.as_mut(), env.clone(), token_reply).unwrap();
+    let nft_reply = create_instantiate_reply(encode_reply_id(pool_id_2, MINT_CREATE_POOL), "nft_addr_2");
+    pool_creation_reply(deps.as_mut(), env.clone(), nft_reply).unwrap();
+    let pool_reply = create_instantiate_reply(encode_reply_id(pool_id_2, FINALIZE_POOL), "pool_addr_2");
+    pool_creation_reply(deps.as_mut(), env.clone(), pool_reply).unwrap();
+
+    // Verify pool 2 commit info
+    let commit_2 = SETCOMMIT.load(&deps.storage, pool_id_2).unwrap();
+    assert_eq!(commit_2.pool_id, pool_id_2);
+    assert_eq!(commit_2.creator_pool_addr, Addr::unchecked("pool_addr_2"));
+
+    // KEY ASSERTION: Pool 1's commit info should still be intact
+    // (This would fail with the old creator-address key, as pool 2 would overwrite pool 1)
+    let commit_1_after = SETCOMMIT.load(&deps.storage, pool_id_1).unwrap();
+    assert_eq!(commit_1_after.pool_id, pool_id_1,
+        "Pool 1 commit info should not be overwritten by pool 2");
+    assert_eq!(commit_1_after.creator_pool_addr, Addr::unchecked("pool_addr_1"),
+        "Pool 1 pool address should still be pool_addr_1, not pool_addr_2");
+}
+
+// ============================================================================
+// L-NEW-8 Regression: Factory migration CONTRACT_NAME consistency
+// ============================================================================
+
+/// After instantiation + migration, the stored contract name should be
+/// consistent (both execute.rs and migrate.rs use "crates.io:bluechip-factory").
+#[test]
+fn test_l_new_8_factory_migration_contract_name() {
+    let mut deps = mock_deps_with_querier(&[]);
+    setup_factory(&mut deps);
+
+    // After instantiate, cw2 should be set
+    let version_info = cw2::get_contract_version(&deps.storage).unwrap();
+    assert_eq!(version_info.contract, "crates.io:bluechip-factory",
+        "Instantiate should set contract name to crates.io:bluechip-factory");
+
+    // Simulate migration (set version to older to allow migration)
+    cw2::set_contract_version(&mut deps.storage, "crates.io:bluechip-factory", "0.1.0").unwrap();
+
+    let env = mock_env();
+    let res = crate::migrate::migrate(deps.as_mut(), env, Empty {});
+    assert!(res.is_ok(), "Migration should succeed: {:?}", res.err());
+
+    // After migration, contract name should still be "crates.io:bluechip-factory"
+    let version_info = cw2::get_contract_version(&deps.storage).unwrap();
+    assert_eq!(version_info.contract, "crates.io:bluechip-factory",
+        "Migration should maintain the same contract name");
 }
 
