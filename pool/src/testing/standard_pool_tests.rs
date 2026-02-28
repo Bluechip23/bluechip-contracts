@@ -110,8 +110,6 @@ fn test_standard_pool_immediate_swap_and_deposit() {
     // It should be InsufficientReserves, NOT ShortOfThreshold
     assert_eq!(err, ContractError::InsufficientReserves {});
 
-    // Try a deposit (should NOT return ShortOfThreshold error)
-    // M-4 FIX: Use larger amounts since first deposit now locks MINIMUM_LIQUIDITY (1000)
     let deposit_info = mock_info(
         "provider",
         &[Coin {

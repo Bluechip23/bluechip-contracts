@@ -67,22 +67,11 @@ fn test_pause_unpause() {
         to: None,
         transaction_deadline: None,
     };
-    // Note: SimpleSwap logic checks pause FIRST.
-    // However, SimpleSwap might fail for other reasons (like no liquidity), so we need to ensure it fails with "PoolPausedLowLiquidity" specifically or generic Paused if we separated them.
-    // In contract.rs: execute_simple_swap checks is_paused and returns PoolPausedLowLiquidity.
-
-    // We need to set up some liquidity first to pass other checks if pause check wasn't first?
-    // Actually pause check is usually very early.
-    // But let's act as a user
     let user_info = mock_info("user", &[Coin::new(100, "ublue")]);
     let res = execute(deps.as_mut(), mock_env(), user_info.clone(), swap_msg);
-    // Since we didn't add liquidity, it might fail on empty reserves if pause check was after.
-    // But if pause check is first, it should be PoolPausedLowLiquidity.
-    // Note: The error enum name is PoolPausedLowLiquidity but it is used for manual pause too now.
+   
     match res {
         Err(e) => {
-            // In string form it might look like "Pool is paused or has low liquidity"
-            // Or we can check the debug output
             let debug_err = format!("{:?}", e);
             assert!(debug_err.contains("PoolPausedLowLiquidity"));
         }
@@ -110,10 +99,6 @@ fn test_emergency_withdraw() {
     pool_state.reserve0 = Uint128::new(1000); // 1000 ublue
     pool_state.reserve1 = Uint128::new(2000); // 2000 creator token
     POOL_STATE.save(&mut deps.storage, &pool_state).unwrap();
-
-    // --- Phase 1: initiate the emergency withdrawal ---
-    // H-3 FIX: EmergencyWithdraw is now two-phase. The first call pauses the
-    // pool and sets a 24-hour timelock; no funds are moved yet.
     let initiate_res = execute(
         deps.as_mut(),
         base_env.clone(),
@@ -143,7 +128,6 @@ fn test_emergency_withdraw() {
     .unwrap_err();
     assert!(format!("{:?}", early_err).contains("timelock not yet elapsed"));
 
-    // --- Phase 2: execute after the 24-hour delay ---
     let mut env_after = base_env.clone();
     env_after.block.time = env_after.block.time.plus_seconds(86_401); // 24 h + 1 s
 
@@ -164,12 +148,10 @@ fn test_emergency_withdraw() {
     let amount1 = exec_res.attributes.iter().find(|a| a.key == "amount1").unwrap();
     assert_eq!(amount1.value, "2000");
 
-    // Reserves zeroed.
     let pool_state = POOL_STATE.load(&deps.storage).unwrap();
     assert_eq!(pool_state.reserve0, Uint128::zero());
     assert_eq!(pool_state.reserve1, Uint128::zero());
 
-    // Two transfer messages (native bluechip + CW20 creator token).
     assert_eq!(exec_res.messages.len(), 2);
 }
 
@@ -260,7 +242,6 @@ fn test_unauthorized_admin_actions() {
 
     let hacker = mock_info("hacker", &[]);
 
-    // Pause
     let err = execute(
         deps.as_mut(),
         mock_env(),

@@ -359,14 +359,10 @@ fn test_commit_crosses_threshold() {
     );
 
     let pool_state = POOL_STATE.load(&deps.storage).unwrap();
-    // D-1 fix: total_liquidity = sqrt(reserve0 * reserve1), unowned seed liquidity
     assert!(
         !pool_state.total_liquidity.is_zero(),
         "Seed liquidity should be non-zero after threshold crossing"
     );
-
-    // H-1 FIX: Distribution is now always batched; COMMIT_LEDGER entries are paid
-    // out via ContinueDistribution calls, not inline at threshold crossing.
     assert!(
         DISTRIBUTION_STATE.may_load(&deps.storage).unwrap().is_some(),
         "Distribution state should be initialized for batched payout"
@@ -552,9 +548,7 @@ fn test_continue_distribution_processes_batch() {
             .any(|a| a.value == "continue_distribution"),
         "Response should include continue_distribution attribute"
     );
-    // M-1 FIX: Batch size is now gas-based (DEFAULT_MAX_GAS_PER_TX /
-    // DEFAULT_ESTIMATED_GAS_PER_DISTRIBUTION = 40). `last_successful_batch_size`
-    // no longer shrinks the batch size. All 5 committers are processed in one batch.
+
     assert!(
         res.messages.len() >= 5,
         "All 5 committers should be processed in one batch with gas-based batch size"
@@ -717,9 +711,6 @@ fn test_adaptive_batch_sizing_with_history() {
         "All messages should be mint messages, no self-call continuation"
     );
 
-    // M-1 FIX: Batch size is min(max_gas_per_tx / estimated_gas_per_distribution,
-    // MAX_DISTRIBUTIONS_PER_TX) = min(1000/50, 40) = 20.
-    // The `(last_successful * 9) / 10` shrinking heuristic has been removed.
     let expected = 20;
     assert_eq!(
         actually_processed, expected,
@@ -746,9 +737,6 @@ fn test_calculate_effective_batch_size() {
 
     let batch_size = calculate_effective_batch_size(&dist_state);
 
-    // M-1 FIX: Batch size is min(max_gas_per_tx / estimated_gas_per_distribution,
-    // MAX_DISTRIBUTIONS_PER_TX) = min(1000/50, 40) = 20.
-    // `last_successful_batch_size` is no longer used in the calculation.
     assert_eq!(batch_size, 20, "Should use gas-based estimate, ignoring last_successful_batch_size");
 
     let dist_state_no_history = DistributionState {
@@ -767,7 +755,6 @@ fn test_calculate_effective_batch_size() {
 
     let batch_size = calculate_effective_batch_size(&dist_state_no_history);
 
-    // M-1 FIX: Same gas-based calculation regardless of whether there is history.
     assert_eq!(batch_size, 20, "Should use gas-based estimate regardless of history");
 }
 
@@ -813,9 +800,6 @@ fn test_batch_size_with_consecutive_failures() {
     )
     .unwrap();
 
-    // M-1 FIX: Batch size is min(max_gas_per_tx / estimated_gas_per_distribution,
-    // MAX_DISTRIBUTIONS_PER_TX) = min(1000/200, 40) = 5. The consecutive_failures
-    // counter no longer shrinks the batch; the gas estimate governs it.
     assert!(
         res.messages.len() <= 5,
         "Should process at most 5 committers per batch based on gas estimate (1000/200=5)"
@@ -2280,8 +2264,6 @@ fn test_concurrent_commits_both_recorded() {
 
     execute(deps.as_mut(), env.clone(), alice_info.clone(), alice_msg).unwrap();
 
-    // H-1 FIX: Distribution is now always batched. Alice's commit-ledger entry is
-    // retained until a ContinueDistribution call pays her out.
     assert!(
         COMMIT_LEDGER
             .load(&deps.storage, &alice_info.sender)
@@ -2522,17 +2504,11 @@ fn test_swap_fails_when_pool_already_paused() {
 fn test_swap_prevented_if_would_deplete_below_minimum() {
     let mut deps = mock_dependencies();
 
-    // Set reserves above SWAP_PAUSE_THRESHOLD (100) but where swap would deplete below MINIMUM_LIQUIDITY (1000)
     setup_pool_with_reserves(
         &mut deps,
         Uint128::new(10000), // Well above SWAP_PAUSE_THRESHOLD
         Uint128::new(1100),  // Just above MINIMUM_LIQUIDITY
     );
-
-    // Calculate swap that would deplete reserve1 below 1000
-    // k = 10000 * 1100 = 11,000,000
-    // If we add 2000 to reserve0: new reserve0 = 12000
-    // new reserve1 = 11,000,000 / 12000 = 916.67 (below MINIMUM_LIQUIDITY of 1000!)
 
     let swap_amount = Uint128::new(2000);
     let info = mock_info(
@@ -2880,12 +2856,6 @@ fn test_swap_slippage_lopsided() {
             amount: swap_amount,
         }],
     );
-
-    // Expect 100 tokens per bluechip roughly (100k/1k)
-    // So 500 bluechip should get ~50k tokens ideally
-    // belief_price is Price of Ask (Token) in Offer (Bluechip).
-    // Price = 1000 / 100000 = 0.01 Bluechip per Token.
-
     let msg = ExecuteMsg::SimpleSwap {
         offer_asset: TokenInfo {
             info: TokenType::Bluechip {
@@ -2960,7 +2930,6 @@ fn test_commit_and_swap_with_price_change() {
         .unwrap();
     assert_eq!(user_commit, Uint128::new(1_000_000_000)); // $1000 USD
 
-    // === PRICE CHANGES TO $1.50 ===
     update_oracle_price(&mut deps, Uint128::new(1_500_000)); // $1.50
 
     // User2 commits 1000 bluechip at $1.50 = $1500 USD
@@ -3001,7 +2970,6 @@ fn test_commit_and_swap_with_price_change() {
     let total_usd = USD_RAISED_FROM_COMMIT.load(&deps.storage).unwrap();
     assert_eq!(total_usd, Uint128::new(2_500_000_000));
 
-    // === PRICE CRASHES TO $0.80 ===
     update_oracle_price(&mut deps, Uint128::new(800_000)); // $0.80
 
     // User3 commits at crashed price - verify they need more bluechip for same USD value

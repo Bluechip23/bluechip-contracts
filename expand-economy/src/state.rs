@@ -10,16 +10,14 @@ pub struct Config {
 
 pub const CONFIG: Item<Config> = Item::new("config");
 
-/// A withdrawal that has been proposed but not yet executed.
 #[cw_serde]
 pub struct PendingWithdrawal {
     pub amount: Uint128,
     pub denom: String,
     pub recipient: String,
-    /// Earliest block time at which ExecuteWithdrawal may be called.
     pub execute_after: Timestamp,
 }
 
-/// 48-hour timelock on manual withdrawals.
+// 48-hours
 pub const WITHDRAW_TIMELOCK_SECONDS: u64 = 172_800;
 pub const PENDING_WITHDRAWAL: Item<PendingWithdrawal> = Item::new("pending_withdrawal");

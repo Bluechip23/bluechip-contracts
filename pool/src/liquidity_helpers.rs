@@ -13,7 +13,6 @@ use pool_factory_interfaces::cw721_msgs::Cw721ExecuteMsg;
 pub const OPTIMAL_LIQUIDITY: Uint128 = Uint128::new(1_000_000);
 // 10% fees for tiny positions
 pub const MIN_MULTIPLIER: &str = "0.1";
-/// H-2 FIX: Returns StdResult instead of silently returning Uint128::MAX on overflow.
 pub fn calculate_unclaimed_fees(
     liquidity: Uint128,
     //the fee_growth_global number the last time the position collected fees
@@ -32,7 +31,7 @@ pub fn calculate_unclaimed_fees(
     }
 }
 
-/// H-2 FIX: Returns Result instead of silently returning Uint128::MAX on overflow.
+// H-2 FIX: Returns Result instead of silently returning Uint128::MAX on overflow.
 pub fn calculate_fees_owed(
     liquidity: Uint128,
     fee_growth_global: Decimal,
@@ -74,8 +73,6 @@ pub fn integer_sqrt(value: Uint128) -> Uint128 {
         return Uint128::zero();
     }
     let mut x = value;
-    // Safe: value is non-zero (checked above), so value + 1 won't overflow for any valid Uint128
-    // since we'd need value == Uint128::MAX, but sqrt(MAX) converges before that matters.
     let mut y = value.saturating_add(Uint128::one()) / Uint128::new(2);
     while y < x {
         x = y;
@@ -125,9 +122,6 @@ pub fn calc_liquidity_for_deposit(
         let product = final_amount0.checked_mul(final_amount1)?;
         let raw_liquidity = integer_sqrt(product).max(Uint128::new(1));
 
-        // M-4 FIX: For first deposits (true first, not post-threshold with reserves),
-        // lock MINIMUM_LIQUIDITY to prevent first-depositor inflation attacks.
-        // The locked amount stays unowned in the pool and can never be withdrawn.
         let liquidity = if current_reserve0.is_zero() && current_reserve1.is_zero() {
             // True first deposit - subtract minimum liquidity (locked permanently)
             if raw_liquidity <= MINIMUM_LIQUIDITY {
@@ -227,7 +221,6 @@ pub fn execute_claim_creator_excess(
         NEXT_POSITION_ID.update(deps.storage, |n| -> StdResult<_> {
             n.checked_add(1).ok_or_else(|| StdError::generic_err("Position ID overflow"))
         })?;
-    // L-3 FIX: Use plain numeric ID format consistent with execute_deposit_liquidity
     let position_id = position_counter.to_string();
 
     // Create metadata for the NFT

@@ -35,9 +35,7 @@ pub fn mock_dependencies_2(
 #[test]
 fn test_propose_and_execute_update_config() {
     let mut deps = mock_dependencies_2(&[]);
-
     setup_atom_pool(&mut deps);
-
     let msg = FactoryInstantiate {
         cw721_nft_contract_id: 58,
         factory_admin_address: Addr::unchecked("addr0000"),

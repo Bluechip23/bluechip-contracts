@@ -1,19 +1,11 @@
-/// Factory audit and missing-coverage tests.
-///
-/// Coverage:
-/// - NotifyThresholdCrossed: valid notification, double-call prevention, unauthorized caller
-/// - CancelConfigUpdate: cancel pending timelock
-/// - Config timelock enforcement: cannot execute before 48h
-/// - UpdatePoolConfig: send config update to specific pool
-/// - M-NEW-3 regression: newly-rotated pools skipped from oracle price weighting
-/// - M-NEW-4 regression: Pyth confidence interval validation
-/// - M-NEW-5 regression: multi-pool creator SETCOMMIT uses pool_id key
-/// - L-NEW-8 regression: factory migration CONTRACT_NAME consistency
+
 use cosmwasm_std::testing::{
     mock_dependencies, mock_env, mock_info, MockApi, MockQuerier, MockStorage, MOCK_CONTRACT_ADDR,
 };
 use cosmwasm_std::{
+
     Addr, Coin, Decimal, Empty, OwnedDeps, Uint128,
+
 };
 
 use crate::error::ContractError;
@@ -79,10 +71,6 @@ fn setup_factory(
     setup_atom_pool(deps);
     instantiate(deps.as_mut(), env, info, config).unwrap();
 }
-
-// ============================================================================
-// NotifyThresholdCrossed
-// ============================================================================
 
 #[test]
 fn test_notify_threshold_crossed_unauthorized_caller() {
@@ -150,10 +138,6 @@ fn test_notify_threshold_crossed_unregistered_pool() {
     );
 }
 
-// ============================================================================
-// CancelConfigUpdate
-// ============================================================================
-
 #[test]
 fn test_cancel_config_update() {
     let mut deps = mock_deps_with_querier(&[]);
@@ -199,9 +183,6 @@ fn test_cancel_config_update_unauthorized() {
     assert!(err.to_string().contains("Only the admin"));
 }
 
-// ============================================================================
-// Config Timelock Enforcement
-// ============================================================================
 
 #[test]
 fn test_config_update_before_timelock_fails() {
@@ -232,9 +213,6 @@ fn test_config_update_before_timelock_fails() {
     assert!(res.attributes.iter().any(|a| a.value == "execute_update_config"));
 }
 
-// ============================================================================
-// UpdatePoolConfig
-// ============================================================================
 
 #[test]
 fn test_update_pool_config_sends_message_to_pool() {
@@ -342,13 +320,6 @@ fn test_update_pool_config_nonexistent_pool() {
     assert!(err.to_string().contains("not found") || err.to_string().contains("type: cw_storage_plus"));
 }
 
-// ============================================================================
-// M-NEW-3 Regression: Newly-rotated pools skipped from oracle weighting
-// ============================================================================
-
-/// After pool rotation, pools without a previous cumulative snapshot should be
-/// skipped from the weighted price average (instead of falling back to spot
-/// price). Only pools with prior snapshots should contribute.
 #[test]
 fn test_m_new_3_rotation_skips_pools_without_prior_snapshot() {
     let mut deps = mock_deps_with_querier(&[]);
@@ -443,13 +414,6 @@ fn test_m_new_3_bootstrap_uses_spot_price_for_all() {
     assert_eq!(new_snapshots.len(), 1, "Should record snapshot for next cycle");
 }
 
-// ============================================================================
-// M-NEW-4 Regression: Pyth confidence interval validation
-// ============================================================================
-
-/// The confidence interval check (conf > price / 20) gates the production
-/// Pyth query path. Since that path is behind #[cfg(not(test))], we validate
-/// the arithmetic directly.
 #[test]
 fn test_m_new_4_confidence_interval_threshold_arithmetic() {
     // The check in query_pyth_atom_usd_price is:
@@ -481,10 +445,6 @@ fn test_m_new_4_confidence_interval_threshold_arithmetic() {
     let conf: u64 = 10_000_000; // ~0.95% -> should PASS
     assert!(conf <= threshold, "~1% confidence on real Pyth price should pass");
 }
-
-// ============================================================================
-// M-NEW-5 Regression: SETCOMMIT keyed by pool_id, not creator address
-// ============================================================================
 
 /// When the same creator creates two pools, both pool's CommitInfo entries
 /// should be independently stored (keyed by pool_id, not creator address).
@@ -602,12 +562,6 @@ fn test_m_new_5_multi_pool_creator_no_setcommit_collision() {
         "Pool 1 pool address should still be pool_addr_1, not pool_addr_2");
 }
 
-// ============================================================================
-// L-NEW-8 Regression: Factory migration CONTRACT_NAME consistency
-// ============================================================================
-
-/// After instantiation + migration, the stored contract name should be
-/// consistent (both execute.rs and migrate.rs use "crates.io:bluechip-factory").
 #[test]
 fn test_l_new_8_factory_migration_contract_name() {
     let mut deps = mock_deps_with_querier(&[]);

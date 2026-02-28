@@ -101,10 +101,6 @@ pub fn update_price_accumulator(
             .map_err(ContractError::from)?
             .checked_div(pool_state.reserve1)
             .map_err(|_| ContractError::DivideByZero)?;
-        // M-3 FIX: Use saturating_add instead of checked_add for TWAP accumulators.
-        // checked_add would cause pool operations to fail permanently on overflow.
-        // saturating_add caps at Uint128::MAX which is safe for TWAP delta calculations
-        // since the delta between two snapshots remains valid.
         pool_state.price0_cumulative_last = pool_state
             .price0_cumulative_last
             .saturating_add(price0_increment);
@@ -118,8 +114,8 @@ pub fn update_price_accumulator(
     Ok(())
 }
 
-/// Maximum age (in seconds) for an oracle price to be considered valid in commits.
-/// If the oracle price was last updated more than this many seconds ago, commits will be rejected.
+// Maximum age (in seconds) for an oracle price to be considered valid in commits.
+// If the oracle price was last updated more than this many seconds ago, commits will be rejected.
 pub const MAX_ORACLE_STALENESS_SECONDS: u64 = 600; // 10 minutes
 
 pub fn get_usd_value_with_staleness_check(

@@ -84,8 +84,7 @@ pub fn query(deps: Deps, env: Env, msg: QueryMsg) -> StdResult<Binary> {
             let info = COMMIT_INFO.may_load(deps.storage, &addr)?;
             to_json_binary(&info)
         }
-        // C-NEW-1 FIX: dispatch factory-facing queries through the entry point so
-        // the factory oracle's query_wasm_smart(PoolQueryMsg::GetPoolState) calls succeed.
+
         QueryMsg::GetPoolState { pool_contract_address } => {
             query_for_factory(deps, env, PoolQueryMsg::GetPoolState { pool_contract_address })
         }
@@ -322,8 +321,6 @@ pub fn query_positions(
     })
 }
 
-/// H-5 FIX: Use secondary OWNER_POSITIONS index for efficient owner-based lookups
-/// instead of scanning all positions and filtering client-side.
 pub fn query_positions_by_owner(
     deps: Deps,
     owner: String,
@@ -429,7 +426,6 @@ pub fn query_pool_commiters(
         }
     }
 
-    // L-7 FIX: Use commiters.len() directly instead of redundant counter
     Ok(PoolCommitResponse {
         total_count: commiters.len() as u32,
         commiters,
@@ -441,7 +437,6 @@ pub fn query_for_factory(deps: Deps, _env: Env, msg: PoolQueryMsg) -> StdResult<
         PoolQueryMsg::GetPoolState {
             pool_contract_address: _, // Ignore address check for now, simply return self state
         } => {
-            // Fix: Load from POOL_STATE (Item) instead of POOLS (Map which is never populated)
             let pool_state = POOL_STATE.load(deps.storage)?;
 
             // Load pool info to get assets
@@ -471,7 +466,6 @@ pub fn query_for_factory(deps: Deps, _env: Env, msg: PoolQueryMsg) -> StdResult<
             to_json_binary(&response)
         }
         PoolQueryMsg::GetAllPools {} => {
-            // Fix: Return single pool state since this contract is a single pool instance
             let pool_state = POOL_STATE.load(deps.storage)?;
             let pool_info = POOL_INFO.load(deps.storage)?;
             let assets: Vec<String> = pool_info

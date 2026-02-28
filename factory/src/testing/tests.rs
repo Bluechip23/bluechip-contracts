@@ -54,8 +54,8 @@ pub fn setup_atom_pool(deps: &mut OwnedDeps<MockStorage, MockApi, WasmMockQuerie
     let atom_pool_state = PoolStateResponseForFactory {
         pool_contract_address: atom_pool_addr.clone(),
         nft_ownership_accepted: true,
-        reserve0: Uint128::new(1_000_000_000_000), // 1M bluechip with 6 decimals
-        reserve1: Uint128::new(100_000_000_000),   // 100k ATOM with 6 decimals
+        reserve0: Uint128::new(1_000_000_000_000), 
+        reserve1: Uint128::new(100_000_000_000),   
         total_liquidity: Uint128::new(100_000_000),
         block_time_last: 0,
         price0_cumulative_last: Uint128::zero(),
