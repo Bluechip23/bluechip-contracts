@@ -196,13 +196,6 @@ pub fn trigger_threshold_payout(
         payout.pool_seed_amount,
     )?);
 
-    // H-1 FIX: Replaced O(n) COMMIT_LEDGER.keys().count() scan with a single-entry
-    // peek. The previous full scan charged storage-read gas for every committer and
-    // could exhaust the block gas limit with enough participants, permanently
-    // preventing threshold crossing. Distribution is now unconditionally deferred
-    // to batched ContinueDistribution calls; the inline path has been removed.
-    // Termination is driven by cursor-exhaustion in process_distribution_batch:
-    // when a batch finds no entries after the last cursor it removes DistributionState.
     let has_committers = COMMIT_LEDGER
         .range(storage, None, None, Order::Ascending)
         .next()
@@ -337,13 +330,6 @@ pub fn process_distribution_batch(
                 match reward_result {
                     Ok(reward) => {
                         if !reward.is_zero() {
-                            // M-2 FIX: Propagate construction errors instead of silently
-                            // skipping the entry. A skipped entry that falls behind the
-                            // advancing cursor is permanently stranded — it is never
-                            // revisited because subsequent batches start after the last
-                            // successfully-processed key. Returning an error here increments
-                            // consecutive_failures and eventually triggers manual recovery,
-                            // which is far preferable to silently losing a committer's funds.
                             msgs.push(mint_tokens(&pool_info.token_address, payer, reward)?);
                         }
                         COMMIT_LEDGER.remove(storage, payer);
@@ -351,7 +337,6 @@ pub fn process_distribution_batch(
                         processed_count += 1;
                     }
                     Err(e) => {
-                        // M-2 FIX: Same rationale — propagate rather than skip.
                         return Err(e);
                     }
                 }
@@ -382,11 +367,6 @@ pub fn process_distribution_batch(
                 DISTRIBUTION_STATE.save(storage, &updated_state)?;
                 // Remaining batches will be processed by external ContinueDistribution calls
             } else {
-                // No progress made - increment failure counter
-                // M-4 FIX: Only count failures when the batch was non-empty.
-                // An empty batch means distribution is actually complete (all
-                // entries processed), not a failure that should count toward
-                // the consecutive_failures threshold.
                 let recheck_start = dist_state
                     .last_processed_key
                     .as_ref()
@@ -450,15 +430,7 @@ pub fn process_distribution_batch(
 }
 
 pub fn calculate_effective_batch_size(dist_state: &DistributionState) -> u32 {
-    // M-1 FIX: The previous logic applied `(last_successful * 9) / 10` on every
-    // call, causing the batch size to shrink geometrically toward 1 after the
-    // first batch (10 → 9 → 8 → … → 1). Combined with the conservative first-run
-    // cap of 10, this made distribution progressively slower with each call and
-    // completely defeated the gas-based estimate for all subsequent batches.
-    //
-    // Now: derive the batch size purely from the gas estimate and cap it at
-    // MAX_DISTRIBUTIONS_PER_TX. This is stable across calls and respects the
-    // actual gas budget rather than a decaying heuristic.
+
     let base_batch_size = if dist_state.estimated_gas_per_distribution == 0 {
         1u32
     } else {

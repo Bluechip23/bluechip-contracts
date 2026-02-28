@@ -1,13 +1,3 @@
-/// Expand-economy audit and missing-coverage tests.
-///
-/// Coverage:
-/// - ProposeWithdrawal: address validation, unauthorized, duplicate proposal
-/// - ExecuteWithdrawal: timelock not expired, happy path, no pending withdrawal
-/// - CancelWithdrawal: happy path, nothing to cancel
-/// - Recipient defaults to sender when None
-/// - Zero-amount expansion (skipped gracefully)
-/// - Unauthorized expansion / update-config
-
 #[cfg(test)]
 mod tests {
     use crate::contract::{execute, instantiate};
@@ -30,10 +20,6 @@ mod tests {
         instantiate(deps.as_mut(), mock_env(), mock_info("creator", &[]), msg).unwrap();
     }
 
-    // ========================================================================
-    // ProposeWithdrawal — address validation (replaces H-4)
-    // ========================================================================
-
     #[test]
     fn test_propose_withdrawal_invalid_recipient_fails() {
         let mut deps = mock_dependencies();
@@ -53,10 +39,6 @@ mod tests {
         );
     }
 
-    // ========================================================================
-    // ProposeWithdrawal — unauthorized caller
-    // ========================================================================
-
     #[test]
     fn test_propose_withdrawal_unauthorized() {
         let mut deps = mock_dependencies();
@@ -71,10 +53,6 @@ mod tests {
         let err = execute(deps.as_mut(), mock_env(), mock_info("hacker", &[]), msg).unwrap_err();
         assert!(matches!(err, crate::error::ContractError::Unauthorized {}));
     }
-
-    // ========================================================================
-    // ProposeWithdrawal — duplicate proposal rejected
-    // ========================================================================
 
     #[test]
     fn test_propose_withdrawal_duplicate_fails() {
@@ -97,10 +75,6 @@ mod tests {
             err
         );
     }
-
-    // ========================================================================
-    // ExecuteWithdrawal — before timelock expires
-    // ========================================================================
 
     #[test]
     fn test_execute_withdrawal_before_timelock_fails() {
@@ -129,10 +103,6 @@ mod tests {
             err
         );
     }
-
-    // ========================================================================
-    // ExecuteWithdrawal — happy path with explicit recipient
-    // ========================================================================
 
     #[test]
     fn test_execute_withdrawal_after_timelock_with_recipient() {
@@ -170,10 +140,6 @@ mod tests {
         }
     }
 
-    // ========================================================================
-    // ExecuteWithdrawal — recipient defaults to sender when None
-    // ========================================================================
-
     #[test]
     fn test_execute_withdrawal_defaults_to_sender() {
         let mut deps = mock_dependencies();
@@ -206,10 +172,6 @@ mod tests {
         }
     }
 
-    // ========================================================================
-    // ExecuteWithdrawal — nothing pending
-    // ========================================================================
-
     #[test]
     fn test_execute_withdrawal_nothing_pending_fails() {
         let mut deps = mock_dependencies();
@@ -229,10 +191,6 @@ mod tests {
             err
         );
     }
-
-    // ========================================================================
-    // ExecuteWithdrawal — unauthorized caller
-    // ========================================================================
 
     #[test]
     fn test_execute_withdrawal_unauthorized() {
@@ -259,10 +217,6 @@ mod tests {
         .unwrap_err();
         assert!(matches!(err, crate::error::ContractError::Unauthorized {}));
     }
-
-    // ========================================================================
-    // CancelWithdrawal — happy path
-    // ========================================================================
 
     #[test]
     fn test_cancel_withdrawal_happy_path() {
@@ -307,10 +261,6 @@ mod tests {
         .unwrap();
     }
 
-    // ========================================================================
-    // CancelWithdrawal — nothing to cancel
-    // ========================================================================
-
     #[test]
     fn test_cancel_withdrawal_nothing_pending_fails() {
         let mut deps = mock_dependencies();
@@ -331,9 +281,6 @@ mod tests {
         );
     }
 
-    // ========================================================================
-    // CancelWithdrawal — unauthorized caller
-    // ========================================================================
 
     #[test]
     fn test_cancel_withdrawal_unauthorized() {
@@ -357,10 +304,6 @@ mod tests {
         assert!(matches!(err, crate::error::ContractError::Unauthorized {}));
     }
 
-    // ========================================================================
-    // Zero-amount expansion (skipped gracefully)
-    // ========================================================================
-
     #[test]
     fn test_zero_amount_expansion_skipped() {
         let mut deps = mock_dependencies();
@@ -383,10 +326,6 @@ mod tests {
         assert_eq!(action_attr.value, "request_reward_skipped");
     }
 
-    // ========================================================================
-    // Expansion unauthorized (non-factory caller)
-    // ========================================================================
-
     #[test]
     fn test_expansion_unauthorized() {
         let mut deps = mock_dependencies();
@@ -400,10 +339,6 @@ mod tests {
         let err = execute(deps.as_mut(), mock_env(), mock_info("random", &[]), msg).unwrap_err();
         assert!(matches!(err, crate::error::ContractError::Unauthorized {}));
     }
-
-    // ========================================================================
-    // Update config unauthorized
-    // ========================================================================
 
     #[test]
     fn test_update_config_unauthorized() {

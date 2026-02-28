@@ -1,15 +1,8 @@
-/// Factory audit and missing-coverage tests.
-///
-/// Coverage:
-/// - NotifyThresholdCrossed: valid notification, double-call prevention, unauthorized caller
-/// - CancelConfigUpdate: cancel pending timelock
-/// - Config timelock enforcement: cannot execute before 48h
-/// - UpdatePoolConfig: send config update to specific pool
 use cosmwasm_std::testing::{
     mock_dependencies, mock_env, mock_info, MockApi, MockQuerier, MockStorage, MOCK_CONTRACT_ADDR,
 };
 use cosmwasm_std::{
-    to_json_binary, Addr, Coin, Decimal, OwnedDeps, Timestamp, Uint128,
+    to_json_binary, Addr, Coin, Decimal, OwnedDeps, Uint128,
 };
 
 use crate::error::ContractError;
@@ -68,10 +61,6 @@ fn setup_factory(
     setup_atom_pool(deps);
     instantiate(deps.as_mut(), env, info, config).unwrap();
 }
-
-// ============================================================================
-// NotifyThresholdCrossed
-// ============================================================================
 
 #[test]
 fn test_notify_threshold_crossed_unauthorized_caller() {
@@ -139,10 +128,6 @@ fn test_notify_threshold_crossed_unregistered_pool() {
     );
 }
 
-// ============================================================================
-// CancelConfigUpdate
-// ============================================================================
-
 #[test]
 fn test_cancel_config_update() {
     let mut deps = mock_deps_with_querier(&[]);
@@ -188,9 +173,6 @@ fn test_cancel_config_update_unauthorized() {
     assert!(err.to_string().contains("Only the admin"));
 }
 
-// ============================================================================
-// Config Timelock Enforcement
-// ============================================================================
 
 #[test]
 fn test_config_update_before_timelock_fails() {
@@ -221,9 +203,6 @@ fn test_config_update_before_timelock_fails() {
     assert!(res.attributes.iter().any(|a| a.value == "execute_update_config"));
 }
 
-// ============================================================================
-// UpdatePoolConfig
-// ============================================================================
 
 #[test]
 fn test_update_pool_config_sends_message_to_pool() {

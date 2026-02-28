@@ -19,7 +19,6 @@ pub fn calculate_mint_amount(seconds_elapsed: u64, pools_created: u64) -> StdRes
     let numerator = five_x_squared
         .checked_add(x)
         .ok_or_else(|| StdError::generic_err("Overflow in numerator addition"))?;
-    //number of bluechips minted by chain since first pool creation
     let s_div_6 = s / 6;
     let denominator = s_div_6
         .checked_add(
@@ -32,9 +31,6 @@ pub fn calculate_mint_amount(seconds_elapsed: u64, pools_created: u64) -> StdRes
     if denominator == 0 {
         return Ok(Uint128::new(500_000_000));
     }
-
-    // Scale numerator by 1_000_000 before dividing to preserve fractional precision,
-    // since the formula produces values in the 0..500 range but base_amount is 500_000_000.
     let scaled_numerator = numerator
         .checked_mul(1_000_000)
         .ok_or_else(|| StdError::generic_err("Overflow in scaled numerator"))?;
@@ -57,7 +53,7 @@ pub fn calculate_and_mint_bluechip(
 ) -> Result<Vec<CosmosMsg>, ContractError> {
     let messages = vec![];
 
-    // Still track the first pool timestamp for future use
+    // Still track the first pool timestamp for future use (s/6)
     let first_pool_time = match FIRST_POOL_TIMESTAMP.may_load(deps.storage)? {
         Some(time) => time,
         None => {

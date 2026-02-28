@@ -47,7 +47,6 @@ pub const NEXT_POSITION_ID: Item<u64> = Item::new("next_position_id");
 pub const DISTRIBUTION_STATE: Item<DistributionState> = Item::new("distribution_state");
 //information for liquidity positions in pools
 pub const LIQUIDITY_POSITIONS: Map<&str, Position> = Map::new("positions");
-/// H-5 FIX: Secondary index mapping (owner_addr, position_id) -> empty for efficient owner lookups
 pub const OWNER_POSITIONS: Map<(&Addr, &str), bool> = Map::new("owner_positions");
 //commit limit and amount of bluechips that will be stored in pool
 pub const COMMIT_LIMIT_INFO: Item<CommitLimitInfo> = Item::new("commit_config");
@@ -57,12 +56,10 @@ pub const ORACLE_INFO: Item<OracleInfo> = Item::new("oracle_info");
 pub const POOL_FEE_STATE: Item<PoolFeeState> = Item::new("pool_fee_state");
 pub const CREATOR_EXCESS_POSITION: Item<CreatorExcessLiquidity> = Item::new("creator_excess");
 pub const POOL_PAUSED: Item<bool> = Item::new("pool_paused");
-/// H-3 FIX: Track emergency withdrawal details so LPs know where funds went
 pub const EMERGENCY_WITHDRAWAL: Item<EmergencyWithdrawalInfo> = Item::new("emergency_withdrawal");
-/// H-3 FIX (timelock): timestamp after which the pending emergency withdrawal
-/// may be executed.  Set on initiation; cleared on execution or cancellation.
+// may be executed.  Set on initiation; cleared on execution or cancellation.
 pub const PENDING_EMERGENCY_WITHDRAW: Item<Timestamp> = Item::new("pending_emergency_withdraw");
-/// Timelock duration for emergency withdrawal: 24 hours.
+// Timelock duration for emergency withdrawal: 24 hours.
 pub const EMERGENCY_WITHDRAW_DELAY_SECONDS: u64 = 86_400;
 
 #[cw_serde]
@@ -78,9 +75,9 @@ pub const DEFAULT_ESTIMATED_GAS_PER_DISTRIBUTION: u64 = 50_000;
 pub const DEFAULT_MAX_GAS_PER_TX: u64 = 2_000_000;
 pub const MAX_DISTRIBUTIONS_PER_TX: u32 = 40;
 pub const MINIMUM_LIQUIDITY: Uint128 = Uint128::new(1000);
-/// Small bounty paid from pool reserves to the caller of ContinueDistribution.
-/// Incentivizes external callers to drive distribution batches to completion.
-/// 1_000_000 = 1 bluechip token (6 decimal places), enough to cover gas costs.
+// Small bounty paid from pool reserves to the caller of ContinueDistribution.
+// Incentivizes external callers to drive distribution batches to completion.
+// 1_000_000 = 1 bluechip token (6 decimal places), enough to cover gas costs.
 pub const DISTRIBUTION_BOUNTY: Uint128 = Uint128::new(1_000_000);
 
 #[cw_serde]
@@ -101,7 +98,7 @@ pub struct DistributionState {
 pub enum RecoveryType {
     StuckThreshold,
     StuckDistribution,
-    StuckReentrancyGuard, // C-3 FIX: Reset reentrancy guard if stuck
+    StuckReentrancyGuard, 
     Both,                 // Check and clear all stuck states
 }
 

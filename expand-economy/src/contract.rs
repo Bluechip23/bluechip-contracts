@@ -62,6 +62,7 @@ pub fn execute(
     }
 }
 
+//triggered when pool crosses threshold. Sends specified amount of ubluechip to the recipient address. Only callable by factory.
 pub fn execute_expand_economy(
     deps: DepsMut,
     info: MessageInfo,
@@ -127,7 +128,7 @@ pub fn execute_update_config(
         .add_attribute("owner", config.owner))
 }
 
-/// Step 1: record a proposed withdrawal and start the 48-hour timelock.
+// only one at a time, and only owner can call
 pub fn execute_propose_withdrawal(
     deps: DepsMut,
     env: Env,
@@ -168,7 +169,7 @@ pub fn execute_propose_withdrawal(
         .add_attribute("execute_after", execute_after.to_string()))
 }
 
-/// Step 2: execute the timelocked withdrawal after the delay has elapsed.
+// execute the timelocked withdrawal after the delay has elapsed. 48hrs
 pub fn execute_withdrawal(
     deps: DepsMut,
     env: Env,
@@ -208,7 +209,7 @@ pub fn execute_withdrawal(
         .add_attribute("denom", pending.denom))
 }
 
-/// Cancel a pending withdrawal before it executes.
+// Cancel a pending withdrawal before it executes.
 pub fn execute_cancel_withdrawal(
     deps: DepsMut,
     info: MessageInfo,

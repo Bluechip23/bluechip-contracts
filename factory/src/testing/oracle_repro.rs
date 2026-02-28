@@ -83,7 +83,7 @@ fn test_repro_token_sort_order_bug() {
         "Price should be 1.0 when reserves are equal"
     );
 
-    // NOW: Simulate "Inverted" Pool
+    // Simulate "Inverted" Pool
     // reserve0 = ATOM (200B), reserve1 = Bluechip (100B).
     // Update POOLS_BY_ID to reflect the inverted token order.
     let inverted_pool_details = PoolDetails {
@@ -123,10 +123,6 @@ fn test_repro_token_sort_order_bug() {
 
     let (price_inverted, _, _) =
         calculate_weighted_price_with_atom(deps.as_ref(), &pools, &[]).unwrap();
-
-    // With the fix, the oracle looks up POOLS_BY_ID to determine that asset[0] is
-    // CreatorToken => is_bluechip_second = true => bluechip is reserve1 (100B).
-    // Price = 100 / 200 = 0.5 (500_000).
     assert_eq!(
         price_inverted.u128(),
         500_000,

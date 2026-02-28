@@ -30,8 +30,6 @@ pub struct BlueChipPriceInternalOracle {
     pub rotation_interval: u64,
     pub bluechip_price_cache: PriceCache,
     pub update_interval: u64,
-    /// Per-pool snapshots of cumulative price accumulators from the previous oracle update.
-    /// Used to compute manipulation-resistant TWAPs from on-chain accumulators.
     pub pool_cumulative_snapshots: Vec<PoolCumulativeSnapshot>,
 }
 #[cw_serde]
@@ -39,8 +37,7 @@ pub struct PriceCache {
     pub last_price: Uint128,
     pub last_update: u64,
     pub twap_observations: Vec<PriceObservation>,
-    /// Cached ATOM/USD price from the last successful Pyth query.
-    /// Used as fallback when Pyth is stale but the internal TWAP is fresh.
+
     #[serde(default)]
     pub cached_pyth_price: Uint128,
     #[serde(default)]
@@ -52,8 +49,7 @@ pub struct PriceObservation {
     pub price: Uint128,
     pub atom_pool_price: Uint128,
 }
-/// Stores the cumulative price accumulator values from a pool at a given time.
-/// Used to compute TWAP = (cumulative_now - cumulative_prev) / (time_now - time_prev).
+
 #[cw_serde]
 pub struct PoolCumulativeSnapshot {
     pub pool_address: String,
@@ -84,12 +80,7 @@ pub fn select_random_pools_with_atom(
         all_pools.push(atom_pool_contract_contract_address);
         return Ok(all_pools);
     }
-    // H-1 FIX: mix in oracle state that a validator cannot predict or control
-    // at block-production time: the last stored TWAP price and last update
-    // timestamp are set by the *previous* oracle update call, so they are
-    // determined before the current block is chosen.  Block time/height alone
-    // are computable in advance by a colluding validator, so they remain
-    // necessary but insufficient on their own.
+
     let oracle_state = INTERNAL_ORACLE.may_load(deps.storage)?.unwrap_or_else(|| {
         BlueChipPriceInternalOracle {
             selected_pools: vec![],
@@ -243,10 +234,7 @@ pub fn update_internal_oracle_price(deps: DepsMut, env: Env) -> Result<Response,
             select_random_pools_with_atom(deps.as_ref(), env.clone(), ORACLE_POOL_COUNT)?;
         oracle.selected_pools = pools_to_use.clone();
         oracle.last_rotation = current_time;
-        // Retain snapshots only for pools that remain in the new selection
-        // (e.g. the ATOM anchor pool which is always selected). This avoids
-        // falling back to manipulable spot prices for pools that already have
-        // TWAP history.
+        // Retain snapshots only for pools that remain in the new selection to preserve TWAP continuity
         oracle
             .pool_cumulative_snapshots
             .retain(|s| pools_to_use.contains(&s.pool_address));
@@ -276,8 +264,7 @@ pub fn update_internal_oracle_price(deps: DepsMut, env: Env) -> Result<Response,
     oracle.bluechip_price_cache.last_price = twap_price;
     oracle.bluechip_price_cache.last_update = current_time;
 
-    // Cache the Pyth ATOM/USD price alongside the TWAP update so that
-    // commits can still proceed when Pyth goes stale but the TWAP is fresh.
+    // Cache the Pyth ATOM/USD price alongside the TWAP update 
     if let Ok(pyth_price) = query_pyth_atom_usd_price(deps.as_ref(), env) {
         oracle.bluechip_price_cache.cached_pyth_price = pyth_price;
         oracle.bluechip_price_cache.cached_pyth_timestamp = current_time;
@@ -291,14 +278,7 @@ pub fn update_internal_oracle_price(deps: DepsMut, env: Env) -> Result<Response,
         .add_attribute("pools_used", pools_to_use.len().to_string()))
 }
 
-/// Calculates a liquidity-weighted price across sampled pools using cumulative
-/// price accumulators (Uniswap V2 TWAP pattern) instead of spot reserves.
-///
-/// For each pool:
-/// - If a previous cumulative snapshot exists, computes TWAP from the difference
-/// - If no snapshot exists (first observation), falls back to spot price
-///
-/// Returns (weighted_price, atom_pool_price, new_snapshots).
+// Calculates a liquidity-weighted price across sampled pools using cumulative
 pub fn calculate_weighted_price_with_atom(
     deps: Deps,
     pool_addresses: &[String],
@@ -332,8 +312,6 @@ pub fn calculate_weighted_price_with_atom(
                 }
 
                 // Determine if Bluechip is reserve0 or reserve1 by looking up the
-                // registered pool token types from POOLS_BY_ID. This is reliable because
-                // the TokenType enum explicitly tags Bluechip vs CreatorToken.
                 let is_bluechip_second = {
                     let mut found = false;
                     for result in POOLS_BY_ID.range(deps.storage, None, None, Order::Ascending) {
@@ -350,9 +328,6 @@ pub fn calculate_weighted_price_with_atom(
 
                 // Save cumulative snapshot for next update cycle.
                 // price0_cumulative tracks reserve1/reserve0 (creator_per_bluechip).
-                // We want bluechip_per_creator = reserve0/reserve1 = price1_cumulative.
-                // But the pool accumulator `price0_cumulative_last` = sum(reserve1/reserve0 * dt)
-                // and `price1_cumulative_last` = sum(reserve0/reserve1 * dt).
                 // For bluechip pricing: we need reserve0(bluechip) / reserve1(other).
                 let cumulative_for_price = if is_bluechip_second {
                     // bluechip is reserve1, other is reserve0
@@ -381,8 +356,6 @@ pub fn calculate_weighted_price_with_atom(
 
                     if time_delta > 0 && !cumulative_delta.is_zero() {
                         // TWAP = cumulative_delta / time_delta
-                        // The accumulator stores sum(price * time) in integer units,
-                        // so dividing by time gives average price.
                         // Scale to PRICE_PRECISION for consistency.
                         let twap = cumulative_delta
                             .checked_mul(Uint128::from(PRICE_PRECISION))
@@ -414,8 +387,7 @@ pub fn calculate_weighted_price_with_atom(
                     calculate_price_from_reserves(bluechip_reserve, other_reserve)?
                 } else {
                     // Post-rotation: this pool is newly selected and has no prior
-                    // snapshot. Skip it from price weighting to avoid using
-                    // manipulable spot prices. The snapshot was already recorded
+                    // snapshot. Skip it from price weighting. The snapshot was already recorded
                     // above, so TWAP data will be available on the next update.
                     continue;
                 };

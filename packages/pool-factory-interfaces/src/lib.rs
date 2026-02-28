@@ -53,10 +53,10 @@ pub struct AllPoolsResponse {
     pub pools: Vec<(String, PoolStateResponseForFactory)>,
 }
 
-/// Messages that a pool contract can send to the factory contract.
+// Messages that a pool contract can send to the factory contract.
 #[cw_serde]
 pub enum FactoryExecuteMsg {
-    /// Called by a pool when its commit threshold has been crossed.
+    // Called by a pool when its commit threshold has been crossed.
     NotifyThresholdCrossed { pool_id: u64 },
 }
 

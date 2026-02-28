@@ -23,20 +23,19 @@ use std::env;
 const CONTRACT_NAME: &str = "crates.io:bluechip-factory";
 const CONTRACT_VERSION: &str = env!("CARGO_PKG_VERSION");
 pub const BURN_ADDRESS: &str = "cosmos1qqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqnrql8a";
-/// Reply step constants (stored in low 8 bits of reply ID).
+// Reply step constants (stored in low 8 bits of reply ID).
 pub const SET_TOKENS: u64 = 1;
 pub const MINT_CREATE_POOL: u64 = 2;
 pub const FINALIZE_POOL: u64 = 3;
 pub const CLEANUP_TOKEN_STEP: u64 = 100;
 pub const CLEANUP_NFT_STEP: u64 = 101;
 
-/// Encodes a pool_id and a step into a single SubMsg reply ID.
-/// Layout: upper 56 bits = pool_id, lower 8 bits = step.
+// Encodes a pool_id and a step into a single SubMsg reply ID.
 pub fn encode_reply_id(pool_id: u64, step: u64) -> u64 {
     (pool_id << 8) | (step & 0xFF)
 }
 
-/// Decodes a reply ID back into (pool_id, step).
+// Decodes a reply ID back into (pool_id, step).
 pub fn decode_reply_id(reply_id: u64) -> (u64, u64) {
     (reply_id >> 8, reply_id & 0xFF)
 }
@@ -50,7 +49,6 @@ pub fn instantiate(
 ) -> Result<Response, ContractError> {
     cw2::set_contract_version(deps.storage, CONTRACT_NAME, CONTRACT_VERSION)?;
 
-    // M-1 FIX: Validate all address fields during instantiation
     deps.api.addr_validate(msg.factory_admin_address.as_str())?;
     deps.api.addr_validate(msg.bluechip_wallet_address.as_str())?;
     deps.api.addr_validate(msg.atom_bluechip_anchor_pool_address.as_str())?;
@@ -134,10 +132,6 @@ pub fn execute_propose_factory_config_update(
     config: FactoryInstantiate,
 ) -> Result<Response, ContractError> {
     assert_correct_factory_address(deps.as_ref(), info)?;
-
-    // H-NEW-2 FIX: validate all address fields in the proposed config before
-    // committing to the 48-hour timelock. Without this a typo/wrong-prefix address
-    // would silently pass the proposal and brick the factory after the delay.
     deps.api.addr_validate(config.factory_admin_address.as_str())?;
     deps.api.addr_validate(config.bluechip_wallet_address.as_str())?;
     deps.api.addr_validate(config.atom_bluechip_anchor_pool_address.as_str())?;
@@ -248,12 +242,12 @@ pub fn execute_propose_pool_upgrade(
     env: Env,
     info: MessageInfo,
     new_code_id: u64,
-    pool_ids: Option<Vec<u64>>, // None = all pools
+    // None = all pools
+    pool_ids: Option<Vec<u64>>, 
     migrate_msg: Binary,
 ) -> Result<Response, ContractError> {
     assert_correct_factory_address(deps.as_ref(), info)?;
 
-    // Reject if there's already a pending upgrade
     if PENDING_POOL_UPGRADE.may_load(deps.storage)?.is_some() {
         return Err(ContractError::Std(StdError::generic_err(
             "A pool upgrade is already pending. Cancel it first.",
@@ -297,7 +291,6 @@ pub fn execute_apply_pool_upgrade(
 
     let upgrade = PENDING_POOL_UPGRADE.load(deps.storage)?;
 
-    // Enforce timelock
     if env.block.time < upgrade.effective_after {
         return Err(ContractError::TimelockNotExpired {
             effective_after: upgrade.effective_after,
@@ -323,7 +316,6 @@ pub fn execute_apply_pool_upgrade(
         }));
     }
 
-    // Save progress
     let mut upgrade = upgrade;
     upgrade.upgraded_count = messages.len() as u32;
     PENDING_POOL_UPGRADE.save(deps.storage, &upgrade)?;
@@ -454,8 +446,8 @@ pub fn execute_continue_pool_upgrade(
         .add_attribute("total_upgraded", upgrade.upgraded_count.to_string()))
 }
 
-/// Called by a pool when its commit threshold has been crossed.
-/// Triggers the bluechip mint for this pool (only once per pool).
+// Called by a pool when its commit threshold has been crossed.
+// Triggers the bluechip mint for this pool (only once per pool).
 pub fn execute_notify_threshold_crossed(
     mut deps: DepsMut,
     env: Env,
@@ -486,10 +478,8 @@ pub fn execute_notify_threshold_crossed(
         )));
     }
 
-    // Mark as minted before executing to prevent reentrancy
     POOL_THRESHOLD_MINTED.save(deps.storage, pool_id, &true)?;
 
-    // Trigger the bluechip mint using pool_id as the count parameter
     let mint_messages = calculate_and_mint_bluechip(&mut deps, env, pool_id)?;
 
     Ok(Response::new()

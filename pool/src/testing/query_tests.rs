@@ -1,16 +1,3 @@
-/// Tests for pool contract query handlers.
-///
-/// Coverage:
-/// - Simulation query (swap preview)
-/// - ReverseSimulation query
-/// - PositionsByOwner query (H-5 audit fix)
-/// - PoolInfo combined query
-/// - FeeState query
-/// - FeeInfo query
-/// - CommitingInfo query
-/// - LastCommited query
-/// - IsFullyCommited query (CommitStatus)
-
 use cosmwasm_std::{
     testing::{mock_dependencies, mock_env, MockApi, MockQuerier, MockStorage},
     from_json, to_json_binary, Addr, Coin, Decimal, OwnedDeps, Timestamp, Uint128,
@@ -33,8 +20,8 @@ use crate::state::{
 };
 use crate::testing::liquidity_tests::{create_test_position, setup_pool_post_threshold, setup_pool_storage};
 
-/// Setup pool storage on the custom mock querier that supports simulation queries.
-/// Simulation queries call `query_pools()` which needs bank balance + CW20 balance queries.
+// Setup pool storage on the custom mock querier that supports simulation queries.
+// Simulation queries call `query_pools()` which needs bank balance + CW20 balance queries.
 fn setup_pool_with_querier() -> OwnedDeps<MockStorage, MockApi, mock_querier::WasmMockQuerier> {
     let mut deps = mock_querier::mock_dependencies(&[
         Coin { denom: "ubluechip".to_string(), amount: Uint128::new(23_500_000_000) },
@@ -119,10 +106,6 @@ fn setup_pool_with_querier() -> OwnedDeps<MockStorage, MockApi, mock_querier::Wa
     deps
 }
 
-// ============================================================================
-// Simulation Query
-// ============================================================================
-
 #[test]
 fn test_query_simulation_bluechip_to_token() {
     let deps = setup_pool_with_querier();
@@ -188,9 +171,6 @@ fn test_query_simulation_wrong_asset() {
     assert!(err.to_string().contains("does not belong"));
 }
 
-// ============================================================================
-// ReverseSimulation Query
-// ============================================================================
 
 #[test]
 fn test_query_reverse_simulation() {
@@ -213,9 +193,6 @@ fn test_query_reverse_simulation() {
     assert!(rsim.commission_amount > Uint128::zero(), "commission_amount should be > 0");
 }
 
-// ============================================================================
-// PositionsByOwner Query (H-5 audit optimization)
-// ============================================================================
 
 #[test]
 fn test_query_positions_by_owner() {
@@ -331,10 +308,6 @@ fn test_query_positions_by_owner_pagination() {
     }
 }
 
-// ============================================================================
-// PoolInfo Combined Query
-// ============================================================================
-
 #[test]
 fn test_query_pool_info() {
     let mut deps = mock_dependencies();
@@ -356,9 +329,6 @@ fn test_query_pool_info() {
     assert_eq!(info.fee_state.total_fees_collected_0, Uint128::zero());
 }
 
-// ============================================================================
-// FeeState Query
-// ============================================================================
 
 #[test]
 fn test_query_fee_state() {
@@ -384,9 +354,6 @@ fn test_query_fee_state() {
     assert_eq!(resp.total_fees_collected_1, Uint128::new(750_000));
 }
 
-// ============================================================================
-// FeeInfo Query
-// ============================================================================
 
 #[test]
 fn test_query_fee_info() {
@@ -403,10 +370,6 @@ fn test_query_fee_info() {
     assert_eq!(resp.fee_info.bluechip_wallet_address, Addr::unchecked("bluechip_treasury"));
     assert_eq!(resp.fee_info.creator_wallet_address, Addr::unchecked("creator_wallet"));
 }
-
-// ============================================================================
-// CommitingInfo Query
-// ============================================================================
 
 #[test]
 fn test_query_commiting_info_exists() {
@@ -448,9 +411,6 @@ fn test_query_commiting_info_not_found() {
     assert!(info.is_none());
 }
 
-// ============================================================================
-// LastCommited Query
-// ============================================================================
 
 #[test]
 fn test_query_last_commited_exists() {
@@ -494,10 +454,6 @@ fn test_query_last_commited_not_found() {
     assert!(resp.last_payment_bluechip.is_none());
 }
 
-// ============================================================================
-// IsFullyCommited (CommitStatus) Query
-// ============================================================================
-
 #[test]
 fn test_query_is_fully_commited_in_progress() {
     let mut deps = mock_dependencies();
@@ -533,9 +489,6 @@ fn test_query_is_fully_commited_fully_committed() {
     assert!(matches!(status, CommitStatus::FullyCommitted));
 }
 
-// ============================================================================
-// PoolState Query
-// ============================================================================
 
 #[test]
 fn test_query_pool_state() {

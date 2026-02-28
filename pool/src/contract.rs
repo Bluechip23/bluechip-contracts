@@ -59,7 +59,6 @@ pub fn instantiate(
     info: MessageInfo,
     msg: PoolInstantiateMsg,
 ) -> Result<Response, ContractError> {
-    // M-1 FIX: Removed circular validate_factory_address call (was saving then loading
     // the same address and comparing it to itself). The real security check is below:
     // pools are instantiated via SubMsg from the factory, so info.sender IS the factory.
     let cfg = ExpectedFactory {
@@ -389,7 +388,6 @@ pub fn execute_recover_stuck_states(
             recover_distribution(deps.storage, &env, &mut recovered_items)?;
         }
         RecoveryType::StuckReentrancyGuard => {
-            // C-3 FIX: Allow factory admin to reset a stuck reentrancy guard
             recover_reentrancy_guard(deps.storage, &mut recovered_items)?;
         }
         RecoveryType::Both => {
@@ -474,8 +472,7 @@ fn recover_distribution(
     Ok(())
 }
 
-/// C-3 FIX: Reset the reentrancy guard if it gets stuck in `true` state.
-/// This can only be called by the factory admin via RecoverStuckStates.
+// This can only be called by the factory admin via RecoverStuckStates.
 fn recover_reentrancy_guard(
     storage: &mut dyn Storage,
     recovered: &mut Vec<String>,
@@ -562,7 +559,6 @@ pub fn reply(deps: DepsMut, _env: Env, msg: Reply) -> Result<Response, ContractE
 
         let lp: Addr = deps.api.addr_validate(&res.contract_address)?;
 
-        // M-2 FIX: Removed no-op POOL_INFO.update that loaded and saved unchanged state.
         return Ok(Response::new().add_attribute("lp_token", lp));
     }
 
@@ -964,11 +960,7 @@ pub fn execute_commit_logic(
                             get_bluechip_value(deps.as_ref(), usd_to_threshold)?;
                         // Pre-fee excess (for accounting/tracking only)
                         let bluechip_excess = asset.amount.checked_sub(bluechip_to_threshold)?;
-                        // C-2 FIX: Fees were already deducted from the full `amount` and sent
-                        // via BankMsg above (lines 865-893). The post-fee funds remaining in
-                        // the contract are `amount_after_fees`. We must split that into the
-                        // threshold portion and the excess portion proportionally, rather
-                        // than deducting fees again from the excess.
+                   
                         let threshold_portion_after_fees = if amount.is_zero() {
                             Uint128::zero()
                         } else {
@@ -1063,9 +1055,7 @@ pub fn execute_commit_logic(
                             // Accumulate price with OLD reserves before updating
                             update_price_accumulator(&mut pool_state, env.block.time.seconds())?;
 
-                            // Update reserves with fee-adjusted amount (actual tokens remaining in pool)
-                            // C-1 FIX: Subtract both return_amt AND commission_amt from ask reserve
-                            // to avoid double-counting commission in both reserve1 and fee_reserve_1.
+                        
                             pool_state.reserve0 = offer_pool.checked_add(effective_bluechip_excess)?;
                             pool_state.reserve1 = ask_pool.checked_sub(return_amt.checked_add(commission_amt)?)?;
 
@@ -1316,8 +1306,6 @@ fn process_post_threshold_commit(
     // Accumulate price with OLD reserves before updating
     update_price_accumulator(&mut pool_state, env.block.time.seconds())?;
     // Update reserves with fee-adjusted amount (actual tokens remaining in pool)
-    // C-1 FIX: Subtract both return_amt AND commission_amt from ask reserve
-    // to avoid double-counting commission in both reserve1 and fee_reserve_1.
     pool_state.reserve0 = offer_pool.checked_add(swap_amount)?;
     pool_state.reserve1 = ask_pool.checked_sub(return_amt.checked_add(commission_amt)?)?;
     // Update fee growth
@@ -1399,7 +1387,6 @@ pub fn execute_continue_distribution(
     info: MessageInfo,
 ) -> Result<Response, ContractError> {
     // Permissionless: anyone can trigger the next distribution batch.
-    // Safety: amounts, recipients, and totals are all fixed in DISTRIBUTION_STATE.
     let dist_state = DISTRIBUTION_STATE.load(deps.storage)?;
     if !dist_state.is_distributing {
         return Err(ContractError::NothingToRecover {});
@@ -1408,7 +1395,6 @@ pub fn execute_continue_distribution(
     let pool_info = POOL_INFO.load(deps.storage)?;
     let mut msgs = process_distribution_batch(deps.storage, &pool_info, &env)?;
 
-    // M-5 FIX: Pay bounty from the pool's fee reserves (bluechip side) to actually
     // incentivize external callers. The previous self-funded model provided no incentive.
     let bluechip_denom = match &pool_info.pool_info.asset_infos[0] {
         TokenType::Bluechip { denom } => denom.clone(),
@@ -1447,7 +1433,6 @@ pub fn execute_continue_distribution(
 pub fn migrate(deps: DepsMut, _env: Env, msg: MigrateMsg) -> StdResult<Response> {
     match msg {
         MigrateMsg::UpdateFees { new_fees } => {
-            // M-6 FIX: Add reasonable fee bounds (max 10%) to prevent
             // migration from setting abusive fee levels
             let max_lp_fee = Decimal::percent(10);
             if new_fees > max_lp_fee {
@@ -1483,7 +1468,6 @@ pub fn execute_update_config_from_factory(
     let mut attributes = vec![("action", "update_config")];
 
     if let Some(fee) = update.lp_fee {
-        // H-NEW-1 FIX: apply the same 10% cap used in migrate() so the config-update
         // path cannot silently set extractive fees that steal from traders.
         let max_lp_fee = Decimal::percent(10);
         if fee > max_lp_fee {
@@ -1491,7 +1475,6 @@ pub fn execute_update_config_from_factory(
                 "lp_fee must not exceed 10% (0.1)",
             )));
         }
-        // L-1 FIX: enforce a minimum fee so LPs always earn something from swaps.
         // A fee of zero makes providing liquidity economically irrational and will
         // drain the pool through impermanent loss over time.
         let min_lp_fee = Decimal::permille(1); // 0.1%
@@ -1508,7 +1491,6 @@ pub fn execute_update_config_from_factory(
     }
 
     if let Some(interval) = update.min_commit_interval {
-        // M-9 FIX: cap at 1 day so an admin cannot freeze the pool by setting an
         // absurdly large interval (e.g. u64::MAX would prevent all future commits).
         const MAX_COMMIT_INTERVAL: u64 = 86_400; // 24 hours
         if interval > MAX_COMMIT_INTERVAL {
@@ -1562,19 +1544,18 @@ pub fn execute_unpause(deps: DepsMut, info: MessageInfo) -> Result<Response, Con
     Ok(Response::new().add_attribute("action", "unpause"))
 }
 
-/// H-3 FIX (timelock): Two-phase emergency withdraw.
-///
-/// **Phase 1 — initiate** (first call, no pending state):
-///   Pauses the pool and records a pending withdrawal that becomes
-///   executable 24 hours later.  No funds are moved yet, giving LPs a
-///   window to observe the pending action on-chain.
-///
-/// **Phase 2 — execute** (second call, after timelock):
-///   Drains all reserves, fee reserves, and creator excess to the
-///   protocol-controlled `bluechip_wallet_address`.
-///
-/// The factory admin can cancel a pending-but-unexecuted withdrawal with
-/// `CancelEmergencyWithdraw {}`.
+//
+// **Phase 1 — initiate** (first call, no pending state):
+//   Pauses the pool and records a pending withdrawal that becomes
+//   executable 24 hours later.  No funds are moved yet, giving LPs a
+//   window to observe the pending action on-chain.
+//
+// **Phase 2 — execute** (second call, after timelock):
+//   Drains all reserves, fee reserves, and creator excess to the
+//   protocol-controlled `bluechip_wallet_address`.
+//
+// The factory admin can cancel a pending-but-unexecuted withdrawal with
+// `CancelEmergencyWithdraw {}`.
 pub fn execute_emergency_withdraw(
     deps: DepsMut,
     env: Env,
@@ -1587,7 +1568,7 @@ pub fn execute_emergency_withdraw(
 
     let now = env.block.time;
 
-    // --- Phase 2: execute if timelock has elapsed ---
+    // Phase 2: execute if timelock has elapsed 
     if let Some(effective_after) = PENDING_EMERGENCY_WITHDRAW.may_load(deps.storage)? {
         if now < effective_after {
             return Err(ContractError::Std(StdError::generic_err(format!(
@@ -1665,7 +1646,7 @@ pub fn execute_emergency_withdraw(
             .add_attribute("total_liquidity", withdrawal_info.total_liquidity_at_withdrawal));
     }
 
-    // --- Phase 1: initiate — pause pool and set timelock ---
+    // Phase 1: initiate — pause pool and set timelock 
     POOL_PAUSED.save(deps.storage, &true)?;
     let effective_after = now.plus_seconds(EMERGENCY_WITHDRAW_DELAY_SECONDS);
     PENDING_EMERGENCY_WITHDRAW.save(deps.storage, &effective_after)?;
@@ -1675,8 +1656,8 @@ pub fn execute_emergency_withdraw(
         .add_attribute("effective_after", effective_after.to_string()))
 }
 
-/// Cancels a pending emergency withdrawal before its timelock elapses.
-/// Only callable by the factory admin.
+// Cancels a pending emergency withdrawal before its timelock elapses.
+// Only callable by the factory admin.
 pub fn execute_cancel_emergency_withdraw(
     deps: DepsMut,
     info: MessageInfo,

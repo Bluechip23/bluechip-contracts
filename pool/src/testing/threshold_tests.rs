@@ -205,7 +205,6 @@ fn test_claim_excess_after_unlock_succeeds() {
         _ => panic!("Expected Wasm Execute message"),
     }
 
-    // L-3 FIX: Position IDs now use plain numeric format (consistent with execute_deposit_liquidity)
     let position = LIQUIDITY_POSITIONS
         .load(&deps.storage, "1")
         .unwrap();
@@ -427,9 +426,6 @@ fn test_commit_threshold_overshoot_split() {
         USD_RAISED_FROM_COMMIT.load(&deps.storage).unwrap(),
         Uint128::new(25_000_000_000)
     );
-
-    // H-1 FIX: Distribution is now always batched. The threshold-crosser's entry is
-    // retained in COMMIT_LEDGER until ContinueDistribution pays them out.
     assert!(
         COMMIT_LEDGER.load(&deps.storage, &info.sender).is_ok(),
         "Threshold-crosser's entry should remain in ledger pending batched distribution"
@@ -747,9 +743,6 @@ fn test_accumulated_bluechips_respected() {
     USD_RAISED_FROM_COMMIT
         .save(&mut deps.storage, &Uint128::new(24_000_000_000))
         .unwrap();
-
-    // CRITICAL: We must manually set the NATIVE_RAISED_FROM_COMMIT to reflect the low price history
-    // 48,000 bluechips for 4,000 USD
     crate::state::NATIVE_RAISED_FROM_COMMIT
         .save(&mut deps.storage, &Uint128::new(48_000_000_000))
         .unwrap();
@@ -788,12 +781,6 @@ fn test_accumulated_bluechips_respected() {
     };
 
     execute(deps.as_mut(), env.clone(), info, msg).unwrap();
-
-    // Total bluechips = 48,000 + 2,000 = 50,000, after 6% fees = ~47,000
-    // Max bluechip lock is 100,000 (from setup_pool_with_excess_config)
-    // Since 47,000,000,000 > 100,000 cap, excess path triggers
-    // Reserves should only contain the CAPPED amount, not the full amount
-    // Excess is held separately in CREATOR_EXCESS_POSITION until creator claims
 
     let pool_state = POOL_STATE.load(&deps.storage).unwrap();
 

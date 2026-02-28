@@ -1,13 +1,3 @@
-/// Audit regression tests for critical, high, and medium severity findings.
-/// These tests serve as regression guards to ensure audit fixes are never accidentally reverted.
-///
-/// Coverage:
-/// - C-1: Post-threshold swap reserve double-counting (commission + return deducted from ask reserve)
-/// - C-3: Reentrancy guard recovery via RecoverStuckStates
-/// - M-4: Minimum liquidity lock on first deposit (MINIMUM_LIQUIDITY = 1000)
-/// - M-5: Distribution bounty paid from fee_reserve, not tradeable reserves
-/// - M-6: Migration fee bounds validation (max 10%)
-
 use cosmwasm_std::{
     testing::{mock_dependencies, mock_env, mock_info, MockApi, MockQuerier, MockStorage},
     to_json_binary, Addr, Binary, Coin, ContractResult, CosmosMsg, Decimal, OwnedDeps,
@@ -41,14 +31,6 @@ fn mock_dependencies_with_balance(
         .update_balance(cosmwasm_std::testing::MOCK_CONTRACT_ADDR, balances.to_vec());
     deps
 }
-
-// ============================================================================
-// C-1: Post-threshold swap reserve double-counting regression
-//
-// The fix ensures ask_reserve is reduced by (return_amt + commission_amt),
-// not just return_amt. If only return_amt is subtracted, the commission
-// stays counted in both reserve1 AND fee_reserve_1 (double-counting).
-// ============================================================================
 
 #[test]
 fn test_c1_swap_reserve_deducts_return_and_commission() {
@@ -92,11 +74,6 @@ fn test_c1_swap_reserve_deducts_return_and_commission() {
     let commission_in_reserve = post_fee_state.fee_reserve_1;
     assert!(commission_in_reserve > Uint128::zero(), "Commission should be tracked in fee_reserve");
 
-    // C-1 REGRESSION: reserve1 must NOT include the commission amount.
-    // If the bug existed, reserve1 = initial_reserve1 - return_amt (commission double-counted).
-    // With the fix: reserve1 = initial_reserve1 - return_amt - commission_amt.
-    // Verify: reserve1 + fee_reserve_1 + tokens_sent_to_user < initial_reserve1
-    // (they should sum to exactly initial_reserve1)
     let tokens_sent = res.messages.iter()
         .filter_map(|m| {
             if let CosmosMsg::Wasm(cosmwasm_std::WasmMsg::Execute { msg, .. }) = &m.msg {
@@ -118,13 +95,6 @@ fn test_c1_swap_reserve_deducts_return_and_commission() {
         post_state.reserve1, commission_in_reserve, tokens_sent, initial_reserve1
     );
 }
-
-// ============================================================================
-// C-3: Reentrancy guard recovery
-//
-// If RATE_LIMIT_GUARD gets stuck in `true` (e.g., due to a failed transaction
-// that doesn't clean up), the factory admin can reset it.
-// ============================================================================
 
 #[test]
 fn test_c3_recover_stuck_reentrancy_guard() {
@@ -251,13 +221,6 @@ fn test_c3_recover_both_resets_all_stuck_states() {
     assert!(recovered_attr.value.contains("threshold"));
 }
 
-// ============================================================================
-// M-4: Minimum liquidity lock on first deposit
-//
-// The first depositor in a pool should have MINIMUM_LIQUIDITY (1000) locked,
-// receiving (computed_liquidity - 1000) instead of the full amount.
-// This prevents the "first depositor" attack.
-// ============================================================================
 
 #[test]
 fn test_m4_first_deposit_locks_minimum_liquidity() {
@@ -326,13 +289,6 @@ fn test_m4_first_deposit_locks_minimum_liquidity() {
     );
 }
 
-// ============================================================================
-// M-5: Distribution bounty paid from fee reserves
-//
-// When someone calls ContinueDistribution, the bounty should come from
-// fee_reserve_0 (bluechip fee reserves), not from the tradeable reserves.
-// ============================================================================
-
 #[test]
 fn test_m5_distribution_bounty_from_fee_reserves() {
     let mut deps = mock_dependencies();
@@ -392,13 +348,6 @@ fn test_m5_distribution_bounty_from_fee_reserves() {
     let bounty_amount: u128 = bounty_attr.value.parse().unwrap();
     assert!(bounty_amount > 0, "Bounty should be non-zero");
 }
-
-// ============================================================================
-// M-6: Migration fee bounds validation
-//
-// MigrateMsg::UpdateFees should reject fees > 10% to prevent
-// migration from setting abusive fee levels.
-// ============================================================================
 
 #[test]
 fn test_m6_migrate_rejects_excessive_fees() {
