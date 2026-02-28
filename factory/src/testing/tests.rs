@@ -449,7 +449,7 @@ fn test_asset_info() {
     assert!(!bluechip_info.equal(&token_info));
 }
 
-fn create_instantiate_reply(id: u64, contract_addr: &str) -> Reply {
+pub fn create_instantiate_reply(id: u64, contract_addr: &str) -> Reply {
     Reply {
         id,
         result: SubMsgResult::Ok(SubMsgResponse {
