@@ -209,15 +209,6 @@ fn test_update_config_all() {
         min_commit_interval: Some(60),        // was something else
         usd_payment_tolerance_bps: Some(200), // 2%
         oracle_address: Some("new_oracle".to_string()),
-        // other fields None
-        commit_fee_info: None,
-        commit_limit_usd: None,
-        pyth_contract_addr_for_conversions: None,
-        pyth_atom_usd_price_feed_id: None,
-        commit_amount_for_threshold: None,
-        threshold_payout: None,
-        cw20_token_contract_id: None,
-        cw721_nft_contract_id: None,
     };
 
     let exec_msg = ExecuteMsg::UpdateConfigFromFactory { update };
@@ -267,14 +258,6 @@ fn test_unauthorized_admin_actions() {
         min_commit_interval: None,
         usd_payment_tolerance_bps: None,
         oracle_address: None,
-        commit_fee_info: None,
-        commit_limit_usd: None,
-        pyth_contract_addr_for_conversions: None,
-        pyth_atom_usd_price_feed_id: None,
-        commit_amount_for_threshold: None,
-        threshold_payout: None,
-        cw20_token_contract_id: None,
-        cw721_nft_contract_id: None,
     };
     let err = execute(
         deps.as_mut(),

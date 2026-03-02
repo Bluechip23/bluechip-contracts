@@ -30,16 +30,12 @@ pub struct CreatePool {
     pub creator_excess_liquidity_lock_days: u64,
     pub is_standard_pool: Option<bool>,
 }
+/// Mutable pool configuration fields. Only these four fields can be changed
+/// post-instantiation via `UpdatePoolConfig` / `UpdateConfigFromFactory`.
+/// All other pool parameters (commit fees, thresholds, Pyth config, code IDs)
+/// are immutable after creation.
 #[cw_serde]
 pub struct PoolConfigUpdate {
-    pub commit_fee_info: Option<CommitFeeInfo>,
-    pub commit_limit_usd: Option<Uint128>,
-    pub pyth_contract_addr_for_conversions: Option<String>,
-    pub pyth_atom_usd_price_feed_id: Option<String>,
-    pub commit_amount_for_threshold: Option<Uint128>,
-    pub threshold_payout: Option<Binary>,
-    pub cw20_token_contract_id: Option<u64>,
-    pub cw721_nft_contract_id: Option<u64>,
     pub lp_fee: Option<Decimal>,
     pub min_commit_interval: Option<u64>,
     pub usd_payment_tolerance_bps: Option<u16>,

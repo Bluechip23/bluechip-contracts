@@ -1,12 +1,11 @@
 use cosmwasm_schema::{cw_serde, QueryResponses};
-use cosmwasm_std::{entry_point, to_json_binary, Addr, BalanceResponse, BankQuery, Binary, Deps, Env, QuerierWrapper, QueryRequest, StdError, StdResult, Uint128, WasmQuery};
+use cosmwasm_std::{entry_point, to_json_binary, Addr, BalanceResponse, BankQuery, Binary, Deps, Env, QuerierWrapper, QueryRequest, StdResult, Uint128, WasmQuery};
 use cw20::{Cw20QueryMsg, TokenInfoResponse, BalanceResponse as Cw20BalanceResponse};
 use pool_factory_interfaces::{FactoryQueryMsg, PoolStateResponseForFactory};
 use crate::internal_bluechip_price_oracle::{bluechip_to_usd, get_bluechip_usd_price, usd_to_bluechip};
 use crate::pool_struct::PoolDetails;
 use crate::msg::FactoryInstantiateResponse;
-use crate::pyth_types::{PythQueryMsg, PriceFeedResponse};
-use crate::state::{FACTORYINSTANTIATEINFO, MAX_PRICE_AGE_SECONDS_BEFORE_STALE, PENDING_CONFIG, POOLS_BY_CONTRACT_ADDRESS, PendingConfig};
+use crate::state::{FACTORYINSTANTIATEINFO, PENDING_CONFIG, POOLS_BY_CONTRACT_ADDRESS, PendingConfig};
 
 #[cw_serde]
 #[derive(QueryResponses)]
@@ -100,55 +99,6 @@ pub fn query_balance(
     Ok(balance.amount.amount)
 }
 
-pub fn query_pyth_atom_usd_price(deps: Deps, env: Env) -> StdResult<Uint128> {
-    let config = FACTORYINSTANTIATEINFO.load(deps.storage)?;
-    
-    let query_msg = PythQueryMsg::PythConversionPriceFeed {
-        id: config.pyth_atom_usd_price_feed_id.clone(),
-    };
-    
-    let query = QueryRequest::Wasm(WasmQuery::Smart {
-        contract_addr: config.pyth_contract_addr_for_conversions.to_string(),
-        msg: to_json_binary(&query_msg)?,
-    });
-    
-    let response: PriceFeedResponse = deps.querier.query(&query)?;
-    
-    // Extract price data from either standard Pyth response or Mock Oracle response
-    let price_data = if let Some(feed) = response.price_feed {
-        feed.price
-    } else if let Some(price) = response.price {
-        price
-    } else {
-        return Err(StdError::generic_err("Invalid oracle response: missing price data"));
-    };
-    
-    // Check if price is fresh enough
-    let current_time = env.block.time.seconds() as i64;
-    let price_age = current_time - price_data.publish_time;
-    
-    if price_age > MAX_PRICE_AGE_SECONDS_BEFORE_STALE as i64 {
-        return Err(StdError::generic_err(format!(
-            "Price is too stale. Age: {} seconds, Max allowed: {} seconds",
-            price_age, MAX_PRICE_AGE_SECONDS_BEFORE_STALE
-        )));
-    }
-    if price_data.price <= 0 {
-        return Err(StdError::generic_err("Invalid negative or zero price"));
-    }
-    
-    let price_u128 = price_data.price as u128;
-    let expo = price_data.expo;
-
-    let normalized_price = if expo == -6 {
-        Uint128::from(price_u128)
-    } else if expo < -6 {
-        let divisor = 10u128.pow((expo.abs() - 6) as u32);
-        Uint128::from(price_u128 / divisor)
-    } else {
-        let multiplier = 10u128.pow((6 - expo.abs()) as u32);
-        Uint128::from(price_u128 * multiplier)
-    };
-    
-    Ok(normalized_price)
-}
+// Pyth ATOM/USD price queries are handled exclusively through the oracle
+// module (internal_bluechip_price_oracle::query_pyth_atom_usd_price) which
+// includes full validation: staleness, confidence interval, and exponent range.

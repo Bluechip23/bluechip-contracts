@@ -59,6 +59,9 @@ pub const POOL_PAUSED: Item<bool> = Item::new("pool_paused");
 pub const EMERGENCY_WITHDRAWAL: Item<EmergencyWithdrawalInfo> = Item::new("emergency_withdrawal");
 // may be executed.  Set on initiation; cleared on execution or cancellation.
 pub const PENDING_EMERGENCY_WITHDRAW: Item<Timestamp> = Item::new("pending_emergency_withdraw");
+// Permanently set to `true` after an emergency withdrawal drains all reserves.
+// Prevents any further deposits, swaps, fee collections, or LP operations.
+pub const EMERGENCY_DRAINED: Item<bool> = Item::new("emergency_drained");
 // Timelock duration for emergency withdrawal: 24 hours.
 pub const EMERGENCY_WITHDRAW_DELAY_SECONDS: u64 = 86_400;
 

@@ -27,7 +27,7 @@ pub fn create_cleanup_messages(
             msg: to_json_binary(&Cw20ExecuteMsg::UpdateMinter { new_minter: None })?,
             funds: vec![],
         };
-        let sub_msg: SubMsg = SubMsg::reply_on_error(disable_token_msg, encode_reply_id(pool_id, CLEANUP_TOKEN_STEP));
+        let sub_msg: SubMsg = SubMsg::reply_always(disable_token_msg, encode_reply_id(pool_id, CLEANUP_TOKEN_STEP));
         messages.push(sub_msg);
     }
     if let Some(nft_addr) = &creation_state.mint_new_position_nft_address {
@@ -41,7 +41,7 @@ pub fn create_cleanup_messages(
             ))?,
             funds: vec![],
         };
-        let sub_msg: SubMsg = SubMsg::reply_on_error(disable_nft_msg, encode_reply_id(pool_id, CLEANUP_NFT_STEP));
+        let sub_msg: SubMsg = SubMsg::reply_always(disable_nft_msg, encode_reply_id(pool_id, CLEANUP_NFT_STEP));
         messages.push(sub_msg);
     }
 
