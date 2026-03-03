@@ -60,9 +60,7 @@ pub fn query(deps: Deps, env: Env, msg: PythQueryMsg) -> StdResult<Binary> {
                 .may_load(deps.storage, &price_id)?
                 .ok_or_else(|| StdError::generic_err("Symbol not found"))?;
             
-            // Always return current time to avoid staleness in tests comment out for live
             stored_price.publish_time = env.block.time.seconds();
-            
             to_json_binary(&stored_price)
         }
         PythQueryMsg::PythConversionPriceFeed { id } => {
@@ -70,27 +68,21 @@ pub fn query(deps: Deps, env: Env, msg: PythQueryMsg) -> StdResult<Binary> {
                 .may_load(deps.storage, &id)?
                 .ok_or_else(|| StdError::generic_err("Price feed not found"))?;
             
-            // Always return current time to avoid staleness in tests comment out for live
             let current_time = env.block.time.seconds() as i64;
-            
-            // Wrap in the expected response format
+
             let response = PriceFeedResponse {
                 price_feed: Some(PriceFeed {
-                    id: id,
+                    id,
                     price: PythPriceRetrievalResponse {
                         price: stored_price.price.u128() as i64,
                         conf: stored_price.conf.u128() as u64,
                         expo: stored_price.expo,
-                        //use for real price publish_time: stored_price.publish_time as i64,
-                        //this is for testing uncomment above for live
                         publish_time: current_time,
                     },
                     ema_price: PythPriceRetrievalResponse {
                         price: stored_price.price.u128() as i64,
                         conf: stored_price.conf.u128() as u64,
                         expo: stored_price.expo,
-                        //use for real price publish_time: stored_price.publish_time as i64,
-                         //this is for testing uncomment above for live
                         publish_time: current_time,
                     },
                 }),

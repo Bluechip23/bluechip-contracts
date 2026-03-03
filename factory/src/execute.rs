@@ -18,8 +18,6 @@ use cosmwasm_std::{
 };
 use cosmwasm_std::{Binary, CosmosMsg, Order};
 use cw20::MinterResponse;
-use std::env;
-
 const CONTRACT_NAME: &str = "crates.io:bluechip-factory";
 const CONTRACT_VERSION: &str = env!("CARGO_PKG_VERSION");
 pub const BURN_ADDRESS: &str = "cosmos1qqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqnrql8a";

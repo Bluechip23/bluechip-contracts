@@ -15,7 +15,6 @@ use crate::liquidity::{
 use crate::liquidity_helpers::execute_claim_creator_excess;
 use crate::msg::{Cw20HookMsg, ExecuteMsg, MigrateMsg, PoolConfigUpdate, PoolInstantiateMsg};
 use crate::query::query_check_commit;
-// use crate::response::MsgInstantiateContractResponse;
 use crate::state::{
     CommitLimitInfo, DistributionState, EmergencyWithdrawalInfo, ExpectedFactory, OracleInfo,
     PoolDetails, PoolFeeState, PoolInfo, PoolSpecs, RecoveryType, ThresholdPayoutAmounts,
@@ -37,18 +36,12 @@ use crate::swap_helper::{
 };
 use cosmwasm_std::{
     entry_point, from_json, to_json_binary, Addr, CosmosMsg, Decimal, DepsMut, Env, Fraction,
-    MessageInfo, Order, Reply, Response, StdError, StdResult, Storage, Timestamp, Uint128, WasmMsg,
+    MessageInfo, Order, Response, StdError, StdResult, Storage, Timestamp, Uint128, WasmMsg,
 };
 use cw2::set_contract_version;
 use cw20::{Cw20ExecuteMsg, Cw20ReceiveMsg};
-// use protobuf::Message;
 use std::vec;
-// The default swap slippage
 pub const DEFAULT_SLIPPAGE: &str = "0.005";
-// The maximum allowed swap slippage
-pub const MAX_ALLOWED_SLIPPAGE: &str = "0.5";
-// Decimal precision for TWAP results
-pub const TWAP_PRECISION: u8 = 6;
 // Contract name that is used for migration.
 const CONTRACT_NAME: &str = "bluechip-contracts-pool";
 // Contract version that is used for migration.
@@ -573,20 +566,6 @@ pub fn execute_swap_cw20(
         }
         Err(err) => Err(ContractError::Std(err)),
     }
-}
-
-#[cfg_attr(not(feature = "library"), entry_point)]
-pub fn reply(deps: DepsMut, _env: Env, msg: Reply) -> Result<Response, ContractError> {
-    if msg.id == 42 {
-        let res = cw_utils::parse_reply_instantiate_data(msg)
-            .map_err(|e| StdError::generic_err(format!("parse error: {}", e)))?;
-
-        let lp: Addr = deps.api.addr_validate(&res.contract_address)?;
-
-        return Ok(Response::new().add_attribute("lp_token", lp));
-    }
-
-    Err(StdError::generic_err("unknown reply id").into())
 }
 
 pub fn simple_swap(
@@ -1385,24 +1364,6 @@ fn process_post_threshold_commit(
         .add_attribute("commit_amount_usd", usd_value.to_string())
         .add_attribute("block_committed", env.block.time.to_string())
         .add_attribute("tokens_received", return_amt.to_string()))
-}
-
-pub fn get_cw20_transfer_msg(
-    token_addr: &Addr,
-    recipient: &Addr,
-    amount: Uint128,
-) -> StdResult<CosmosMsg> {
-    let transfer_cw20_msg = Cw20ExecuteMsg::Transfer {
-        recipient: recipient.into(),
-        amount,
-    };
-    let exec_cw20_transfer_msg = WasmMsg::Execute {
-        contract_addr: token_addr.into(),
-        msg: to_json_binary(&transfer_cw20_msg)?,
-        funds: vec![],
-    };
-    let cw20_transfer_msg: CosmosMsg = exec_cw20_transfer_msg.into();
-    Ok(cw20_transfer_msg)
 }
 
 pub fn execute_continue_distribution(

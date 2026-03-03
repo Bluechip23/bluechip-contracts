@@ -2,7 +2,7 @@
 use cosmwasm_std::entry_point;
 use cosmwasm_std::{
     to_json_binary, BankMsg, Binary, Coin, Deps, DepsMut, Env, MessageInfo, Response, StdError,
-    StdResult,
+    StdResult, Uint128,
 };
 use cw2::set_contract_version;
 
@@ -133,7 +133,7 @@ pub fn execute_propose_withdrawal(
     deps: DepsMut,
     env: Env,
     info: MessageInfo,
-    amount: cosmwasm_std::Uint128,
+    amount: Uint128,
     denom: String,
     recipient: Option<String>,
 ) -> Result<Response, ContractError> {
@@ -231,11 +231,11 @@ pub fn execute_cancel_withdrawal(
 }
 
 #[cfg_attr(not(feature = "library"), entry_point)]
-pub fn query(deps: Deps, _env: Env, msg: QueryMsg) -> StdResult<Binary> {
+pub fn query(deps: Deps, env: Env, msg: QueryMsg) -> StdResult<Binary> {
     match msg {
         QueryMsg::GetConfig {} => to_json_binary(&query_config(deps)?),
         QueryMsg::GetBalance { denom } => {
-            to_json_binary(&deps.querier.query_balance(_env.contract.address, denom)?)
+            to_json_binary(&deps.querier.query_balance(env.contract.address, denom)?)
         }
     }
 }

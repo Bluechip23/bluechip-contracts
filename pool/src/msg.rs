@@ -301,23 +301,6 @@ pub struct FeeInfoResponse {
 }
 
 #[cw_serde]
-pub struct StablePoolParams {
-    // The current stableswap pool amplification
-    pub amp: u64,
-}
-
-#[cw_serde]
-pub struct StablePoolConfig {
-    // The stableswap pool amplification
-    pub amp: Decimal,
-}
-
-#[cw_serde]
-pub enum StablePoolUpdateParams {
-    StartChangingAmp { next_amp: u64, next_amp_time: u64 },
-    StopChangingAmp {},
-}
-#[cw_serde]
 pub enum CommitStatus {
     InProgress { raised: Uint128, target: Uint128 },
     FullyCommitted,

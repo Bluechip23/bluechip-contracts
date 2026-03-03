@@ -52,7 +52,7 @@ pub enum ContractError {
     #[error("Your commit amount does not match an amount designated by the creator of the pool.")]
     MismatchAmount {},
 
-    #[error("Fee is to great or to small for this transaction")]
+    #[error("Fee is too great or too small for this transaction")]
     InvalidFee {},
 
     #[error("belief_price cannot be zero")]
@@ -89,9 +89,6 @@ pub enum ContractError {
     #[error("CW20 tokens can be swapped via Cw20::Send message only")]
     Cw20DirectSwap {},
 
-    #[error("Operation non supported")]
-    NonSupported {},
-
     #[error("Event of zero transfer")]
     InvalidZeroAmount {},
 
@@ -101,7 +98,7 @@ pub enum ContractError {
     #[error("Provided spread amount exceeds allowed limit")]
     AllowedSpreadAssertion {},
 
-    #[error("Operation exceeds max splippage tolerance")]
+    #[error("Operation exceeds max slippage tolerance")]
     MaxSlippageAssertion {},
 
     #[error("Doubling assets in asset infos")]
@@ -109,18 +106,6 @@ pub enum ContractError {
 
     #[error("Asset mismatch between the requested and the stored asset in contract")]
     AssetMismatch {},
-
-    #[error("Pair type mismatch. Check factory pair configs")]
-    PairTypeMismatch {},
-
-    #[error("Generator address is not set in factory. Cannot auto-stake")]
-    AutoStakeError {},
-
-    #[error("Failed to migrate the contract")]
-    MigrationError {},
-
-    #[error("Cannot migrate from different contract type: {previous_contract}")]
-    CannotMigrate { previous_contract: String },
 
     #[error("InsufficientFunds")]
     InsufficientFunds {},
