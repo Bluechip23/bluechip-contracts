@@ -20,9 +20,10 @@ use crate::state::{
     CommitLimitInfo, DistributionState, EmergencyWithdrawalInfo, ExpectedFactory, OracleInfo,
     PoolDetails, PoolFeeState, PoolInfo, PoolSpecs, RecoveryType, ThresholdPayoutAmounts,
     COMMITFEEINFO, COMMIT_LEDGER, COMMIT_LIMIT_INFO, DEFAULT_ESTIMATED_GAS_PER_DISTRIBUTION,
-    DEFAULT_MAX_GAS_PER_TX, DISTRIBUTION_BOUNTY, DISTRIBUTION_STATE, EMERGENCY_WITHDRAWAL,
-    EMERGENCY_WITHDRAW_DELAY_SECONDS, EXPECTED_FACTORY, IS_THRESHOLD_HIT, LAST_THRESHOLD_ATTEMPT,
-    MINIMUM_LIQUIDITY, NATIVE_RAISED_FROM_COMMIT, ORACLE_INFO, OWNER_POSITIONS, PENDING_EMERGENCY_WITHDRAW,
+    DEFAULT_MAX_GAS_PER_TX, DISTRIBUTION_BOUNTY, DISTRIBUTION_STATE, EMERGENCY_DRAINED,
+    EMERGENCY_WITHDRAWAL, EMERGENCY_WITHDRAW_DELAY_SECONDS, EXPECTED_FACTORY, IS_THRESHOLD_HIT,
+    LAST_THRESHOLD_ATTEMPT, MINIMUM_LIQUIDITY, NATIVE_RAISED_FROM_COMMIT, ORACLE_INFO,
+    OWNER_POSITIONS, PENDING_EMERGENCY_WITHDRAW,
     POOL_FEE_STATE, POOL_INFO, POOL_PAUSED, POOL_SPECS, POOL_STATE, RATE_LIMIT_GUARD,
     THRESHOLD_PAYOUT_AMOUNTS, THRESHOLD_PROCESSING, USD_RAISED_FROM_COMMIT,
 };
@@ -260,6 +261,14 @@ pub fn execute(
             min_amount1,
             transaction_deadline,
         } => {
+            if EMERGENCY_DRAINED.may_load(deps.storage)?.unwrap_or(false) {
+                return Err(ContractError::Std(StdError::generic_err(
+                    "Pool has been permanently drained via emergency withdrawal",
+                )));
+            }
+            // Note: POOL_PAUSED is intentionally NOT checked here because
+            // deposits are the mechanism to re-activate a paused pool
+            // (auto-unpause when reserves exceed MINIMUM_LIQUIDITY).
             if !query_check_commit(deps.as_ref())? {
                 return Err(ContractError::ShortOfThreshold {});
             }
@@ -285,6 +294,13 @@ pub fn execute(
             min_amount1,
             transaction_deadline,
         } => {
+            if EMERGENCY_DRAINED.may_load(deps.storage)?.unwrap_or(false) {
+                return Err(ContractError::Std(StdError::generic_err(
+                    "Pool has been permanently drained via emergency withdrawal",
+                )));
+            }
+            // Note: POOL_PAUSED is intentionally NOT checked here because
+            // adding to positions is allowed when paused to help re-activate the pool.
             // check threshold requirement
             if !query_check_commit(deps.as_ref())? {
                 return Err(ContractError::ShortOfThreshold {});
@@ -305,6 +321,14 @@ pub fn execute(
         }
         //collect all fees for a position
         ExecuteMsg::CollectFees { position_id } => {
+            if EMERGENCY_DRAINED.may_load(deps.storage)?.unwrap_or(false) {
+                return Err(ContractError::Std(StdError::generic_err(
+                    "Pool has been permanently drained via emergency withdrawal",
+                )));
+            }
+            if POOL_PAUSED.may_load(deps.storage)?.unwrap_or(false) {
+                return Err(ContractError::PoolPausedLowLiquidity {});
+            }
             execute_collect_fees(deps, env, info, position_id)
         }
         //removes liquidity based on a specific amount (I have 100 liquidity I want to remove 18.) - will collect fees in proportion of removal to rebalance accounting
@@ -1609,11 +1633,16 @@ pub fn execute_emergency_withdraw(
 
         pool_state.reserve0 = Uint128::zero();
         pool_state.reserve1 = Uint128::zero();
+        pool_state.total_liquidity = Uint128::zero();
         POOL_STATE.save(deps.storage, &pool_state)?;
 
         pool_fee_state.fee_reserve_0 = Uint128::zero();
         pool_fee_state.fee_reserve_1 = Uint128::zero();
         POOL_FEE_STATE.save(deps.storage, &pool_fee_state)?;
+
+        // Permanently mark this pool as drained to prevent any further
+        // deposits, swaps, or LP operations.
+        EMERGENCY_DRAINED.save(deps.storage, &true)?;
 
         let mut messages = vec![];
 

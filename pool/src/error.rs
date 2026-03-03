@@ -8,14 +8,14 @@ pub enum ContractError {
 
     #[error("Unauthorized")]
     Unauthorized {},
-    #[error("")]
-    RatioDeviationExceeded { 
+    #[error("Ratio deviation exceeded: expected {expected_ratio}, got {actual_ratio}, max {max_deviation_bps}bps vs actual {actual_deviation_bps}bps")]
+    RatioDeviationExceeded {
     expected_ratio: Decimal,
     actual_ratio: Decimal,
     max_deviation_bps: u16,
     actual_deviation_bps: u16
     },
-    #[error("")]
+    #[error("Position locked until {unlock_time}")]
     PositionLocked { unlock_time: Timestamp },
     #[error("The pool is paused due to low liquidity, please supply liquidity before swapping")]
     PoolPausedLowLiquidity {},
@@ -128,7 +128,7 @@ pub enum ContractError {
     #[error("pool can not cover reserves")]
     InsufficientReserves {},
 
-    #[error("Incorrect bluechip denom: provided: {oracle}, required: {twap}")]
+    #[error("Oracle price deviation: oracle={oracle}, twap={twap}")]
     OraclePriceDeviation { oracle: Uint128, twap: Uint128 },
 
     #[error("Incorrect bluechip denom: provided: {provided}, required: {required}")]

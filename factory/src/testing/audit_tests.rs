@@ -226,14 +226,6 @@ fn test_update_pool_config_sends_message_to_pool() {
     let admin_info = mock_info("admin", &[]);
 
     let update = PoolConfigUpdate {
-        commit_fee_info: None,
-        commit_limit_usd: None,
-        pyth_contract_addr_for_conversions: None,
-        pyth_atom_usd_price_feed_id: None,
-        commit_amount_for_threshold: None,
-        threshold_payout: None,
-        cw20_token_contract_id: None,
-        cw721_nft_contract_id: None,
         lp_fee: Some(Decimal::percent(5)),
         min_commit_interval: Some(120),
         usd_payment_tolerance_bps: None,
@@ -263,14 +255,6 @@ fn test_update_pool_config_unauthorized() {
     let hacker_info = mock_info("hacker", &[]);
 
     let update = PoolConfigUpdate {
-        commit_fee_info: None,
-        commit_limit_usd: None,
-        pyth_contract_addr_for_conversions: None,
-        pyth_atom_usd_price_feed_id: None,
-        commit_amount_for_threshold: None,
-        threshold_payout: None,
-        cw20_token_contract_id: None,
-        cw721_nft_contract_id: None,
         lp_fee: Some(Decimal::percent(5)),
         min_commit_interval: None,
         usd_payment_tolerance_bps: None,
@@ -296,14 +280,6 @@ fn test_update_pool_config_nonexistent_pool() {
     let admin_info = mock_info("admin", &[]);
 
     let update = PoolConfigUpdate {
-        commit_fee_info: None,
-        commit_limit_usd: None,
-        pyth_contract_addr_for_conversions: None,
-        pyth_atom_usd_price_feed_id: None,
-        commit_amount_for_threshold: None,
-        threshold_payout: None,
-        cw20_token_contract_id: None,
-        cw721_nft_contract_id: None,
         lp_fee: None,
         min_commit_interval: None,
         usd_payment_tolerance_bps: None,

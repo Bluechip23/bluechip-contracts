@@ -10,7 +10,7 @@ pub enum ContractError {
     QueryError { msg: String },
     #[error("Unauthorized")]
     Unauthorized {},
-    #[error("Unauthorized")]
+    #[error("Oracle price deviation: oracle={oracle}, twap={twap}")]
     OraclePriceDeviation { oracle: Uint128, twap: Uint128 },
     #[error("Invalid Price")]
     InvalidPrice {},

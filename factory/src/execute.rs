@@ -181,13 +181,18 @@ fn execute_create_creator_pool(
             nft_addr: None,
         },
     )?;
+    if token_info.decimal > 18 {
+        return Err(ContractError::Std(StdError::generic_err(
+            "Token decimals must be between 0 and 18",
+        )));
+    }
     let msg = WasmMsg::Instantiate {
         code_id: factory_cw20.cw20_token_contract_id,
         //creating the creator token only, no minting.
         msg: to_json_binary(&TokenInstantiateMsg {
             name: token_info.name.clone(),
             symbol: token_info.symbol.clone(),
-            decimals: 6,
+            decimals: token_info.decimal,
             initial_balances: vec![],
             mint: Some(MinterResponse {
                 minter: env.contract.address.to_string(),
@@ -439,10 +444,11 @@ pub fn execute_continue_pool_upgrade(
         PENDING_POOL_UPGRADE.remove(deps.storage);
     }
 
+    let batch_count = messages.len();
     Ok(Response::new()
-        .add_messages(messages.clone())
+        .add_messages(messages)
         .add_attribute("action", "continue_upgrade")
-        .add_attribute("upgraded_in_batch", messages.len().to_string())
+        .add_attribute("upgraded_in_batch", batch_count.to_string())
         .add_attribute("total_upgraded", upgrade.upgraded_count.to_string()))
 }
 

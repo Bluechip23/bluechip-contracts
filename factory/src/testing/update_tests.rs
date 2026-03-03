@@ -12,7 +12,7 @@ const ATOM_BLUECHIP_POOL_CONTRACT_ADDRESS: &str =
     "cosmos1atom_bluechip_pool_test_addr_000000000000";
 use crate::mock_querier::WasmMockQuerier;
 use crate::msg::ExecuteMsg;
-use crate::pool_struct::{CommitFeeInfo, PoolConfigUpdate, PoolDetails};
+use crate::pool_struct::{PoolConfigUpdate, PoolDetails};
 use crate::state::{
     FactoryInstantiate, PENDING_CONFIG, PENDING_POOL_UPGRADE, POOLS_BY_ID, POOL_REGISTRY,
 };
@@ -231,19 +231,6 @@ fn test_update_specific_pool_from_registry() {
 
     let admin_info = mock_info("admin", &[]);
     let pool_config = PoolConfigUpdate {
-        commit_fee_info: Some(CommitFeeInfo {
-            bluechip_wallet_address: Addr::unchecked("ubluechip"),
-            creator_wallet_address: Addr::unchecked("creator"),
-            commit_fee_bluechip: Decimal::percent(2), // Changed
-            commit_fee_creator: Decimal::percent(10), // Changed
-        }),
-        commit_limit_usd: Some(Uint128::new(30_000_000_000)),
-        pyth_contract_addr_for_conversions: None,
-        pyth_atom_usd_price_feed_id: None,
-        commit_amount_for_threshold: Some(Uint128::new(30_000_000_000)), // Changed
-        threshold_payout: None,
-        cw20_token_contract_id: None,
-        cw721_nft_contract_id: None,
         lp_fee: None,
         min_commit_interval: None,
         usd_payment_tolerance_bps: None,

@@ -46,10 +46,13 @@ pub fn calculate_mint_amount(seconds_elapsed: u64, pools_created: u64) -> StdRes
     Ok(Uint128::new(base_amount - division_result))
 }
 
+/// Calculates and mints bluechip tokens when a pool crosses its commit threshold.
+/// `pool_id` is the sequential ID of the pool — the decay formula uses this as `x`
+/// so that later pools receive fewer minted tokens.
 pub fn calculate_and_mint_bluechip(
     deps: &mut DepsMut,
     env: Env,
-    pool_count: u64,
+    pool_id: u64,
 ) -> Result<Vec<CosmosMsg>, ContractError> {
     let messages = vec![];
 
@@ -70,7 +73,7 @@ pub fn calculate_and_mint_bluechip(
 
     let seconds_elapsed = env.block.time.seconds().saturating_sub(first_pool_time.seconds());
 
-    let mint_amount = calculate_mint_amount(seconds_elapsed, pool_count)?;
+    let mint_amount = calculate_mint_amount(seconds_elapsed, pool_id)?;
     let mut msgs = Vec::new();
 
     if !mint_amount.is_zero() {
