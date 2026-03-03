@@ -18,7 +18,7 @@ pub enum ContractError {
     #[error("The anchor atom/bluechip pool must exist and be active before generating a new set of pools for price")]
     MissingAtomPool {},
 
-    #[error("Trying to update the oracle price to quickly. Please wait before updating again.")]
+    #[error("Trying to update the oracle price too quickly. Please wait before updating again.")]
     UpdateTooSoon { next_update: u64 },
 
     #[error("You are missing important times and prices")]
@@ -35,7 +35,7 @@ pub enum ContractError {
     #[error("Contract Failed Creating Token {}", pool_id)]
     TokenCreationFailed { pool_id: u64, reason: String },
 
-    #[error("Contract Failed Creating  {}", id)]
+    #[error("Contract Failed Creating {}", id)]
     UnknownReplyId { id: u64 },
 
     #[error("SemVer parse error: {0}")]

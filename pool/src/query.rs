@@ -3,7 +3,7 @@ use crate::asset::{call_pool_info, TokenInfo};
 use crate::liquidity_helpers::calculate_unclaimed_fees;
 use crate::msg::{
     CommitStatus, CommiterInfo, ConfigResponse, CumulativePricesResponse, FeeInfoResponse,
-    LastCommitedResponse, PoolCommitResponse, PoolFeeStateResponse, PoolInfoResponse, PoolResponse,
+    LastCommitedResponse, PoolCommitResponse, PoolFeeStateResponse, PoolInfoResponse,
     PoolStateResponse, PositionResponse, PositionsResponse, QueryMsg, ReverseSimulationResponse,
     SimulationResponse,
 };
@@ -99,14 +99,6 @@ pub fn query_pair_info(deps: Deps) -> StdResult<PoolDetails> {
     Ok(pool_info.pool_info)
 }
 
-pub fn query_pool(deps: Deps) -> StdResult<PoolResponse> {
-    let pool_info = POOL_INFO.load(deps.storage)?;
-    let assets = call_pool_info(deps, pool_info)?;
-
-    let resp = PoolResponse { assets };
-
-    Ok(resp)
-}
 
 pub fn query_check_threshold_limit(deps: Deps) -> StdResult<CommitStatus> {
     let threshold_hit = IS_THRESHOLD_HIT.load(deps.storage)?;
