@@ -1,8 +1,8 @@
 use std::str::FromStr;
 
 use crate::state::{
-    Position, TokenMetadata, LIQUIDITY_POSITIONS, MINIMUM_LIQUIDITY, NEXT_POSITION_ID,
-    OWNER_POSITIONS, POOL_FEE_STATE, POOL_INFO, POOL_STATE,
+    PoolFeeState, PoolInfo, Position, TokenMetadata, LIQUIDITY_POSITIONS, MINIMUM_LIQUIDITY,
+    NEXT_POSITION_ID, OWNER_POSITIONS, POOL_FEE_STATE, POOL_INFO, POOL_STATE,
 };
 use crate::{error::ContractError, state::CREATOR_EXCESS_POSITION};
 use cosmwasm_std::{
@@ -53,6 +53,130 @@ pub fn calculate_fees_owed(
     }
 }
 //used to protect against many small liquidity positions
+use crate::asset::get_bluechip_denom;
+
+/// Calculate fees owed on a position (including unclaimed), capped against fee reserves.
+pub fn calc_capped_fees(
+    position: &Position,
+    pool_fee_state: &PoolFeeState,
+) -> Result<(Uint128, Uint128), ContractError> {
+    let fees_0 = calculate_fees_owed(
+        position.liquidity,
+        pool_fee_state.fee_growth_global_0,
+        position.fee_growth_inside_0_last,
+        position.fee_size_multiplier,
+    )?
+    .checked_add(position.unclaimed_fees_0)?;
+
+    let fees_1 = calculate_fees_owed(
+        position.liquidity,
+        pool_fee_state.fee_growth_global_1,
+        position.fee_growth_inside_1_last,
+        position.fee_size_multiplier,
+    )?
+    .checked_add(position.unclaimed_fees_1)?;
+
+    Ok((
+        fees_0.min(pool_fee_state.fee_reserve_0),
+        fees_1.min(pool_fee_state.fee_reserve_1),
+    ))
+}
+
+/// Build transfer messages to send bluechip (bank) and cw20 tokens to a recipient.
+pub fn build_fee_transfer_msgs(
+    pool_info: &PoolInfo,
+    recipient: &Addr,
+    amount_0: Uint128,
+    amount_1: Uint128,
+) -> Result<Vec<CosmosMsg>, ContractError> {
+    let mut msgs = Vec::new();
+    if !amount_0.is_zero() {
+        let native_denom = get_bluechip_denom(&pool_info.pool_info.asset_infos)?;
+        msgs.push(CosmosMsg::Bank(cosmwasm_std::BankMsg::Send {
+            to_address: recipient.to_string(),
+            amount: vec![cosmwasm_std::Coin {
+                denom: native_denom,
+                amount: amount_0,
+            }],
+        }));
+    }
+    if !amount_1.is_zero() {
+        msgs.push(CosmosMsg::Wasm(cosmwasm_std::WasmMsg::Execute {
+            contract_addr: pool_info.token_address.to_string(),
+            msg: cosmwasm_std::to_json_binary(&cw20::Cw20ExecuteMsg::Transfer {
+                recipient: recipient.to_string(),
+                amount: amount_1,
+            })?,
+            funds: vec![],
+        }));
+    }
+    Ok(msgs)
+}
+
+pub fn check_slippage(
+    actual: Uint128,
+    min: Option<Uint128>,
+    token: &str,
+) -> Result<(), ContractError> {
+    if let Some(min_val) = min {
+        if actual < min_val {
+            return Err(ContractError::SlippageExceeded {
+                expected: min_val,
+                actual,
+                token: token.to_string(),
+            });
+        }
+    }
+    Ok(())
+}
+
+pub fn check_ratio_deviation(
+    actual_amount0: Uint128,
+    actual_amount1: Uint128,
+    min_amount0: Option<Uint128>,
+    min_amount1: Option<Uint128>,
+    max_ratio_deviation_bps: Option<u16>,
+) -> Result<(), ContractError> {
+    let max_deviation_bps = match max_ratio_deviation_bps {
+        Some(v) => v,
+        None => return Ok(()),
+    };
+    let (min0, min1) = match (min_amount0, min_amount1) {
+        (Some(a), Some(b)) => (a, b),
+        _ => return Ok(()),
+    };
+    if min0.is_zero() || min1.is_zero() || actual_amount0.is_zero() || actual_amount1.is_zero() {
+        return Ok(());
+    }
+    let expected_ratio = Decimal::from_ratio(min0, min1);
+    let actual_ratio = Decimal::from_ratio(actual_amount0, actual_amount1);
+    let (larger, smaller) = if actual_ratio > expected_ratio {
+        (actual_ratio, expected_ratio)
+    } else {
+        (expected_ratio, actual_ratio)
+    };
+    let diff = larger
+        .checked_sub(smaller)
+        .map_err(|_| StdError::generic_err("Ratio calculation overflow"))?;
+    let raw = (diff
+        .checked_mul(Decimal::from_ratio(10000u128, 1u128))
+        .map_err(|_| StdError::generic_err("Deviation calculation overflow"))?
+        / smaller)
+        .to_uint_floor()
+        .u128();
+    let deviation_bps = if raw > u16::MAX as u128 { u16::MAX } else { raw as u16 };
+
+    if deviation_bps > max_deviation_bps {
+        return Err(ContractError::RatioDeviationExceeded {
+            expected_ratio,
+            actual_ratio,
+            max_deviation_bps,
+            actual_deviation_bps: deviation_bps,
+        });
+    }
+    Ok(())
+}
+
 pub fn calculate_fee_size_multiplier(liquidity: Uint128) -> Decimal {
     //if position has optimal liquidity they will not be punished
 

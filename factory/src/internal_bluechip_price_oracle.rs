@@ -326,16 +326,19 @@ pub fn calculate_weighted_price_with_atom(
                     found
                 };
 
+                // Resolve reserves once based on token ordering
+                let (bluechip_reserve, other_reserve) = if is_bluechip_second {
+                    (pool_state.reserve1, pool_state.reserve0)
+                } else {
+                    (pool_state.reserve0, pool_state.reserve1)
+                };
+
                 // Save cumulative snapshot for next update cycle.
                 // price0_cumulative tracks reserve1/reserve0 (creator_per_bluechip).
                 // For bluechip pricing: we need reserve0(bluechip) / reserve1(other).
                 let cumulative_for_price = if is_bluechip_second {
-                    // bluechip is reserve1, other is reserve0
-                    // price we want: reserve1/reserve0 = price0_cumulative
                     pool_state.price0_cumulative_last
                 } else {
-                    // bluechip is reserve0, other is reserve1
-                    // price we want: reserve0/reserve1 = price1_cumulative
                     pool_state.price1_cumulative_last
                 };
 
@@ -369,33 +372,17 @@ pub fn calculate_weighted_price_with_atom(
                         twap
                     } else {
                         // No time elapsed or no cumulative change — fall back to spot
-                        let (bluechip_reserve, other_reserve) = if is_bluechip_second {
-                            (pool_state.reserve1, pool_state.reserve0)
-                        } else {
-                            (pool_state.reserve0, pool_state.reserve1)
-                        };
                         calculate_price_from_reserves(bluechip_reserve, other_reserve)?
                     }
                 } else if prev_snapshots.is_empty() {
                     // Bootstrap case: very first oracle update — no prior snapshots
                     // exist for any pool.  Spot price is the only option.
-                    let (bluechip_reserve, other_reserve) = if is_bluechip_second {
-                        (pool_state.reserve1, pool_state.reserve0)
-                    } else {
-                        (pool_state.reserve0, pool_state.reserve1)
-                    };
                     calculate_price_from_reserves(bluechip_reserve, other_reserve)?
                 } else {
                     // Post-rotation: this pool is newly selected and has no prior
                     // snapshot. Skip it from price weighting. The snapshot was already recorded
                     // above, so TWAP data will be available on the next update.
                     continue;
-                };
-
-                let (bluechip_reserve, _) = if is_bluechip_second {
-                    (pool_state.reserve1, pool_state.reserve0)
-                } else {
-                    (pool_state.reserve0, pool_state.reserve1)
                 };
 
                 let liquidity_weight = if pool_address == &atom_pool_address {
@@ -666,10 +653,12 @@ pub fn get_bluechip_usd_price(deps: Deps, env: Env) -> StdResult<Uint128> {
     Ok(bluechip_usd_price)
 }
 
-pub fn bluechip_to_usd(
+/// Core conversion: when `to_usd` is true, converts bluechip→USD; otherwise USD→bluechip.
+fn convert_with_oracle(
     deps: Deps,
-    bluechip_amount: Uint128,
     env: Env,
+    amount: Uint128,
+    to_usd: bool,
 ) -> StdResult<ConversionResponse> {
     let oracle = INTERNAL_ORACLE.load(deps.storage)?;
     let cached_price = get_bluechip_usd_price(deps, env)?;
@@ -678,51 +667,32 @@ pub fn bluechip_to_usd(
         return Err(StdError::generic_err("Invalid zero price"));
     }
 
-    let usd_amount = bluechip_amount
-        .checked_mul(cached_price)
-        .map_err(|e| {
-            StdError::generic_err(format!("Overflow in bluechip to USD conversion: {}", e))
-        })?
-        .checked_div(Uint128::from(PRICE_PRECISION))
-        .map_err(|e| {
-            StdError::generic_err(format!(
-                "Division error in bluechip to USD conversion: {}",
-                e
-            ))
-        })?;
+    let (numerator, denominator) = if to_usd {
+        (cached_price, Uint128::from(PRICE_PRECISION))
+    } else {
+        (Uint128::from(PRICE_PRECISION), cached_price)
+    };
+    let direction = if to_usd { "bluechip to USD" } else { "USD to bluechip" };
+
+    let converted = amount
+        .checked_mul(numerator)
+        .map_err(|e| StdError::generic_err(format!("Overflow in {} conversion: {}", direction, e)))?
+        .checked_div(denominator)
+        .map_err(|e| StdError::generic_err(format!("Division error in {} conversion: {}", direction, e)))?;
 
     Ok(ConversionResponse {
-        amount: usd_amount,
+        amount: converted,
         rate_used: cached_price,
         timestamp: oracle.bluechip_price_cache.last_update,
     })
 }
+
+pub fn bluechip_to_usd(deps: Deps, bluechip_amount: Uint128, env: Env) -> StdResult<ConversionResponse> {
+    convert_with_oracle(deps, env, bluechip_amount, true)
+}
+
 pub fn usd_to_bluechip(deps: Deps, usd_amount: Uint128, env: Env) -> StdResult<ConversionResponse> {
-    let oracle = INTERNAL_ORACLE.load(deps.storage)?;
-    let cached_price = get_bluechip_usd_price(deps, env)?;
-
-    if cached_price.is_zero() {
-        return Err(StdError::generic_err("Invalid zero price"));
-    }
-
-    let bluechip_amount = usd_amount
-        .checked_mul(Uint128::from(PRICE_PRECISION))
-        .map_err(|e| {
-            StdError::generic_err(format!("Overflow in USD to bluechip conversion: {}", e))
-        })?
-        .checked_div(cached_price)
-        .map_err(|e| {
-            StdError::generic_err(format!(
-                "Division error in USD to bluechip conversion: {}",
-                e
-            ))
-        })?;
-
-    Ok(ConversionResponse {
-        amount: bluechip_amount,
-        rate_used: cached_price,
-        timestamp: oracle.bluechip_price_cache.last_update,
-    })
+    convert_with_oracle(deps, env, usd_amount, false)
 }
 
 pub fn get_price_with_staleness_check(
