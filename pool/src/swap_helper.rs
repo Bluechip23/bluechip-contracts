@@ -143,19 +143,6 @@ pub fn get_usd_value_with_staleness_check(
     Ok(response.amount)
 }
 
-pub fn get_usd_value(deps: Deps, bluechip_amount: Uint128) -> StdResult<Uint128> {
-    let factory_address = POOL_INFO.load(deps.storage)?;
-
-    let response: ConversionResponse = deps.querier.query_wasm_smart(
-        factory_address.factory_addr,
-        &FactoryQueryWrapper::InternalBlueChipOracleQuery(FactoryQueryMsg::ConvertBluechipToUsd {
-            amount: bluechip_amount,
-        }),
-    )?;
-
-    Ok(response.amount)
-}
-
 pub fn get_bluechip_value(deps: Deps, usd_amount: Uint128) -> StdResult<Uint128> {
     let factory_address = POOL_INFO.load(deps.storage)?;
 

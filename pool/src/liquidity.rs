@@ -2,7 +2,8 @@
 use crate::error::ContractError;
 use crate::generic_helpers::{check_rate_limit, enforce_transaction_deadline};
 use crate::liquidity_helpers::{
-    calc_liquidity_for_deposit, calculate_fee_size_multiplier, calculate_fees_owed,
+    build_fee_transfer_msgs, calc_capped_fees, calc_liquidity_for_deposit,
+    calculate_fee_size_multiplier, calculate_fees_owed, check_ratio_deviation, check_slippage,
     verify_position_ownership,
 };
 use crate::asset::get_bluechip_denom;
@@ -13,7 +14,7 @@ use crate::state::{
 use crate::state::{Position, TokenMetadata, LIQUIDITY_POSITIONS, NEXT_POSITION_ID, OWNER_POSITIONS};
 use crate::swap_helper::update_price_accumulator;
 use cosmwasm_std::{
-    to_json_binary, Addr, BankMsg, Coin, CosmosMsg, Decimal, DepsMut, Env, MessageInfo, Response,
+    to_json_binary, Addr, BankMsg, Coin, CosmosMsg, DepsMut, Env, MessageInfo, Response,
     StdError, Timestamp, Uint128, WasmMsg,
 };
 use pool_factory_interfaces::cw721_msgs::{Action, Cw721ExecuteMsg};
@@ -54,24 +55,8 @@ pub fn execute_deposit_liquidity(
         });
     }
     //slippage check
-    if let Some(min0) = min_amount0 {
-        if actual_amount0 < min0 {
-            return Err(ContractError::SlippageExceeded {
-                expected: min0,
-                actual: actual_amount0,
-                token: "bluechip".to_string(),
-            });
-        }
-    }
-    if let Some(min1) = min_amount1 {
-        if actual_amount1 < min1 {
-            return Err(ContractError::SlippageExceeded {
-                expected: min1,
-                actual: actual_amount1,
-                token: "cw20".to_string(),
-            });
-        }
-    }
+    check_slippage(actual_amount0, min_amount0, "bluechip")?;
+    check_slippage(actual_amount1, min_amount1, "cw20")?;
 
     let mut pool_state = POOL_STATE.load(deps.storage)?;
     let pool_fee_state = POOL_FEE_STATE.load(deps.storage)?;
@@ -207,25 +192,7 @@ pub fn execute_collect_fees(
         &info.sender,
     )?;
     let mut liquidity_position = LIQUIDITY_POSITIONS.load(deps.storage, &position_id)?;
-    let fees_owed_0 = calculate_fees_owed(
-        liquidity_position.liquidity,
-        pool_fee_state.fee_growth_global_0,
-        liquidity_position.fee_growth_inside_0_last,
-        liquidity_position.fee_size_multiplier,
-    )?
-    // Include fees preserved from any prior partial removals.
-    .checked_add(liquidity_position.unclaimed_fees_0)?;
-
-    let fees_owed_1 = calculate_fees_owed(
-        liquidity_position.liquidity,
-        pool_fee_state.fee_growth_global_1,
-        liquidity_position.fee_growth_inside_1_last,
-        liquidity_position.fee_size_multiplier,
-    )?
-    .checked_add(liquidity_position.unclaimed_fees_1)?;
-
-    let fees_owed_0 = fees_owed_0.min(pool_fee_state.fee_reserve_0);
-    let fees_owed_1 = fees_owed_1.min(pool_fee_state.fee_reserve_1);
+    let (fees_owed_0, fees_owed_1) = calc_capped_fees(&liquidity_position, &pool_fee_state)?;
 
     liquidity_position.fee_growth_inside_0_last = pool_fee_state.fee_growth_global_0;
     liquidity_position.fee_growth_inside_1_last = pool_fee_state.fee_growth_global_1;
@@ -242,37 +209,14 @@ pub fn execute_collect_fees(
     POOL_STATE.save(deps.storage, &pool_state)?;
     POOL_FEE_STATE.save(deps.storage, &pool_fee_state)?;
 
-    let mut response = Response::new()
+    let fee_msgs = build_fee_transfer_msgs(&pool_info, &info.sender, fees_owed_0, fees_owed_1)?;
+
+    Ok(Response::new()
+        .add_messages(fee_msgs)
         .add_attribute("action", "collect_fees")
         .add_attribute("position_id", position_id)
         .add_attribute("fees_0", fees_owed_0)
-        .add_attribute("fees_1", fees_owed_1);
-
-    if !fees_owed_0.is_zero() {
-        let native_denom = get_bluechip_denom(&pool_info.pool_info.asset_infos)?;
-        let bluechip_msg = BankMsg::Send {
-            to_address: info.sender.to_string(),
-            amount: vec![Coin {
-                denom: native_denom,
-                amount: fees_owed_0,
-            }],
-        };
-        response = response.add_message(bluechip_msg);
-    }
-
-    if !fees_owed_1.is_zero() {
-        let cw20_msg = WasmMsg::Execute {
-            contract_addr: pool_info.token_address.to_string(),
-            msg: to_json_binary(&cw20::Cw20ExecuteMsg::Transfer {
-                recipient: info.sender.to_string(),
-                amount: fees_owed_1,
-            })?,
-            funds: vec![],
-        };
-        response = response.add_message(cw20_msg);
-    }
-
-    Ok(response)
+        .add_attribute("fees_1", fees_owed_1))
 }
 
 //add liquidity to an already existing position and collects fees for accounting
@@ -323,45 +267,10 @@ pub fn add_to_position(
     let mut liquidity_position = LIQUIDITY_POSITIONS.load(deps.storage, &position_id)?;
     let mut messages: Vec<CosmosMsg> = vec![];
     //send accumulated fees to reset accounting - collect before adding new liquidity
-    let fees_owed_0 = calculate_fees_owed(
-        liquidity_position.liquidity,
-        pool_fee_state.fee_growth_global_0,
-        liquidity_position.fee_growth_inside_0_last,
-        liquidity_position.fee_size_multiplier,
-    )?
-    // Include fees preserved from any prior partial removals.
-    .checked_add(liquidity_position.unclaimed_fees_0)?;
-
-    let fees_owed_1 = calculate_fees_owed(
-        liquidity_position.liquidity,
-        pool_fee_state.fee_growth_global_1,
-        liquidity_position.fee_growth_inside_1_last,
-        liquidity_position.fee_size_multiplier,
-    )?
-    .checked_add(liquidity_position.unclaimed_fees_1)?;
-
-    let fees_owed_0 = fees_owed_0.min(pool_fee_state.fee_reserve_0);
-    let fees_owed_1 = fees_owed_1.min(pool_fee_state.fee_reserve_1);
+    let (fees_owed_0, fees_owed_1) = calc_capped_fees(&liquidity_position, &pool_fee_state)?;
     //check slippage
-    if let Some(min0) = min_amount0 {
-        if actual_amount0 < min0 {
-            return Err(ContractError::SlippageExceeded {
-                expected: min0,
-                actual: actual_amount0,
-                token: "bluechip".to_string(),
-            });
-        }
-    }
-
-    if let Some(min1) = min_amount1 {
-        if actual_amount1 < min1 {
-            return Err(ContractError::SlippageExceeded {
-                expected: min1,
-                actual: actual_amount1,
-                token: "cw20".to_string(),
-            });
-        }
-    }
+    check_slippage(actual_amount0, min_amount0, "bluechip")?;
+    check_slippage(actual_amount1, min_amount1, "cw20")?;
     //send the appropraite amount of both assets to the pool for the liquidity position
     if !actual_amount1.is_zero() {
         let transfer_cw20_msg = WasmMsg::Execute {
@@ -431,28 +340,8 @@ pub fn add_to_position(
         .add_attribute("fees_collected_0", fees_owed_0)
         .add_attribute("fees_collected_1", fees_owed_1);
     //actually send fees
-    if !fees_owed_0.is_zero() {
-        let bluechip_msg = BankMsg::Send {
-            to_address: user.to_string(),
-            amount: vec![Coin {
-                denom: native_denom.clone(),
-                amount: fees_owed_0,
-            }],
-        };
-        response = response.add_message(bluechip_msg);
-    }
-
-    if !fees_owed_1.is_zero() {
-        let cw20_msg = WasmMsg::Execute {
-            contract_addr: pool_info.token_address.to_string(),
-            msg: to_json_binary(&cw20::Cw20ExecuteMsg::Transfer {
-                recipient: user.to_string(),
-                amount: fees_owed_1,
-            })?,
-            funds: vec![],
-        };
-        response = response.add_message(cw20_msg);
-    }
+    let fee_msgs = build_fee_transfer_msgs(&pool_info, &user, fees_owed_0, fees_owed_1)?;
+    response = response.add_messages(fee_msgs);
 
     Ok(response)
 }
@@ -491,92 +380,11 @@ pub fn remove_all_liquidity(
     let user_share_1 =
         current_reserve1.multiply_ratio(liquidity_position.liquidity, pool_state.total_liquidity);
     //protect against slippage and error out transaction
-    if let Some(min0) = min_amount0 {
-        if user_share_0 < min0 {
-            return Err(ContractError::SlippageExceeded {
-                expected: min0,
-                actual: user_share_0,
-                token: "bluechip".to_string(),
-            });
-        }
-    }
-
-    if let Some(min1) = min_amount1 {
-        if user_share_1 < min1 {
-            return Err(ContractError::SlippageExceeded {
-                expected: min1,
-                actual: user_share_1,
-                token: "cw20".to_string(),
-            });
-        }
-    }
-    if let Some(max_deviation_bps) = max_ratio_deviation_bps {
-        if let (Some(min0), Some(min1)) = (min_amount0, min_amount1) {
-            if !min0.is_zero()
-                && !min1.is_zero()
-                && !user_share_0.is_zero()
-                && !user_share_1.is_zero()
-            {
-                let expected_ratio = Decimal::from_ratio(min0, min1);
-                let actual_ratio = Decimal::from_ratio(user_share_0, user_share_1);
-                let deviation_bps = if actual_ratio > expected_ratio {
-                    let diff = actual_ratio
-                        .checked_sub(expected_ratio)
-                        .map_err(|_| StdError::generic_err("Ratio calculation overflow"))?;
-                    {
-                        let raw = (diff
-                            .checked_mul(Decimal::from_ratio(10000u128, 1u128))
-                            .map_err(|_| StdError::generic_err("Deviation calculation overflow"))?
-                            / expected_ratio)
-                            .to_uint_floor()
-                            .u128();
-                        if raw > u16::MAX as u128 { u16::MAX } else { raw as u16 }
-                    }
-                } else {
-                    let diff = expected_ratio
-                        .checked_sub(actual_ratio)
-                        .map_err(|_| StdError::generic_err("Ratio calculation overflow"))?;
-                    {
-                        let raw = (diff
-                            .checked_mul(Decimal::from_ratio(10000u128, 1u128))
-                            .map_err(|_| StdError::generic_err("Deviation calculation overflow"))?
-                            / actual_ratio)
-                            .to_uint_floor()
-                            .u128();
-                        if raw > u16::MAX as u128 { u16::MAX } else { raw as u16 }
-                    }
-                };
-
-                if deviation_bps > max_deviation_bps {
-                    return Err(ContractError::RatioDeviationExceeded {
-                        expected_ratio,
-                        actual_ratio,
-                        max_deviation_bps,
-                        actual_deviation_bps: deviation_bps,
-                    });
-                }
-            }
-        }
-    }
+    check_slippage(user_share_0, min_amount0, "bluechip")?;
+    check_slippage(user_share_1, min_amount1, "cw20")?;
+    check_ratio_deviation(user_share_0, user_share_1, min_amount0, min_amount1, max_ratio_deviation_bps)?;
     //calculate the fees owed to the position and prepare for collection
-    let fees_owed_0 = calculate_fees_owed(
-        liquidity_position.liquidity,
-        pool_fee_state.fee_growth_global_0,
-        liquidity_position.fee_growth_inside_0_last,
-        liquidity_position.fee_size_multiplier,
-    )?
-    // Include fees preserved from any prior partial removals.
-    .checked_add(liquidity_position.unclaimed_fees_0)?;
-
-    let fees_owed_1 = calculate_fees_owed(
-        liquidity_position.liquidity,
-        pool_fee_state.fee_growth_global_1,
-        liquidity_position.fee_growth_inside_1_last,
-        liquidity_position.fee_size_multiplier,
-    )?
-    .checked_add(liquidity_position.unclaimed_fees_1)?;
-    let fees_owed_0 = fees_owed_0.min(pool_fee_state.fee_reserve_0);
-    let fees_owed_1 = fees_owed_1.min(pool_fee_state.fee_reserve_1);
+    let (fees_owed_0, fees_owed_1) = calc_capped_fees(&liquidity_position, &pool_fee_state)?;
 
     let total_amount_0 = user_share_0.checked_add(fees_owed_0)?;
     let total_amount_1 = user_share_1.checked_add(fees_owed_1)?;
@@ -585,20 +393,8 @@ pub fn remove_all_liquidity(
     pool_state.total_liquidity = pool_state
         .total_liquidity
         .checked_sub(liquidity_to_subtract)?;
-    /*
-        let burn_msg = WasmMsg::Execute {
-            contract_addr: pool_info.position_nft_address.to_string(),
-            msg: to_json_binary(&cw721::Cw721ExecuteMsg::Burn {
-                token_id: position_id.clone(),
-            })?,
-            funds: vec![],
-        };
-        let messages = vec![CosmosMsg::Wasm(burn_msg)];
-    */
-    // Note: We don't burn the NFT because the pool contract is not the owner.
-    // The NFT remains with the user as a historical record of the position.
-    // If burning is desired, the user can manually burn it after removal.
-    let messages: Vec<CosmosMsg> = vec![];
+    // NFT is not burned — pool contract is not the owner. The NFT remains
+    // with the user as a historical record; they can burn it manually.
 
     //update pool fees, collect fees, and reserve prices
     liquidity_position.fee_growth_inside_0_last = pool_fee_state.fee_growth_global_0;
@@ -617,7 +413,6 @@ pub fn remove_all_liquidity(
     POOL_FEE_STATE.save(deps.storage, &pool_fee_state)?;
 
     let mut response = Response::new()
-        .add_messages(messages)
         .add_attribute("action", "remove_liquidity")
         .add_attribute("position_id", position_id)
         .add_attribute(
@@ -631,29 +426,8 @@ pub fn remove_all_liquidity(
         .add_attribute("total_0", total_amount_0)
         .add_attribute("total_1", total_amount_1);
     //redeem the tokens correlated with the users positions
-    if !total_amount_0.is_zero() {
-        let native_denom = get_bluechip_denom(&pool_info.pool_info.asset_infos)?;
-        let bluechip_msg = BankMsg::Send {
-            to_address: info.sender.to_string(),
-            amount: vec![Coin {
-                denom: native_denom,
-                amount: total_amount_0,
-            }],
-        };
-        response = response.add_message(bluechip_msg);
-    }
-
-    if !total_amount_1.is_zero() {
-        let cw20_msg = WasmMsg::Execute {
-            contract_addr: pool_info.token_address.to_string(),
-            msg: to_json_binary(&cw20::Cw20ExecuteMsg::Transfer {
-                recipient: info.sender.to_string(),
-                amount: total_amount_1,
-            })?,
-            funds: vec![],
-        };
-        response = response.add_message(cw20_msg);
-    }
+    let transfer_msgs = build_fee_transfer_msgs(&pool_info, &info.sender, total_amount_0, total_amount_1)?;
+    response = response.add_messages(transfer_msgs);
 
     Ok(response)
 }
@@ -755,80 +529,9 @@ pub fn remove_partial_liquidity(
     let fees_owed_0 = fees_owed_0.min(pool_fee_state.fee_reserve_0);
     let fees_owed_1 = fees_owed_1.min(pool_fee_state.fee_reserve_1);
 
-    if let Some(min0) = min_amount0 {
-        if withdrawal_amount_0 < min0 {
-            return Err(ContractError::SlippageExceeded {
-                expected: min0,
-                actual: withdrawal_amount_0,
-                token: "bluechip".to_string(),
-            });
-        }
-    }
-
-    if let Some(min1) = min_amount1 {
-        if withdrawal_amount_1 < min1 {
-            return Err(ContractError::SlippageExceeded {
-                expected: min1,
-                actual: withdrawal_amount_1,
-                token: "cw20".to_string(),
-            });
-        }
-    }
-    if let Some(max_deviation_bps) = max_ratio_deviation_bps {
-        // Only check if both minimums were provided (user cares about ratio)
-        if let (Some(min0), Some(min1)) = (min_amount0, min_amount1) {
-            // Avoid division by zero and only check meaningful ratios
-            if !min0.is_zero()
-                && !min1.is_zero()
-                && !withdrawal_amount_0.is_zero()
-                && !withdrawal_amount_1.is_zero()
-            {
-                // Calculate expected ratio from minimum amounts
-                let expected_ratio = Decimal::from_ratio(min0, min1);
-
-                // Calculate actual ratio from withdrawal amounts (principal only, not including fees)
-                let actual_ratio = Decimal::from_ratio(withdrawal_amount_0, withdrawal_amount_1);
-
-                // Calculate deviation in basis points
-                let deviation_bps = if actual_ratio > expected_ratio {
-                    let diff = actual_ratio
-                        .checked_sub(expected_ratio)
-                        .map_err(|_| StdError::generic_err("Ratio calculation overflow"))?;
-                    {
-                        let raw = (diff
-                            .checked_mul(Decimal::from_ratio(10000u128, 1u128))
-                            .map_err(|_| StdError::generic_err("Deviation calculation overflow"))?
-                            / expected_ratio)
-                            .to_uint_floor()
-                            .u128();
-                        if raw > u16::MAX as u128 { u16::MAX } else { raw as u16 }
-                    }
-                } else {
-                    let diff = expected_ratio
-                        .checked_sub(actual_ratio)
-                        .map_err(|_| StdError::generic_err("Ratio calculation overflow"))?;
-                    {
-                        let raw = (diff
-                            .checked_mul(Decimal::from_ratio(10000u128, 1u128))
-                            .map_err(|_| StdError::generic_err("Deviation calculation overflow"))?
-                            / actual_ratio)
-                            .to_uint_floor()
-                            .u128();
-                        if raw > u16::MAX as u128 { u16::MAX } else { raw as u16 }
-                    }
-                };
-
-                if deviation_bps > max_deviation_bps {
-                    return Err(ContractError::RatioDeviationExceeded {
-                        expected_ratio,
-                        actual_ratio,
-                        max_deviation_bps,
-                        actual_deviation_bps: deviation_bps,
-                    });
-                }
-            }
-        }
-    }
+    check_slippage(withdrawal_amount_0, min_amount0, "bluechip")?;
+    check_slippage(withdrawal_amount_1, min_amount1, "cw20")?;
+    check_ratio_deviation(withdrawal_amount_0, withdrawal_amount_1, min_amount0, min_amount1, max_ratio_deviation_bps)?;
     //add amounts to transfer back to user
     let total_amount_0 = withdrawal_amount_0.checked_add(fees_owed_0)?;
     let total_amount_1 = withdrawal_amount_1.checked_add(fees_owed_1)?;
@@ -886,29 +589,8 @@ pub fn remove_partial_liquidity(
         .add_attribute("total_0", total_amount_0)
         .add_attribute("total_1", total_amount_1);
     //send assets back to user.
-    if !total_amount_0.is_zero() {
-        let native_denom = get_bluechip_denom(&pool_info.pool_info.asset_infos)?;
-        let bluechip_msg = BankMsg::Send {
-            to_address: info.sender.to_string(),
-            amount: vec![Coin {
-                denom: native_denom,
-                amount: total_amount_0,
-            }],
-        };
-        response = response.add_message(bluechip_msg);
-    }
-
-    if !total_amount_1.is_zero() {
-        let cw20_msg = WasmMsg::Execute {
-            contract_addr: pool_info.token_address.to_string(),
-            msg: to_json_binary(&cw20::Cw20ExecuteMsg::Transfer {
-                recipient: info.sender.to_string(),
-                amount: total_amount_1,
-            })?,
-            funds: vec![],
-        };
-        response = response.add_message(cw20_msg);
-    }
+    let transfer_msgs = build_fee_transfer_msgs(&pool_info, &info.sender, total_amount_0, total_amount_1)?;
+    response = response.add_messages(transfer_msgs);
 
     Ok(response)
 }
@@ -933,7 +615,7 @@ pub fn execute_add_to_position(
         RATE_LIMIT_GUARD.save(deps.storage, &false)?;
         return Err(e);
     }
-    let result = add_to_position(
+    add_to_position(
         &mut deps,
         env,
         info.clone(),
@@ -944,8 +626,7 @@ pub fn execute_add_to_position(
         min_amount0,
         min_amount1,
         transaction_deadline,
-    );
-    result
+    )
 }
 
 pub fn execute_remove_all_liquidity(
@@ -966,7 +647,7 @@ pub fn execute_remove_all_liquidity(
         RATE_LIMIT_GUARD.save(deps.storage, &false)?;
         return Err(e);
     }
-    let result = remove_all_liquidity(
+    remove_all_liquidity(
         &mut deps,
         env,
         info.clone(),
@@ -974,8 +655,7 @@ pub fn execute_remove_all_liquidity(
         min_amount0,
         min_amount1,
         max_ratio_deviation_bps,
-    );
-    result
+    )
 }
 
 pub fn execute_remove_partial_liquidity(
@@ -997,7 +677,7 @@ pub fn execute_remove_partial_liquidity(
         RATE_LIMIT_GUARD.save(deps.storage, &false)?;
         return Err(e);
     }
-    let result = remove_partial_liquidity(
+    remove_partial_liquidity(
         &mut deps,
         env,
         info.clone(),
@@ -1007,9 +687,7 @@ pub fn execute_remove_partial_liquidity(
         min_amount0,
         min_amount1,
         max_ratio_deviation_bps,
-    );
-
-    result
+    )
 }
 
 //same as remove partial liquidity but with a percent instead of a whole number
