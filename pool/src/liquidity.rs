@@ -4,7 +4,7 @@ use crate::generic_helpers::{check_rate_limit, enforce_transaction_deadline};
 use crate::liquidity_helpers::{
     build_fee_transfer_msgs, calc_capped_fees, calc_liquidity_for_deposit,
     calculate_fee_size_multiplier, calculate_fees_owed, check_ratio_deviation, check_slippage,
-    verify_position_ownership,
+    sync_position_on_transfer, verify_position_ownership,
 };
 use crate::asset::get_bluechip_denom;
 use crate::state::{
@@ -192,6 +192,13 @@ pub fn execute_collect_fees(
         &info.sender,
     )?;
     let mut liquidity_position = LIQUIDITY_POSITIONS.load(deps.storage, &position_id)?;
+    sync_position_on_transfer(
+        deps.storage,
+        &mut liquidity_position,
+        &position_id,
+        &info.sender,
+        &pool_fee_state,
+    )?;
     let (fees_owed_0, fees_owed_1) = calc_capped_fees(&liquidity_position, &pool_fee_state)?;
 
     liquidity_position.fee_growth_inside_0_last = pool_fee_state.fee_growth_global_0;
@@ -265,6 +272,13 @@ pub fn add_to_position(
         });
     }
     let mut liquidity_position = LIQUIDITY_POSITIONS.load(deps.storage, &position_id)?;
+    sync_position_on_transfer(
+        deps.storage,
+        &mut liquidity_position,
+        &position_id,
+        &info.sender,
+        &pool_fee_state,
+    )?;
     let mut messages: Vec<CosmosMsg> = vec![];
     //send accumulated fees to reset accounting - collect before adding new liquidity
     let (fees_owed_0, fees_owed_1) = calc_capped_fees(&liquidity_position, &pool_fee_state)?;
@@ -368,6 +382,13 @@ pub fn remove_all_liquidity(
         &position_id,
         &info.sender,
     )?;
+    sync_position_on_transfer(
+        deps.storage,
+        &mut liquidity_position,
+        &position_id,
+        &info.sender,
+        &pool_fee_state,
+    )?;
 
     let current_reserve0 = pool_state.reserve0;
     let current_reserve1 = pool_state.reserve1;
@@ -456,6 +477,13 @@ pub fn remove_partial_liquidity(
         &pool_info.position_nft_address,
         &position_id,
         &info.sender,
+    )?;
+    sync_position_on_transfer(
+        deps.storage,
+        &mut liquidity_position,
+        &position_id,
+        &info.sender,
+        &pool_fee_state,
     )?;
 
     if liquidity_to_remove.is_zero() {

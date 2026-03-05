@@ -66,8 +66,8 @@ pub fn select_random_pools_with_atom(
     let atom_pool_contract_contract_address =
         factory_config.atom_bluechip_anchor_pool_address.to_string();
 
-    // Mock Mode Check: If atom pool is admin, we are in local testing
-    if factory_config.atom_bluechip_anchor_pool_address == factory_config.factory_admin_address {
+    #[cfg(feature = "mock")]
+    {
         return Ok(vec![atom_pool_contract_contract_address]);
     }
 
@@ -610,10 +610,8 @@ pub fn get_bluechip_usd_price(deps: Deps, env: Env) -> StdResult<Uint128> {
         }
     };
 
-    // Check for Mock/Local Mode
-    let factory_config = FACTORYINSTANTIATEINFO.load(deps.storage)?;
-    if factory_config.atom_bluechip_anchor_pool_address == factory_config.factory_admin_address {
-        // BYPASS INTERNAL ORACLE FOR LOCAL TESTING
+    #[cfg(feature = "mock")]
+    {
         return Ok(atom_usd_price);
     }
 
