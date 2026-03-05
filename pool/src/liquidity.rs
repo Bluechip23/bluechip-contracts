@@ -192,7 +192,6 @@ pub fn execute_collect_fees(
         &info.sender,
     )?;
     let mut liquidity_position = LIQUIDITY_POSITIONS.load(deps.storage, &position_id)?;
-    // [C-1 FIX] Reset fee checkpoints if NFT was transferred to a new owner.
     sync_position_on_transfer(
         deps.storage,
         &mut liquidity_position,
@@ -273,7 +272,6 @@ pub fn add_to_position(
         });
     }
     let mut liquidity_position = LIQUIDITY_POSITIONS.load(deps.storage, &position_id)?;
-    // [C-1 FIX] Reset fee checkpoints if NFT was transferred to a new owner.
     sync_position_on_transfer(
         deps.storage,
         &mut liquidity_position,
@@ -384,7 +382,6 @@ pub fn remove_all_liquidity(
         &position_id,
         &info.sender,
     )?;
-    // [C-1 FIX] Reset fee checkpoints if NFT was transferred to a new owner.
     sync_position_on_transfer(
         deps.storage,
         &mut liquidity_position,
@@ -481,7 +478,6 @@ pub fn remove_partial_liquidity(
         &position_id,
         &info.sender,
     )?;
-    // [C-1 FIX] Reset fee checkpoints if NFT was transferred to a new owner.
     sync_position_on_transfer(
         deps.storage,
         &mut liquidity_position,

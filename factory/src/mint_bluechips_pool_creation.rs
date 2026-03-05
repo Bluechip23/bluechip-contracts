@@ -65,9 +65,6 @@ pub fn calculate_and_mint_bluechip(
         }
     };
 
-    // [H-4 FIX] Use compile-time feature gate instead of runtime address comparison.
-    // The old check (atom_pool == admin) could be accidentally triggered in production
-    // via misconfiguration, silently skipping all minting.
     #[cfg(feature = "mock")]
     {
         return Ok(messages);

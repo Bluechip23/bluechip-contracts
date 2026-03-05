@@ -32,7 +32,6 @@ pub fn calculate_unclaimed_fees(
     }
 }
 
-// H-2 FIX: Returns Result instead of silently returning Uint128::MAX on overflow.
 pub fn calculate_fees_owed(
     liquidity: Uint128,
     fee_growth_global: Decimal,
@@ -322,7 +321,7 @@ pub fn verify_position_ownership(
     Ok(())
 }
 
-/// [C-1 FIX] Detect NFT ownership changes and reset fee checkpoints.
+/// Detect NFT ownership changes and reset fee checkpoints.
 ///
 /// When an NFT position is transferred via CW721 TransferNft, no callback
 /// notifies the pool contract. The previous owner's fee snapshots remain,
@@ -332,7 +331,7 @@ pub fn verify_position_ownership(
 /// the position is loaded. If the stored `position.owner` differs from the
 /// current caller (the verified CW721 owner), it means a transfer occurred.
 /// We reset fee snapshots to current globals, clear unclaimed fees, and
-/// update the OWNER_POSITIONS index (also fixing M-3).
+/// update the OWNER_POSITIONS index.
 pub fn sync_position_on_transfer(
     storage: &mut dyn Storage,
     position: &mut Position,

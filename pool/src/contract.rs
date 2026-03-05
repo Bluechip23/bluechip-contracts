@@ -1047,8 +1047,6 @@ pub fn execute_commit_logic(
                             }
                             // Check slippage if specified
                             if let Some(max_spread) = max_spread {
-                                // [L-1 FIX] Pass return_amt + commission_amt to match
-                                // the normal swap path at contract.rs:647-653
                                 assert_max_spread(
                                     belief_price,
                                     Some(max_spread),
@@ -1398,9 +1396,6 @@ pub fn execute_continue_distribution(
         pool_fee_state.fee_reserve_0 = pool_fee_state
             .fee_reserve_0
             .checked_sub(DISTRIBUTION_BOUNTY)?;
-        // [H-3 FIX] Adjust fee_growth_global_0 downward so LP fee checkpoint
-        // math stays consistent with the actual reserve. Without this, LPs'
-        // calculated entitlements would exceed the available fee_reserve_0.
         if !pool_state.total_liquidity.is_zero() {
             let growth_reduction =
                 Decimal::from_ratio(DISTRIBUTION_BOUNTY, pool_state.total_liquidity);
@@ -1439,8 +1434,6 @@ pub fn migrate(deps: DepsMut, _env: Env, msg: MigrateMsg) -> StdResult<Response>
                     "lp_fee must not exceed 10% (0.1)",
                 ));
             }
-            // [H-1 FIX] Enforce minimum fee to match execute_update_config_from_factory.
-            // A fee of zero makes providing liquidity economically irrational.
             let min_lp_fee = Decimal::permille(1); // 0.1%
             if new_fees < min_lp_fee {
                 return Err(StdError::generic_err(
@@ -1627,9 +1620,6 @@ pub fn execute_emergency_withdraw(
         // deposits, swaps, or LP operations.
         EMERGENCY_DRAINED.save(deps.storage, &true)?;
 
-        // [M-5 FIX] Clear any in-progress distribution to prevent CW20 minting
-        // after the pool has been drained. Without this, ContinueDistribution
-        // could still mint unbacked CW20 tokens to remaining committers.
         if let Ok(mut dist_state) = DISTRIBUTION_STATE.load(deps.storage) {
             dist_state.is_distributing = false;
             dist_state.distributions_remaining = 0;
