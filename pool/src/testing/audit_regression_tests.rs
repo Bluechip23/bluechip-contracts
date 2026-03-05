@@ -20,8 +20,11 @@ use crate::state::{
     POOL_INFO, POOL_SPECS, POOL_STATE, RATE_LIMIT_GUARD, THRESHOLD_PAYOUT_AMOUNTS,
     THRESHOLD_PROCESSING, USD_RAISED_FROM_COMMIT, MINIMUM_LIQUIDITY,
 };
-use crate::testing::liquidity_tests::{setup_pool_post_threshold, setup_pool_storage};
+use crate::liquidity::{execute_collect_fees};
+use crate::liquidity_helpers::sync_position_on_transfer;
+use crate::testing::liquidity_tests::{create_test_position, setup_pool_post_threshold, setup_pool_storage};
 use crate::testing::swap_tests::with_factory_oracle;
+use crate::state::{EMERGENCY_DRAINED, OWNER_POSITIONS, PENDING_EMERGENCY_WITHDRAW, POOL_PAUSED};
 
 fn mock_dependencies_with_balance(
     balances: &[Coin],
@@ -404,4 +407,250 @@ fn test_m6_migrate_accepts_small_fees() {
     let res = migrate(deps.as_mut(), env, msg).unwrap();
     let pool_specs = POOL_SPECS.load(&deps.storage).unwrap();
     assert_eq!(pool_specs.lp_fee, Decimal::from_str("0.003").unwrap());
+}
+
+// ==================== New Audit V2 Regression Tests ====================
+
+/// C-1: Verify that sync_position_on_transfer resets fee checkpoints when
+/// position ownership changes, preventing the new owner from claiming fees
+/// that accrued before the transfer.
+#[test]
+fn test_c1_nft_transfer_resets_fee_checkpoints() {
+    let mut deps = mock_dependencies();
+    setup_pool_post_threshold(&mut deps);
+
+    // Create a position owned by Alice with fee growth snapshots at zero
+    create_test_position(&mut deps, 1, "alice", Uint128::new(10_000_000));
+
+    // Simulate fees accruing: advance global fee growth
+    let mut fee_state = POOL_FEE_STATE.load(&deps.storage).unwrap();
+    fee_state.fee_growth_global_0 = Decimal::from_str("50").unwrap();
+    fee_state.fee_growth_global_1 = Decimal::from_str("75").unwrap();
+    fee_state.fee_reserve_0 = Uint128::new(1_000_000_000_000);
+    fee_state.fee_reserve_1 = Uint128::new(1_000_000_000_000);
+    POOL_FEE_STATE.save(&mut deps.storage, &fee_state).unwrap();
+
+    // Simulate NFT transfer: Bob is now the CW721 owner, but position still
+    // has Alice as `position.owner`. Call sync_position_on_transfer as Bob.
+    let bob = Addr::unchecked("bob");
+    let mut position = LIQUIDITY_POSITIONS.load(&deps.storage, "1").unwrap();
+    assert_eq!(position.owner, Addr::unchecked("alice"));
+
+    let transferred = sync_position_on_transfer(
+        &mut deps.storage,
+        &mut position,
+        "1",
+        &bob,
+        &fee_state,
+    )
+    .unwrap();
+
+    assert!(transferred, "Should detect ownership transfer");
+    assert_eq!(position.owner, bob);
+    // Fee snapshots should be reset to current globals — Bob gets no pre-transfer fees
+    assert_eq!(position.fee_growth_inside_0_last, fee_state.fee_growth_global_0);
+    assert_eq!(position.fee_growth_inside_1_last, fee_state.fee_growth_global_1);
+    assert_eq!(position.unclaimed_fees_0, Uint128::zero());
+    assert_eq!(position.unclaimed_fees_1, Uint128::zero());
+
+    // OWNER_POSITIONS should be updated
+    assert!(OWNER_POSITIONS.may_load(&deps.storage, (&Addr::unchecked("alice"), "1")).unwrap().is_none());
+    assert!(OWNER_POSITIONS.may_load(&deps.storage, (&bob, "1")).unwrap().is_some());
+}
+
+/// C-1: Verify that sync_position_on_transfer is a no-op when owner hasn't changed
+#[test]
+fn test_c1_no_transfer_no_reset() {
+    let mut deps = mock_dependencies();
+    setup_pool_post_threshold(&mut deps);
+
+    create_test_position(&mut deps, 1, "alice", Uint128::new(10_000_000));
+
+    let mut fee_state = POOL_FEE_STATE.load(&deps.storage).unwrap();
+    fee_state.fee_growth_global_0 = Decimal::from_str("50").unwrap();
+    POOL_FEE_STATE.save(&mut deps.storage, &fee_state).unwrap();
+
+    let alice = Addr::unchecked("alice");
+    let mut position = LIQUIDITY_POSITIONS.load(&deps.storage, "1").unwrap();
+
+    let transferred = sync_position_on_transfer(
+        &mut deps.storage,
+        &mut position,
+        "1",
+        &alice,
+        &fee_state,
+    )
+    .unwrap();
+
+    assert!(!transferred, "Should NOT detect transfer when owner is the same");
+    // Fee snapshots should remain at zero (original values)
+    assert_eq!(position.fee_growth_inside_0_last, Decimal::zero());
+}
+
+/// H-1: Verify migrate rejects fees below 0.1% minimum
+#[test]
+fn test_h1_migrate_rejects_zero_fees() {
+    let mut deps = mock_dependencies();
+    setup_pool_post_threshold(&mut deps);
+
+    let env = mock_env();
+    let msg = MigrateMsg::UpdateFees {
+        new_fees: Decimal::zero(),
+    };
+
+    let err = migrate(deps.as_mut(), env, msg).unwrap_err();
+    assert!(
+        err.to_string().contains("at least 0.1%"),
+        "H-1 regression: zero fees should be rejected, got: {}",
+        err
+    );
+}
+
+/// H-1: Verify migrate rejects fees just below the 0.1% minimum
+#[test]
+fn test_h1_migrate_rejects_below_minimum() {
+    let mut deps = mock_dependencies();
+    setup_pool_post_threshold(&mut deps);
+
+    let env = mock_env();
+    let msg = MigrateMsg::UpdateFees {
+        new_fees: Decimal::from_str("0.0009").unwrap(), // 0.09% < 0.1%
+    };
+
+    let err = migrate(deps.as_mut(), env, msg).unwrap_err();
+    assert!(
+        err.to_string().contains("at least 0.1%"),
+        "H-1 regression: fees below 0.1% should be rejected, got: {}",
+        err
+    );
+}
+
+/// H-1: Verify migrate accepts fees at exactly 0.1% minimum
+#[test]
+fn test_h1_migrate_accepts_minimum_fee() {
+    let mut deps = mock_dependencies();
+    setup_pool_post_threshold(&mut deps);
+
+    let env = mock_env();
+    let msg = MigrateMsg::UpdateFees {
+        new_fees: Decimal::permille(1), // 0.1%
+    };
+
+    let res = migrate(deps.as_mut(), env, msg).unwrap();
+    let pool_specs = POOL_SPECS.load(&deps.storage).unwrap();
+    assert_eq!(pool_specs.lp_fee, Decimal::permille(1));
+}
+
+/// H-3: Verify ContinueDistribution adjusts fee_growth_global_0 when paying bounty
+#[test]
+fn test_h3_distribution_bounty_adjusts_fee_growth() {
+    let mut deps = mock_dependencies();
+    setup_pool_post_threshold(&mut deps);
+
+    EXPECTED_FACTORY
+        .save(
+            &mut deps.storage,
+            &ExpectedFactory {
+                expected_factory_address: Addr::unchecked("factory_contract"),
+            },
+        )
+        .unwrap();
+
+    // Set up fee reserves and some fee growth
+    let mut fee_state = POOL_FEE_STATE.load(&deps.storage).unwrap();
+    fee_state.fee_reserve_0 = Uint128::new(10_000_000); // 10 bluechip
+    fee_state.fee_growth_global_0 = Decimal::from_str("100").unwrap();
+    POOL_FEE_STATE.save(&mut deps.storage, &fee_state).unwrap();
+
+    let pre_growth = fee_state.fee_growth_global_0;
+
+    // Set up distribution state
+    let committer = Addr::unchecked("committer1");
+    COMMIT_LEDGER
+        .save(&mut deps.storage, &committer, &Uint128::new(5_000_000_000))
+        .unwrap();
+    let dist_state = DistributionState {
+        is_distributing: true,
+        total_to_distribute: Uint128::new(500_000_000_000),
+        total_committed_usd: Uint128::new(25_000_000_000),
+        last_processed_key: None,
+        distributions_remaining: 1,
+        estimated_gas_per_distribution: DEFAULT_ESTIMATED_GAS_PER_DISTRIBUTION,
+        max_gas_per_tx: DEFAULT_MAX_GAS_PER_TX,
+        last_successful_batch_size: None,
+        consecutive_failures: 0,
+        started_at: Timestamp::from_seconds(1_600_000_000),
+        last_updated: Timestamp::from_seconds(1_600_000_000),
+    };
+    DISTRIBUTION_STATE.save(&mut deps.storage, &dist_state).unwrap();
+
+    let env = mock_env();
+    let caller_info = mock_info("bounty_hunter", &[]);
+    let msg = ExecuteMsg::ContinueDistribution {};
+    execute(deps.as_mut(), env, caller_info, msg).unwrap();
+
+    let post_fee_state = POOL_FEE_STATE.load(&deps.storage).unwrap();
+    // fee_growth_global_0 should be reduced to match the reserve reduction
+    assert!(
+        post_fee_state.fee_growth_global_0 < pre_growth,
+        "H-3 regression: fee_growth_global_0 should decrease when bounty is paid. Before: {}, After: {}",
+        pre_growth,
+        post_fee_state.fee_growth_global_0
+    );
+}
+
+/// M-5: Verify emergency withdrawal clears distribution state
+#[test]
+fn test_m5_emergency_withdraw_clears_distribution() {
+    let mut deps = mock_dependencies();
+    setup_pool_post_threshold(&mut deps);
+
+    EXPECTED_FACTORY
+        .save(
+            &mut deps.storage,
+            &ExpectedFactory {
+                expected_factory_address: Addr::unchecked("factory_contract"),
+            },
+        )
+        .unwrap();
+
+    // Set up an in-progress distribution
+    let dist_state = DistributionState {
+        is_distributing: true,
+        total_to_distribute: Uint128::new(500_000_000_000),
+        total_committed_usd: Uint128::new(25_000_000_000),
+        last_processed_key: None,
+        distributions_remaining: 50,
+        estimated_gas_per_distribution: DEFAULT_ESTIMATED_GAS_PER_DISTRIBUTION,
+        max_gas_per_tx: DEFAULT_MAX_GAS_PER_TX,
+        last_successful_batch_size: None,
+        consecutive_failures: 0,
+        started_at: Timestamp::from_seconds(1_600_000_000),
+        last_updated: Timestamp::from_seconds(1_600_000_000),
+    };
+    DISTRIBUTION_STATE.save(&mut deps.storage, &dist_state).unwrap();
+
+    // Phase 1: initiate emergency withdrawal
+    let mut env = mock_env();
+    env.block.time = Timestamp::from_seconds(1_700_000_000);
+    let factory_info = mock_info("factory_contract", &[]);
+    execute(deps.as_mut(), env.clone(), factory_info.clone(), ExecuteMsg::EmergencyWithdraw {}).unwrap();
+
+    // Phase 2: execute after timelock (24h + 1s)
+    env.block.time = Timestamp::from_seconds(1_700_000_000 + 86_401);
+    execute(deps.as_mut(), env, factory_info, ExecuteMsg::EmergencyWithdraw {}).unwrap();
+
+    // Distribution should be cleared
+    let post_dist = DISTRIBUTION_STATE.load(&deps.storage).unwrap();
+    assert!(
+        !post_dist.is_distributing,
+        "M-5 regression: distribution should be stopped after emergency withdrawal"
+    );
+    assert_eq!(
+        post_dist.distributions_remaining, 0,
+        "M-5 regression: distributions_remaining should be 0 after emergency withdrawal"
+    );
+
+    // Pool should be permanently drained
+    assert!(EMERGENCY_DRAINED.load(&deps.storage).unwrap());
 }

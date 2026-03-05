@@ -4,6 +4,7 @@ use crate::state::{
     PoolFeeState, PoolInfo, Position, TokenMetadata, LIQUIDITY_POSITIONS, MINIMUM_LIQUIDITY,
     NEXT_POSITION_ID, OWNER_POSITIONS, POOL_FEE_STATE, POOL_INFO, POOL_STATE,
 };
+use cosmwasm_std::Storage;
 use crate::{error::ContractError, state::CREATOR_EXCESS_POSITION};
 use cosmwasm_std::{
     to_json_binary, Addr, CosmosMsg, Decimal, Deps, DepsMut, Env, MessageInfo, Response, StdError,
@@ -319,6 +320,50 @@ pub fn verify_position_ownership(
     }
 
     Ok(())
+}
+
+/// [C-1 FIX] Detect NFT ownership changes and reset fee checkpoints.
+///
+/// When an NFT position is transferred via CW721 TransferNft, no callback
+/// notifies the pool contract. The previous owner's fee snapshots remain,
+/// allowing the new owner to claim fees that accrued before the transfer.
+///
+/// This function must be called after verify_position_ownership succeeds and
+/// the position is loaded. If the stored `position.owner` differs from the
+/// current caller (the verified CW721 owner), it means a transfer occurred.
+/// We reset fee snapshots to current globals, clear unclaimed fees, and
+/// update the OWNER_POSITIONS index (also fixing M-3).
+pub fn sync_position_on_transfer(
+    storage: &mut dyn Storage,
+    position: &mut Position,
+    position_id: &str,
+    current_owner: &Addr,
+    pool_fee_state: &PoolFeeState,
+) -> Result<bool, ContractError> {
+    if position.owner == *current_owner {
+        return Ok(false); // No transfer occurred
+    }
+
+    let old_owner = position.owner.clone();
+
+    // Reset fee checkpoints to current global values — any fees accrued
+    // before this point belonged to the previous owner and are forfeited.
+    position.fee_growth_inside_0_last = pool_fee_state.fee_growth_global_0;
+    position.fee_growth_inside_1_last = pool_fee_state.fee_growth_global_1;
+    position.unclaimed_fees_0 = Uint128::zero();
+    position.unclaimed_fees_1 = Uint128::zero();
+
+    // Update stored owner
+    position.owner = current_owner.clone();
+
+    // Update OWNER_POSITIONS index: remove old, add new
+    OWNER_POSITIONS.remove(storage, (&old_owner, position_id));
+    OWNER_POSITIONS.save(storage, (current_owner, position_id), &true)?;
+
+    // Persist the updated position
+    LIQUIDITY_POSITIONS.save(storage, position_id, position)?;
+
+    Ok(true) // Transfer was detected and handled
 }
 
 pub fn execute_claim_creator_excess(

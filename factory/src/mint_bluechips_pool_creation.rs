@@ -65,12 +65,15 @@ pub fn calculate_and_mint_bluechip(
         }
     };
 
-    // Check Mock/Direct Mode - Skip minting if enabled
-    let config = FACTORYINSTANTIATEINFO.load(deps.storage)?;
-    if config.atom_bluechip_anchor_pool_address == config.factory_admin_address {
+    // [H-4 FIX] Use compile-time feature gate instead of runtime address comparison.
+    // The old check (atom_pool == admin) could be accidentally triggered in production
+    // via misconfiguration, silently skipping all minting.
+    #[cfg(feature = "mock")]
+    {
         return Ok(messages);
     }
 
+    let config = FACTORYINSTANTIATEINFO.load(deps.storage)?;
     let seconds_elapsed = env.block.time.seconds().saturating_sub(first_pool_time.seconds());
 
     let mint_amount = calculate_mint_amount(seconds_elapsed, pool_id)?;
