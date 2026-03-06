@@ -222,7 +222,7 @@ impl TokenType {
     }
 }
 
-// L-5 FIX: Renamed from PoolDetails to PoolPairInfo to avoid collision with state::PoolDetails
+// Renamed from PoolDetails to PoolPairInfo to avoid collision with state::PoolDetails
 #[cw_serde]
 pub struct PoolPairInfo {
     // information for the two token in the pool
