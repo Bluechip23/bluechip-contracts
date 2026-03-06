@@ -334,16 +334,21 @@ fn test_m5_distribution_bounty_from_fee_reserves() {
     let msg = ExecuteMsg::ContinueDistribution {};
     let res = execute(deps.as_mut(), env, caller_info, msg).unwrap();
 
-    // Check that fee_reserve_0 decreased (bounty was taken from it)
+    // Bounty is now paid from pool reserves (not fee reserves) to avoid
+    // distorting fee_growth_global_0 and LP fee accounting.
     let post_fee_state = POOL_FEE_STATE.load(&deps.storage).unwrap();
-    assert!(
-        post_fee_state.fee_reserve_0 < fee_state.fee_reserve_0,
-        "M-5 regression: bounty should be taken from fee_reserve_0"
+    assert_eq!(
+        post_fee_state.fee_reserve_0, fee_state.fee_reserve_0,
+        "M-5 regression: fee_reserve_0 should be untouched (bounty comes from reserves)"
     );
 
-    // Check that tradeable reserves were NOT touched for the bounty
+    // Check that pool reserves decreased by the bounty amount
     let post_reserve0 = POOL_STATE.load(&deps.storage).unwrap().reserve0;
-    // Reserve may change due to distribution, but not by the bounty amount specifically
+    assert!(
+        post_reserve0 < initial_reserve0,
+        "M-5 regression: reserve0 should decrease (bounty paid from reserves)"
+    );
+
     // The bounty_paid attribute should confirm bounty was paid
     let bounty_attr = res.attributes.iter()
         .find(|a| a.key == "bounty_paid")
@@ -543,7 +548,7 @@ fn test_h1_migrate_accepts_minimum_fee() {
 
 /// H-3: Verify ContinueDistribution adjusts fee_growth_global_0 when paying bounty
 #[test]
-fn test_h3_distribution_bounty_adjusts_fee_growth() {
+fn test_h3_distribution_bounty_does_not_distort_fee_growth() {
     let mut deps = mock_dependencies();
     setup_pool_post_threshold(&mut deps);
 
@@ -590,10 +595,11 @@ fn test_h3_distribution_bounty_adjusts_fee_growth() {
     execute(deps.as_mut(), env, caller_info, msg).unwrap();
 
     let post_fee_state = POOL_FEE_STATE.load(&deps.storage).unwrap();
-    // fee_growth_global_0 should be reduced to match the reserve reduction
-    assert!(
-        post_fee_state.fee_growth_global_0 < pre_growth,
-        "H-3 regression: fee_growth_global_0 should decrease when bounty is paid. Before: {}, After: {}",
+    // Bounty is now paid from pool reserves, so fee_growth_global_0 must NOT change.
+    // This prevents LP fee accounting distortion (the original M-3 finding).
+    assert_eq!(
+        post_fee_state.fee_growth_global_0, pre_growth,
+        "fee_growth_global_0 must not change when bounty is paid from reserves. Before: {}, After: {}",
         pre_growth,
         post_fee_state.fee_growth_global_0
     );
