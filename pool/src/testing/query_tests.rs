@@ -205,7 +205,7 @@ fn test_query_positions_by_owner() {
     create_test_position(&mut deps, 3, "alice", Uint128::new(3_000_000));
     create_test_position(&mut deps, 4, "charlie", Uint128::new(500_000));
 
-    // Register in OWNER_POSITIONS index (H-5 secondary index)
+    // Register in OWNER_POSITIONS secondary index
     let alice = Addr::unchecked("alice");
     let bob = Addr::unchecked("bob");
     let charlie = Addr::unchecked("charlie");

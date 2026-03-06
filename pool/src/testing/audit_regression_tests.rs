@@ -36,7 +36,7 @@ fn mock_dependencies_with_balance(
 }
 
 #[test]
-fn test_c1_swap_reserve_deducts_return_and_commission() {
+fn test_swap_reserve_deducts_return_and_commission() {
     let mut deps = mock_dependencies();
     setup_pool_post_threshold(&mut deps);
 
@@ -94,13 +94,13 @@ fn test_c1_swap_reserve_deducts_return_and_commission() {
     let total_accounted = post_state.reserve1 + commission_in_reserve + tokens_sent;
     assert_eq!(
         total_accounted, initial_reserve1,
-        "C-1 regression: reserve1 ({}) + fee_reserve_1 ({}) + sent ({}) must equal initial_reserve1 ({})",
+        "reserve1 ({}) + fee_reserve_1 ({}) + sent ({}) must equal initial_reserve1 ({})",
         post_state.reserve1, commission_in_reserve, tokens_sent, initial_reserve1
     );
 }
 
 #[test]
-fn test_c3_recover_stuck_reentrancy_guard() {
+fn test_recover_stuck_reentrancy_guard() {
     let mut deps = mock_dependencies();
     setup_pool_storage(&mut deps);
 
@@ -134,7 +134,7 @@ fn test_c3_recover_stuck_reentrancy_guard() {
 }
 
 #[test]
-fn test_c3_recover_stuck_reentrancy_guard_unauthorized() {
+fn test_recover_stuck_reentrancy_guard_unauthorized() {
     let mut deps = mock_dependencies();
     setup_pool_storage(&mut deps);
 
@@ -160,7 +160,7 @@ fn test_c3_recover_stuck_reentrancy_guard_unauthorized() {
 }
 
 #[test]
-fn test_c3_recover_not_stuck_returns_error() {
+fn test_recover_not_stuck_returns_error() {
     let mut deps = mock_dependencies();
     setup_pool_storage(&mut deps);
 
@@ -183,7 +183,7 @@ fn test_c3_recover_not_stuck_returns_error() {
 }
 
 #[test]
-fn test_c3_recover_both_resets_all_stuck_states() {
+fn test_recover_both_resets_all_stuck_states() {
     let mut deps = mock_dependencies();
     setup_pool_storage(&mut deps);
 
@@ -226,7 +226,7 @@ fn test_c3_recover_both_resets_all_stuck_states() {
 
 
 #[test]
-fn test_m4_first_deposit_locks_minimum_liquidity() {
+fn test_first_deposit_locks_minimum_liquidity() {
     let mut deps = mock_dependencies();
     setup_pool_post_threshold(&mut deps);
 
@@ -274,7 +274,7 @@ fn test_m4_first_deposit_locks_minimum_liquidity() {
 
     assert_eq!(
         position.liquidity, expected_user_liquidity,
-        "M-4 regression: first depositor should get sqrt(a*b) - MINIMUM_LIQUIDITY ({}) but got {}",
+        "first depositor should get sqrt(a*b) - MINIMUM_LIQUIDITY ({}) but got {}",
         expected_user_liquidity, position.liquidity
     );
 
@@ -285,15 +285,15 @@ fn test_m4_first_deposit_locks_minimum_liquidity() {
         "total_liquidity should equal position liquidity (locked minimum is not tracked in total_liquidity)"
     );
 
-    // The key M-4 check: position got LESS than the raw sqrt due to the lock
+    // Position got LESS than the raw sqrt due to the lock
     assert!(
         position.liquidity < raw_liquidity,
-        "M-4 regression: position liquidity should be less than raw sqrt due to MINIMUM_LIQUIDITY lock"
+        "position liquidity should be less than raw sqrt due to MINIMUM_LIQUIDITY lock"
     );
 }
 
 #[test]
-fn test_m5_distribution_bounty_from_fee_reserves() {
+fn test_distribution_bounty_from_reserves() {
     let mut deps = mock_dependencies();
     setup_pool_post_threshold(&mut deps);
 
@@ -334,16 +334,21 @@ fn test_m5_distribution_bounty_from_fee_reserves() {
     let msg = ExecuteMsg::ContinueDistribution {};
     let res = execute(deps.as_mut(), env, caller_info, msg).unwrap();
 
-    // Check that fee_reserve_0 decreased (bounty was taken from it)
+    // Bounty is now paid from pool reserves (not fee reserves) to avoid
+    // distorting fee_growth_global_0 and LP fee accounting.
     let post_fee_state = POOL_FEE_STATE.load(&deps.storage).unwrap();
-    assert!(
-        post_fee_state.fee_reserve_0 < fee_state.fee_reserve_0,
-        "M-5 regression: bounty should be taken from fee_reserve_0"
+    assert_eq!(
+        post_fee_state.fee_reserve_0, fee_state.fee_reserve_0,
+        "fee_reserve_0 should be untouched (bounty comes from reserves)"
     );
 
-    // Check that tradeable reserves were NOT touched for the bounty
+    // Check that pool reserves decreased by the bounty amount
     let post_reserve0 = POOL_STATE.load(&deps.storage).unwrap().reserve0;
-    // Reserve may change due to distribution, but not by the bounty amount specifically
+    assert!(
+        post_reserve0 < initial_reserve0,
+        "reserve0 should decrease (bounty paid from reserves)"
+    );
+
     // The bounty_paid attribute should confirm bounty was paid
     let bounty_attr = res.attributes.iter()
         .find(|a| a.key == "bounty_paid")
@@ -353,7 +358,7 @@ fn test_m5_distribution_bounty_from_fee_reserves() {
 }
 
 #[test]
-fn test_m6_migrate_rejects_excessive_fees() {
+fn test_migrate_rejects_excessive_fees() {
     let mut deps = mock_dependencies();
     setup_pool_post_threshold(&mut deps);
 
@@ -367,13 +372,13 @@ fn test_m6_migrate_rejects_excessive_fees() {
     let err = migrate(deps.as_mut(), env.clone(), msg).unwrap_err();
     assert!(
         err.to_string().contains("must not exceed 10%"),
-        "M-6 regression: fees above 10% should be rejected, got: {}",
+        "fees above 10% should be rejected, got: {}",
         err
     );
 }
 
 #[test]
-fn test_m6_migrate_accepts_valid_fees() {
+fn test_migrate_accepts_valid_fees() {
     let mut deps = mock_dependencies();
     setup_pool_post_threshold(&mut deps);
 
@@ -393,7 +398,7 @@ fn test_m6_migrate_accepts_valid_fees() {
 }
 
 #[test]
-fn test_m6_migrate_accepts_small_fees() {
+fn test_migrate_accepts_small_fees() {
     let mut deps = mock_dependencies();
     setup_pool_post_threshold(&mut deps);
 
@@ -409,13 +414,13 @@ fn test_m6_migrate_accepts_small_fees() {
     assert_eq!(pool_specs.lp_fee, Decimal::from_str("0.003").unwrap());
 }
 
-// ==================== New Audit V2 Regression Tests ====================
+// ==================== Additional Regression Tests ====================
 
-/// C-1: Verify that sync_position_on_transfer resets fee checkpoints when
+/// Verify that sync_position_on_transfer resets fee checkpoints when
 /// position ownership changes, preventing the new owner from claiming fees
 /// that accrued before the transfer.
 #[test]
-fn test_c1_nft_transfer_resets_fee_checkpoints() {
+fn test_nft_transfer_resets_fee_checkpoints() {
     let mut deps = mock_dependencies();
     setup_pool_post_threshold(&mut deps);
 
@@ -458,9 +463,9 @@ fn test_c1_nft_transfer_resets_fee_checkpoints() {
     assert!(OWNER_POSITIONS.may_load(&deps.storage, (&bob, "1")).unwrap().is_some());
 }
 
-/// C-1: Verify that sync_position_on_transfer is a no-op when owner hasn't changed
+/// Verify that sync_position_on_transfer is a no-op when owner hasn't changed
 #[test]
-fn test_c1_no_transfer_no_reset() {
+fn test_no_transfer_no_reset() {
     let mut deps = mock_dependencies();
     setup_pool_post_threshold(&mut deps);
 
@@ -487,9 +492,9 @@ fn test_c1_no_transfer_no_reset() {
     assert_eq!(position.fee_growth_inside_0_last, Decimal::zero());
 }
 
-/// H-1: Verify migrate rejects fees below 0.1% minimum
+/// Verify migrate rejects fees below 0.1% minimum
 #[test]
-fn test_h1_migrate_rejects_zero_fees() {
+fn test_migrate_rejects_zero_fees() {
     let mut deps = mock_dependencies();
     setup_pool_post_threshold(&mut deps);
 
@@ -501,14 +506,14 @@ fn test_h1_migrate_rejects_zero_fees() {
     let err = migrate(deps.as_mut(), env, msg).unwrap_err();
     assert!(
         err.to_string().contains("at least 0.1%"),
-        "H-1 regression: zero fees should be rejected, got: {}",
+        "zero fees should be rejected, got: {}",
         err
     );
 }
 
-/// H-1: Verify migrate rejects fees just below the 0.1% minimum
+/// Verify migrate rejects fees just below the 0.1% minimum
 #[test]
-fn test_h1_migrate_rejects_below_minimum() {
+fn test_migrate_rejects_below_minimum() {
     let mut deps = mock_dependencies();
     setup_pool_post_threshold(&mut deps);
 
@@ -520,14 +525,14 @@ fn test_h1_migrate_rejects_below_minimum() {
     let err = migrate(deps.as_mut(), env, msg).unwrap_err();
     assert!(
         err.to_string().contains("at least 0.1%"),
-        "H-1 regression: fees below 0.1% should be rejected, got: {}",
+        "fees below 0.1% should be rejected, got: {}",
         err
     );
 }
 
-/// H-1: Verify migrate accepts fees at exactly 0.1% minimum
+/// Verify migrate accepts fees at exactly 0.1% minimum
 #[test]
-fn test_h1_migrate_accepts_minimum_fee() {
+fn test_migrate_accepts_minimum_fee() {
     let mut deps = mock_dependencies();
     setup_pool_post_threshold(&mut deps);
 
@@ -541,9 +546,9 @@ fn test_h1_migrate_accepts_minimum_fee() {
     assert_eq!(pool_specs.lp_fee, Decimal::permille(1));
 }
 
-/// H-3: Verify ContinueDistribution adjusts fee_growth_global_0 when paying bounty
+/// Verify ContinueDistribution does not distort fee_growth_global_0 when paying bounty
 #[test]
-fn test_h3_distribution_bounty_adjusts_fee_growth() {
+fn test_distribution_bounty_does_not_distort_fee_growth() {
     let mut deps = mock_dependencies();
     setup_pool_post_threshold(&mut deps);
 
@@ -590,18 +595,19 @@ fn test_h3_distribution_bounty_adjusts_fee_growth() {
     execute(deps.as_mut(), env, caller_info, msg).unwrap();
 
     let post_fee_state = POOL_FEE_STATE.load(&deps.storage).unwrap();
-    // fee_growth_global_0 should be reduced to match the reserve reduction
-    assert!(
-        post_fee_state.fee_growth_global_0 < pre_growth,
-        "H-3 regression: fee_growth_global_0 should decrease when bounty is paid. Before: {}, After: {}",
+    // Bounty is now paid from pool reserves, so fee_growth_global_0 must NOT change.
+    // This prevents LP fee accounting distortion.
+    assert_eq!(
+        post_fee_state.fee_growth_global_0, pre_growth,
+        "fee_growth_global_0 must not change when bounty is paid from reserves. Before: {}, After: {}",
         pre_growth,
         post_fee_state.fee_growth_global_0
     );
 }
 
-/// M-5: Verify emergency withdrawal clears distribution state
+/// Verify emergency withdrawal clears distribution state
 #[test]
-fn test_m5_emergency_withdraw_clears_distribution() {
+fn test_emergency_withdraw_clears_distribution() {
     let mut deps = mock_dependencies();
     setup_pool_post_threshold(&mut deps);
 
@@ -644,11 +650,11 @@ fn test_m5_emergency_withdraw_clears_distribution() {
     let post_dist = DISTRIBUTION_STATE.load(&deps.storage).unwrap();
     assert!(
         !post_dist.is_distributing,
-        "M-5 regression: distribution should be stopped after emergency withdrawal"
+        "distribution should be stopped after emergency withdrawal"
     );
     assert_eq!(
         post_dist.distributions_remaining, 0,
-        "M-5 regression: distributions_remaining should be 0 after emergency withdrawal"
+        "distributions_remaining should be 0 after emergency withdrawal"
     );
 
     // Pool should be permanently drained

@@ -535,11 +535,12 @@ pub fn execute_swap_cw20(
             } else {
                 None
             };
+            let validated_sender = deps.api.addr_validate(&cw20_msg.sender)?;
             simple_swap(
                 deps,
                 env,
                 info,
-                Addr::unchecked(cw20_msg.sender),
+                validated_sender,
                 TokenInfo {
                     info: TokenType::CreatorToken { contract_addr },
                     amount: cw20_msg.amount,
@@ -1389,22 +1390,14 @@ pub fn execute_continue_distribution(
         },
     };
 
-    let mut pool_fee_state = POOL_FEE_STATE.load(deps.storage)?;
-    let pool_state = POOL_STATE.load(deps.storage)?;
-    let bounty_paid = if pool_fee_state.fee_reserve_0 >= DISTRIBUTION_BOUNTY {
-        // Pay bounty from fee reserves to the caller
-        pool_fee_state.fee_reserve_0 = pool_fee_state
-            .fee_reserve_0
+    let mut pool_state = POOL_STATE.load(deps.storage)?;
+    let bounty_paid = if pool_state.reserve0 >= DISTRIBUTION_BOUNTY {
+        // Pay bounty from pool reserves (not fee reserves) to avoid
+        // distorting fee_growth_global_0 and LP fee accounting.
+        pool_state.reserve0 = pool_state
+            .reserve0
             .checked_sub(DISTRIBUTION_BOUNTY)?;
-        if !pool_state.total_liquidity.is_zero() {
-            let growth_reduction =
-                Decimal::from_ratio(DISTRIBUTION_BOUNTY, pool_state.total_liquidity);
-            pool_fee_state.fee_growth_global_0 = pool_fee_state
-                .fee_growth_global_0
-                .checked_sub(growth_reduction)
-                .unwrap_or(Decimal::zero());
-        }
-        POOL_FEE_STATE.save(deps.storage, &pool_fee_state)?;
+        POOL_STATE.save(deps.storage, &pool_state)?;
         msgs.push(get_bank_transfer_to_msg(
             &info.sender,
             &bluechip_denom,
@@ -1412,7 +1405,7 @@ pub fn execute_continue_distribution(
         )?);
         DISTRIBUTION_BOUNTY
     } else {
-        // Not enough in fee reserves; distribution still proceeds without bounty
+        // Not enough in reserves; distribution still proceeds without bounty
         Uint128::zero()
     };
 
