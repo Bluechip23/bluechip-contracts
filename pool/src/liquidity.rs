@@ -8,18 +8,117 @@ use crate::liquidity_helpers::{
 };
 use crate::asset::get_bluechip_denom;
 use crate::state::{
-    PoolSpecs, MINIMUM_LIQUIDITY, POOL_FEE_STATE, POOL_INFO, POOL_PAUSED, POOL_SPECS, POOL_STATE,
+    PoolInfo, PoolSpecs, MINIMUM_LIQUIDITY, POOL_FEE_STATE, POOL_INFO, POOL_PAUSED, POOL_SPECS, POOL_STATE,
     RATE_LIMIT_GUARD,
 };
 use crate::state::{Position, TokenMetadata, LIQUIDITY_POSITIONS, NEXT_POSITION_ID, OWNER_POSITIONS};
 use crate::swap_helper::update_price_accumulator;
 use cosmwasm_std::{
-    to_json_binary, Addr, BankMsg, Coin, CosmosMsg, DepsMut, Env, MessageInfo, Response,
+    to_json_binary, Addr, BankMsg, Coin, CosmosMsg, Deps, DepsMut, Env, MessageInfo, Response,
     StdError, Timestamp, Uint128, WasmMsg,
 };
 use pool_factory_interfaces::cw721_msgs::{Action, Cw721ExecuteMsg};
 
 use std::vec;
+
+/// Result of the shared deposit preparation logic used by both
+/// `execute_deposit_liquidity` and `add_to_position`.
+struct DepositPrep {
+    pool_info: PoolInfo,
+    native_denom: String,
+    liquidity: Uint128,
+    actual_amount0: Uint128,
+    actual_amount1: Uint128,
+    refund_amount: Uint128,
+}
+
+/// Shared logic for preparing a liquidity deposit: loads pool info, calculates
+/// liquidity, validates the bluechip payment, checks slippage, and computes
+/// the refund amount.
+fn prepare_deposit(
+    deps: Deps,
+    info: &MessageInfo,
+    amount0: Uint128,
+    amount1: Uint128,
+    min_amount0: Option<Uint128>,
+    min_amount1: Option<Uint128>,
+) -> Result<DepositPrep, ContractError> {
+    let pool_info = POOL_INFO.load(deps.storage)?;
+    let native_denom = get_bluechip_denom(&pool_info.pool_info.asset_infos)?;
+    let paid_bluechip = info
+        .funds
+        .iter()
+        .find(|c| c.denom == native_denom)
+        .map(|c| c.amount)
+        .unwrap_or_default();
+
+    let (liquidity, actual_amount0, actual_amount1) =
+        calc_liquidity_for_deposit(deps, amount0, amount1)?;
+
+    if paid_bluechip < actual_amount0 {
+        return Err(ContractError::InvalidNativeAmount {
+            expected: actual_amount0,
+            actual: paid_bluechip,
+        });
+    }
+
+    check_slippage(actual_amount0, min_amount0, "bluechip")?;
+    check_slippage(actual_amount1, min_amount1, "cw20")?;
+
+    let refund_amount = if paid_bluechip > actual_amount0 {
+        paid_bluechip - actual_amount0
+    } else {
+        Uint128::zero()
+    };
+
+    Ok(DepositPrep {
+        pool_info,
+        native_denom,
+        liquidity,
+        actual_amount0,
+        actual_amount1,
+        refund_amount,
+    })
+}
+
+/// Builds the CW20 transfer-from message (if amount > 0) and the bluechip
+/// refund message (if overpaid). Used by both deposit and add-to-position.
+fn build_deposit_transfer_msgs(
+    pool_info: &PoolInfo,
+    sender: &Addr,
+    contract_addr: &Addr,
+    native_denom: &str,
+    actual_amount1: Uint128,
+    refund_amount: Uint128,
+) -> Result<Vec<CosmosMsg>, ContractError> {
+    let mut messages = vec![];
+
+    if !actual_amount1.is_zero() {
+        let transfer_cw20_msg = WasmMsg::Execute {
+            contract_addr: pool_info.token_address.to_string(),
+            msg: to_json_binary(&cw20::Cw20ExecuteMsg::TransferFrom {
+                owner: sender.to_string(),
+                recipient: contract_addr.to_string(),
+                amount: actual_amount1,
+            })?,
+            funds: vec![],
+        };
+        messages.push(CosmosMsg::Wasm(transfer_cw20_msg));
+    }
+
+    if !refund_amount.is_zero() {
+        let refund_msg = BankMsg::Send {
+            to_address: sender.to_string(),
+            amount: vec![Coin {
+                denom: native_denom.to_string(),
+                amount: refund_amount,
+            }],
+        };
+        messages.push(CosmosMsg::Bank(refund_msg));
+    }
+
+    Ok(messages)
+}
 
 //deposit liquidity in pool
 pub fn execute_deposit_liquidity(
@@ -35,28 +134,7 @@ pub fn execute_deposit_liquidity(
 ) -> Result<Response, ContractError> {
     enforce_transaction_deadline(env.block.time, transaction_deadline)?;
 
-    let pool_info = POOL_INFO.load(deps.storage)?;
-    let native_denom = get_bluechip_denom(&pool_info.pool_info.asset_infos)?;
-    let paid_bluechip = info
-        .funds
-        .iter()
-        .find(|c| c.denom == native_denom)
-        .map(|c| c.amount)
-        .unwrap_or_default();
-    // calculate actual amounts needed to maintain pool ratio
-    let (liquidity, actual_amount0, actual_amount1) =
-        calc_liquidity_for_deposit(deps.as_ref(), amount0, amount1)?;
-
-    // Ensure the user sent enough bluechip tokens
-    if paid_bluechip < actual_amount0 {
-        return Err(ContractError::InvalidNativeAmount {
-            expected: actual_amount0,
-            actual: paid_bluechip,
-        });
-    }
-    //slippage check
-    check_slippage(actual_amount0, min_amount0, "bluechip")?;
-    check_slippage(actual_amount1, min_amount1, "cw20")?;
+    let prep = prepare_deposit(deps.as_ref(), &info, amount0, amount1, min_amount0, min_amount1)?;
 
     let mut pool_state = POOL_STATE.load(deps.storage)?;
     let pool_fee_state = POOL_FEE_STATE.load(deps.storage)?;
@@ -65,7 +143,7 @@ pub fn execute_deposit_liquidity(
     // accept NFT ownership if this is the first deposit
     if !pool_state.nft_ownership_accepted {
         let accept_msg = WasmMsg::Execute {
-            contract_addr: pool_info.position_nft_address.to_string(),
+            contract_addr: prep.pool_info.position_nft_address.to_string(),
             msg: to_json_binary(&Cw721ExecuteMsg::<()>::UpdateOwnership(
                 Action::AcceptOwnership,
             ))?,
@@ -75,37 +153,16 @@ pub fn execute_deposit_liquidity(
         pool_state.nft_ownership_accepted = true;
     }
 
-    // Transfer only the actual CW20 amount needed
-    if !actual_amount1.is_zero() {
-        let transfer_cw20_msg = WasmMsg::Execute {
-            contract_addr: pool_info.token_address.to_string(),
-            msg: to_json_binary(&cw20::Cw20ExecuteMsg::TransferFrom {
-                owner: info.sender.to_string(),
-                recipient: env.contract.address.to_string(),
-                amount: actual_amount1, // Use actual amount, not requested
-            })?,
-            funds: vec![],
-        };
-        messages.push(CosmosMsg::Wasm(transfer_cw20_msg));
-    }
+    let transfer_msgs = build_deposit_transfer_msgs(
+        &prep.pool_info,
+        &info.sender,
+        &env.contract.address,
+        &prep.native_denom,
+        prep.actual_amount1,
+        prep.refund_amount,
+    )?;
+    messages.extend(transfer_msgs);
 
-    // Refund excess bluechip tokens
-    let refund_amount = if paid_bluechip > actual_amount0 {
-        paid_bluechip - actual_amount0
-    } else {
-        Uint128::zero()
-    };
-
-    if !refund_amount.is_zero() {
-        let refund_msg = BankMsg::Send {
-            to_address: info.sender.to_string(),
-            amount: vec![Coin {
-                denom: native_denom.clone(),
-                amount: refund_amount,
-            }],
-        };
-        messages.push(CosmosMsg::Bank(refund_msg));
-    }
     //increment nft id
     let mut pos_id = NEXT_POSITION_ID.load(deps.storage)?;
     pos_id = pos_id.checked_add(1).ok_or_else(|| ContractError::Std(StdError::generic_err("Position ID overflow")))?;
@@ -114,11 +171,11 @@ pub fn execute_deposit_liquidity(
 
     let metadata = TokenMetadata {
         name: Some(format!("LP Position #{}", position_id)),
-        description: Some(format!("Pool Liquidity Position")),
+        description: Some("Pool Liquidity Position".to_string()),
     };
     //mint nft position
     let mint_liquidity_nft = WasmMsg::Execute {
-        contract_addr: pool_info.position_nft_address.to_string(),
+        contract_addr: prep.pool_info.position_nft_address.to_string(),
         msg: to_json_binary(&Cw721ExecuteMsg::<TokenMetadata>::Mint {
             token_id: position_id.clone(),
             owner: user.to_string(),
@@ -128,9 +185,9 @@ pub fn execute_deposit_liquidity(
         funds: vec![],
     };
     messages.push(CosmosMsg::Wasm(mint_liquidity_nft));
-    let fee_size_multiplier = calculate_fee_size_multiplier(liquidity);
+    let fee_size_multiplier = calculate_fee_size_multiplier(prep.liquidity);
     let position = Position {
-        liquidity,
+        liquidity: prep.liquidity,
         owner: user.clone(),
         fee_growth_inside_0_last: pool_fee_state.fee_growth_global_0,
         fee_growth_inside_1_last: pool_fee_state.fee_growth_global_1,
@@ -144,9 +201,9 @@ pub fn execute_deposit_liquidity(
     LIQUIDITY_POSITIONS.save(deps.storage, &position_id, &position)?;
     OWNER_POSITIONS.save(deps.storage, (&user, &position_id), &true)?;
 
-    pool_state.reserve0 = pool_state.reserve0.checked_add(actual_amount0)?;
-    pool_state.reserve1 = pool_state.reserve1.checked_add(actual_amount1)?;
-    pool_state.total_liquidity = pool_state.total_liquidity.checked_add(liquidity)?;
+    pool_state.reserve0 = pool_state.reserve0.checked_add(prep.actual_amount0)?;
+    pool_state.reserve1 = pool_state.reserve1.checked_add(prep.actual_amount1)?;
+    pool_state.total_liquidity = pool_state.total_liquidity.checked_add(prep.liquidity)?;
     update_price_accumulator(&mut pool_state, env.block.time.seconds())?;
     POOL_STATE.save(deps.storage, &pool_state)?;
 
@@ -160,10 +217,10 @@ pub fn execute_deposit_liquidity(
         .add_attribute("action", "deposit_liquidity")
         .add_attribute("position_id", position_id)
         .add_attribute("depositor", user)
-        .add_attribute("liquidity", liquidity.to_string())
-        .add_attribute("actual_amount0", actual_amount0.to_string())
-        .add_attribute("actual_amount1", actual_amount1.to_string())
-        .add_attribute("refunded_amount0", refund_amount.to_string())
+        .add_attribute("liquidity", prep.liquidity.to_string())
+        .add_attribute("actual_amount0", prep.actual_amount0.to_string())
+        .add_attribute("actual_amount1", prep.actual_amount1.to_string())
+        .add_attribute("refunded_amount0", prep.refund_amount.to_string())
         .add_attribute("offered_amount0", amount0.to_string())
         .add_attribute("offered_amount1", amount1.to_string())
         .add_attribute(
@@ -243,34 +300,18 @@ pub fn add_to_position(
 ) -> Result<Response, ContractError> {
     enforce_transaction_deadline(env.block.time, transaction_deadline)?;
 
-    let pool_info = POOL_INFO.load(deps.storage)?;
-    let native_denom = get_bluechip_denom(&pool_info.pool_info.asset_infos)?;
-    let paid_bluechip = info
-        .funds
-        .iter()
-        .find(|c| c.denom == native_denom)
-        .map(|c| c.amount)
-        .unwrap_or_default();
+    let prep = prepare_deposit(deps.as_ref(), &info, amount0, amount1, min_amount0, min_amount1)?;
 
     let mut pool_fee_state = POOL_FEE_STATE.load(deps.storage)?;
     let mut pool_state = POOL_STATE.load(deps.storage)?;
     //make sure position belongs to wallet sending new funds
     verify_position_ownership(
         deps.as_ref(),
-        &pool_info.position_nft_address,
+        &prep.pool_info.position_nft_address,
         &position_id,
         &info.sender,
     )?;
 
-    let (additional_liquidity, actual_amount0, actual_amount1) =
-        calc_liquidity_for_deposit(deps.as_ref(), amount0, amount1)?;
-
-    if paid_bluechip < actual_amount0 {
-        return Err(ContractError::InvalidNativeAmount {
-            expected: actual_amount0,
-            actual: paid_bluechip,
-        });
-    }
     let mut liquidity_position = LIQUIDITY_POSITIONS.load(deps.storage, &position_id)?;
     sync_position_on_transfer(
         deps.storage,
@@ -279,44 +320,20 @@ pub fn add_to_position(
         &info.sender,
         &pool_fee_state,
     )?;
-    let mut messages: Vec<CosmosMsg> = vec![];
     //send accumulated fees to reset accounting - collect before adding new liquidity
     let (fees_owed_0, fees_owed_1) = calc_capped_fees(&liquidity_position, &pool_fee_state)?;
-    //check slippage
-    check_slippage(actual_amount0, min_amount0, "bluechip")?;
-    check_slippage(actual_amount1, min_amount1, "cw20")?;
-    //send the appropraite amount of both assets to the pool for the liquidity position
-    if !actual_amount1.is_zero() {
-        let transfer_cw20_msg = WasmMsg::Execute {
-            contract_addr: pool_info.token_address.to_string(),
-            msg: to_json_binary(&cw20::Cw20ExecuteMsg::TransferFrom {
-                owner: info.sender.to_string(),
-                recipient: env.contract.address.to_string(),
-                amount: actual_amount1,
-            })?,
-            funds: vec![],
-        };
-        messages.push(CosmosMsg::Wasm(transfer_cw20_msg));
-    }
 
-    let refund_amount = if paid_bluechip > actual_amount0 {
-        paid_bluechip - actual_amount0
-    } else {
-        Uint128::zero()
-    };
+    let mut messages = build_deposit_transfer_msgs(
+        &prep.pool_info,
+        &info.sender,
+        &env.contract.address,
+        &prep.native_denom,
+        prep.actual_amount1,
+        prep.refund_amount,
+    )?;
 
-    if !refund_amount.is_zero() {
-        let refund_msg = BankMsg::Send {
-            to_address: info.sender.to_string(),
-            amount: vec![Coin {
-                denom: native_denom.clone(),
-                amount: refund_amount,
-            }],
-        };
-        messages.push(CosmosMsg::Bank(refund_msg));
-    }
     //update position with new liquidity
-    liquidity_position.liquidity = liquidity_position.liquidity.checked_add(additional_liquidity)?;
+    liquidity_position.liquidity = liquidity_position.liquidity.checked_add(prep.liquidity)?;
     liquidity_position.fee_growth_inside_0_last = pool_fee_state.fee_growth_global_0;
     liquidity_position.fee_growth_inside_1_last = pool_fee_state.fee_growth_global_1;
     liquidity_position.last_fee_collection = env.block.time.seconds();
@@ -326,7 +343,7 @@ pub fn add_to_position(
     liquidity_position.unclaimed_fees_0 = Uint128::zero();
     liquidity_position.unclaimed_fees_1 = Uint128::zero();
 
-    pool_state.total_liquidity = pool_state.total_liquidity.checked_add(additional_liquidity)?;
+    pool_state.total_liquidity = pool_state.total_liquidity.checked_add(prep.liquidity)?;
 
     update_price_accumulator(&mut pool_state, env.block.time.seconds())?;
     // subtract fees
@@ -334,28 +351,28 @@ pub fn add_to_position(
     pool_fee_state.fee_reserve_1 = pool_fee_state.fee_reserve_1.checked_sub(fees_owed_1)?;
 
     // add actual deposit amounts
-    pool_state.reserve0 = pool_state.reserve0.checked_add(actual_amount0)?;
-    pool_state.reserve1 = pool_state.reserve1.checked_add(actual_amount1)?;
+    pool_state.reserve0 = pool_state.reserve0.checked_add(prep.actual_amount0)?;
+    pool_state.reserve1 = pool_state.reserve1.checked_add(prep.actual_amount1)?;
 
     POOL_STATE.save(deps.storage, &pool_state)?;
     LIQUIDITY_POSITIONS.save(deps.storage, &position_id, &liquidity_position)?;
     POOL_FEE_STATE.save(deps.storage, &pool_fee_state)?;
     let mut response = Response::new()
-        .add_messages(messages)
         .add_attribute("action", "add_to_position")
         .add_attribute("position_id", position_id)
-        .add_attribute("additional_liquidity", additional_liquidity.to_string())
+        .add_attribute("additional_liquidity", prep.liquidity.to_string())
         .add_attribute("total_liquidity", liquidity_position.liquidity.to_string())
         .add_attribute("amount0_requested", amount0)
         .add_attribute("amount1_requested", amount1)
-        .add_attribute("actual_amount0_added", actual_amount0.to_string())
-        .add_attribute("actual_amount1_added", actual_amount1.to_string())
-        .add_attribute("refunded_amount0", refund_amount.to_string())
+        .add_attribute("actual_amount0_added", prep.actual_amount0.to_string())
+        .add_attribute("actual_amount1_added", prep.actual_amount1.to_string())
+        .add_attribute("refunded_amount0", prep.refund_amount.to_string())
         .add_attribute("fees_collected_0", fees_owed_0)
         .add_attribute("fees_collected_1", fees_owed_1);
     //actually send fees
-    let fee_msgs = build_fee_transfer_msgs(&pool_info, &user, fees_owed_0, fees_owed_1)?;
-    response = response.add_messages(fee_msgs);
+    let fee_msgs = build_fee_transfer_msgs(&prep.pool_info, &user, fees_owed_0, fees_owed_1)?;
+    messages.extend(fee_msgs);
+    response = response.add_messages(messages);
 
     Ok(response)
 }
@@ -563,7 +580,6 @@ pub fn remove_partial_liquidity(
     //add amounts to transfer back to user
     let total_amount_0 = withdrawal_amount_0.checked_add(fees_owed_0)?;
     let total_amount_1 = withdrawal_amount_1.checked_add(fees_owed_1)?;
-    //update state
     //update state
     update_price_accumulator(&mut pool_state, env.block.time.seconds())?;
     pool_state.reserve0 = pool_state.reserve0.checked_sub(withdrawal_amount_0)?;

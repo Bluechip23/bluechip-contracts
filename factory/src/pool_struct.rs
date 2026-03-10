@@ -96,17 +96,11 @@ impl PoolDetails {
         querier: &QuerierWrapper,
         contract_addr: Addr,
     ) -> StdResult<[TokenInfo; 2]> {
-        Ok([
-            TokenInfo {
-                amount: self.pool_token_info[0]
-                    .query_pool_token_info(querier, contract_addr.clone())?,
-                info: self.pool_token_info[0].clone(),
-            },
-            TokenInfo {
-                amount: self.pool_token_info[1].query_pool_token_info(querier, contract_addr)?,
-                info: self.pool_token_info[1].clone(),
-            },
-        ])
+        pool_factory_interfaces::asset::query_pools(
+            &self.pool_token_info,
+            querier,
+            contract_addr,
+        )
     }
 }
 

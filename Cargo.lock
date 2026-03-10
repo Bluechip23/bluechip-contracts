@@ -1255,6 +1255,8 @@ version = "1.0.0"
 dependencies = [
  "cosmwasm-schema",
  "cosmwasm-std 1.5.11",
+ "cw-utils 1.0.3",
+ "cw20",
  "cw721 0.18.0",
  "serde",
 ]

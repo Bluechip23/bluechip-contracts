@@ -3,7 +3,7 @@ use crate::{
     msg::CommitFeeInfo,
 };
 use cosmwasm_schema::cw_serde;
-use cosmwasm_std::{Addr, Decimal, QuerierWrapper, StdResult, Timestamp, Uint128};
+use cosmwasm_std::{Addr, Decimal, StdResult, Timestamp, Uint128};
 use cw_storage_plus::Item;
 use cw_storage_plus::Map;
 
@@ -241,18 +241,9 @@ pub struct Position {
 impl PoolDetails {
     pub fn query_pools(
         &self,
-        querier: &QuerierWrapper,
+        querier: &cosmwasm_std::QuerierWrapper,
         contract_addr: Addr,
     ) -> StdResult<[TokenInfo; 2]> {
-        Ok([
-            TokenInfo {
-                amount: self.asset_infos[0].query_pool(querier, contract_addr.clone())?,
-                info: self.asset_infos[0].clone(),
-            },
-            TokenInfo {
-                amount: self.asset_infos[1].query_pool(querier, contract_addr)?,
-                info: self.asset_infos[1].clone(),
-            },
-        ])
+        pool_factory_interfaces::asset::query_pools(&self.asset_infos, querier, contract_addr)
     }
 }
