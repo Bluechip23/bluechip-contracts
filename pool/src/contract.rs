@@ -1,5 +1,5 @@
 #![allow(non_snake_case)]
-use crate::asset::{PoolPairType, TokenInfo, TokenType};
+use crate::asset::{PoolPairType, TokenInfo, TokenInfoPoolExt, TokenType};
 use crate::error::ContractError;
 
 use crate::generic_helpers::{

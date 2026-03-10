@@ -1,6 +1,7 @@
 use cosmwasm_schema::{cw_serde, QueryResponses};
 use cosmwasm_std::{Addr, Uint128};
 
+pub mod asset;
 pub mod cw721_msgs;
 
 #[cw_serde]
