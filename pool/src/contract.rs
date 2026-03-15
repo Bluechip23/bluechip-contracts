@@ -476,6 +476,8 @@ fn recover_distribution(
                     consecutive_failures: 0,
                     started_at: env.block.time,
                     last_updated: env.block.time,
+                    // Preserve remaining bounty reserve across recovery restart
+                    bounty_reserve: dist_state.bounty_reserve,
                 };
                 DISTRIBUTION_STATE.save(storage, &restarted)?;
             }
@@ -1379,6 +1381,12 @@ pub fn execute_continue_distribution(
     }
 
     let pool_info = POOL_INFO.load(deps.storage)?;
+
+    // Snapshot the bounty reserve BEFORE processing the batch, because
+    // process_distribution_batch may remove DISTRIBUTION_STATE entirely
+    // when all entries are processed.
+    let pre_batch_bounty_reserve = dist_state.bounty_reserve;
+
     let mut msgs = process_distribution_batch(deps.storage, &pool_info, &env)?;
 
     // incentivize external callers. The previous self-funded model provided no incentive.
@@ -1390,14 +1398,20 @@ pub fn execute_continue_distribution(
         },
     };
 
-    let mut pool_state = POOL_STATE.load(deps.storage)?;
-    let bounty_paid = if pool_state.reserve0 >= DISTRIBUTION_BOUNTY {
-        // Pay bounty from pool reserves (not fee reserves) to avoid
-        // distorting fee_growth_global_0 and LP fee accounting.
-        pool_state.reserve0 = pool_state
-            .reserve0
-            .checked_sub(DISTRIBUTION_BOUNTY)?;
-        POOL_STATE.save(deps.storage, &pool_state)?;
+    // Pay bounty from the dedicated bounty reserve (funded at threshold
+    // crossing), NOT from pool trading reserves.  This prevents repeated
+    // ContinueDistribution calls from eroding LP liquidity.
+    let bounty_paid = if pre_batch_bounty_reserve >= DISTRIBUTION_BOUNTY {
+        // Deduct from the persisted state if it still exists (batch may
+        // have removed it when distribution completed).
+        if let Some(mut dist_state_for_bounty) = DISTRIBUTION_STATE.may_load(deps.storage)? {
+            dist_state_for_bounty.bounty_reserve = dist_state_for_bounty
+                .bounty_reserve
+                .checked_sub(DISTRIBUTION_BOUNTY)?;
+            DISTRIBUTION_STATE.save(deps.storage, &dist_state_for_bounty)?;
+        }
+        // The tokens are still in the contract regardless of whether the
+        // distribution state was removed — send them to the caller.
         msgs.push(get_bank_transfer_to_msg(
             &info.sender,
             &bluechip_denom,
@@ -1405,7 +1419,9 @@ pub fn execute_continue_distribution(
         )?);
         DISTRIBUTION_BOUNTY
     } else {
-        // Not enough in reserves; distribution still proceeds without bounty
+        // Bounty reserve exhausted.  This caps total bounty payouts to the
+        // fixed allocation from threshold crossing, preventing unbounded
+        // reserve drain.
         Uint128::zero()
     };
 
@@ -1614,6 +1630,10 @@ pub fn execute_emergency_withdraw(
         EMERGENCY_DRAINED.save(deps.storage, &true)?;
 
         if let Ok(mut dist_state) = DISTRIBUTION_STATE.load(deps.storage) {
+            // Include any remaining bounty reserve in the drain — these tokens
+            // sit in the contract but are not tracked in reserve0.
+            total0 = total0.checked_add(dist_state.bounty_reserve)?;
+            dist_state.bounty_reserve = Uint128::zero();
             dist_state.is_distributing = false;
             dist_state.distributions_remaining = 0;
             DISTRIBUTION_STATE.save(deps.storage, &dist_state)?;

@@ -309,7 +309,7 @@ fn test_distribution_bounty_from_reserves() {
 
     let initial_reserve0 = POOL_STATE.load(&deps.storage).unwrap().reserve0;
 
-    // Set up distribution state with committers
+    // Set up distribution state with committers and a funded bounty reserve
     let committer = Addr::unchecked("committer1");
     COMMIT_LEDGER.save(&mut deps.storage, &committer, &Uint128::new(5_000_000_000)).unwrap();
 
@@ -325,6 +325,9 @@ fn test_distribution_bounty_from_reserves() {
         consecutive_failures: 0,
         started_at: Timestamp::from_seconds(1_600_000_000),
         last_updated: Timestamp::from_seconds(1_600_000_000),
+        // Bounty reserve funded during threshold crossing — bounty is paid
+        // from here, NOT from pool trading reserves (reserve0).
+        bounty_reserve: Uint128::new(5_000_000),
     };
     DISTRIBUTION_STATE.save(&mut deps.storage, &dist_state).unwrap();
 
@@ -334,19 +337,18 @@ fn test_distribution_bounty_from_reserves() {
     let msg = ExecuteMsg::ContinueDistribution {};
     let res = execute(deps.as_mut(), env, caller_info, msg).unwrap();
 
-    // Bounty is now paid from pool reserves (not fee reserves) to avoid
-    // distorting fee_growth_global_0 and LP fee accounting.
+    // Fee reserves must be untouched — bounty does not distort LP accounting
     let post_fee_state = POOL_FEE_STATE.load(&deps.storage).unwrap();
     assert_eq!(
         post_fee_state.fee_reserve_0, fee_state.fee_reserve_0,
-        "fee_reserve_0 should be untouched (bounty comes from reserves)"
+        "fee_reserve_0 should be untouched (bounty comes from bounty_reserve)"
     );
 
-    // Check that pool reserves decreased by the bounty amount
+    // Pool trading reserves must be untouched — bounty comes from dedicated reserve
     let post_reserve0 = POOL_STATE.load(&deps.storage).unwrap().reserve0;
-    assert!(
-        post_reserve0 < initial_reserve0,
-        "reserve0 should decrease (bounty paid from reserves)"
+    assert_eq!(
+        post_reserve0, initial_reserve0,
+        "reserve0 must NOT decrease — bounty is paid from bounty_reserve, not LP reserves"
     );
 
     // The bounty_paid attribute should confirm bounty was paid
@@ -569,7 +571,7 @@ fn test_distribution_bounty_does_not_distort_fee_growth() {
 
     let pre_growth = fee_state.fee_growth_global_0;
 
-    // Set up distribution state
+    // Set up distribution state with funded bounty reserve
     let committer = Addr::unchecked("committer1");
     COMMIT_LEDGER
         .save(&mut deps.storage, &committer, &Uint128::new(5_000_000_000))
@@ -586,6 +588,7 @@ fn test_distribution_bounty_does_not_distort_fee_growth() {
         consecutive_failures: 0,
         started_at: Timestamp::from_seconds(1_600_000_000),
         last_updated: Timestamp::from_seconds(1_600_000_000),
+        bounty_reserve: Uint128::new(5_000_000),
     };
     DISTRIBUTION_STATE.save(&mut deps.storage, &dist_state).unwrap();
 
@@ -595,11 +598,11 @@ fn test_distribution_bounty_does_not_distort_fee_growth() {
     execute(deps.as_mut(), env, caller_info, msg).unwrap();
 
     let post_fee_state = POOL_FEE_STATE.load(&deps.storage).unwrap();
-    // Bounty is now paid from pool reserves, so fee_growth_global_0 must NOT change.
+    // Bounty is paid from dedicated bounty_reserve, so fee_growth_global_0 must NOT change.
     // This prevents LP fee accounting distortion.
     assert_eq!(
         post_fee_state.fee_growth_global_0, pre_growth,
-        "fee_growth_global_0 must not change when bounty is paid from reserves. Before: {}, After: {}",
+        "fee_growth_global_0 must not change when bounty is paid from bounty_reserve. Before: {}, After: {}",
         pre_growth,
         post_fee_state.fee_growth_global_0
     );
@@ -633,6 +636,7 @@ fn test_emergency_withdraw_clears_distribution() {
         consecutive_failures: 0,
         started_at: Timestamp::from_seconds(1_600_000_000),
         last_updated: Timestamp::from_seconds(1_600_000_000),
+        bounty_reserve: Uint128::zero(),
     };
     DISTRIBUTION_STATE.save(&mut deps.storage, &dist_state).unwrap();
 

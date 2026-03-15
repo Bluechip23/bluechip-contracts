@@ -78,10 +78,16 @@ pub const DEFAULT_ESTIMATED_GAS_PER_DISTRIBUTION: u64 = 50_000;
 pub const DEFAULT_MAX_GAS_PER_TX: u64 = 2_000_000;
 pub const MAX_DISTRIBUTIONS_PER_TX: u32 = 40;
 pub const MINIMUM_LIQUIDITY: Uint128 = Uint128::new(1000);
-// Small bounty paid from pool reserves to the caller of ContinueDistribution.
-// Incentivizes external callers to drive distribution batches to completion.
+// Small bounty paid from a dedicated bounty reserve to the caller of
+// ContinueDistribution.  Incentivizes external callers to drive distribution
+// batches to completion.
 // 1_000_000 = 1 bluechip token (6 decimal places), enough to cover gas costs.
 pub const DISTRIBUTION_BOUNTY: Uint128 = Uint128::new(1_000_000);
+// Maximum total bounty allocated per distribution cycle.
+// 50 batches × 1 bluechip = 50 bluechip tokens (50_000_000 ubluechip).
+// Funded once from committed bluechip during threshold crossing, NOT from
+// LP trading reserves, so that bounty payments never erode pool liquidity.
+pub const MAX_DISTRIBUTION_BOUNTY_RESERVE: Uint128 = Uint128::new(50_000_000);
 
 #[cw_serde]
 pub struct DistributionState {
@@ -96,6 +102,12 @@ pub struct DistributionState {
     pub consecutive_failures: u32,
     pub started_at: Timestamp,
     pub last_updated: Timestamp,
+    /// Dedicated reserve for distribution bounty payments, funded once during
+    /// threshold crossing from committed bluechip.  Bounties are paid from here
+    /// instead of pool trading reserves (`reserve0`), preventing LP liquidity
+    /// erosion from repeated `ContinueDistribution` calls.
+    #[serde(default)]
+    pub bounty_reserve: Uint128,
 }
 #[cw_serde]
 pub enum RecoveryType {

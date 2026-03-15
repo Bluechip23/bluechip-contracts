@@ -4,8 +4,9 @@ use crate::liquidity_helpers::integer_sqrt;
 use crate::msg::CommitFeeInfo;
 use crate::state::{
     CommitLimitInfo, PoolFeeState, PoolInfo, PoolSpecs, ThresholdPayoutAmounts, COMMIT_LEDGER,
-    DEFAULT_ESTIMATED_GAS_PER_DISTRIBUTION, DEFAULT_MAX_GAS_PER_TX, MAX_DISTRIBUTIONS_PER_TX,
-    POOL_FEE_STATE, POOL_STATE, USER_LAST_COMMIT,
+    DEFAULT_ESTIMATED_GAS_PER_DISTRIBUTION, DEFAULT_MAX_GAS_PER_TX,
+    MAX_DISTRIBUTION_BOUNTY_RESERVE, MAX_DISTRIBUTIONS_PER_TX, POOL_FEE_STATE, POOL_STATE,
+    USER_LAST_COMMIT,
 };
 use crate::state::{
     CreatorExcessLiquidity, DistributionState, PoolState, CREATOR_EXCESS_POSITION,
@@ -217,6 +218,10 @@ pub fn trigger_threshold_payout(
             consecutive_failures: 0,
             started_at: env.block.time,
             last_updated: env.block.time,
+            // Dedicated bounty reserve funded from committed bluechip.  This
+            // is deducted from pools_bluechip_seed below so that LP trading
+            // reserves are never touched by distribution bounty payments.
+            bounty_reserve: MAX_DISTRIBUTION_BOUNTY_RESERVE,
         };
         DISTRIBUTION_STATE.save(storage, &dist_state)?;
     }
@@ -228,6 +233,19 @@ pub fn trigger_threshold_payout(
         .map_err(|_| StdError::generic_err("Fee rate >= 100%"))?;
     let pools_bluechip_seed = total_bluechip_raised.checked_mul_floor(one_minus_fee)
         .map_err(|_| StdError::generic_err("Fee deduction overflow"))?;
+
+    // Deduct the distribution bounty reserve from the bluechip available for
+    // pool seeding.  The bounty tokens remain in the contract but are tracked
+    // separately in DistributionState.bounty_reserve rather than in reserve0,
+    // so that ContinueDistribution bounty payments never erode LP liquidity.
+    let bounty_allocation = if has_committers {
+        // Only allocate if we actually have enough; otherwise take what we can.
+        pools_bluechip_seed.min(MAX_DISTRIBUTION_BOUNTY_RESERVE)
+    } else {
+        Uint128::zero()
+    };
+    let pools_bluechip_seed = pools_bluechip_seed.checked_sub(bounty_allocation)
+        .map_err(StdError::overflow)?;
 
     if pools_bluechip_seed > commit_config.max_bluechip_lock_per_pool {
         let excess_bluechip = pools_bluechip_seed.checked_sub(commit_config.max_bluechip_lock_per_pool)
@@ -363,6 +381,7 @@ pub fn process_distribution_batch(
                     consecutive_failures: 0, // Reset failures on success
                     started_at: dist_state.started_at,
                     last_updated: env.block.time, // Update timestamp
+                    bounty_reserve: dist_state.bounty_reserve,
                 };
                 DISTRIBUTION_STATE.save(storage, &updated_state)?;
                 // Remaining batches will be processed by external ContinueDistribution calls

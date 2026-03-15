@@ -486,6 +486,7 @@ fn test_continue_distribution_is_permissionless() {
         consecutive_failures: 0,
         started_at: env.block.time,
         last_updated: env.block.time,
+        bounty_reserve: Uint128::zero(),
     };
     DISTRIBUTION_STATE
         .save(&mut deps.storage, &dist_state)
@@ -530,6 +531,7 @@ fn test_continue_distribution_processes_batch() {
         consecutive_failures: 0,
         started_at: env.block.time,
         last_updated: env.block.time,
+        bounty_reserve: Uint128::zero(),
     };
     DISTRIBUTION_STATE
         .save(&mut deps.storage, &dist_state)
@@ -582,6 +584,7 @@ fn test_continue_distribution_batches() {
         consecutive_failures: 0,
         started_at: env.block.time,
         last_updated: env.block.time,
+        bounty_reserve: Uint128::zero(),
     };
     DISTRIBUTION_STATE
         .save(&mut deps.storage, &dist_state)
@@ -679,6 +682,7 @@ fn test_adaptive_batch_sizing_with_history() {
         consecutive_failures: 0,
         started_at: env.block.time,
         last_updated: env.block.time,
+        bounty_reserve: Uint128::zero(),
     };
     DISTRIBUTION_STATE
         .save(&mut deps.storage, &dist_state)
@@ -733,6 +737,7 @@ fn test_calculate_effective_batch_size() {
         consecutive_failures: 0,
         started_at: Timestamp::from_seconds(0),
         last_updated: Timestamp::from_seconds(0),
+        bounty_reserve: Uint128::zero(),
     };
 
     let batch_size = calculate_effective_batch_size(&dist_state);
@@ -751,6 +756,7 @@ fn test_calculate_effective_batch_size() {
         consecutive_failures: 0,
         started_at: Timestamp::from_seconds(0),
         last_updated: Timestamp::from_seconds(0),
+        bounty_reserve: Uint128::zero(),
     };
 
     let batch_size = calculate_effective_batch_size(&dist_state_no_history);
@@ -785,6 +791,7 @@ fn test_batch_size_with_consecutive_failures() {
         consecutive_failures: 2,             // Had 2 failures
         started_at: env.block.time,          // Use current time
         last_updated: env.block.time,
+        bounty_reserve: Uint128::zero(),
     };
     DISTRIBUTION_STATE
         .save(&mut deps.storage, &dist_state)
@@ -834,6 +841,7 @@ fn test_final_batch_completes_distribution() {
         consecutive_failures: 0,
         started_at: env.block.time, // Use current time
         last_updated: env.block.time,
+        bounty_reserve: Uint128::zero(),
     };
     DISTRIBUTION_STATE
         .save(&mut deps.storage, &dist_state)
