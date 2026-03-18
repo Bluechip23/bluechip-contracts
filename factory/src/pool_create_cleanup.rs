@@ -85,7 +85,7 @@ pub fn extract_contract_address(deps: &DepsMut, result: &SubMsgResponse) -> Resu
                 .find(|attr| attr.key == "_contract_address")
                 .map(|attr| attr.value.clone())
         })
-        .ok_or_else(|| ContractError::ContractAddressNotFound {})?;
+        .ok_or(ContractError::ContractAddressNotFound {})?;
 
     deps.api.addr_validate(&addr_str).map_err(|e| {
         ContractError::Std(cosmwasm_std::StdError::generic_err(format!(
