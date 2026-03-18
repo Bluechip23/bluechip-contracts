@@ -77,7 +77,7 @@ impl WasmMockQuerier {
                             pool_contract_address,
                         } => {
                             let pool_state = PoolStateResponseForFactory {
-                                pool_contract_address: Addr::unchecked(&pool_contract_address),
+                                pool_contract_address: Addr::unchecked(pool_contract_address),
                                 nft_ownership_accepted: true,
                                 reserve0: cosmwasm_std::Uint128::new(50_000_000_000),
                                 reserve1: cosmwasm_std::Uint128::new(10_000_000_000),
@@ -92,7 +92,7 @@ impl WasmMockQuerier {
                         _ => {
                             return SystemResult::Err(SystemError::InvalidRequest {
                                 error: "Unsupported pool query".to_string(),
-                                request: msg.clone().into(),
+                                request: msg.clone(),
                             })
                         }
                     }
@@ -119,7 +119,7 @@ impl WasmMockQuerier {
                 // If neither parse succeeded
                 SystemResult::Err(SystemError::InvalidRequest {
                     error: "Could not parse query message".to_string(),
-                    request: msg.clone().into(),
+                    request: msg.clone(),
                 })
             }
             _ => self.base.handle_query(request),

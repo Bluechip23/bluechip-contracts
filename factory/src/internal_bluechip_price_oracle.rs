@@ -1,7 +1,6 @@
 #[cfg(not(test))]
 use crate::pyth_types::{PriceFeedResponse, PythQueryMsg};
-#[cfg(not(test))]
-use crate::state::ATOM_USD_PRICE_FEED_ID;
+
 use crate::state::{FACTORYINSTANTIATEINFO, POOLS_BY_CONTRACT_ADDRESS, POOLS_BY_ID};
 use crate::{asset::TokenType, error::ContractError};
 use cosmwasm_schema::cw_serde;
@@ -286,7 +285,7 @@ pub fn calculate_weighted_price_with_atom(
 ) -> Result<(Uint128, Uint128, Vec<PoolCumulativeSnapshot>), ContractError> {
     let factory_config = FACTORYINSTANTIATEINFO
         .load(deps.storage)
-        .map_err(|e| ContractError::Std(e))?;
+        .map_err(ContractError::Std)?;
     let atom_pool_address = factory_config.atom_bluechip_anchor_pool_address.to_string();
     if !pool_addresses.contains(&atom_pool_address) {
         return Err(ContractError::MissingAtomPool {});
@@ -314,13 +313,11 @@ pub fn calculate_weighted_price_with_atom(
                 // Determine if Bluechip is reserve0 or reserve1 by looking up the
                 let is_bluechip_second = {
                     let mut found = false;
-                    for result in POOLS_BY_ID.range(deps.storage, None, None, Order::Ascending) {
-                        if let Ok((_id, pool_details)) = result {
-                            if pool_details.creator_pool_addr.as_str() == pool_address.as_str() {
-                                // asset_infos[0] is CreatorToken => bluechip is second (index 1)
-                                found = matches!(pool_details.pool_token_info[0], TokenType::CreatorToken { .. });
-                                break;
-                            }
+                    for (_id, pool_details) in POOLS_BY_ID.range(deps.storage, None, None, Order::Ascending).flatten() {
+                        if pool_details.creator_pool_addr.as_str() == pool_address.as_str() {
+                            // asset_infos[0] is CreatorToken => bluechip is second (index 1)
+                            found = matches!(pool_details.pool_token_info[0], TokenType::CreatorToken { .. });
+                            break;
                         }
                     }
                     found
@@ -360,7 +357,7 @@ pub fn calculate_weighted_price_with_atom(
                     if time_delta > 0 && !cumulative_delta.is_zero() {
                         // TWAP = cumulative_delta / time_delta
                         // Scale to PRICE_PRECISION for consistency.
-                        let twap = cumulative_delta
+                        cumulative_delta
                             .checked_mul(Uint128::from(PRICE_PRECISION))
                             .map_err(|_| {
                                 ContractError::Std(StdError::generic_err("TWAP scale overflow"))
@@ -368,8 +365,7 @@ pub fn calculate_weighted_price_with_atom(
                             .checked_div(Uint128::from(time_delta))
                             .map_err(|_| {
                                 ContractError::Std(StdError::generic_err("TWAP division error"))
-                            })?;
-                        twap
+                            })?
                     } else {
                         // No time elapsed or no cumulative change — fall back to spot
                         calculate_price_from_reserves(bluechip_reserve, other_reserve)?
@@ -555,7 +551,7 @@ pub fn query_pyth_atom_usd_price(deps: Deps, env: Env) -> StdResult<Uint128> {
         let expo = price_data.expo;
 
         // Validate expo is within reasonable range for price feeds
-        if expo > -4 || expo < -12 {
+        if !(-12..=-4).contains(&expo) {
             return Err(StdError::generic_err(format!(
                 "Unexpected Pyth expo: {}. Expected between -12 and -4",
                 expo
@@ -563,14 +559,16 @@ pub fn query_pyth_atom_usd_price(deps: Deps, env: Env) -> StdResult<Uint128> {
         }
 
         // Normalize to 6 decimals (system standard)
-        let normalized_price = if expo == -6 {
-            Uint128::from(price_u128)
-        } else if expo < -6 {
-            let divisor = 10u128.pow((expo.abs() - 6) as u32);
-            Uint128::from(price_u128 / divisor)
-        } else {
-            let multiplier = 10u128.pow((6 - expo.abs()) as u32);
-            Uint128::from(price_u128 * multiplier)
+        let normalized_price = match expo.cmp(&-6) {
+            std::cmp::Ordering::Equal => Uint128::from(price_u128),
+            std::cmp::Ordering::Less => {
+                let divisor = 10u128.pow((expo.abs() - 6) as u32);
+                Uint128::from(price_u128 / divisor)
+            }
+            std::cmp::Ordering::Greater => {
+                let multiplier = 10u128.pow((6 - expo.abs()) as u32);
+                Uint128::from(price_u128 * multiplier)
+            }
         };
 
         Ok(normalized_price)
