@@ -13,7 +13,7 @@ use crate::state::{
     POOL_CREATION_STATES, POOL_REGISTRY, POOL_THRESHOLD_MINTED, TEMP_POOL_CREATION,
 };
 use cosmwasm_std::{
-    to_json_binary, Deps, DepsMut, Env, MessageInfo, Reply, Response, StdError,
+    entry_point, to_json_binary, Deps, DepsMut, Env, MessageInfo, Reply, Response, StdError,
     StdResult, SubMsg, Uint128, WasmMsg,
 };
 use cosmwasm_std::{Binary, CosmosMsg, Order};

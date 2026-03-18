@@ -12,11 +12,10 @@
 use crate::msg::PriceResponse;
 #[cfg(feature = "testing")]
 use crate::msg::{ExecuteMsg, InstantiateMsg, PythQueryMsg, PriceFeedResponse, PriceFeed, PythPriceRetrievalResponse};
-use cosmwasm_std::StdResult;
 #[cfg(feature = "testing")]
 use cosmwasm_std::{
     entry_point, to_json_binary, Binary, Deps, DepsMut, Env, MessageInfo, Response, StdError,
-    Uint128,
+    StdResult, Uint128,
 };
 
 use cw_storage_plus::Map;
