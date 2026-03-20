@@ -1,9 +1,3 @@
-#!/usr/bin/env bash
-# =====================================================================
-# Bluechip Full-Stack Test: Fresh Chain + Deploy + Functional + Security
-# Usage: bash run_local_test.sh
-# =====================================================================
-
 BIN="/home/jeremy/go/bin/bluechipChaind"
 CHAIN_HOME="$HOME/.bluechipChain"
 CHAIN_ID="bluechipChain"
@@ -17,9 +11,6 @@ TX_FLAGS="--chain-id $CHAIN_ID --node $NODE --gas auto --gas-adjustment 1.5 --fe
 
 PASS=0; FAIL=0; ATTACK_BLOCKED=0; ATTACK_SUCCEEDED=0
 
-# =====================================================================
-# HELPERS
-# =====================================================================
 log_header() { echo ""; echo ""; echo "================================================================"; echo "  $1"; echo "================================================================"; }
 log_step()   { echo ""; echo "  --- $1 ---"; }
 log_info()   { echo "      $1"; }

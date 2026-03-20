@@ -148,17 +148,6 @@ deploy-factory: optimize-factory
 		--fees 300000usei \
 		-y | tee ./config/factory_deploy_result.txt
 
-deploy-airdrops: optimize-airdrops
-	@echo "Deploying airdrops contract to Sei testnet..."
-	seid tx wasm store artifacts/airdrops.wasm \
-		--from $(SEI_FROM) \
-		--node $(SEI_NODE) \
-		--chain-id $(SEI_CHAIN_ID) \
-		-b block \
-		--gas 5000000 \
-		--fees 300000usei \
-		-y
-
 init-factory:
 	seid tx wasm instantiate 10234 "$$(cat ./config/factory_init.json)" \
 		--from $(SEI_FROM) \
@@ -186,4 +175,3 @@ init-pool:
 .PHONY: build test optimize optimize-all optimize-pool optimize-factory optimize-expand-economy optimize-mockoracle \
 	check check-pool check-factory check-expand-economy check-mockoracle \
 	deploy-pool-local deploy-factory-local deploy-expand-economy-local deploy-mockoracle-local deploy-all-local \
-	deploy-pool deploy-factory deploy-airdrops init-factory init-pool
