@@ -5,7 +5,17 @@ use pool_factory_interfaces::{FactoryQueryMsg, PoolStateResponseForFactory};
 use crate::internal_bluechip_price_oracle::{bluechip_to_usd, get_bluechip_usd_price, usd_to_bluechip};
 use crate::pool_struct::PoolDetails;
 use crate::msg::FactoryInstantiateResponse;
-use crate::state::{FACTORYINSTANTIATEINFO, PENDING_CONFIG, POOLS_BY_CONTRACT_ADDRESS, PendingConfig};
+use crate::state::{FACTORYINSTANTIATEINFO, PENDING_CONFIG, POOLS_BY_CONTRACT_ADDRESS, POOLS_BY_ID, PendingConfig};
+use crate::asset::TokenType;
+
+#[cw_serde]
+pub struct CreatorTokenInfoResponse {
+    pub name: String,
+    pub symbol: String,
+    pub decimals: u8,
+    pub total_supply: Uint128,
+    pub token_address: Addr,
+}
 
 #[cw_serde]
 #[derive(QueryResponses)]
@@ -14,6 +24,8 @@ pub enum QueryMsg {
     Factory {},
     #[returns(PoolDetails)]
     Pool { pool_address: String },
+    #[returns(CreatorTokenInfoResponse)]
+    CreatorTokenInfo { pool_id: u64 },
     #[returns(cosmwasm_std::Binary)]
     InternalBlueChipOracleQuery (FactoryQueryMsg),
 }
@@ -23,15 +35,44 @@ pub fn query(deps: Deps, env: Env, msg: QueryMsg) -> StdResult<Binary> {
     match msg {
         QueryMsg::Factory {} => to_json_binary(&query_active_factory(deps)?),
         QueryMsg::Pool { pool_address } => to_json_binary(&query_pool(deps, pool_address)?),
+        QueryMsg::CreatorTokenInfo { pool_id } => to_json_binary(&query_creator_token_info(deps, pool_id)?),
         QueryMsg::InternalBlueChipOracleQuery(oracle_msg) => handle_internal_bluechip_oracle_query(deps, env, oracle_msg),
     }
 }
 
 pub fn query_pool(deps: Deps, pool_address: String) -> StdResult<PoolStateResponseForFactory> {
     let pool_addr = deps.api.addr_validate(&pool_address)?;
-    
+
     let pool_details = POOLS_BY_CONTRACT_ADDRESS.load(deps.storage, pool_addr)?;
     Ok(pool_details)
+}
+
+pub fn query_creator_token_info(deps: Deps, pool_id: u64) -> StdResult<CreatorTokenInfoResponse> {
+    let pool = POOLS_BY_ID.load(deps.storage, pool_id)?;
+
+    // Find the creator token address from the pool's token info
+    let token_addr = pool
+        .pool_token_info
+        .iter()
+        .find_map(|t| match t {
+            TokenType::CreatorToken { contract_addr } => Some(contract_addr.clone()),
+            _ => None,
+        })
+        .ok_or_else(|| cosmwasm_std::StdError::generic_err("No creator token found for this pool"))?;
+
+    // Query the CW20 token contract for its metadata
+    let token_info: TokenInfoResponse = deps.querier.query(&QueryRequest::Wasm(WasmQuery::Smart {
+        contract_addr: token_addr.to_string(),
+        msg: to_json_binary(&Cw20QueryMsg::TokenInfo {})?,
+    }))?;
+
+    Ok(CreatorTokenInfoResponse {
+        name: token_info.name,
+        symbol: token_info.symbol,
+        decimals: token_info.decimals,
+        total_supply: token_info.total_supply,
+        token_address: token_addr,
+    })
 }
 
 pub fn handle_internal_bluechip_oracle_query(deps: Deps, env: Env, msg: FactoryQueryMsg) -> StdResult<Binary> {
