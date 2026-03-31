@@ -16,8 +16,3 @@ pub struct PriceResponse {
     pub expo: i32,
     pub conf: Uint128,
 }
-
-pub struct OracleData {
-    pub price: Uint128,
-    pub expo: i32,
-}

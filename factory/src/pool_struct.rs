@@ -75,14 +75,6 @@ pub struct CommitFeeInfo {
 }
 
 #[cw_serde]
-pub struct ConfigResponse {
-    // Last timestamp when the cumulative prices in the pool were updated
-    pub block_time_last: u64,
-    // The pool's parameters
-    pub params: Option<Binary>,
-}
-
-#[cw_serde]
 pub struct PoolDetails {
     pub pool_id: u64,
     // information for the two tokens in the pool

@@ -4,8 +4,8 @@ use crate::error::ContractError;
 
 use crate::generic_helpers::{
     check_rate_limit, enforce_transaction_deadline, get_bank_transfer_to_msg,
-    process_distribution_batch, trigger_threshold_payout, update_pool_fee_growth,
-    validate_pool_threshold_payments,
+    process_distribution_batch, trigger_threshold_payout, update_commit_info,
+    update_pool_fee_growth, validate_pool_threshold_payments,
 };
 use crate::liquidity::{
     execute_add_to_position, execute_collect_fees, execute_deposit_liquidity,
@@ -27,7 +27,7 @@ use crate::state::{
     THRESHOLD_PAYOUT_AMOUNTS, THRESHOLD_PROCESSING, USD_RAISED_FROM_COMMIT,
 };
 use crate::state::{
-    Commiting, PoolState, Position, COMMIT_INFO, CREATOR_EXCESS_POSITION, LIQUIDITY_POSITIONS,
+    PoolState, Position, CREATOR_EXCESS_POSITION, LIQUIDITY_POSITIONS,
     NEXT_POSITION_ID,
 };
 use crate::swap_helper::{
@@ -527,24 +527,14 @@ pub fn execute_swap_cw20(
             transaction_deadline,
         }) => {
             // Only asset contract can execute this message
-            let mut authorized: bool = false;
             let pool_info: PoolInfo = POOL_INFO.load(deps.storage)?;
-
-            for pool in pool_info.pool_info.asset_infos {
-                if let TokenType::CreatorToken { contract_addr, .. } = &pool {
-                    if contract_addr == &info.sender {
-                        authorized = true;
-                    }
-                }
-            }
+            let authorized = pool_info.pool_info.asset_infos.iter().any(|t| {
+                matches!(t, TokenType::CreatorToken { contract_addr } if contract_addr == &info.sender)
+            });
             if !authorized {
                 return Err(ContractError::Unauthorized {});
             }
-            let to_addr = if let Some(to_addr) = to {
-                Some(deps.api.addr_validate(to_addr.as_str())?)
-            } else {
-                None
-            };
+            let to_addr = to.map(|a| deps.api.addr_validate(&a)).transpose()?;
             let validated_sender = deps.api.addr_validate(&cw20_msg.sender)?;
             simple_swap(
                 deps,
@@ -902,8 +892,6 @@ pub fn execute_commit_logic(
             if amount_after_fees.is_zero() {
                 return Err(ContractError::InvalidFee {});
             }
-            let _total_fee_rate = fee_info.commit_fee_bluechip.checked_add(fee_info.commit_fee_creator)
-                .map_err(|_| ContractError::Std(StdError::generic_err("Fee rate overflow")))?;
             // Create fee transfer messages
             if !commit_fee_bluechip_amt.is_zero() {
                 let bluechip_transfer = get_bank_transfer_to_msg(
@@ -1022,30 +1010,13 @@ pub fn execute_commit_logic(
                             &fee_info,
                             &env,
                         )?);
-                        COMMIT_INFO.update(
+                        update_commit_info(
                             deps.storage,
                             &sender,
-                            |maybe_commiting| -> Result<_, ContractError> {
-                                match maybe_commiting {
-                                    Some(mut commit) => {
-                                        commit.total_paid_bluechip = commit.total_paid_bluechip.checked_add(bluechip_to_threshold)?;
-                                        commit.total_paid_usd = commit.total_paid_usd.checked_add(usd_to_threshold)?;
-                                        commit.last_payment_bluechip = bluechip_to_threshold;
-                                        commit.last_payment_usd = usd_to_threshold;
-                                        commit.last_commited = env.block.time;
-                                        Ok(commit)
-                                    }
-                                    None => Ok(Commiting {
-                                        pool_contract_address: pool_state.pool_contract_address,
-                                        commiter: sender.clone(),
-                                        total_paid_bluechip: bluechip_to_threshold,
-                                        total_paid_usd: usd_to_threshold,
-                                        last_commited: env.block.time,
-                                        last_payment_bluechip: bluechip_to_threshold,
-                                        last_payment_usd: usd_to_threshold,
-                                    }),
-                                }
-                            },
+                            pool_state.pool_contract_address.clone(),
+                            bluechip_to_threshold,
+                            usd_to_threshold,
+                            env.block.time,
                         )?;
                         // Process the excess as a swap
                         let mut return_amt = Uint128::zero();
@@ -1111,21 +1082,15 @@ pub fn execute_commit_logic(
                                     .into(),
                                 );
                             }
-                            //save the commit transaction
-                            COMMIT_INFO.update(
+                            //save the commit transaction — the record was just created above
+                            //so this adds the excess amounts on top
+                            update_commit_info(
                                 deps.storage,
                                 &sender,
-                                |maybe_commiting| -> Result<_, ContractError> {
-                                    if let Some(mut commiting) = maybe_commiting {
-                                        commiting.total_paid_bluechip = commiting.total_paid_bluechip.checked_add(bluechip_excess)?;
-                                        commiting.total_paid_usd = commiting.total_paid_usd.checked_add(usd_excess)?;
-                                        Ok(commiting)
-                                    } else {
-                                        Err(ContractError::Std(StdError::generic_err(
-                                            "Expected existing commit record for excess update"
-                                        )))
-                                    }
-                                },
+                                pool_state.pool_contract_address.clone(),
+                                bluechip_excess,
+                                usd_excess,
+                                env.block.time,
                             )?;
                         }
                         // Clear the processing lock
@@ -1180,30 +1145,13 @@ pub fn execute_commit_logic(
                             &fee_info,
                             &env,
                         )?);
-                        COMMIT_INFO.update(
+                        update_commit_info(
                             deps.storage,
                             &sender,
-                            |maybe_commiting| -> Result<_, ContractError> {
-                                match maybe_commiting {
-                                    Some(mut commiting) => {
-                                        commiting.total_paid_bluechip = commiting.total_paid_bluechip.checked_add(asset.amount)?;
-                                        commiting.total_paid_usd = commiting.total_paid_usd.checked_add(usd_value)?;
-                                        commiting.last_payment_bluechip = asset.amount;
-                                        commiting.last_payment_usd = usd_value;
-                                        commiting.last_commited = env.block.time;
-                                        Ok(commiting)
-                                    }
-                                    None => Ok(Commiting {
-                                        pool_contract_address: pool_state.pool_contract_address,
-                                        commiter: sender.clone(),
-                                        total_paid_bluechip: asset.amount,
-                                        total_paid_usd: usd_value,
-                                        last_commited: env.block.time,
-                                        last_payment_bluechip: asset.amount,
-                                        last_payment_usd: usd_value,
-                                    }),
-                                }
-                            },
+                            pool_state.pool_contract_address.clone(),
+                            asset.amount,
+                            usd_value,
+                            env.block.time,
                         )?;
                         // Clear the processing lock
                         THRESHOLD_PROCESSING.save(deps.storage, &false)?;
@@ -1260,30 +1208,13 @@ fn process_pre_threshold_commit(
         USD_RAISED_FROM_COMMIT.update::<_, ContractError>(deps.storage, |r| Ok(r.checked_add(usd_value)?))?;
     NATIVE_RAISED_FROM_COMMIT.update::<_, ContractError>(deps.storage, |r| Ok(r.checked_add(asset.amount)?))?;
 
-    COMMIT_INFO.update(
+    update_commit_info(
         deps.storage,
         &sender,
-        |maybe_commiting| -> Result<_, ContractError> {
-            match maybe_commiting {
-                Some(mut commiting) => {
-                    commiting.total_paid_bluechip = commiting.total_paid_bluechip.checked_add(asset.amount)?;
-                    commiting.total_paid_usd = commiting.total_paid_usd.checked_add(usd_value)?;
-                    commiting.last_payment_bluechip = asset.amount;
-                    commiting.last_payment_usd = usd_value;
-                    commiting.last_commited = env.block.time;
-                    Ok(commiting)
-                }
-                None => Ok(Commiting {
-                    pool_contract_address: pool_state.pool_contract_address,
-                    commiter: sender.clone(),
-                    total_paid_bluechip: asset.amount,
-                    total_paid_usd: usd_value,
-                    last_commited: env.block.time,
-                    last_payment_bluechip: asset.amount,
-                    last_payment_usd: usd_value,
-                }),
-            }
-        },
+        pool_state.pool_contract_address,
+        asset.amount,
+        usd_value,
+        env.block.time,
     )?;
     Ok(Response::new()
         .add_messages(messages)
@@ -1354,30 +1285,13 @@ fn process_post_threshold_commit(
             .into(),
         );
     }
-    COMMIT_INFO.update(
+    update_commit_info(
         deps.storage,
         &sender,
-        |maybe_commiting| -> Result<_, ContractError> {
-            match maybe_commiting {
-                Some(mut commiting) => {
-                    commiting.total_paid_bluechip = commiting.total_paid_bluechip.checked_add(asset.amount)?;
-                    commiting.total_paid_usd = commiting.total_paid_usd.checked_add(usd_value)?;
-                    commiting.last_payment_bluechip = asset.amount;
-                    commiting.last_payment_usd = usd_value;
-                    commiting.last_commited = env.block.time;
-                    Ok(commiting)
-                }
-                None => Ok(Commiting {
-                    pool_contract_address: pool_state.pool_contract_address,
-                    commiter: sender.clone(),
-                    total_paid_bluechip: asset.amount,
-                    total_paid_usd: usd_value,
-                    last_commited: env.block.time,
-                    last_payment_bluechip: asset.amount,
-                    last_payment_usd: usd_value,
-                }),
-            }
-        },
+        pool_state.pool_contract_address.clone(),
+        asset.amount,
+        usd_value,
+        env.block.time,
     )?;
 
     Ok(Response::new()
@@ -1412,13 +1326,7 @@ pub fn execute_continue_distribution(
     let mut msgs = process_distribution_batch(deps.storage, &pool_info, &env)?;
 
     // incentivize external callers. The previous self-funded model provided no incentive.
-    let bluechip_denom = match &pool_info.pool_info.asset_infos[0] {
-        TokenType::Bluechip { denom } => denom.clone(),
-        _ => match &pool_info.pool_info.asset_infos[1] {
-            TokenType::Bluechip { denom } => denom.clone(),
-            _ => return Err(ContractError::AssetMismatch {}),
-        },
-    };
+    let bluechip_denom = crate::asset::get_bluechip_denom(&pool_info.pool_info.asset_infos)?;
 
     // Pay bounty from the dedicated bounty reserve (funded at threshold
     // crossing), NOT from pool trading reserves.  This prevents repeated
@@ -1497,6 +1405,8 @@ pub fn execute_update_config_from_factory(
     }
 
     let mut attributes = vec![("action", "update_config")];
+    let mut specs = POOL_SPECS.load(deps.storage)?;
+    let mut specs_changed = false;
 
     if let Some(fee) = update.lp_fee {
         // path cannot silently set extractive fees that steal from traders.
@@ -1514,10 +1424,8 @@ pub fn execute_update_config_from_factory(
                 "lp_fee must be at least 0.1% (0.001)",
             )));
         }
-        POOL_SPECS.update(deps.storage, |mut specs| -> StdResult<_> {
-            specs.lp_fee = fee;
-            Ok(specs)
-        })?;
+        specs.lp_fee = fee;
+        specs_changed = true;
         attributes.push(("lp_fee", "updated"));
     }
 
@@ -1529,19 +1437,19 @@ pub fn execute_update_config_from_factory(
                 "min_commit_interval must not exceed 86400 seconds (1 day)",
             )));
         }
-        POOL_SPECS.update(deps.storage, |mut specs| -> StdResult<_> {
-            specs.min_commit_interval = interval;
-            Ok(specs)
-        })?;
+        specs.min_commit_interval = interval;
+        specs_changed = true;
         attributes.push(("min_commit_interval", "updated"));
     }
 
     if let Some(tolerance) = update.usd_payment_tolerance_bps {
-        POOL_SPECS.update(deps.storage, |mut specs| -> StdResult<_> {
-            specs.usd_payment_tolerance_bps = tolerance;
-            Ok(specs)
-        })?;
+        specs.usd_payment_tolerance_bps = tolerance;
+        specs_changed = true;
         attributes.push(("usd_payment_tolerance_bps", "updated"));
+    }
+
+    if specs_changed {
+        POOL_SPECS.save(deps.storage, &specs)?;
     }
 
     if let Some(oracle_addr) = update.oracle_address {

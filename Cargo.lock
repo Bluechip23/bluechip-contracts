@@ -933,9 +933,7 @@ dependencies = [
  "cw2 1.1.2",
  "cw20",
  "cw721 0.18.0",
- "integer-sqrt",
  "pool-factory-interfaces",
- "protobuf",
  "semver",
  "serde",
  "sha2 0.10.8",
@@ -1241,11 +1239,9 @@ dependencies = [
  "cw721-base 0.18.0",
  "easy-addr",
  "factory",
- "integer-sqrt",
  "oracle",
  "pool-factory-interfaces",
  "proptest",
- "sha2 0.10.8",
  "thiserror 2.0.12",
 ]
 
