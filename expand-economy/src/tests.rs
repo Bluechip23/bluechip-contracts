@@ -63,7 +63,7 @@ mod tests {
     }
 
     #[test]
-    fn update_config() {
+    fn update_config_with_timelock() {
         let mut deps = mock_dependencies();
         let msg = InstantiateMsg {
             factory_address: "factory".to_string(),
@@ -71,16 +71,40 @@ mod tests {
         };
         instantiate(deps.as_mut(), mock_env(), mock_info("creator", &[]), msg).unwrap();
 
-        // only owner can update config
+        // Propose config update (owner only)
         let info = mock_info("owner", &[]);
-        let msg = ExecuteMsg::UpdateConfig {
+        let msg = ExecuteMsg::ProposeConfigUpdate {
             factory_address: Some("new_factory".to_string()),
             owner: Some("new_owner".to_string()),
         };
+        execute(deps.as_mut(), mock_env(), info.clone(), msg).unwrap();
 
-        execute(deps.as_mut(), mock_env(), info, msg).unwrap();
+        // Executing before timelock should fail
+        let err = execute(
+            deps.as_mut(),
+            mock_env(),
+            info.clone(),
+            ExecuteMsg::ExecuteConfigUpdate {},
+        )
+        .unwrap_err();
+        assert!(err.to_string().contains("Timelock not expired"));
 
-        let res = query(deps.as_ref(), mock_env(), QueryMsg::GetConfig {}).unwrap();
+        // Advance time past 48-hour timelock
+        let mut future_env = mock_env();
+        future_env.block.time = future_env
+            .block
+            .time
+            .plus_seconds(crate::state::CONFIG_TIMELOCK_SECONDS + 1);
+
+        execute(
+            deps.as_mut(),
+            future_env.clone(),
+            info,
+            ExecuteMsg::ExecuteConfigUpdate {},
+        )
+        .unwrap();
+
+        let res = query(deps.as_ref(), future_env, QueryMsg::GetConfig {}).unwrap();
         let value: ConfigResponse = from_json(&res).unwrap();
         assert_eq!("new_factory", value.factory_address);
         assert_eq!("new_owner", value.owner);

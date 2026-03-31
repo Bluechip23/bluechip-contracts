@@ -237,12 +237,22 @@ fn test_update_specific_pool_from_registry() {
         oracle_address: None,
     };
 
-    let update_msg = ExecuteMsg::UpdatePoolConfig {
+    let update_msg = ExecuteMsg::ProposePoolConfigUpdate {
         pool_id,
         pool_config,
     };
 
-    let res = execute(deps.as_mut(), mock_env(), admin_info, update_msg).unwrap();
+    let res = execute(deps.as_mut(), mock_env(), admin_info.clone(), update_msg).unwrap();
+
+    // Propose should NOT send a message yet — just store the pending update
+    assert_eq!(res.messages.len(), 0);
+
+    // Advance time past 48-hour timelock
+    let mut future_env = mock_env();
+    future_env.block.time = future_env.block.time.plus_seconds(86400 * 2 + 1);
+
+    let apply_msg = ExecuteMsg::ExecutePoolConfigUpdate { pool_id };
+    let res = execute(deps.as_mut(), future_env, admin_info, apply_msg).unwrap();
 
     assert_eq!(res.messages.len(), 1);
     match &res.messages[0].msg {

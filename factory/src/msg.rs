@@ -50,9 +50,18 @@ pub enum ExecuteMsg {
     ExecutePoolUpgrade {},
     CancelPoolUpgrade {},
     ContinuePoolUpgrade {},
-    UpdatePoolConfig {
+    // F1-C2: Pool config changes now follow a 48-hour timelock, matching
+    // factory-level config updates.  ProposePoolConfigUpdate queues the
+    // change; ExecutePoolConfigUpdate applies it after the delay.
+    ProposePoolConfigUpdate {
         pool_id: u64,
         pool_config: PoolConfigUpdate,
+    },
+    ExecutePoolConfigUpdate {
+        pool_id: u64,
+    },
+    CancelPoolConfigUpdate {
+        pool_id: u64,
     },
     // Called by a pool contract when its commit threshold has been crossed.
     // Triggers the bluechip mint for this pool (only fires once per pool).

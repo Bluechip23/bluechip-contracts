@@ -1751,7 +1751,7 @@ fn test_rounding_error_accumulation() {
 
     for i in 0..1000 {
         let user = format!("user{}", i);
-        let amount = Uint128::new(1_000); // Tiny amount
+        let amount = Uint128::new(4_000_000); // ~$1.33 USD, above $1 minimum
 
         // Manual calculation
         let expected_usd = amount * Uint128::new(333_333) / Uint128::new(1_000_000);

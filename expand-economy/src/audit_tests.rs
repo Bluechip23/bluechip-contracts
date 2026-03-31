@@ -341,11 +341,11 @@ mod tests {
     }
 
     #[test]
-    fn test_update_config_unauthorized() {
+    fn test_propose_config_update_unauthorized() {
         let mut deps = mock_dependencies();
         setup_contract(&mut deps);
 
-        let msg = ExecuteMsg::UpdateConfig {
+        let msg = ExecuteMsg::ProposeConfigUpdate {
             factory_address: Some("new_factory".to_string()),
             owner: None,
         };

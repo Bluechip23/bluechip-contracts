@@ -229,13 +229,12 @@ pub fn query_fee_info(deps: Deps) -> StdResult<FeeInfoResponse> {
     Ok(FeeInfoResponse { fee_info })
 }
 
+/// F4-M4: Only allow post-threshold operations when the threshold crossing
+/// has fully completed (IS_THRESHOLD_HIT == true).  The previous secondary
+/// check (usd_raised >= target) could return true even when the crossing
+/// transaction failed, allowing swaps/deposits on an empty pool.
 pub fn query_check_commit(deps: Deps) -> StdResult<bool> {
-    if IS_THRESHOLD_HIT.load(deps.storage)? {
-        return Ok(true);
-    }
-    let commit_info = COMMIT_LIMIT_INFO.load(deps.storage)?;
-    let usd_raised = USD_RAISED_FROM_COMMIT.load(deps.storage)?;
-    Ok(usd_raised >= commit_info.commit_amount_for_threshold_usd)
+    IS_THRESHOLD_HIT.load(deps.storage)
 }
 
 pub fn query_pool_state(deps: Deps) -> StdResult<PoolStateResponse> {
