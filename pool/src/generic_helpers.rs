@@ -3,8 +3,8 @@ use crate::error::ContractError;
 use crate::liquidity_helpers::integer_sqrt;
 use crate::msg::CommitFeeInfo;
 use crate::state::{
-    CommitLimitInfo, PoolFeeState, PoolInfo, PoolSpecs, ThresholdPayoutAmounts, COMMIT_LEDGER,
-    DEFAULT_ESTIMATED_GAS_PER_DISTRIBUTION, DEFAULT_MAX_GAS_PER_TX,
+    CommitLimitInfo, Commiting, PoolFeeState, PoolInfo, PoolSpecs, ThresholdPayoutAmounts,
+    COMMIT_INFO, COMMIT_LEDGER, DEFAULT_ESTIMATED_GAS_PER_DISTRIBUTION, DEFAULT_MAX_GAS_PER_TX,
     MAX_DISTRIBUTION_BOUNTY_RESERVE, MAX_DISTRIBUTIONS_PER_TX, POOL_FEE_STATE, POOL_STATE,
     USER_LAST_COMMIT,
 };
@@ -516,4 +516,44 @@ pub fn mint_tokens(token_addr: &Addr, recipient: &Addr, amount: Uint128) -> StdR
     };
 
     Ok(exec.into())
+}
+
+/// Shared helper to update or create a COMMIT_INFO record.
+/// Consolidates the 5 identical update patterns throughout commit logic.
+pub fn update_commit_info(
+    storage: &mut dyn Storage,
+    sender: &Addr,
+    pool_contract_address: Addr,
+    bluechip_amount: Uint128,
+    usd_amount: Uint128,
+    timestamp: Timestamp,
+) -> Result<(), ContractError> {
+    COMMIT_INFO.update(
+        storage,
+        sender,
+        |maybe_commiting| -> Result<_, ContractError> {
+            match maybe_commiting {
+                Some(mut commiting) => {
+                    commiting.total_paid_bluechip =
+                        commiting.total_paid_bluechip.checked_add(bluechip_amount)?;
+                    commiting.total_paid_usd =
+                        commiting.total_paid_usd.checked_add(usd_amount)?;
+                    commiting.last_payment_bluechip = bluechip_amount;
+                    commiting.last_payment_usd = usd_amount;
+                    commiting.last_commited = timestamp;
+                    Ok(commiting)
+                }
+                None => Ok(Commiting {
+                    pool_contract_address,
+                    commiter: sender.clone(),
+                    total_paid_bluechip: bluechip_amount,
+                    total_paid_usd: usd_amount,
+                    last_commited: timestamp,
+                    last_payment_bluechip: bluechip_amount,
+                    last_payment_usd: usd_amount,
+                }),
+            }
+        },
+    )?;
+    Ok(())
 }

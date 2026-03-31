@@ -207,8 +207,8 @@ pub fn execute_deposit_liquidity(
     update_price_accumulator(&mut pool_state, env.block.time.seconds())?;
     POOL_STATE.save(deps.storage, &pool_state)?;
 
-    let new_state = POOL_STATE.load(deps.storage)?;
-    if new_state.reserve0 >= MINIMUM_LIQUIDITY && new_state.reserve1 >= MINIMUM_LIQUIDITY {
+    let unpaused = pool_state.reserve0 >= MINIMUM_LIQUIDITY && pool_state.reserve1 >= MINIMUM_LIQUIDITY;
+    if unpaused {
         POOL_PAUSED.save(deps.storage, &false)?;
     }
 
@@ -225,11 +225,7 @@ pub fn execute_deposit_liquidity(
         .add_attribute("offered_amount1", amount1.to_string())
         .add_attribute(
             "pool_unpaused",
-            if new_state.reserve0 >= MINIMUM_LIQUIDITY && new_state.reserve1 >= MINIMUM_LIQUIDITY {
-                "true"
-            } else {
-                "false"
-            },
+            if unpaused { "true" } else { "false" },
         ))
 }
 

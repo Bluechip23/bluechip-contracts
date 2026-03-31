@@ -3,16 +3,13 @@
 // are now defined once in pool-factory-interfaces::asset.
 pub use pool_factory_interfaces::asset::*;
 
-use std::collections::{HashMap, HashSet};
-
-use crate::msg::QueryMsg;
 use crate::state::PoolInfo;
 
 use cosmwasm_std::{
     to_json_binary, Addr, BankMsg, Coin, CosmosMsg, Deps, MessageInfo, QuerierWrapper, StdError,
     StdResult, WasmMsg,
 };
-use cw20::{Cw20ExecuteMsg, MinterResponse};
+use cw20::Cw20ExecuteMsg;
 use cw_utils::must_pay;
 
 pub const UBLUECHIP_DENOM: &str = "ubluechip";
@@ -77,66 +74,6 @@ impl TokenInfoPoolExt for TokenInfo {
     }
 }
 
-pub trait TokenSending {
-    fn assert_coins_properly_sent(
-        &self,
-        assets: &[TokenInfo],
-        pool_asset_infos: &[TokenType],
-    ) -> StdResult<()>;
-}
-
-impl TokenSending for Vec<Coin> {
-    fn assert_coins_properly_sent(
-        &self,
-        input_assets: &[TokenInfo],
-        pool_asset_infos: &[TokenType],
-    ) -> StdResult<()> {
-        let pool_coins = pool_asset_infos
-            .iter()
-            .filter_map(|asset_info| match asset_info {
-                TokenType::Bluechip { denom } => Some(denom.to_string()),
-                _ => None,
-            })
-            .collect::<HashSet<_>>();
-
-        let input_coins = input_assets
-            .iter()
-            .filter_map(|asset| match &asset.info {
-                TokenType::Bluechip { denom } => Some((denom.to_string(), asset.amount)),
-                _ => None,
-            })
-            .map(|pair| {
-                if pool_coins.contains(&pair.0) {
-                    Ok(pair)
-                } else {
-                    Err(StdError::generic_err(format!(
-                        "Asset {} is not in the pool",
-                        pair.0
-                    )))
-                }
-            })
-            .collect::<StdResult<HashMap<_, _>>>()?;
-
-        self.iter().try_for_each(|coin| {
-            if input_coins.contains_key(&coin.denom) {
-                if input_coins[&coin.denom] == coin.amount {
-                    Ok(())
-                } else {
-                    Err(StdError::generic_err(format!(
-                        "amount mismatch for denom '{}': expected {}, but received {}",
-                        coin.denom, input_coins[&coin.denom], coin.amount
-                    )))
-                }
-            } else {
-                Err(StdError::generic_err(format!(
-                    "Supplied coins contain {} that is not in the input asset vector",
-                    coin.denom
-                )))
-            }
-        })
-    }
-}
-
 // Pool-specific: PoolPairInfo includes current balances alongside pair config.
 // Renamed from PoolDetails to PoolPairInfo to avoid collision with state::PoolDetails.
 #[cosmwasm_schema::cw_serde]
@@ -155,18 +92,6 @@ impl PoolPairInfo {
     ) -> StdResult<[TokenInfo; 2]> {
         pool_factory_interfaces::asset::query_pools(&self.asset_infos, querier, contract_addr)
     }
-}
-
-pub fn pair_info_by_pool(deps: Deps, pool: Addr) -> StdResult<PoolPairInfo> {
-    let minter_info: MinterResponse = deps
-        .querier
-        .query_wasm_smart(pool, &cw20::Cw20QueryMsg::Minter {})?;
-
-    let pair_info: PoolPairInfo = deps
-        .querier
-        .query_wasm_smart(minter_info.minter, &QueryMsg::Pair {})?;
-
-    Ok(pair_info)
 }
 
 pub fn call_pool_info(deps: Deps, pool_info: PoolInfo) -> StdResult<[TokenInfo; 2]> {

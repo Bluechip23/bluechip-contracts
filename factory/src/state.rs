@@ -19,13 +19,8 @@ pub const POOLS_BY_ID: Map<u64, PoolDetails> = Map::new("pools_by_id");
 pub const POOLS_BY_CONTRACT_ADDRESS: Map<Addr, PoolStateResponseForFactory> =
     Map::new("pools_by_contract_address");
 pub const POOL_CREATION_STATES: Map<u64, PoolCreationState> = Map::new("creation_states");
-pub const PYTH_CONTRACT_ADDR: &str =
-    "neutron1m2emc93m9gpwgsrsf2vylv9xvgqh654630v7dfrhrkmr5slly53spg85wv";
-pub const ATOM_USD_PRICE_FEED_ID: &str = "ATOM_USD";
 pub const MAX_PRICE_AGE_SECONDS_BEFORE_STALE: u64 = 300; // 5 minutes
-pub const ATOM_BLUECHIP_ANCHOR_POOL_ADDRESS: Item<Addr> = Item::new("atom_pool_address");
 pub const POOL_REGISTRY: Map<u64, Addr> = Map::new("pool_registry");
-pub const POOL_CODE_ID: Item<u64> = Item::new("pool_code_id");
 pub const PENDING_POOL_UPGRADE: Item<PoolUpgrade> = Item::new("pending_upgrade");
 pub const FIRST_POOL_TIMESTAMP: Item<Timestamp> = Item::new("first_pool_timestamp");
 // Tracks which pools have already triggered their bluechip mint on threshold crossing.
