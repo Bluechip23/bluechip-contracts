@@ -31,6 +31,17 @@ pub const FIRST_POOL_TIMESTAMP: Item<Timestamp> = Item::new("first_pool_timestam
 // Tracks which pools have already triggered their bluechip mint on threshold crossing.
 // Prevents double-minting if NotifyThresholdCrossed is called multiple times.
 pub const POOL_THRESHOLD_MINTED: Map<u64, bool> = Map::new("pool_threshold_minted");
+// F1-C2: Pending pool config updates, keyed by pool_id. Enforces a 48-hour
+// timelock before pool configuration changes (oracle address, LP fee, etc.)
+// take effect, matching the timelock on factory-level config updates.
+pub const PENDING_POOL_CONFIG: Map<u64, PendingPoolConfig> = Map::new("pending_pool_config");
+
+#[cw_serde]
+pub struct PendingPoolConfig {
+    pub pool_id: u64,
+    pub update: crate::pool_struct::PoolConfigUpdate,
+    pub effective_after: Timestamp,
+}
 
 #[cw_serde]
 pub struct FactoryInstantiate {

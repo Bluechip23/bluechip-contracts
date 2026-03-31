@@ -232,14 +232,20 @@ fn test_update_pool_config_sends_message_to_pool() {
         oracle_address: None,
     };
 
-    let msg = ExecuteMsg::UpdatePoolConfig {
+    // Step 1: Propose — no messages sent yet
+    let msg = ExecuteMsg::ProposePoolConfigUpdate {
         pool_id: 1,
         pool_config: update,
     };
+    let res = execute(deps.as_mut(), env.clone(), admin_info.clone(), msg).unwrap();
+    assert_eq!(res.messages.len(), 0);
+    assert!(res.attributes.iter().any(|a| a.key == "pool_id" && a.value == "1"));
 
-    let res = execute(deps.as_mut(), env, admin_info, msg).unwrap();
-
-    // Should send a WasmMsg::Execute to the pool contract
+    // Step 2: Execute after timelock — should send WasmMsg to pool
+    let mut future_env = env;
+    future_env.block.time = future_env.block.time.plus_seconds(86400 * 2 + 1);
+    let apply_msg = ExecuteMsg::ExecutePoolConfigUpdate { pool_id: 1 };
+    let res = execute(deps.as_mut(), future_env, admin_info, apply_msg).unwrap();
     assert_eq!(res.messages.len(), 1);
     assert!(res.attributes.iter().any(|a| a.key == "pool_id" && a.value == "1"));
 }
@@ -261,7 +267,7 @@ fn test_update_pool_config_unauthorized() {
         oracle_address: None,
     };
 
-    let msg = ExecuteMsg::UpdatePoolConfig {
+    let msg = ExecuteMsg::ProposePoolConfigUpdate {
         pool_id: 1,
         pool_config: update,
     };
@@ -286,7 +292,7 @@ fn test_update_pool_config_nonexistent_pool() {
         oracle_address: None,
     };
 
-    let msg = ExecuteMsg::UpdatePoolConfig {
+    let msg = ExecuteMsg::ProposePoolConfigUpdate {
         pool_id: 99,
         pool_config: update,
     };

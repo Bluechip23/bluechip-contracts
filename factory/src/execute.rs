@@ -8,9 +8,10 @@ use crate::pool_create_cleanup::handle_cleanup_reply;
 use crate::pool_creation_reply::{finalize_pool, mint_create_pool, set_tokens};
 use crate::pool_struct::{CreatePool, PoolConfigUpdate, TempPoolCreation};
 use crate::state::{
-    CreationStatus, FactoryInstantiate, PendingConfig, PoolCreationState, PoolUpgrade,
-    FACTORYINSTANTIATEINFO, PENDING_CONFIG, PENDING_POOL_UPGRADE, POOL_COUNTER,
-    POOL_CREATION_STATES, POOL_REGISTRY, POOL_THRESHOLD_MINTED, TEMP_POOL_CREATION,
+    CreationStatus, FactoryInstantiate, PendingConfig, PendingPoolConfig, PoolCreationState,
+    PoolUpgrade, FACTORYINSTANTIATEINFO, PENDING_CONFIG, PENDING_POOL_CONFIG,
+    PENDING_POOL_UPGRADE, POOL_COUNTER, POOL_CREATION_STATES, POOL_REGISTRY,
+    POOL_THRESHOLD_MINTED, TEMP_POOL_CREATION,
 };
 use cosmwasm_std::{
     entry_point, to_json_binary, Deps, DepsMut, Env, MessageInfo, Reply, Response, StdError,
@@ -86,10 +87,16 @@ pub fn execute(
         ExecuteMsg::ExecutePoolUpgrade {} => execute_apply_pool_upgrade(deps, env, info),
         ExecuteMsg::CancelPoolUpgrade {} => execute_cancel_pool_upgrade(deps, info),
         ExecuteMsg::ContinuePoolUpgrade {} => execute_continue_pool_upgrade(deps, env, info),
-        ExecuteMsg::UpdatePoolConfig {
+        ExecuteMsg::ProposePoolConfigUpdate {
             pool_id,
             pool_config,
-        } => execute_update_pool_config(deps, env, info, pool_id, pool_config),
+        } => execute_propose_pool_config_update(deps, env, info, pool_id, pool_config),
+        ExecuteMsg::ExecutePoolConfigUpdate { pool_id } => {
+            execute_apply_pool_config_update(deps, env, info, pool_id)
+        }
+        ExecuteMsg::CancelPoolConfigUpdate { pool_id } => {
+            execute_cancel_pool_config_update(deps, info, pool_id)
+        }
         ExecuteMsg::NotifyThresholdCrossed { pool_id } => {
             execute_notify_threshold_crossed(deps, env, info, pool_id)
         }
@@ -358,18 +365,68 @@ pub fn execute_cancel_pool_upgrade(
     Ok(Response::new().add_attribute("action", "cancel_pool_upgrade"))
 }
 
-pub fn execute_update_pool_config(
+// F1-C2: Pool config updates now use a 48-hour timelock, matching the
+// factory config update pattern.  This prevents a compromised admin key
+// from instantly redirecting a pool's oracle address or fee parameters.
+
+pub fn execute_propose_pool_config_update(
     deps: DepsMut,
-    _env: Env,
+    env: Env,
     info: MessageInfo,
     pool_id: u64,
     update_msg: PoolConfigUpdate,
 ) -> Result<Response, ContractError> {
     assert_correct_factory_address(deps.as_ref(), info)?;
 
+    // Verify pool exists
+    let _pool_addr = POOL_REGISTRY.load(deps.storage, pool_id)?;
+
+    if PENDING_POOL_CONFIG.may_load(deps.storage, pool_id)?.is_some() {
+        return Err(ContractError::Std(StdError::generic_err(
+            "A pool config update is already pending for this pool. Cancel it first.",
+        )));
+    }
+
+    let effective_after = env.block.time.plus_seconds(86400 * 2); // 48 hours
+
+    PENDING_POOL_CONFIG.save(
+        deps.storage,
+        pool_id,
+        &PendingPoolConfig {
+            pool_id,
+            update: update_msg,
+            effective_after,
+        },
+    )?;
+
+    Ok(Response::new()
+        .add_attribute("action", "propose_pool_config_update")
+        .add_attribute("pool_id", pool_id.to_string())
+        .add_attribute("effective_after", effective_after.to_string()))
+}
+
+pub fn execute_apply_pool_config_update(
+    deps: DepsMut,
+    env: Env,
+    info: MessageInfo,
+    pool_id: u64,
+) -> Result<Response, ContractError> {
+    assert_correct_factory_address(deps.as_ref(), info)?;
+
+    let pending = PENDING_POOL_CONFIG.load(deps.storage, pool_id).map_err(|_| {
+        ContractError::Std(StdError::generic_err(
+            "No pending pool config update for this pool",
+        ))
+    })?;
+
+    if env.block.time < pending.effective_after {
+        return Err(ContractError::TimelockNotExpired {
+            effective_after: pending.effective_after,
+        });
+    }
+
     let pool_addr = POOL_REGISTRY.load(deps.storage, pool_id)?;
 
-    // Send update message to specific pool using the pool's expected message format
     #[derive(serde::Serialize)]
     #[serde(rename_all = "snake_case")]
     enum PoolExecuteMsg {
@@ -378,14 +435,36 @@ pub fn execute_update_pool_config(
     let msg = CosmosMsg::Wasm(WasmMsg::Execute {
         contract_addr: pool_addr.to_string(),
         msg: to_json_binary(&PoolExecuteMsg::UpdateConfigFromFactory {
-            update: update_msg,
+            update: pending.update,
         })?,
         funds: vec![],
     });
 
+    PENDING_POOL_CONFIG.remove(deps.storage, pool_id);
+
     Ok(Response::new()
         .add_message(msg)
-        .add_attribute("action", "update_pool_config")
+        .add_attribute("action", "execute_pool_config_update")
+        .add_attribute("pool_id", pool_id.to_string()))
+}
+
+pub fn execute_cancel_pool_config_update(
+    deps: DepsMut,
+    info: MessageInfo,
+    pool_id: u64,
+) -> Result<Response, ContractError> {
+    assert_correct_factory_address(deps.as_ref(), info)?;
+
+    if PENDING_POOL_CONFIG.may_load(deps.storage, pool_id)?.is_none() {
+        return Err(ContractError::Std(StdError::generic_err(
+            "No pending pool config update to cancel",
+        )));
+    }
+
+    PENDING_POOL_CONFIG.remove(deps.storage, pool_id);
+
+    Ok(Response::new()
+        .add_attribute("action", "cancel_pool_config_update")
         .add_attribute("pool_id", pool_id.to_string()))
 }
 

@@ -12,10 +12,15 @@ pub struct InstantiateMsg {
 pub enum ExecuteMsg {
     ExpandEconomy(ExpandEconomyMsg),
 
-    UpdateConfig {
+    // F2-H1: Config updates now follow a 48-hour timelock to prevent a
+    // compromised owner key from instantly redirecting factory_address
+    // and draining funds via RequestExpansion.
+    ProposeConfigUpdate {
         factory_address: Option<String>,
         owner: Option<String>,
     },
+    ExecuteConfigUpdate {},
+    CancelConfigUpdate {},
 
     // 48hr timelock
     ProposeWithdrawal {

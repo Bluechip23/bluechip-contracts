@@ -42,6 +42,9 @@ use cw2::set_contract_version;
 use cw20::{Cw20ExecuteMsg, Cw20ReceiveMsg};
 use std::vec;
 pub const DEFAULT_SLIPPAGE: &str = "0.005";
+// F4-H3: Minimum commit value in USD (6 decimals). $1 = 1_000_000.
+// Prevents dust commit griefing that bloats COMMIT_LEDGER and distribution.
+pub const MIN_COMMIT_USD: Uint128 = Uint128::new(1_000_000);
 // Contract name that is used for migration.
 const CONTRACT_NAME: &str = "bluechip-contracts-pool";
 // Contract version that is used for migration.
@@ -510,6 +513,11 @@ pub fn execute_swap_cw20(
     info: MessageInfo,
     cw20_msg: Cw20ReceiveMsg,
 ) -> Result<Response, ContractError> {
+    // F4-C1: CW20 swaps must also be gated behind the commit threshold,
+    // matching the check on the SimpleSwap path.
+    if !query_check_commit(deps.as_ref())? {
+        return Err(ContractError::ShortOfThreshold {});
+    }
     let contract_addr = info.sender.clone();
     match from_json(&cw20_msg.msg) {
         Ok(Cw20HookMsg::Swap {
@@ -739,6 +747,12 @@ pub fn commit(
     belief_price: Option<Decimal>,
     max_spread: Option<Decimal>,
 ) -> Result<Response, ContractError> {
+    // F4-C2: Reject commits on permanently drained pools to prevent trapping funds.
+    if EMERGENCY_DRAINED.may_load(deps.storage)?.unwrap_or(false) {
+        return Err(ContractError::Std(StdError::generic_err(
+            "Pool has been permanently drained via emergency withdrawal",
+        )));
+    }
     enforce_transaction_deadline(env.block.time, transaction_deadline)?;
     // Reentrancy protection - check and set guard
     let reentrancy_guard = RATE_LIMIT_GUARD.may_load(deps.storage)?.unwrap_or(false);
@@ -805,6 +819,14 @@ pub fn execute_commit_logic(
 
     if usd_value.is_zero() {
         return Err(ContractError::InvalidOraclePrice {});
+    }
+
+    // F4-H3: Enforce minimum commit to prevent dust griefing.
+    if usd_value < MIN_COMMIT_USD {
+        return Err(ContractError::Std(StdError::generic_err(format!(
+            "Commit too small: ${} USD (minimum $1 USD)",
+            usd_value
+        ))));
     }
 
     // Identify valid bluechip denom from pool config

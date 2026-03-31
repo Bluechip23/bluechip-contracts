@@ -8,7 +8,10 @@ use cw2::set_contract_version;
 
 use crate::error::ContractError;
 use crate::msg::{ConfigResponse, ExecuteMsg, ExpandEconomyMsg, InstantiateMsg, QueryMsg};
-use crate::state::{Config, PendingWithdrawal, CONFIG, PENDING_WITHDRAWAL, WITHDRAW_TIMELOCK_SECONDS};
+use crate::state::{
+    Config, PendingConfigUpdate, PendingWithdrawal, CONFIG, CONFIG_TIMELOCK_SECONDS,
+    PENDING_CONFIG_UPDATE, PENDING_WITHDRAWAL, WITHDRAW_TIMELOCK_SECONDS,
+};
 
 const CONTRACT_NAME: &str = "crates.io:expand-economy";
 const CONTRACT_VERSION: &str = env!("CARGO_PKG_VERSION");
@@ -48,10 +51,12 @@ pub fn execute(
         ExecuteMsg::ExpandEconomy(expand_economy_msg) => {
             execute_expand_economy(deps, info, expand_economy_msg)
         }
-        ExecuteMsg::UpdateConfig {
+        ExecuteMsg::ProposeConfigUpdate {
             factory_address,
             owner,
-        } => execute_update_config(deps, info, factory_address, owner),
+        } => execute_propose_config_update(deps, env, info, factory_address, owner),
+        ExecuteMsg::ExecuteConfigUpdate {} => execute_apply_config_update(deps, env, info),
+        ExecuteMsg::CancelConfigUpdate {} => execute_cancel_config_update(deps, info),
         ExecuteMsg::ProposeWithdrawal {
             amount,
             denom,
@@ -99,33 +104,108 @@ pub fn execute_expand_economy(
     }
 }
 
-pub fn execute_update_config(
+// F2-H1: Config updates now use a 48-hour timelock. This prevents a
+// compromised owner key from instantly changing factory_address to drain
+// funds via RequestExpansion, bypassing the withdrawal timelock.
+
+pub fn execute_propose_config_update(
     deps: DepsMut,
+    env: Env,
     info: MessageInfo,
     factory_address: Option<String>,
     owner: Option<String>,
 ) -> Result<Response, ContractError> {
-    let mut config = CONFIG.load(deps.storage)?;
-
-    // SECURITY: Only the current owner can update config
+    let config = CONFIG.load(deps.storage)?;
     if info.sender != config.owner {
         return Err(ContractError::Unauthorized {});
     }
 
-    if let Some(factory) = factory_address {
-        config.factory_address = deps.api.addr_validate(&factory)?;
+    if PENDING_CONFIG_UPDATE.may_load(deps.storage)?.is_some() {
+        return Err(ContractError::Std(StdError::generic_err(
+            "A config update is already pending. Cancel it first.",
+        )));
     }
 
-    if let Some(new_owner) = owner {
+    // Validate addresses early so invalid proposals fail at propose time
+    if let Some(ref addr) = factory_address {
+        deps.api.addr_validate(addr)?;
+    }
+    if let Some(ref addr) = owner {
+        deps.api.addr_validate(addr)?;
+    }
+
+    let effective_after = env.block.time.plus_seconds(CONFIG_TIMELOCK_SECONDS);
+
+    PENDING_CONFIG_UPDATE.save(
+        deps.storage,
+        &PendingConfigUpdate {
+            factory_address,
+            owner,
+            effective_after,
+        },
+    )?;
+
+    Ok(Response::new()
+        .add_attribute("action", "propose_config_update")
+        .add_attribute("effective_after", effective_after.to_string()))
+}
+
+pub fn execute_apply_config_update(
+    deps: DepsMut,
+    env: Env,
+    info: MessageInfo,
+) -> Result<Response, ContractError> {
+    let config = CONFIG.load(deps.storage)?;
+    if info.sender != config.owner {
+        return Err(ContractError::Unauthorized {});
+    }
+
+    let pending = PENDING_CONFIG_UPDATE.may_load(deps.storage)?.ok_or_else(|| {
+        ContractError::Std(StdError::generic_err("No pending config update to execute"))
+    })?;
+
+    if env.block.time < pending.effective_after {
+        return Err(ContractError::Std(StdError::generic_err(format!(
+            "Timelock not expired. Execute after: {}",
+            pending.effective_after
+        ))));
+    }
+
+    let mut config = config;
+    if let Some(factory) = pending.factory_address {
+        config.factory_address = deps.api.addr_validate(&factory)?;
+    }
+    if let Some(new_owner) = pending.owner {
         config.owner = deps.api.addr_validate(&new_owner)?;
     }
 
     CONFIG.save(deps.storage, &config)?;
+    PENDING_CONFIG_UPDATE.remove(deps.storage);
 
     Ok(Response::new()
-        .add_attribute("action", "update_config")
+        .add_attribute("action", "execute_config_update")
         .add_attribute("factory", config.factory_address)
         .add_attribute("owner", config.owner))
+}
+
+pub fn execute_cancel_config_update(
+    deps: DepsMut,
+    info: MessageInfo,
+) -> Result<Response, ContractError> {
+    let config = CONFIG.load(deps.storage)?;
+    if info.sender != config.owner {
+        return Err(ContractError::Unauthorized {});
+    }
+
+    if PENDING_CONFIG_UPDATE.may_load(deps.storage)?.is_none() {
+        return Err(ContractError::Std(StdError::generic_err(
+            "No pending config update to cancel",
+        )));
+    }
+
+    PENDING_CONFIG_UPDATE.remove(deps.storage);
+
+    Ok(Response::new().add_attribute("action", "cancel_config_update"))
 }
 
 // only one at a time, and only owner can call
