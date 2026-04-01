@@ -1,4 +1,6 @@
-use cosmwasm_std::{entry_point, DepsMut, Empty, Env, Response};
+#[cfg(not(feature = "library"))]
+use cosmwasm_std::entry_point;
+use cosmwasm_std::{DepsMut, Empty, Env, Response};
 use cw2::{get_contract_version, set_contract_version};
 use semver::Version;
 

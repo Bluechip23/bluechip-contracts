@@ -1,8 +1,11 @@
+#[allow(unused_imports)]
 use crate::asset::{PoolPairInfo, TokenInfo, TokenType};
+#[allow(unused_imports)]
 use crate::state::{Commiting, RecoveryType};
 use cosmwasm_schema::{cw_serde, QueryResponses};
 use cosmwasm_std::{Addr, Binary, Decimal, Timestamp, Uint128};
 use cw20::Cw20ReceiveMsg;
+#[allow(unused_imports)]
 use pool_factory_interfaces::{AllPoolsResponse, PoolStateResponseForFactory};
 
 #[cw_serde]

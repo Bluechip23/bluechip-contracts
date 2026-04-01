@@ -13,8 +13,10 @@ use crate::state::{
     PENDING_POOL_UPGRADE, POOL_COUNTER, POOL_CREATION_STATES, POOL_REGISTRY,
     POOL_THRESHOLD_MINTED, TEMP_POOL_CREATION,
 };
+#[cfg(not(feature = "library"))]
+use cosmwasm_std::entry_point;
 use cosmwasm_std::{
-    entry_point, to_json_binary, Deps, DepsMut, Env, MessageInfo, Reply, Response, StdError,
+    to_json_binary, Deps, DepsMut, Env, MessageInfo, Reply, Response, StdError,
     StdResult, SubMsg, Uint128, WasmMsg,
 };
 use cosmwasm_std::{Binary, CosmosMsg, Order};
