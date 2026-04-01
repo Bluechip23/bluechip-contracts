@@ -1,10 +1,10 @@
 #[cfg(test)]
-mod tests {
+mod expand_economy_tests {
     use crate::contract::query;
     use crate::contract::{execute, instantiate};
     use crate::msg::{ConfigResponse, ExecuteMsg, ExpandEconomyMsg, InstantiateMsg, QueryMsg};
     use cosmwasm_std::testing::{mock_dependencies, mock_env, mock_info};
-    use cosmwasm_std::{coins, from_json, Addr, BankMsg, CosmosMsg, Uint128};
+    use cosmwasm_std::{coins, from_json, BankMsg, CosmosMsg, Uint128};
 
     #[test]
     fn proper_initialization() {
@@ -20,7 +20,7 @@ mod tests {
 
         // it worked, let's query the state
         let res = query(deps.as_ref(), mock_env(), QueryMsg::GetConfig {}).unwrap();
-        let value: ConfigResponse = from_json(&res).unwrap();
+        let value: ConfigResponse = from_json(res).unwrap();
         assert_eq!("factory", value.factory_address);
         assert_eq!("owner", value.owner);
     }
@@ -105,7 +105,7 @@ mod tests {
         .unwrap();
 
         let res = query(deps.as_ref(), future_env, QueryMsg::GetConfig {}).unwrap();
-        let value: ConfigResponse = from_json(&res).unwrap();
+        let value: ConfigResponse = from_json(res).unwrap();
         assert_eq!("new_factory", value.factory_address);
         assert_eq!("new_owner", value.owner);
     }

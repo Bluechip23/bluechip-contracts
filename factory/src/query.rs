@@ -1,5 +1,7 @@
 use cosmwasm_schema::{cw_serde, QueryResponses};
-use cosmwasm_std::{entry_point, to_json_binary, Addr, Binary, Deps, Env, QueryRequest, StdResult, Uint128, WasmQuery};
+#[cfg(not(feature = "library"))]
+use cosmwasm_std::entry_point;
+use cosmwasm_std::{to_json_binary, Addr, Binary, Deps, Env, QueryRequest, StdResult, Uint128, WasmQuery};
 use cw20::{Cw20QueryMsg, TokenInfoResponse};
 use pool_factory_interfaces::{FactoryQueryMsg, PoolStateResponseForFactory};
 use crate::internal_bluechip_price_oracle::{bluechip_to_usd, get_bluechip_usd_price, usd_to_bluechip};
