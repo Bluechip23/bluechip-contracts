@@ -5,10 +5,11 @@ use cosmwasm_std::{to_json_binary, Addr, Binary, Deps, Env, QueryRequest, StdRes
 use cw20::{Cw20QueryMsg, TokenInfoResponse};
 use pool_factory_interfaces::{FactoryQueryMsg, PoolStateResponseForFactory};
 use crate::internal_bluechip_price_oracle::{bluechip_to_usd, get_bluechip_usd_price, usd_to_bluechip};
-use crate::pool_struct::PoolDetails;
 use crate::msg::FactoryInstantiateResponse;
 use crate::state::{FACTORYINSTANTIATEINFO, POOLS_BY_CONTRACT_ADDRESS, POOLS_BY_ID};
 use crate::asset::TokenType;
+#[allow(unused_imports)]
+use crate::pool_struct::PoolDetails;
 
 #[cw_serde]
 pub struct CreatorTokenInfoResponse {

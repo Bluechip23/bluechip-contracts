@@ -143,6 +143,7 @@ pub fn validate_pool_threshold_payments(
     Ok(())
 }
 
+#[allow(clippy::too_many_arguments)]
 pub fn trigger_threshold_payout(
     storage: &mut dyn Storage,
     pool_info: &PoolInfo,
@@ -321,18 +322,18 @@ pub fn process_distribution_batch(
     let start_after = dist_state
         .last_processed_key
         .as_ref()
-        .map(|addr| Bound::exclusive(addr));
+        .map(Bound::exclusive);
 
     let effective_batch_size = calculate_effective_batch_size(&dist_state);
     // Track what we actually process
     let mut processed_count = 0u32;
     let mut last_processed = None;
-    let batch_result = (|| -> StdResult<Vec<(Addr, Uint128)>> {
+    let batch_result: StdResult<Vec<(Addr, Uint128)>> = {
         COMMIT_LEDGER
             .range(storage, start_after, None, Order::Ascending)
             .take(effective_batch_size as usize)
             .collect::<StdResult<Vec<_>>>()
-    })();
+    };
 
     match batch_result {
         Ok(batch) => {
@@ -389,7 +390,7 @@ pub fn process_distribution_batch(
                 let recheck_start = dist_state
                     .last_processed_key
                     .as_ref()
-                    .map(|addr| Bound::exclusive(addr));
+                    .map(Bound::exclusive);
                 let remaining_entries: Vec<_> = COMMIT_LEDGER
                     .range(storage, recheck_start, None, Order::Ascending)
                     .take(1)

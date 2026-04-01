@@ -2,7 +2,7 @@ use crate::asset::{TokenInfo, TokenType};
 use crate::contract::{execute, instantiate};
 use crate::msg::CommitFeeInfo;
 use crate::msg::{ExecuteMsg, PoolConfigUpdate, PoolInstantiateMsg};
-use crate::state::{PoolSpecs, ORACLE_INFO, POOL_PAUSED, POOL_SPECS, POOL_STATE};
+use crate::state::{ORACLE_INFO, POOL_PAUSED, POOL_SPECS, POOL_STATE};
 use cosmwasm_std::testing::{mock_dependencies, mock_env, mock_info};
 use cosmwasm_std::{Addr, Coin, Decimal, Uint128};
 

@@ -112,7 +112,7 @@ impl WasmMockQuerier {
             QueryRequest::Wasm(WasmQuery::Smart { contract_addr, msg }) => {
                 // 1) factory fee-info
                 if contract_addr == "factory" {
-                    if let Ok(QueryMsg::FeeInfo {}) = from_json(&msg) {
+                    if let Ok(QueryMsg::FeeInfo {}) = from_json(msg) {
                         let fee_info = CommitFeeInfo {
                             bluechip_wallet_address: Addr::unchecked("ubluechip"),
                             creator_wallet_address: Addr::unchecked("creator"),
@@ -126,7 +126,7 @@ impl WasmMockQuerier {
                     // Handle InternalBlueChipOracleQuery
                     if let Ok(MockFactoryQuery::InternalBlueChipOracleQuery(
                         MockOracleQuery::ConvertBluechipToUsd { amount },
-                    )) = from_json(&msg)
+                    )) = from_json(msg)
                     {
                         // Mock 1:1 price for simplicity in tests
                         let bin = to_json_binary(&amount).unwrap();
@@ -139,7 +139,7 @@ impl WasmMockQuerier {
                 }
 
                 // 2) pool reserves
-                if let Ok(QueryMsg::PoolInfo {}) = from_json(&msg) {
+                if let Ok(QueryMsg::PoolInfo {}) = from_json(msg) {
                     // bluechip balance from bank
                     let bluechip = QuerierWrapper::<Empty>::new(&self.base)
                         .query_balance(contract_addr.clone(), "ubluechip".to_string())
@@ -167,7 +167,7 @@ impl WasmMockQuerier {
                     let bin = to_json_binary(&resp).unwrap();
                     return SystemResult::Ok(cosmwasm_std::ContractResult::Ok(bin));
                 } else if contract_addr == "oracle0000" {
-                    match from_json(&msg).unwrap() {
+                    match from_json(msg).unwrap() {
                         PythQueryMsg::GetPrice { price_id: _ } => {
                             let resp = PriceResponse {
                                 price: Uint128::new(100_000_000),
@@ -182,7 +182,7 @@ impl WasmMockQuerier {
                     }
                 }
                 // 3) CW20 canonical queries
-                match from_json(&msg).unwrap() {
+                match from_json(msg).unwrap() {
                     Cw20QueryMsg::TokenInfo {} => {
                         let supply = self
                             .token_querier

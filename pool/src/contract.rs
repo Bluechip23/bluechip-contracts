@@ -86,18 +86,16 @@ pub fn instantiate(
             pool_seed_amount: Uint128::zero(),
             commit_return_amount: Uint128::zero(),
         }
+    } else if let Some(params_binary) = msg.threshold_payout {
+        let params: ThresholdPayoutAmounts = from_json(params_binary)?;
+        //make sure params match - no funny business with token minting.
+        //checks total value and predetermined amounts for creator, BlueChip, original subscribers (commit amount), and the pool itself
+        validate_pool_threshold_payments(&params)?;
+        params
     } else {
-        if let Some(params_binary) = msg.threshold_payout {
-            let params: ThresholdPayoutAmounts = from_json(&params_binary)?;
-            //make sure params match - no funny business with token minting.
-            //checks total value and predetermined amounts for creator, BlueChip, original subscribers (commit amount), and the pool itself
-            validate_pool_threshold_payments(&params)?;
-            params
-        } else {
-            return Err(ContractError::InvalidThresholdParams {
-                msg: format!("Your params could not be validated during pool instantiation."),
-            });
-        }
+        return Err(ContractError::InvalidThresholdParams {
+            msg: "Your params could not be validated during pool instantiation.".to_string(),
+        });
     };
     set_contract_version(deps.storage, CONTRACT_NAME, CONTRACT_VERSION)?;
 
@@ -529,7 +527,7 @@ pub fn execute_swap_cw20(
             // Only asset contract can execute this message
             let pool_info: PoolInfo = POOL_INFO.load(deps.storage)?;
             let authorized = pool_info.pool_info.asset_infos.iter().any(|t| {
-                matches!(t, TokenType::CreatorToken { contract_addr } if contract_addr == &info.sender)
+                matches!(t, TokenType::CreatorToken { contract_addr } if contract_addr == info.sender)
             });
             if !authorized {
                 return Err(ContractError::Unauthorized {});
@@ -569,6 +567,7 @@ pub fn execute_swap_cw20(
     }
 }
 
+#[allow(clippy::too_many_arguments)]
 pub fn simple_swap(
     mut deps: DepsMut,
     env: Env,
@@ -896,7 +895,7 @@ pub fn execute_commit_logic(
             if !commit_fee_bluechip_amt.is_zero() {
                 let bluechip_transfer = get_bank_transfer_to_msg(
                     &fee_info.bluechip_wallet_address,
-                    &denom,
+                    denom,
                     commit_fee_bluechip_amt,
                 )
                 .map_err(|e| {
@@ -911,7 +910,7 @@ pub fn execute_commit_logic(
             if !commit_fee_creator_amt.is_zero() {
                 let creator_transfer = get_bank_transfer_to_msg(
                     &fee_info.creator_wallet_address,
-                    &denom,
+                    denom,
                     commit_fee_creator_amt,
                 )
                 .map_err(|e| {
@@ -1096,7 +1095,7 @@ pub fn execute_commit_logic(
                         // Clear the processing lock
                         THRESHOLD_PROCESSING.save(deps.storage, &false)?;
                         // Return response for split commit
-                        return Ok(Response::new()
+                        Ok(Response::new()
                             .add_messages(messages)
                             .add_attribute("action", "commit")
                             .add_attribute("phase", "threshold_crossing")
@@ -1114,7 +1113,7 @@ pub fn execute_commit_logic(
                             .add_attribute(
                                 "bluechip_excess_commission",
                                 commission_amt.to_string(),
-                            ));
+                            ))
                     } else {
                         //threshold hit on the nose.
                         // Update commit ledger
@@ -1155,23 +1154,23 @@ pub fn execute_commit_logic(
                         )?;
                         // Clear the processing lock
                         THRESHOLD_PROCESSING.save(deps.storage, &false)?;
-                        return Ok(Response::new()
+                        Ok(Response::new()
                             .add_messages(messages)
                             .add_attribute("action", "commit")
                             .add_attribute("phase", "threshold_hit_exact")
                             .add_attribute("committer", sender)
                             .add_attribute("commit_amount_bluechip", asset.amount.to_string())
-                            .add_attribute("commit_amount_usd", usd_value.to_string()));
+                            .add_attribute("commit_amount_usd", usd_value.to_string()))
                     }
                 } else {
                     // normal commit pre threshold (doesn't reach threshold)
-                    return process_pre_threshold_commit(
+                    process_pre_threshold_commit(
                         deps, env, sender, &asset, usd_value, messages,
-                    );
+                    )
                 }
             } else {
                 // post threshold commit swap logic using bluechip token
-                return process_post_threshold_commit(
+                process_post_threshold_commit(
                     deps,
                     env,
                     sender,
@@ -1181,7 +1180,7 @@ pub fn execute_commit_logic(
                     messages,
                     belief_price,
                     max_spread,
-                );
+                )
             }
         }
         _ => Err(ContractError::AssetMismatch {}),
@@ -1227,6 +1226,7 @@ fn process_pre_threshold_commit(
 }
 
 //commit transaction post threshold - makes a swap with pool - still has fees taken out for creator and bluechip done in execute_commit_logic
+#[allow(clippy::too_many_arguments)]
 fn process_post_threshold_commit(
     deps: &mut DepsMut,
     env: Env,

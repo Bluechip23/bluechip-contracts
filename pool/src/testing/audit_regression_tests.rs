@@ -1,31 +1,29 @@
 use cosmwasm_std::{
     testing::{mock_dependencies, mock_env, mock_info, MockApi, MockQuerier, MockStorage},
-    to_json_binary, Addr, Binary, Coin, ContractResult, CosmosMsg, Decimal, OwnedDeps,
-    StdError, SystemError, SystemResult, Timestamp, Uint128, WasmQuery,
+    Addr, Coin, CosmosMsg, Decimal, OwnedDeps,
+    Timestamp, Uint128,
 };
 use std::str::FromStr;
 
-use crate::asset::{PoolPairType, TokenInfo, TokenType};
+use crate::asset::{TokenInfo, TokenType};
 use crate::contract::{execute, execute_simple_swap, migrate};
 use crate::error::ContractError;
 use crate::liquidity::execute_deposit_liquidity;
-use crate::msg::{CommitFeeInfo, ExecuteMsg, MigrateMsg};
+use crate::msg::{ExecuteMsg, MigrateMsg};
 use crate::state::{
-    CommitLimitInfo, DistributionState, ExpectedFactory, OracleInfo, Position,
-    PoolDetails, PoolFeeState, PoolInfo, PoolSpecs, PoolState, RecoveryType,
-    ThresholdPayoutAmounts, COMMITFEEINFO, COMMIT_LEDGER, COMMIT_LIMIT_INFO,
+    DistributionState, ExpectedFactory, RecoveryType,
+    COMMIT_LEDGER,
     DEFAULT_ESTIMATED_GAS_PER_DISTRIBUTION, DEFAULT_MAX_GAS_PER_TX,
-    DISTRIBUTION_STATE, EXPECTED_FACTORY, IS_THRESHOLD_HIT, LIQUIDITY_POSITIONS,
-    NATIVE_RAISED_FROM_COMMIT, NEXT_POSITION_ID, ORACLE_INFO, POOL_FEE_STATE,
-    POOL_INFO, POOL_SPECS, POOL_STATE, RATE_LIMIT_GUARD, THRESHOLD_PAYOUT_AMOUNTS,
-    THRESHOLD_PROCESSING, USD_RAISED_FROM_COMMIT, MINIMUM_LIQUIDITY,
+    DISTRIBUTION_STATE, EXPECTED_FACTORY, LIQUIDITY_POSITIONS,
+    NEXT_POSITION_ID, POOL_FEE_STATE,
+    POOL_SPECS, POOL_STATE, RATE_LIMIT_GUARD,
+    THRESHOLD_PROCESSING, MINIMUM_LIQUIDITY,
 };
-use crate::liquidity::{execute_collect_fees};
 use crate::liquidity_helpers::sync_position_on_transfer;
 use crate::testing::liquidity_tests::{create_test_position, setup_pool_post_threshold, setup_pool_storage};
-use crate::testing::swap_tests::with_factory_oracle;
-use crate::state::{EMERGENCY_DRAINED, OWNER_POSITIONS, PENDING_EMERGENCY_WITHDRAW, POOL_PAUSED};
+use crate::state::{EMERGENCY_DRAINED, OWNER_POSITIONS};
 
+#[allow(dead_code)]
 fn mock_dependencies_with_balance(
     balances: &[Coin],
 ) -> OwnedDeps<MockStorage, MockApi, MockQuerier> {
@@ -248,7 +246,7 @@ fn test_first_deposit_locks_minimum_liquidity() {
         amount: bluechip_amount,
     }]);
 
-    let res = execute_deposit_liquidity(
+    let _res = execute_deposit_liquidity(
         deps.as_mut(),
         env,
         info,
@@ -411,7 +409,7 @@ fn test_migrate_accepts_small_fees() {
         new_fees: Decimal::from_str("0.003").unwrap(),
     };
 
-    let res = migrate(deps.as_mut(), env, msg).unwrap();
+    let _res = migrate(deps.as_mut(), env, msg).unwrap();
     let pool_specs = POOL_SPECS.load(&deps.storage).unwrap();
     assert_eq!(pool_specs.lp_fee, Decimal::from_str("0.003").unwrap());
 }
@@ -543,7 +541,7 @@ fn test_migrate_accepts_minimum_fee() {
         new_fees: Decimal::permille(1), // 0.1%
     };
 
-    let res = migrate(deps.as_mut(), env, msg).unwrap();
+    let _res = migrate(deps.as_mut(), env, msg).unwrap();
     let pool_specs = POOL_SPECS.load(&deps.storage).unwrap();
     assert_eq!(pool_specs.lp_fee, Decimal::permille(1));
 }

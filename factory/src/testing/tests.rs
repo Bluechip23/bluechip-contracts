@@ -125,7 +125,7 @@ fn proper_initialization() {
 
     let env = mock_env();
     let addr = Addr::unchecked("addr0001");
-    let info = mock_info(&addr.as_str(), &[]);
+    let info = mock_info(addr.as_str(), &[]);
 
     let _res1 = instantiate(deps2.as_mut(), env.clone(), info, msg.clone()).unwrap();
 
@@ -134,7 +134,7 @@ fn proper_initialization() {
 
     let env = mock_env();
     let addr = Addr::unchecked("addr0002");
-    let info = mock_info(&addr.as_str(), &[]);
+    let info = mock_info(addr.as_str(), &[]);
 
     instantiate(deps3.as_mut(), env.clone(), info, msg.clone()).unwrap();
 }
@@ -203,7 +203,7 @@ fn test_oracle_initialization_with_multiple_pools() {
     // Verify oracle selected multiple pools (ATOM + up to 3 random = 4 total max)
     let oracle = INTERNAL_ORACLE.load(&deps.storage).unwrap();
     assert!(
-        oracle.selected_pools.len() >= 1,
+        !oracle.selected_pools.is_empty(),
         "Should have at least ATOM pool"
     );
     assert!(
@@ -244,7 +244,7 @@ fn create_pair() {
 
     let env = mock_env();
     let addr = Addr::unchecked("addr0000");
-    let info = mock_info(&addr.as_str(), &[]);
+    let info = mock_info(addr.as_str(), &[]);
 
     let _res = instantiate(deps.as_mut(), env, info, msg.clone()).unwrap();
 
@@ -259,7 +259,7 @@ fn create_pair() {
 
     let env = mock_env();
     let addr = Addr::unchecked("addr0000");
-    let info = mock_info(&addr.as_str(), &[]);
+    let info = mock_info(addr.as_str(), &[]);
 
     let res = execute(
         deps.as_mut(),
@@ -373,7 +373,7 @@ fn test_create_pair_with_custom_params() {
     let res = execute(deps.as_mut(), env, info, create_msg).unwrap();
 
     assert!(
-        res.messages.len() >= 1 && res.messages.len() <= 2,
+        !res.messages.is_empty() && res.messages.len() <= 2,
         "Should have 1-2 messages (token instantiation + possibly mint), got {}",
         res.messages.len()
     );
@@ -599,14 +599,14 @@ fn test_complete_pool_creation_flow() {
         "Should have response attributes"
     );
     assert!(
-        res.messages.len() >= 1 && res.messages.len() <= 2,
+        !res.messages.is_empty() && res.messages.len() <= 2,
         "Should have 1-2 messages total (token instantiation + possibly mint), got {}",
         res.messages.len()
     );
 
     let pool_id = POOL_COUNTER.load(&deps.storage).unwrap();
     let pool_context = TEMP_POOL_CREATION.load(&deps.storage, pool_id).unwrap();
-    let creator = pool_context.temp_creator_wallet.clone();
+    let _creator = pool_context.temp_creator_wallet.clone();
 
     assert!(pool_id > 0);
     assert_eq!(pool_context.temp_creator_wallet, Addr::unchecked(ADMIN));
@@ -753,7 +753,7 @@ fn test_reply_handling() {
 
     let env = mock_env();
     let addr = Addr::unchecked("addr0000");
-    let info = mock_info(&addr.as_str(), &[]);
+    let info = mock_info(addr.as_str(), &[]);
 
     let _res = instantiate(deps.as_mut(), env.clone(), info, msg).unwrap();
 
