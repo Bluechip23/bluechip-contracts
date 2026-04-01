@@ -4,7 +4,7 @@ use crate::error::ContractError;
 use crate::msg::{CommitFeeInfo, ExecuteMsg, PoolInstantiateMsg};
 use crate::state::IS_THRESHOLD_HIT;
 use cosmwasm_std::{
-    testing::{mock_dependencies, mock_env, mock_info},
+    testing::{mock_dependencies, mock_env, message_info, MockApi},
     Addr, Coin, Decimal, Uint128,
 };
 
@@ -12,7 +12,7 @@ use cosmwasm_std::{
 fn test_standard_pool_instantiation() {
     let mut deps = mock_dependencies();
     let env = mock_env();
-    let info = mock_info("factory", &[]);
+    let info = message_info(&Addr::unchecked("factory"), &[]);
 
     let msg = PoolInstantiateMsg {
         pool_id: 1,
@@ -21,7 +21,7 @@ fn test_standard_pool_instantiation() {
                 denom: "ubluechip".to_string(),
             },
             TokenType::CreatorToken {
-                contract_addr: Addr::unchecked("token"),
+                contract_addr: MockApi::default().addr_make("token"),
             },
         ],
         cw20_token_contract_id: 1,
@@ -52,7 +52,7 @@ fn test_standard_pool_instantiation() {
 fn test_standard_pool_immediate_swap_and_deposit() {
     let mut deps = mock_dependencies();
     let env = mock_env();
-    let info = mock_info("factory", &[]);
+    let info = message_info(&Addr::unchecked("factory"), &[]);
 
     // Instantiate as standard pool
     let msg = PoolInstantiateMsg {
@@ -62,7 +62,7 @@ fn test_standard_pool_immediate_swap_and_deposit() {
                 denom: "ubluechip".to_string(),
             },
             TokenType::CreatorToken {
-                contract_addr: Addr::unchecked("token"),
+                contract_addr: MockApi::default().addr_make("token"),
             },
         ],
         cw20_token_contract_id: 1,
@@ -86,8 +86,7 @@ fn test_standard_pool_immediate_swap_and_deposit() {
     instantiate(deps.as_mut(), env.clone(), info, msg).unwrap();
 
     // Try a swap (should NOT return ShortOfThreshold error, but might return InsufficientLiquidity if reserves are 0)
-    let swap_info = mock_info(
-        "trader",
+    let swap_info = message_info(&Addr::unchecked("trader"),
         &[Coin {
             denom: "ubluechip".to_string(),
             amount: Uint128::new(1000),
@@ -110,8 +109,7 @@ fn test_standard_pool_immediate_swap_and_deposit() {
     // It should be InsufficientReserves, NOT ShortOfThreshold
     assert_eq!(err, ContractError::InsufficientReserves {});
 
-    let deposit_info = mock_info(
-        "provider",
+    let deposit_info = message_info(&Addr::unchecked("provider"),
         &[Coin {
             denom: "ubluechip".to_string(),
             amount: Uint128::new(100_000),

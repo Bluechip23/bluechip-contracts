@@ -19,7 +19,7 @@ use cosmwasm_std::{
 };
 use cosmwasm_std::{
     from_json,
-    testing::{mock_dependencies, mock_env, mock_info},
+    testing::{mock_dependencies, mock_env, message_info},
     to_json_binary, Addr, ContractResult, CosmosMsg, SystemResult, Uint128, WasmMsg,
 };
 use pool_factory_interfaces::cw721_msgs::Cw721ExecuteMsg;
@@ -80,7 +80,7 @@ fn test_threshold_with_excess_creates_position() {
         }),
     });
     let env = mock_env();
-    let info = mock_info("final_committer", &[coin(100_000_000_000_000, "ubluechip")]);
+    let info = message_info(&Addr::unchecked("final_committer"), &[coin(100_000_000_000_000, "ubluechip")]);
 
     let msg = ExecuteMsg::Commit {
         asset: TokenInfo {
@@ -144,7 +144,7 @@ fn test_claim_excess_before_unlock_fails() {
         )
         .unwrap();
 
-    let info = mock_info("creator", &[]);
+    let info = message_info(&Addr::unchecked("creator"), &[]);
     let msg = ExecuteMsg::ClaimCreatorExcessLiquidity {};
 
     let err = execute(deps.as_mut(), env, info, msg).unwrap_err();
@@ -187,7 +187,7 @@ fn test_claim_excess_after_unlock_succeeds() {
 
     NEXT_POSITION_ID.save(&mut deps.storage, &0u64).unwrap();
 
-    let info = mock_info("creator", &[]);
+    let info = message_info(&Addr::unchecked("creator"), &[]);
     let msg = ExecuteMsg::ClaimCreatorExcessLiquidity {};
 
     let res = execute(deps.as_mut(), env.clone(), info, msg).unwrap();
@@ -235,7 +235,7 @@ fn test_claim_excess_wrong_user_fails() {
         )
         .unwrap();
 
-    let info = mock_info("hacker", &[]);
+    let info = message_info(&Addr::unchecked("hacker"), &[]);
     let msg = ExecuteMsg::ClaimCreatorExcessLiquidity {};
 
     let err = execute(deps.as_mut(), env, info, msg).unwrap_err();
@@ -283,7 +283,7 @@ fn test_no_excess_when_under_cap() {
     });
 
     let env = mock_env();
-    let info = mock_info("final_committer", &[coin(100_000_000, "ubluechip")]);
+    let info = message_info(&Addr::unchecked("final_committer"), &[coin(100_000_000, "ubluechip")]);
 
     let msg = ExecuteMsg::Commit {
         asset: TokenInfo {
@@ -339,8 +339,7 @@ fn test_commit_threshold_overshoot_split() {
 
     let commit_amount = Uint128::new(5_000_000);
 
-    let info = mock_info(
-        "whale",
+    let info = message_info(&Addr::unchecked("whale"),
         &[Coin {
             denom: "ubluechip".to_string(),
             amount: commit_amount,
@@ -515,8 +514,7 @@ fn test_commit_exact_threshold() {
 
     let commit_amount = Uint128::new(1_000_000);
 
-    let info = mock_info(
-        "user",
+    let info = message_info(&Addr::unchecked("user"),
         &[Coin {
             denom: "ubluechip".to_string(),
             amount: commit_amount,
@@ -575,7 +573,7 @@ fn test_recover_stuck_threshold() {
     THRESHOLD_PROCESSING.save(&mut deps.storage, &true).unwrap();
     env.block.time = env.block.time.plus_seconds(1800); // 30 minutes later
 
-    let info = mock_info("factory_address", &[]);
+    let info = message_info(&Addr::unchecked("factory_address"), &[]);
     let msg = ExecuteMsg::RecoverStuckStates {
         recovery_type: RecoveryType::StuckThreshold,
     };
@@ -617,8 +615,7 @@ fn test_concurrent_threshold_crossing_attempts() {
         .unwrap();
 
     // Second user tries to commit while first is processing
-    let info2 = mock_info(
-        "user2",
+    let info2 = message_info(&Addr::unchecked("user2"),
         &[Coin {
             denom: "ubluechip".to_string(),
             amount: Uint128::new(2_000_000),
@@ -693,7 +690,7 @@ fn test_distribution_timeout_triggers_error() {
     env.block.time = old_time.plus_seconds(7201); // Over 2 hours later
 
     // Permissionless — anyone can call ContinueDistribution
-    let info = mock_info("anyone", &[]);
+    let info = message_info(&Addr::unchecked("anyone"), &[]);
     let res = execute(
         deps.as_mut(),
         env,
@@ -721,7 +718,7 @@ fn test_unauthorized_recovery_attempt() {
     THRESHOLD_PROCESSING.save(&mut deps.storage, &true).unwrap();
 
     // Non-admin tries to recover
-    let info = mock_info("random_user", &[]);
+    let info = message_info(&Addr::unchecked("random_user"), &[]);
     let msg = ExecuteMsg::RecoverStuckStates {
         recovery_type: RecoveryType::StuckThreshold,
     };
@@ -763,7 +760,7 @@ fn test_accumulated_bluechips_respected() {
 
     let env = mock_env();
     // Commit remaining ,000 (requires 2,000 bluechips at /bin/bash.50)
-    let info = mock_info("final_committer", &[coin(2_000_000_000, "ubluechip")]);
+    let info = message_info(&Addr::unchecked("final_committer"), &[coin(2_000_000_000, "ubluechip")]);
 
     let msg = ExecuteMsg::Commit {
         asset: TokenInfo {
@@ -824,8 +821,7 @@ fn test_concurrent_threshold_crossing_race_condition() {
     with_factory_oracle(&mut deps, Uint128::new(1_000_000));
 
     // User 1 commits enough to cross
-    let info1 = mock_info(
-        "user1",
+    let info1 = message_info(&Addr::unchecked("user1"),
         &[Coin {
             denom: "ubluechip".to_string(),
             amount: Uint128::new(2_000_000),
@@ -845,8 +841,7 @@ fn test_concurrent_threshold_crossing_race_condition() {
     };
 
     // User 2 commits enough to cross (simulating same block execution)
-    let info2 = mock_info(
-        "user2",
+    let info2 = message_info(&Addr::unchecked("user2"),
         &[Coin {
             denom: "ubluechip".to_string(),
             amount: Uint128::new(2_000_000),

@@ -5,18 +5,23 @@ use crate::pool_struct::PoolDetails;
 use crate::state::{
     FactoryInstantiate, FACTORYINSTANTIATEINFO, POOLS_BY_CONTRACT_ADDRESS, POOLS_BY_ID,
 };
+use cosmwasm_std::testing::MockApi;
 use cosmwasm_std::{Addr, Decimal, Uint128};
 use pool_factory_interfaces::PoolStateResponseForFactory;
 
-const ATOM_BLUECHIP_ANCHOR_POOL: &str = "pool_atom_bluechip";
+fn make_addr(label: &str) -> Addr {
+    MockApi::default().addr_make(label)
+}
 
 #[test]
 fn test_repro_token_sort_order_bug() {
     let mut deps = mock_dependencies(&[]);
 
+    let atom_pool = make_addr("pool_atom_bluechip");
+
     // Setup Factory Config
     let config = FactoryInstantiate {
-        factory_admin_address: Addr::unchecked("admin"),
+        factory_admin_address: make_addr("admin"),
         cw721_nft_contract_id: 1,
         commit_amount_for_threshold_bluechip: Uint128::zero(),
         commit_threshold_limit_usd: Uint128::new(100),
@@ -24,12 +29,12 @@ fn test_repro_token_sort_order_bug() {
         pyth_atom_usd_price_feed_id: "id".to_string(),
         cw20_token_contract_id: 1,
         create_pool_wasm_contract_id: 1,
-        bluechip_wallet_address: Addr::unchecked("wallet"),
+        bluechip_wallet_address: make_addr("wallet"),
         commit_fee_bluechip: Decimal::percent(1),
         commit_fee_creator: Decimal::percent(1),
         max_bluechip_lock_per_pool: Uint128::zero(),
         creator_excess_liquidity_lock_days: 0,
-        atom_bluechip_anchor_pool_address: Addr::unchecked(ATOM_BLUECHIP_ANCHOR_POOL),
+        atom_bluechip_anchor_pool_address: atom_pool.clone(),
         bluechip_mint_contract_address: None,
     };
     FACTORYINSTANTIATEINFO
@@ -48,7 +53,7 @@ fn test_repro_token_sort_order_bug() {
                 contract_addr: Addr::unchecked("atom_addr_123"),
             },
         ],
-        creator_pool_addr: Addr::unchecked(ATOM_BLUECHIP_ANCHOR_POOL),
+        creator_pool_addr: atom_pool.clone(),
     };
     POOLS_BY_ID
         .save(deps.as_mut().storage, 1, &pool_details)
@@ -56,7 +61,7 @@ fn test_repro_token_sort_order_bug() {
 
     // Setup ATOM Pool
     let atom_pool_state = PoolStateResponseForFactory {
-        pool_contract_address: Addr::unchecked(ATOM_BLUECHIP_ANCHOR_POOL),
+        pool_contract_address: atom_pool.clone(),
         nft_ownership_accepted: true,
         reserve0: Uint128::new(100_000_000_000),
         reserve1: Uint128::new(100_000_000_000),
@@ -69,13 +74,13 @@ fn test_repro_token_sort_order_bug() {
     POOLS_BY_CONTRACT_ADDRESS
         .save(
             deps.as_mut().storage,
-            Addr::unchecked(ATOM_BLUECHIP_ANCHOR_POOL),
+            atom_pool.clone(),
             &atom_pool_state,
         )
         .unwrap();
 
     // Calculate Price - Expected 1.0 (1_000_000 precision)
-    let pools = vec![ATOM_BLUECHIP_ANCHOR_POOL.to_string()];
+    let pools = vec![atom_pool.to_string()];
     let (price, _, _) = calculate_weighted_price_with_atom(deps.as_ref(), &pools, &[]).unwrap();
     assert_eq!(
         price.u128(),
@@ -96,14 +101,14 @@ fn test_repro_token_sort_order_bug() {
                 denom: "BC".to_string(),
             },
         ],
-        creator_pool_addr: Addr::unchecked(ATOM_BLUECHIP_ANCHOR_POOL),
+        creator_pool_addr: atom_pool.clone(),
     };
     POOLS_BY_ID
         .save(deps.as_mut().storage, 1, &inverted_pool_details)
         .unwrap();
 
     let inverted_state = PoolStateResponseForFactory {
-        pool_contract_address: Addr::unchecked(ATOM_BLUECHIP_ANCHOR_POOL),
+        pool_contract_address: atom_pool.clone(),
         nft_ownership_accepted: true,
         reserve0: Uint128::new(200_000_000_000),
         reserve1: Uint128::new(100_000_000_000),
@@ -116,7 +121,7 @@ fn test_repro_token_sort_order_bug() {
     POOLS_BY_CONTRACT_ADDRESS
         .save(
             deps.as_mut().storage,
-            Addr::unchecked(ATOM_BLUECHIP_ANCHOR_POOL),
+            atom_pool.clone(),
             &inverted_state,
         )
         .unwrap();
