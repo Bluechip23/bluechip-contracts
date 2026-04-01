@@ -121,6 +121,7 @@ fn build_deposit_transfer_msgs(
 }
 
 //deposit liquidity in pool
+#[allow(clippy::too_many_arguments)]
 pub fn execute_deposit_liquidity(
     deps: DepsMut,
     env: Env,
@@ -280,6 +281,7 @@ pub fn execute_collect_fees(
 }
 
 //add liquidity to an already existing position and collects fees for accounting
+#[allow(clippy::too_many_arguments)]
 pub fn add_to_position(
     deps: &mut DepsMut,
     env: Env,
@@ -466,6 +468,7 @@ pub fn remove_all_liquidity(
     Ok(response)
 }
 
+#[allow(clippy::too_many_arguments)]
 pub fn remove_partial_liquidity(
     deps: &mut DepsMut,
     env: Env,
@@ -635,6 +638,7 @@ pub fn remove_partial_liquidity(
     Ok(response)
 }
 
+#[allow(clippy::too_many_arguments)]
 pub fn execute_add_to_position(
     mut deps: DepsMut,
     env: Env,
@@ -669,6 +673,7 @@ pub fn execute_add_to_position(
     )
 }
 
+#[allow(clippy::too_many_arguments)]
 pub fn execute_remove_all_liquidity(
     mut deps: DepsMut,
     env: Env,
@@ -698,6 +703,7 @@ pub fn execute_remove_all_liquidity(
     )
 }
 
+#[allow(clippy::too_many_arguments)]
 pub fn execute_remove_partial_liquidity(
     mut deps: DepsMut,
     env: Env,
@@ -731,6 +737,7 @@ pub fn execute_remove_partial_liquidity(
 }
 
 //same as remove partial liquidity but with a percent instead of a whole number
+#[allow(clippy::too_many_arguments)]
 pub fn execute_remove_partial_liquidity_by_percent(
     deps: DepsMut,
     env: Env,

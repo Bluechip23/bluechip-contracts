@@ -1,6 +1,6 @@
 
 use cosmwasm_std::testing::{
-    mock_dependencies, mock_env, mock_info, MockApi, MockQuerier, MockStorage, MOCK_CONTRACT_ADDR,
+    mock_env, mock_info, MockApi, MockQuerier, MockStorage, MOCK_CONTRACT_ADDR,
 };
 use cosmwasm_std::{
 
@@ -11,8 +11,8 @@ use cosmwasm_std::{
 use crate::error::ContractError;
 use crate::execute::{execute, instantiate, pool_creation_reply, encode_reply_id, FINALIZE_POOL, MINT_CREATE_POOL, SET_TOKENS};
 use crate::internal_bluechip_price_oracle::{
-    calculate_weighted_price_with_atom, BlueChipPriceInternalOracle, PriceCache,
-    PoolCumulativeSnapshot, INTERNAL_ORACLE,
+    calculate_weighted_price_with_atom,
+    PoolCumulativeSnapshot,
 };
 use crate::asset::TokenType;
 use crate::mock_querier::WasmMockQuerier;
@@ -20,7 +20,7 @@ use crate::msg::{CreatorTokenInfo, ExecuteMsg};
 use crate::pool_struct::{CommitFeeInfo, CreatePool, PoolConfigUpdate, PoolDetails};
 use crate::state::{
     FactoryInstantiate, PENDING_CONFIG, POOL_COUNTER, POOL_REGISTRY, POOL_THRESHOLD_MINTED,
-    POOLS_BY_CONTRACT_ADDRESS, POOLS_BY_ID, SETCOMMIT, TEMP_POOL_CREATION,
+    POOLS_BY_CONTRACT_ADDRESS, POOLS_BY_ID, SETCOMMIT,
 };
 use crate::testing::tests::{setup_atom_pool, create_instantiate_reply};
 use pool_factory_interfaces::PoolStateResponseForFactory;

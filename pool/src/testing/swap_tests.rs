@@ -29,7 +29,7 @@ use cosmwasm_std::{
         MOCK_CONTRACT_ADDR,
     },
     to_json_binary, Addr, BankMsg, Binary, Coin, ContractResult, CosmosMsg, Decimal, Order,
-    OwnedDeps, SystemError, SystemResult, Timestamp, Uint128, WasmMsg, WasmQuery,
+    OwnedDeps, SystemError, SystemResult, Timestamp, Uint128, WasmQuery,
 };
 use cw20::Cw20ReceiveMsg;
 use pool_factory_interfaces::{ConversionResponse, FactoryQueryMsg};
@@ -127,8 +127,6 @@ pub fn with_factory_oracle(
                 }
             }
 
-            if contract_addr == "nft_contract" {}
-
             SystemResult::Err(SystemError::InvalidRequest {
                 error: "Unknown contract or query".to_string(),
                 request: msg.clone(),
@@ -184,7 +182,7 @@ fn test_commit_pre_threshold_basic() {
     let total_usd = USD_RAISED_FROM_COMMIT.load(&deps.storage).unwrap();
     assert_eq!(total_usd, Uint128::new(1_000_000_000));
 
-    assert_eq!(IS_THRESHOLD_HIT.load(&deps.storage).unwrap(), false);
+    assert!(!IS_THRESHOLD_HIT.load(&deps.storage).unwrap());
 
     let commiting = COMMIT_INFO.load(&deps.storage, &user_addr).unwrap();
     assert_eq!(commiting.total_paid_bluechip, commit_amount);
@@ -245,7 +243,7 @@ fn test_race_condition_commits_crossing_threshold() {
         .attributes
         .iter()
         .any(|a| a.value == "threshold_crossing"));
-    assert_eq!(IS_THRESHOLD_HIT.load(&deps.storage).unwrap(), true);
+    assert!(IS_THRESHOLD_HIT.load(&deps.storage).unwrap());
     THRESHOLD_PROCESSING.save(&mut deps.storage, &true).unwrap();
     println!(
         "Simulated race -> USD_RAISED_FROM_COMMIT: {}, IS_THRESHOLD_HIT: {}, THRESHOLD_PROCESSING: {}",
@@ -344,9 +342,9 @@ fn test_commit_crosses_threshold() {
 
     let res = execute(deps.as_mut(), env, info, msg).unwrap();
 
-    assert_eq!(IS_THRESHOLD_HIT.load(&deps.storage).unwrap(), true);
+    assert!(IS_THRESHOLD_HIT.load(&deps.storage).unwrap());
 
-    assert_eq!(THRESHOLD_PROCESSING.load(&deps.storage).unwrap(), false);
+    assert!(!THRESHOLD_PROCESSING.load(&deps.storage).unwrap());
     assert!(res
         .attributes
         .iter()
@@ -1088,8 +1086,7 @@ fn test_swap_cw20_via_hook() {
 
     deps.querier.update_wasm(move |query| match query {
         WasmQuery::Smart { contract_addr, msg } => {
-            if contract_addr == "token_contract" {
-                if msg.to_string().contains("balance") {
+            if contract_addr == "token_contract" && msg.to_string().contains("balance") {
                     let balance_response = cw20::BalanceResponse {
                         balance: Uint128::new(350_000_000_000),
                     };
@@ -1371,7 +1368,7 @@ fn test_threshold_crossing_depends_on_oracle_price() {
     };
 
     execute(deps1.as_mut(), env.clone(), info1, msg1).unwrap();
-    assert_eq!(IS_THRESHOLD_HIT.load(&deps1.storage).unwrap(), true);
+    assert!(IS_THRESHOLD_HIT.load(&deps1.storage).unwrap());
     let mut deps2 = mock_dependencies_with_balance(&[Coin {
         denom: "ubluechip".to_string(),
         amount: Uint128::new(100_000_000_000),
@@ -1409,7 +1406,7 @@ fn test_threshold_crossing_depends_on_oracle_price() {
     };
 
     execute(deps2.as_mut(), env, info2, msg2).unwrap();
-    assert_eq!(IS_THRESHOLD_HIT.load(&deps2.storage).unwrap(), false);
+    assert!(!IS_THRESHOLD_HIT.load(&deps2.storage).unwrap());
 
     let total = USD_RAISED_FROM_COMMIT.load(&deps2.storage).unwrap();
     assert_eq!(total, Uint128::new(24_010_000_000)); // $24k + $10
@@ -1929,15 +1926,13 @@ fn test_swap_cw20_to_bluechip_direct() {
 
     deps.querier.update_wasm(move |query| match query {
         WasmQuery::Smart { contract_addr, msg } => {
-            if contract_addr == "token_contract" {
-                if msg.to_string().contains("balance") {
-                    let balance_response = cw20::BalanceResponse {
-                        balance: Uint128::new(350_000_000_000),
-                    };
-                    return SystemResult::Ok(ContractResult::Ok(
-                        to_json_binary(&balance_response).unwrap(),
-                    ));
-                }
+            if contract_addr == "token_contract" && msg.to_string().contains("balance") {
+                let balance_response = cw20::BalanceResponse {
+                    balance: Uint128::new(350_000_000_000),
+                };
+                return SystemResult::Ok(ContractResult::Ok(
+                    to_json_binary(&balance_response).unwrap(),
+                ));
             }
             SystemResult::Err(SystemError::InvalidRequest {
                 error: "Unknown query".to_string(),
@@ -2002,15 +1997,13 @@ fn test_swap_cw20_with_custom_recipient() {
 
     deps.querier.update_wasm(move |query| match query {
         WasmQuery::Smart { contract_addr, msg } => {
-            if contract_addr == "token_contract" {
-                if msg.to_string().contains("balance") {
-                    let balance_response = cw20::BalanceResponse {
-                        balance: Uint128::new(350_000_000_000),
-                    };
-                    return SystemResult::Ok(ContractResult::Ok(
-                        to_json_binary(&balance_response).unwrap(),
-                    ));
-                }
+            if contract_addr == "token_contract" && msg.to_string().contains("balance") {
+                let balance_response = cw20::BalanceResponse {
+                    balance: Uint128::new(350_000_000_000),
+                };
+                return SystemResult::Ok(ContractResult::Ok(
+                    to_json_binary(&balance_response).unwrap(),
+                ));
             }
             SystemResult::Err(SystemError::InvalidRequest {
                 error: "Unknown query".to_string(),
@@ -2068,15 +2061,13 @@ fn test_cw20_swap_with_belief_price() {
     // Mock CW20 balance
     deps.querier.update_wasm(move |query| match query {
         WasmQuery::Smart { contract_addr, msg } => {
-            if contract_addr == "token_contract" {
-                if msg.to_string().contains("balance") {
-                    let balance_response = cw20::BalanceResponse {
-                        balance: Uint128::new(350_000_000_000),
-                    };
-                    return SystemResult::Ok(ContractResult::Ok(
-                        to_json_binary(&balance_response).unwrap(),
-                    ));
-                }
+            if contract_addr == "token_contract" && msg.to_string().contains("balance") {
+                let balance_response = cw20::BalanceResponse {
+                    balance: Uint128::new(350_000_000_000),
+                };
+                return SystemResult::Ok(ContractResult::Ok(
+                    to_json_binary(&balance_response).unwrap(),
+                ));
             }
             SystemResult::Err(SystemError::InvalidRequest {
                 error: "Unknown query".to_string(),
@@ -2159,15 +2150,14 @@ fn test_race_condition_not_manually_set() {
 
     let alice_res = execute(deps.as_mut(), env.clone(), alice_info, alice_msg).unwrap();
 
-    assert_eq!(IS_THRESHOLD_HIT.load(&deps.storage).unwrap(), true);
+    assert!(IS_THRESHOLD_HIT.load(&deps.storage).unwrap());
     assert!(alice_res
         .attributes
         .iter()
         .any(|a| a.value == "threshold_crossing"));
 
-    assert_eq!(
-        THRESHOLD_PROCESSING.load(&deps.storage).unwrap(),
-        false,
+    assert!(
+        !THRESHOLD_PROCESSING.load(&deps.storage).unwrap(),
         "THRESHOLD_PROCESSING should be cleared after successful threshold crossing"
     );
 
@@ -2365,8 +2355,8 @@ pub fn setup_pool_with_reserves(
     let pool_state = PoolState {
         pool_contract_address: Addr::unchecked("pool_contract"),
         nft_ownership_accepted: true,
-        reserve0: reserve0, // No reserves pre-threshold
-        reserve1: reserve1,
+        reserve0, // No reserves pre-threshold
+        reserve1,
         total_liquidity: Uint128::zero(),
         block_time_last: 0,
         price0_cumulative_last: Uint128::zero(),
