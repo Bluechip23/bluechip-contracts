@@ -8,6 +8,8 @@ use crate::internal_bluechip_price_oracle::{bluechip_to_usd, get_bluechip_usd_pr
 use crate::msg::FactoryInstantiateResponse;
 use crate::state::{FACTORYINSTANTIATEINFO, POOLS_BY_CONTRACT_ADDRESS, POOLS_BY_ID};
 use crate::asset::TokenType;
+#[allow(unused_imports)]
+use crate::pool_struct::PoolDetails;
 
 #[cw_serde]
 pub struct CreatorTokenInfoResponse {

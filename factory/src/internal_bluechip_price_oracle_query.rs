@@ -1,6 +1,8 @@
 use cosmwasm_schema::{cw_serde, QueryResponses};
 use cosmwasm_std::{to_json_binary,Binary, Deps, Env, StdResult, Uint128};
 use crate::internal_bluechip_price_oracle::{bluechip_to_usd, usd_to_bluechip, INTERNAL_ORACLE};
+#[allow(unused_imports)]
+use pool_factory_interfaces::ConversionResponse;
 
 #[cw_serde]
 #[derive(QueryResponses)]
