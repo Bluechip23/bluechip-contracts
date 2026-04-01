@@ -264,7 +264,7 @@ fn test_collect_fees_with_accrued_fees() {
     ).unwrap();
     
     // Verify fee collection messages (bluechip and CW20)
-    assert!(res.messages.len() >= 1); // At least one fee transfer
+    assert!(!res.messages.is_empty()); // At least one fee transfer
     
     let position = LIQUIDITY_POSITIONS.load(&deps.storage, "1").unwrap();
     assert_eq!(position.fee_growth_inside_0_last, fee_state.fee_growth_global_0);
@@ -1799,7 +1799,7 @@ fn test_fee_distribution_proportional() {
     // Now generate some fees
     // Fee is 0.3%
     let mut pool_fee_state = POOL_FEE_STATE.load(&deps.storage).unwrap();
-    pool_fee_state.fee_growth_global_0 = pool_fee_state.fee_growth_global_0 + Decimal::from_ratio(300_000u128, 1_000_000u128); // Arbitrary growth
+    pool_fee_state.fee_growth_global_0 += Decimal::from_ratio(300_000u128, 1_000_000u128); // Arbitrary growth
     pool_fee_state.total_fees_collected_0 += Uint128::new(300_000);
     pool_fee_state.fee_reserve_0 += Uint128::new(100_000_000); // Set high to avoid reserve cap limit during test
     POOL_FEE_STATE.save(&mut deps.storage, &pool_fee_state).unwrap();

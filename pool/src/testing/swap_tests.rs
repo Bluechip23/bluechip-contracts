@@ -1086,7 +1086,8 @@ fn test_swap_cw20_via_hook() {
 
     deps.querier.update_wasm(move |query| match query {
         WasmQuery::Smart { contract_addr, msg } => {
-            if contract_addr == "token_contract" && msg.to_string().contains("balance") {
+            if contract_addr == "token_contract" {
+                if msg.to_string().contains("balance") {
                     let balance_response = cw20::BalanceResponse {
                         balance: Uint128::new(350_000_000_000),
                     };

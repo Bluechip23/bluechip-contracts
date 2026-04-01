@@ -1,21 +1,20 @@
 use cosmwasm_std::{
-    testing::{mock_dependencies, mock_env, MockApi, MockQuerier, MockStorage},
-    from_json, to_json_binary, Addr, Coin, Decimal, OwnedDeps, Timestamp, Uint128,
+    testing::{mock_dependencies, mock_env, MockApi, MockStorage},
+    from_json, Addr, Coin, Decimal, OwnedDeps, Timestamp, Uint128,
 };
 use std::str::FromStr;
 
 use crate::asset::{TokenInfo, TokenType};
 use crate::mock_querier;
 use crate::msg::{
-    CommitStatus, CumulativePricesResponse, FeeInfoResponse, LastCommitedResponse,
-    PoolFeeStateResponse, PoolInfoResponse, PoolStateResponse, PositionResponse,
+    CommitStatus, FeeInfoResponse, LastCommitedResponse,
+    PoolFeeStateResponse, PoolInfoResponse, PoolStateResponse,
     PositionsResponse, QueryMsg, ReverseSimulationResponse, SimulationResponse,
 };
 use crate::query::query;
 use crate::state::{
-    Commiting, COMMITFEEINFO, COMMIT_INFO, COMMIT_LIMIT_INFO, CommitLimitInfo,
-    IS_THRESHOLD_HIT, NEXT_POSITION_ID, OWNER_POSITIONS, POOL_FEE_STATE, POOL_INFO,
-    POOL_SPECS, POOL_STATE, PoolDetails, PoolFeeState, PoolInfo, PoolSpecs, PoolState,
+    Commiting, COMMIT_INFO,
+    NEXT_POSITION_ID, OWNER_POSITIONS, POOL_FEE_STATE,
     USD_RAISED_FROM_COMMIT,
 };
 use crate::testing::liquidity_tests::{create_test_position, setup_pool_post_threshold, setup_pool_storage};
@@ -120,7 +119,7 @@ fn test_query_simulation_bluechip_to_token() {
 
     let msg = QueryMsg::Simulation { offer_asset: offer };
     let res = query(deps.as_ref(), env, msg).unwrap();
-    let sim: SimulationResponse = from_json(&res).unwrap();
+    let sim: SimulationResponse = from_json(res).unwrap();
 
     // With 23.5k bluechip and 350k token reserves:
     // return_amount should be positive
@@ -148,7 +147,7 @@ fn test_query_simulation_token_to_bluechip() {
 
     let msg = QueryMsg::Simulation { offer_asset: offer };
     let res = query(deps.as_ref(), env, msg).unwrap();
-    let sim: SimulationResponse = from_json(&res).unwrap();
+    let sim: SimulationResponse = from_json(res).unwrap();
 
     assert!(sim.return_amount > Uint128::zero());
     assert!(sim.commission_amount > Uint128::zero());
@@ -186,7 +185,7 @@ fn test_query_reverse_simulation() {
 
     let msg = QueryMsg::ReverseSimulation { ask_asset: ask };
     let res = query(deps.as_ref(), env, msg).unwrap();
-    let rsim: ReverseSimulationResponse = from_json(&res).unwrap();
+    let rsim: ReverseSimulationResponse = from_json(res).unwrap();
 
     assert!(rsim.offer_amount > Uint128::zero(), "offer_amount should be > 0");
     assert!(rsim.spread_amount > Uint128::zero(), "spread_amount should be > 0");
@@ -223,7 +222,7 @@ fn test_query_positions_by_owner() {
         limit: None,
     };
     let res = query(deps.as_ref(), env.clone(), msg).unwrap();
-    let positions: PositionsResponse = from_json(&res).unwrap();
+    let positions: PositionsResponse = from_json(res).unwrap();
 
     assert_eq!(positions.positions.len(), 2, "Alice should have 2 positions");
 
@@ -239,7 +238,7 @@ fn test_query_positions_by_owner() {
         limit: None,
     };
     let res = query(deps.as_ref(), env.clone(), msg).unwrap();
-    let positions: PositionsResponse = from_json(&res).unwrap();
+    let positions: PositionsResponse = from_json(res).unwrap();
 
     assert_eq!(positions.positions.len(), 1, "Bob should have 1 position");
     assert_eq!(positions.positions[0].owner, Addr::unchecked("bob"));
@@ -259,7 +258,7 @@ fn test_query_positions_by_owner_empty() {
         limit: None,
     };
     let res = query(deps.as_ref(), env, msg).unwrap();
-    let positions: PositionsResponse = from_json(&res).unwrap();
+    let positions: PositionsResponse = from_json(res).unwrap();
 
     assert_eq!(positions.positions.len(), 0);
 }
@@ -286,7 +285,7 @@ fn test_query_positions_by_owner_pagination() {
         limit: Some(2),
     };
     let res = query(deps.as_ref(), env.clone(), msg).unwrap();
-    let page1: PositionsResponse = from_json(&res).unwrap();
+    let page1: PositionsResponse = from_json(res).unwrap();
     assert_eq!(page1.positions.len(), 2);
 
     // Get next page starting after the last position ID from page 1
@@ -297,7 +296,7 @@ fn test_query_positions_by_owner_pagination() {
         limit: Some(2),
     };
     let res = query(deps.as_ref(), env.clone(), msg).unwrap();
-    let page2: PositionsResponse = from_json(&res).unwrap();
+    let page2: PositionsResponse = from_json(res).unwrap();
     assert_eq!(page2.positions.len(), 2);
 
     // Verify no overlap between pages
@@ -317,7 +316,7 @@ fn test_query_pool_info() {
     let env = mock_env();
     let msg = QueryMsg::PoolInfo {};
     let res = query(deps.as_ref(), env, msg).unwrap();
-    let info: PoolInfoResponse = from_json(&res).unwrap();
+    let info: PoolInfoResponse = from_json(res).unwrap();
 
     assert_eq!(info.pool_state.reserve0, Uint128::new(23_500_000_000));
     assert_eq!(info.pool_state.reserve1, Uint128::new(350_000_000_000));
@@ -346,7 +345,7 @@ fn test_query_fee_state() {
     let env = mock_env();
     let msg = QueryMsg::FeeState {};
     let res = query(deps.as_ref(), env, msg).unwrap();
-    let resp: PoolFeeStateResponse = from_json(&res).unwrap();
+    let resp: PoolFeeStateResponse = from_json(res).unwrap();
 
     assert_eq!(resp.fee_growth_global_0, Decimal::from_str("12.5").unwrap());
     assert_eq!(resp.fee_growth_global_1, Decimal::from_str("0.75").unwrap());
@@ -363,7 +362,7 @@ fn test_query_fee_info() {
     let env = mock_env();
     let msg = QueryMsg::FeeInfo {};
     let res = query(deps.as_ref(), env, msg).unwrap();
-    let resp: FeeInfoResponse = from_json(&res).unwrap();
+    let resp: FeeInfoResponse = from_json(res).unwrap();
 
     assert_eq!(resp.fee_info.commit_fee_bluechip, Decimal::percent(1));
     assert_eq!(resp.fee_info.commit_fee_creator, Decimal::percent(5));
@@ -390,7 +389,7 @@ fn test_query_commiting_info_exists() {
     let env = mock_env();
     let msg = QueryMsg::CommitingInfo { wallet: "committer1".to_string() };
     let res = query(deps.as_ref(), env, msg).unwrap();
-    let info: Option<Commiting> = from_json(&res).unwrap();
+    let info: Option<Commiting> = from_json(res).unwrap();
 
     assert!(info.is_some());
     let info = info.unwrap();
@@ -406,7 +405,7 @@ fn test_query_commiting_info_not_found() {
     let env = mock_env();
     let msg = QueryMsg::CommitingInfo { wallet: "nobody".to_string() };
     let res = query(deps.as_ref(), env, msg).unwrap();
-    let info: Option<Commiting> = from_json(&res).unwrap();
+    let info: Option<Commiting> = from_json(res).unwrap();
 
     assert!(info.is_none());
 }
@@ -431,7 +430,7 @@ fn test_query_last_commited_exists() {
     let env = mock_env();
     let msg = QueryMsg::LastCommited { wallet: "committer1".to_string() };
     let res = query(deps.as_ref(), env, msg).unwrap();
-    let resp: LastCommitedResponse = from_json(&res).unwrap();
+    let resp: LastCommitedResponse = from_json(res).unwrap();
 
     assert!(resp.has_commited);
     assert_eq!(resp.last_commited, Some(Timestamp::from_seconds(1_600_000_000)));
@@ -447,7 +446,7 @@ fn test_query_last_commited_not_found() {
     let env = mock_env();
     let msg = QueryMsg::LastCommited { wallet: "nobody".to_string() };
     let res = query(deps.as_ref(), env, msg).unwrap();
-    let resp: LastCommitedResponse = from_json(&res).unwrap();
+    let resp: LastCommitedResponse = from_json(res).unwrap();
 
     assert!(!resp.has_commited);
     assert!(resp.last_commited.is_none());
@@ -465,7 +464,7 @@ fn test_query_is_fully_commited_in_progress() {
     let env = mock_env();
     let msg = QueryMsg::IsFullyCommited {};
     let res = query(deps.as_ref(), env, msg).unwrap();
-    let status: CommitStatus = from_json(&res).unwrap();
+    let status: CommitStatus = from_json(res).unwrap();
 
     match status {
         CommitStatus::InProgress { raised, target } => {
@@ -484,7 +483,7 @@ fn test_query_is_fully_commited_fully_committed() {
     let env = mock_env();
     let msg = QueryMsg::IsFullyCommited {};
     let res = query(deps.as_ref(), env, msg).unwrap();
-    let status: CommitStatus = from_json(&res).unwrap();
+    let status: CommitStatus = from_json(res).unwrap();
 
     assert!(matches!(status, CommitStatus::FullyCommitted));
 }
@@ -498,7 +497,7 @@ fn test_query_pool_state() {
     let env = mock_env();
     let msg = QueryMsg::PoolState {};
     let res = query(deps.as_ref(), env, msg).unwrap();
-    let state: PoolStateResponse = from_json(&res).unwrap();
+    let state: PoolStateResponse = from_json(res).unwrap();
 
     assert_eq!(state.reserve0, Uint128::new(23_500_000_000));
     assert_eq!(state.reserve1, Uint128::new(350_000_000_000));

@@ -367,9 +367,8 @@ fn test_commit_threshold_overshoot_split() {
         last_attempt, env.block.time,
         "LAST_THRESHOLD_ATTEMPT should be set to current time"
     );
-    assert_eq!(
-        THRESHOLD_PROCESSING.load(&deps.storage).unwrap(),
-        false,
+    assert!(
+        !THRESHOLD_PROCESSING.load(&deps.storage).unwrap(),
         "THRESHOLD_PROCESSING should be cleared after successful threshold crossing"
     );
 
@@ -417,7 +416,7 @@ fn test_commit_threshold_overshoot_split() {
         .map(|a| &a.value)
         .unwrap_or(&binding);
     println!("Return amount from attributes: {}", return_amt_str);
-    assert_eq!(IS_THRESHOLD_HIT.load(&deps.storage).unwrap(), true);
+    assert!(IS_THRESHOLD_HIT.load(&deps.storage).unwrap());
     let pool_state = POOL_STATE.load(&deps.storage).unwrap();
     println!("\n=== Pool State After ===");
     println!("reserve0: {}", pool_state.reserve0);
@@ -545,9 +544,8 @@ fn test_commit_exact_threshold() {
         "LAST_THRESHOLD_ATTEMPT should be set to current time"
     );
 
-    assert_eq!(
-        THRESHOLD_PROCESSING.load(&deps.storage).unwrap(),
-        false,
+    assert!(
+        !THRESHOLD_PROCESSING.load(&deps.storage).unwrap(),
         "THRESHOLD_PROCESSING should be cleared after threshold hit"
     );
 
@@ -560,7 +558,7 @@ fn test_commit_exact_threshold() {
         "threshold_hit_exact"
     );
 
-    assert_eq!(IS_THRESHOLD_HIT.load(&deps.storage).unwrap(), true);
+    assert!(IS_THRESHOLD_HIT.load(&deps.storage).unwrap());
     let total_usd = USD_RAISED_FROM_COMMIT.load(&deps.storage).unwrap();
     assert_eq!(total_usd, Uint128::new(25_000_000_000)); // Should be exactly at $25k threshold
 }
@@ -588,9 +586,8 @@ fn test_recover_stuck_threshold() {
 
     let res = execute(deps.as_mut(), env, info, msg).unwrap();
 
-    assert_eq!(
-        THRESHOLD_PROCESSING.load(&deps.storage).unwrap(),
-        false,
+    assert!(
+        !THRESHOLD_PROCESSING.load(&deps.storage).unwrap(),
         "THRESHOLD_PROCESSING should be cleared"
     );
 
@@ -865,7 +862,7 @@ fn test_concurrent_threshold_crossing_race_condition() {
         .attributes
         .iter()
         .any(|a| a.key == "phase" && a.value == "threshold_crossing"));
-    assert_eq!(IS_THRESHOLD_HIT.load(&deps.storage).unwrap(), true);
+    assert!(IS_THRESHOLD_HIT.load(&deps.storage).unwrap());
 
     let res2 = execute(deps.as_mut(), env.clone(), info2, msg2);
 
