@@ -25,7 +25,7 @@ use cosmwasm_schema::cw_serde;
 use cosmwasm_std::{
     from_json,
     testing::{
-        mock_dependencies, mock_env, mock_info, MockApi, MockQuerier, MockStorage,
+        mock_dependencies, mock_env, message_info, MockApi, MockQuerier, MockStorage,
         MOCK_CONTRACT_ADDR,
     },
     to_json_binary, Addr, BankMsg, Binary, Coin, ContractResult, CosmosMsg, Decimal, Order,
@@ -43,6 +43,7 @@ fn mock_dependencies_with_balance(
 ) -> OwnedDeps<MockStorage, MockApi, MockQuerier> {
     let mut deps = mock_dependencies();
     deps.querier
+        .bank
         .update_balance(MOCK_CONTRACT_ADDR, balances.to_vec());
     deps
 }
@@ -150,8 +151,7 @@ fn test_commit_pre_threshold_basic() {
     let commit_amount = Uint128::new(1_000_000_000); // 1k bluechip
     with_factory_oracle(&mut deps, Uint128::new(1_000_000)); // $1 per bluechip with 6 decimals
 
-    let info = mock_info(
-        "user1",
+    let info = message_info(&Addr::unchecked("user1"),
         &[Coin {
             denom: "ubluechip".to_string(),
             amount: commit_amount,
@@ -210,8 +210,7 @@ fn test_race_condition_commits_crossing_threshold() {
     let commit_amount = Uint128::new(200_000_000); // $200 per commit
     let env = mock_env();
 
-    let info1 = mock_info(
-        "alice",
+    let info1 = message_info(&Addr::unchecked("alice"),
         &[Coin {
             denom: "ubluechip".to_string(),
             amount: commit_amount,
@@ -251,8 +250,7 @@ fn test_race_condition_commits_crossing_threshold() {
         IS_THRESHOLD_HIT.load(&deps.storage).unwrap(),
         THRESHOLD_PROCESSING.load(&deps.storage).unwrap()
     );
-    let info2 = mock_info(
-        "bob",
+    let info2 = message_info(&Addr::unchecked("bob"),
         &[Coin {
             denom: "ubluechip".to_string(),
             amount: commit_amount,
@@ -319,8 +317,7 @@ fn test_commit_crosses_threshold() {
     let commit_amount = Uint128::new(200_000_000); // 200 tokens = $200
 
     with_factory_oracle(&mut deps, Uint128::new(1_000_000)); // $1 per bluechip with 6 decimals
-    let info = mock_info(
-        "whale",
+    let info = message_info(&Addr::unchecked("whale"),
         &[Coin {
             denom: "ubluechip".to_string(),
             amount: commit_amount,
@@ -380,8 +377,7 @@ fn test_commit_post_threshold_swap() {
 
     with_factory_oracle(&mut deps, Uint128::new(1_000_000)); // $1 per bluechip with 6 decimals
 
-    let info = mock_info(
-        "commiter",
+    let info = message_info(&Addr::unchecked("commiter"),
         &[Coin {
             denom: "ubluechip".to_string(),
             amount: commit_amount,
@@ -491,7 +487,7 @@ fn test_continue_distribution_is_permissionless() {
         .unwrap();
     let msg = ExecuteMsg::ContinueDistribution {};
     // Any external user can call ContinueDistribution — it's permissionless
-    let info = mock_info("random_user", &[]);
+    let info = message_info(&Addr::unchecked("random_user"), &[]);
 
     let res = execute(deps.as_mut(), mock_env(), info, msg);
 
@@ -537,7 +533,7 @@ fn test_continue_distribution_processes_batch() {
 
     let env = mock_env();
     // Permissionless — any user can trigger
-    let info = mock_info("anyone", &[]);
+    let info = message_info(&Addr::unchecked("anyone"), &[]);
 
     let msg = ExecuteMsg::ContinueDistribution {};
     let res = execute(deps.as_mut(), env, info, msg).expect("permissionless call should succeed");
@@ -589,7 +585,7 @@ fn test_continue_distribution_batches() {
         .unwrap();
 
     let env = mock_env();
-    let info = mock_info("anyone", &[]);
+    let info = message_info(&Addr::unchecked("anyone"), &[]);
     let res = execute(
         deps.as_mut(),
         env.clone(),
@@ -691,7 +687,7 @@ fn test_adaptive_batch_sizing_with_history() {
         .count();
 
     let env = mock_env();
-    let info = mock_info("anyone", &[]);
+    let info = message_info(&Addr::unchecked("anyone"), &[]);
     let res = execute(
         deps.as_mut(),
         env.clone(),
@@ -796,7 +792,7 @@ fn test_batch_size_with_consecutive_failures() {
         .unwrap();
 
     let env = mock_env();
-    let info = mock_info("anyone", &[]);
+    let info = message_info(&Addr::unchecked("anyone"), &[]);
     let res = execute(
         deps.as_mut(),
         env.clone(),
@@ -846,7 +842,7 @@ fn test_final_batch_completes_distribution() {
         .unwrap();
 
     let env = mock_env();
-    let info = mock_info("anyone", &[]);
+    let info = message_info(&Addr::unchecked("anyone"), &[]);
     let res = execute(
         deps.as_mut(),
         env.clone(),
@@ -878,8 +874,7 @@ fn test_commit_reentrancy_protection() {
     RATE_LIMIT_GUARD.save(&mut deps.storage, &true).unwrap();
 
     let env = mock_env();
-    let info = mock_info(
-        "user",
+    let info = message_info(&Addr::unchecked("user"),
         &[Coin {
             denom: "ubluechip".to_string(),
             amount: Uint128::new(1_000_000),
@@ -917,8 +912,7 @@ fn test_commit_rate_limiting() {
     let mut env = mock_env();
     let user = Addr::unchecked("user");
 
-    let info = mock_info(
-        user.as_str(),
+    let info = message_info(&user,
         &[Coin {
             denom: "ubluechip".to_string(),
             amount: Uint128::new(1_000_000),
@@ -964,8 +958,7 @@ fn test_commit_with_deadline() {
     let mut env = mock_env();
     env.block.time = Timestamp::from_seconds(1_000_000);
 
-    let info = mock_info(
-        "user",
+    let info = message_info(&Addr::unchecked("user"),
         &[Coin {
             denom: "ubluechip".to_string(),
             amount: Uint128::new(1_000_000),
@@ -1003,8 +996,7 @@ fn test_simple_swap_bluechip_to_cw20() {
     let env = mock_env();
     let swap_amount = Uint128::new(100_000_000); // 1k bluechip
 
-    let info = mock_info(
-        "trader",
+    let info = message_info(&Addr::unchecked("trader"),
         &[Coin {
             denom: "ubluechip".to_string(),
             amount: swap_amount,
@@ -1051,8 +1043,7 @@ fn test_swap_with_max_spread() {
     let env = mock_env();
     let swap_amount = Uint128::new(10_000_000_000); // 10k bluechip (large swap)
 
-    let info = mock_info(
-        "trader",
+    let info = message_info(&Addr::unchecked("trader"),
         &[Coin {
             denom: "ubluechip".to_string(),
             amount: swap_amount,
@@ -1116,10 +1107,10 @@ fn test_swap_cw20_via_hook() {
     let env = mock_env();
     let swap_amount = Uint128::new(10_000_000_000); // 10k tokens
 
-    let info = mock_info("token_contract", &[]);
+    let info = message_info(&Addr::unchecked("token_contract"), &[]);
 
     let cw20_msg = Cw20ReceiveMsg {
-        sender: "trader".to_string(),
+        sender: MockApi::default().addr_make("trader").to_string(),
         amount: swap_amount,
         msg: to_json_binary(&Cw20HookMsg::Swap {
             belief_price: None,
@@ -1152,8 +1143,7 @@ fn test_swap_wrong_asset() {
     setup_pool_post_threshold(&mut deps);
 
     let env = mock_env();
-    let info = mock_info(
-        "trader",
+    let info = message_info(&Addr::unchecked("trader"),
         &[Coin {
             denom: "wrong_token".to_string(),
             amount: Uint128::new(1_000_000),
@@ -1191,8 +1181,7 @@ fn test_swap_price_accumulator_update() {
     let initial_state = POOL_STATE.load(&deps.storage).unwrap();
     let initial_price0 = initial_state.price0_cumulative_last;
 
-    let info = mock_info(
-        "trader",
+    let info = message_info(&Addr::unchecked("trader"),
         &[Coin {
             denom: "ubluechip".to_string(),
             amount: Uint128::new(1_000_000),
@@ -1230,7 +1219,7 @@ fn test_factory_impersonation_prevented() {
                 denom: "ubluechip".to_string(),
             },
             TokenType::CreatorToken {
-                contract_addr: Addr::unchecked("WILL_BE_CREATED_BY_FACTORY"),
+                contract_addr: MockApi::default().addr_make("WILL_BE_CREATED_BY_FACTORY"),
             },
         ],
         cw20_token_contract_id: 2u64,
@@ -1250,7 +1239,7 @@ fn test_factory_impersonation_prevented() {
         token_address: Addr::unchecked("token_contract"),
         is_standard_pool: None,
     };
-    let info = mock_info("fake_factory", &[]); // Wrong sender!
+    let info = message_info(&Addr::unchecked("fake_factory"), &[]); // Wrong sender!
     let err = instantiate(deps.as_mut(), mock_env(), info, msg).unwrap_err();
 
     match err {
@@ -1270,8 +1259,7 @@ fn test_commit_with_changing_oracle_prices() {
     with_factory_oracle(&mut deps, Uint128::new(1_000_000));
 
     let env = mock_env();
-    let info1 = mock_info(
-        "user1",
+    let info1 = message_info(&Addr::unchecked("user1"),
         &[Coin {
             denom: "ubluechip".to_string(),
             amount: Uint128::new(5_000_000),
@@ -1298,8 +1286,7 @@ fn test_commit_with_changing_oracle_prices() {
 
     with_factory_oracle(&mut deps, Uint128::new(2_000_000));
 
-    let info2 = mock_info(
-        "user2",
+    let info2 = message_info(&Addr::unchecked("user2"),
         &[Coin {
             denom: "ubluechip".to_string(),
             amount: Uint128::new(5_000_000),
@@ -1347,8 +1334,7 @@ fn test_threshold_crossing_depends_on_oracle_price() {
         .unwrap();
 
     let env = mock_env();
-    let info1 = mock_info(
-        "whale",
+    let info1 = message_info(&Addr::unchecked("whale"),
         &[Coin {
             denom: "ubluechip".to_string(),
             amount: Uint128::new(100_000_000), // 100 tokens
@@ -1385,8 +1371,7 @@ fn test_threshold_crossing_depends_on_oracle_price() {
         .save(&mut deps2.storage, &Uint128::new(24_000_000_000))
         .unwrap();
 
-    let info2 = mock_info(
-        "whale",
+    let info2 = message_info(&Addr::unchecked("whale"),
         &[Coin {
             denom: "ubluechip".to_string(),
             amount: Uint128::new(100_000_000),
@@ -1465,8 +1450,7 @@ fn test_oracle_conversion_precision_various_prices() {
         with_factory_oracle(&mut deps, test.oracle_price);
 
         let env = mock_env();
-        let info = mock_info(
-            "user",
+        let info = message_info(&Addr::unchecked("user"),
             &[Coin {
                 denom: "ubluechip".to_string(),
                 amount: test.token_amount,
@@ -1513,8 +1497,7 @@ fn test_extreme_oracle_prices() {
     with_factory_oracle(&mut deps_low, Uint128::new(1_000)); // $0.001
 
     let env = mock_env();
-    let info_low = mock_info(
-        "user",
+    let info_low = message_info(&Addr::unchecked("user"),
         &[Coin {
             denom: "ubluechip".to_string(),
             amount: Uint128::new(1_000_000_000),
@@ -1548,8 +1531,7 @@ fn test_extreme_oracle_prices() {
 
     with_factory_oracle(&mut deps_high, Uint128::new(1_000_000_000)); // $1000
 
-    let info_high = mock_info(
-        "user",
+    let info_high = message_info(&Addr::unchecked("user"),
         &[Coin {
             denom: "ubluechip".to_string(),
             amount: Uint128::new(1_000_000), // 1 token
@@ -1598,8 +1580,8 @@ fn test_usd_tracking_consistency_across_commits() {
     let mut expected_total = Uint128::zero();
 
     for (user, amount) in commits {
-        let info = mock_info(
-            user,
+        let info = message_info(
+            &Addr::unchecked(user),
             &[Coin {
                 denom: "ubluechip".to_string(),
                 amount: Uint128::new(amount),
@@ -1654,8 +1636,7 @@ fn test_commit_with_zero_oracle_price() {
     with_factory_oracle(&mut deps, Uint128::zero()); // ZERO PRICE
 
     let env = mock_env();
-    let info = mock_info(
-        "user",
+    let info = message_info(&Addr::unchecked("user"),
         &[Coin {
             denom: "ubluechip".to_string(),
             amount: Uint128::new(1_000_000),
@@ -1695,8 +1676,7 @@ fn test_usd_calculation_overflow() {
     with_factory_oracle(&mut deps, Uint128::new(1_000_000_000_000)); // $1M per token
 
     let env = mock_env();
-    let info = mock_info(
-        "whale",
+    let info = message_info(&Addr::unchecked("whale"),
         &[Coin {
             denom: "ubluechip".to_string(),
             amount: Uint128::new(u128::MAX / 1000),
@@ -1755,8 +1735,8 @@ fn test_rounding_error_accumulation() {
         let expected_usd = amount * Uint128::new(333_333) / Uint128::new(1_000_000);
         manual_sum += expected_usd;
 
-        let info = mock_info(
-            &user,
+        let info = message_info(
+            &Addr::unchecked(&user),
             &[Coin {
                 denom: "ubluechip".to_string(),
                 amount,
@@ -1811,8 +1791,7 @@ fn test_swap_with_belief_price_protection() {
 
     let belief_price = Some(Decimal::from_ratio(140u128, 100u128)); // 1.4
 
-    let info = mock_info(
-        "trader",
+    let info = message_info(&Addr::unchecked("trader"),
         &[Coin {
             denom: "ubluechip".to_string(),
             amount: swap_amount,
@@ -1858,8 +1837,7 @@ fn test_swap_belief_price_rejects_bad_price_corrected() {
 
     let belief_price = Some(Decimal::from_ratio(5u128, 100u128)); // 0.05
 
-    let info = mock_info(
-        "trader",
+    let info = message_info(&Addr::unchecked("trader"),
         &[Coin {
             denom: "ubluechip".to_string(),
             amount: swap_amount,
@@ -1892,8 +1870,7 @@ fn test_belief_price_with_zero_price() {
     setup_pool_post_threshold(&mut deps);
 
     let env = mock_env();
-    let info = mock_info(
-        "trader",
+    let info = message_info(&Addr::unchecked("trader"),
         &[Coin {
             denom: "ubluechip".to_string(),
             amount: Uint128::new(1_000_000),
@@ -1949,9 +1926,9 @@ fn test_swap_cw20_to_bluechip_direct() {
     let env = mock_env();
     let swap_amount = Uint128::new(10_000_000_000); // 10k CW20 tokens
 
-    let info = mock_info("token_contract", &[]);
+    let info = message_info(&Addr::unchecked("token_contract"), &[]);
     let cw20_msg = Cw20ReceiveMsg {
-        sender: "trader".to_string(),
+        sender: MockApi::default().addr_make("trader").to_string(),
         amount: swap_amount,
         msg: to_json_binary(&Cw20HookMsg::Swap {
             belief_price: None,
@@ -2019,11 +1996,11 @@ fn test_swap_cw20_with_custom_recipient() {
 
     let env = mock_env();
     let swap_amount = Uint128::new(100_000_000); // Reduced to 100M to avoid slippage
-    let recipient = "beneficiary".to_string();
+    let recipient = MockApi::default().addr_make("beneficiary").to_string();
 
-    let info = mock_info("token_contract", &[]);
+    let info = message_info(&Addr::unchecked("token_contract"), &[]);
     let cw20_msg = Cw20ReceiveMsg {
-        sender: "trader".to_string(),
+        sender: MockApi::default().addr_make("trader").to_string(),
         amount: swap_amount,
         msg: to_json_binary(&Cw20HookMsg::Swap {
             belief_price: None,
@@ -2086,9 +2063,9 @@ fn test_cw20_swap_with_belief_price() {
 
     let belief_price = Some(Decimal::from_ratio(5u128, 100u128));
 
-    let info = mock_info("token_contract", &[]);
+    let info = message_info(&Addr::unchecked("token_contract"), &[]);
     let cw20_msg = Cw20ReceiveMsg {
-        sender: "trader".to_string(),
+        sender: MockApi::default().addr_make("trader").to_string(),
         amount: swap_amount,
         msg: to_json_binary(&Cw20HookMsg::Swap {
             belief_price,
@@ -2128,8 +2105,7 @@ fn test_race_condition_not_manually_set() {
 
     let env = mock_env();
 
-    let alice_info = mock_info(
-        "alice",
+    let alice_info = message_info(&Addr::unchecked("alice"),
         &[Coin {
             denom: "ubluechip".to_string(),
             amount: Uint128::new(200_000_000),
@@ -2162,8 +2138,7 @@ fn test_race_condition_not_manually_set() {
         "THRESHOLD_PROCESSING should be cleared after successful threshold crossing"
     );
 
-    let bob_info = mock_info(
-        "bob",
+    let bob_info = message_info(&Addr::unchecked("bob"),
         &[Coin {
             denom: "ubluechip".to_string(),
             amount: Uint128::new(200_000_000),
@@ -2240,8 +2215,7 @@ fn test_concurrent_commits_both_recorded() {
     with_factory_oracle(&mut deps, Uint128::new(1_000_000));
     let env = mock_env();
 
-    let alice_info = mock_info(
-        "alice",
+    let alice_info = message_info(&Addr::unchecked("alice"),
         &[Coin {
             denom: "ubluechip".to_string(),
             amount: Uint128::new(200_000_000),
@@ -2275,8 +2249,7 @@ fn test_concurrent_commits_both_recorded() {
     );
 
     let bob_amount = Uint128::new(100_000_000);
-    let bob_info = mock_info(
-        "bob",
+    let bob_info = message_info(&Addr::unchecked("bob"),
         &[Coin {
             denom: "ubluechip".to_string(),
             amount: bob_amount,
@@ -2448,7 +2421,7 @@ fn test_swap_fails_when_reserves_below_pause_threshold() {
     let result = execute_simple_swap(
         &mut deps.as_mut(),
         mock_env(),
-        mock_info("user", &[]),
+        message_info(&Addr::unchecked("user"), &[]),
         Addr::unchecked("user"),
         offer,
         None,
@@ -2486,7 +2459,7 @@ fn test_swap_fails_when_pool_already_paused() {
     let result = execute_simple_swap(
         &mut deps.as_mut(),
         mock_env(),
-        mock_info("user", &[]),
+        message_info(&Addr::unchecked("user"), &[]),
         Addr::unchecked("user"),
         offer,
         None,
@@ -2510,8 +2483,7 @@ fn test_swap_prevented_if_would_deplete_below_minimum() {
     );
 
     let swap_amount = Uint128::new(2000);
-    let info = mock_info(
-        "user",
+    let info = message_info(&Addr::unchecked("user"),
         &[Coin {
             denom: "ubluechip".to_string(),
             amount: swap_amount,
@@ -2556,8 +2528,7 @@ fn test_swap_triggers_pause_at_threshold() {
     );
 
     let swap_amount = Uint128::new(10);
-    let info = mock_info(
-        "user",
+    let info = message_info(&Addr::unchecked("user"),
         &[Coin {
             denom: "ubluechip".to_string(),
             amount: swap_amount,
@@ -2608,11 +2579,10 @@ fn test_add_liquidity_unpauses_pool() {
     let result = execute_deposit_liquidity(
         deps.as_mut(),
         mock_env(),
-        mock_info(
-            "provider",
+        message_info(&Addr::unchecked("provider"),
             &[
-                Coin::new(50_000, "ubluechip"),
-                Coin::new(50_000, "token1_contract"),
+                Coin::new(50_000u128, "ubluechip"),
+                Coin::new(50_000u128, "token1_contract"),
             ],
         ),
         Addr::unchecked("provider"),
@@ -2652,9 +2622,8 @@ fn test_add_liquidity_doesnt_unpause_if_still_below_threshold() {
     let result = execute_deposit_liquidity(
         deps.as_mut(),
         mock_env(),
-        mock_info(
-            "provider",
-            &[Coin::new(500, "ubluechip"), Coin::new(500, "token1")],
+        message_info(&Addr::unchecked("provider"),
+            &[Coin::new(500u128, "ubluechip"), Coin::new(500u128, "token1")],
         ),
         Addr::unchecked("provider"),
         Uint128::new(500),
@@ -2682,7 +2651,7 @@ fn test_both_reserves_checked() {
     let result1 = execute_simple_swap(
         &mut deps.as_mut(),
         mock_env(),
-        mock_info("user", &[]),
+        message_info(&Addr::unchecked("user"), &[]),
         Addr::unchecked("user"),
         TokenInfo {
             info: TokenType::Bluechip {
@@ -2708,7 +2677,7 @@ fn test_both_reserves_checked() {
     let result2 = execute_simple_swap(
         &mut deps.as_mut(),
         mock_env(),
-        mock_info("user", &[]),
+        message_info(&Addr::unchecked("user"), &[]),
         Addr::unchecked("user"),
         TokenInfo {
             info: TokenType::Bluechip {
@@ -2737,7 +2706,7 @@ fn test_pause_state_persistence() {
     let _ = execute_simple_swap(
         &mut deps.as_mut(),
         mock_env(),
-        mock_info("user1", &[]),
+        message_info(&Addr::unchecked("user1"), &[]),
         Addr::unchecked("user1"),
         TokenInfo {
             info: TokenType::Bluechip {
@@ -2755,7 +2724,7 @@ fn test_pause_state_persistence() {
     let result = execute_simple_swap(
         &mut deps.as_mut(),
         mock_env(),
-        mock_info("user2", &[]),
+        message_info(&Addr::unchecked("user2"), &[]),
         Addr::unchecked("user2"),
         TokenInfo {
             info: TokenType::Bluechip {
@@ -2792,8 +2761,7 @@ fn test_swap_lopsided_pool_after_threshold() {
     // 500 bluechip (50% of reserve!)
     let swap_amount = Uint128::new(500_000_000);
 
-    let info = mock_info(
-        "trader",
+    let info = message_info(&Addr::unchecked("trader"),
         &[Coin {
             denom: "ubluechip".to_string(),
             amount: swap_amount,
@@ -2848,8 +2816,7 @@ fn test_swap_slippage_lopsided() {
     let env = mock_env();
     let swap_amount = Uint128::new(500_000_000); // 50% of reserve
 
-    let info = mock_info(
-        "trader",
+    let info = message_info(&Addr::unchecked("trader"),
         &[Coin {
             denom: "ubluechip".to_string(),
             amount: swap_amount,
@@ -2912,8 +2879,7 @@ fn test_commit_and_swap_with_price_change() {
     execute(
         deps.as_mut(),
         env.clone(),
-        mock_info(
-            "user1",
+        message_info(&Addr::unchecked("user1"),
             &[Coin {
                 denom: "ubluechip".to_string(),
                 amount: Uint128::new(1_000_000_000),
@@ -2948,8 +2914,7 @@ fn test_commit_and_swap_with_price_change() {
     execute(
         deps.as_mut(),
         env.clone(),
-        mock_info(
-            "user2",
+        message_info(&Addr::unchecked("user2"),
             &[Coin {
                 denom: "ubluechip".to_string(),
                 amount: Uint128::new(1_000_000_000),
@@ -2988,8 +2953,7 @@ fn test_commit_and_swap_with_price_change() {
     execute(
         deps.as_mut(),
         env.clone(),
-        mock_info(
-            "user3",
+        message_info(&Addr::unchecked("user3"),
             &[Coin {
                 denom: "ubluechip".to_string(),
                 amount: Uint128::new(1_250_000_000),

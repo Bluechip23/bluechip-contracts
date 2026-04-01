@@ -1,5 +1,5 @@
 use cosmwasm_std::testing::{
-    mock_dependencies, mock_env, mock_info, MockApi, MockQuerier, MockStorage, MOCK_CONTRACT_ADDR,
+    mock_dependencies, mock_env, message_info, MockApi, MockQuerier, MockStorage, MOCK_CONTRACT_ADDR,
 };
 use cosmwasm_std::{
     from_json, to_json_binary, Addr, Coin, CosmosMsg, Decimal, Empty, OwnedDeps, Uint128, WasmMsg,
@@ -8,8 +8,6 @@ use cosmwasm_std::{
 use crate::asset::TokenType;
 use crate::error::ContractError;
 use crate::execute::{execute, instantiate};
-const ATOM_BLUECHIP_POOL_CONTRACT_ADDRESS: &str =
-    "cosmos1atom_bluechip_pool_test_addr_000000000000";
 use crate::mock_querier::WasmMockQuerier;
 use crate::msg::ExecuteMsg;
 use crate::pool_struct::{PoolConfigUpdate, PoolDetails};
@@ -17,6 +15,18 @@ use crate::state::{
     FactoryInstantiate, PENDING_CONFIG, PENDING_POOL_UPGRADE, POOLS_BY_ID, POOL_REGISTRY,
 };
 use crate::testing::tests::setup_atom_pool;
+
+fn make_addr(label: &str) -> Addr {
+    MockApi::default().addr_make(label)
+}
+
+fn admin_addr() -> Addr {
+    make_addr("admin")
+}
+
+fn atom_bluechip_pool_addr() -> Addr {
+    make_addr("atom_bluechip_pool")
+}
 
 pub fn mock_dependencies_2(
     contract_balance: &[Coin],
@@ -36,32 +46,33 @@ pub fn mock_dependencies_2(
 fn test_propose_and_execute_update_config() {
     let mut deps = mock_dependencies_2(&[]);
     setup_atom_pool(&mut deps);
+    let the_admin = make_addr("addr0000");
     let msg = FactoryInstantiate {
         cw721_nft_contract_id: 58,
-        factory_admin_address: Addr::unchecked("addr0000"),
+        factory_admin_address: the_admin.clone(),
         commit_amount_for_threshold_bluechip: Uint128::zero(),
         commit_threshold_limit_usd: Uint128::new(100),
         pyth_contract_addr_for_conversions: "oracle0000".to_string(),
         pyth_atom_usd_price_feed_id: "ORCL".to_string(),
         cw20_token_contract_id: 10,
         create_pool_wasm_contract_id: 11,
-        bluechip_wallet_address: Addr::unchecked("ubluechip"),
+        bluechip_wallet_address: make_addr("ubluechip"),
         commit_fee_bluechip: Decimal::from_ratio(10u128, 100u128),
         commit_fee_creator: Decimal::from_ratio(10u128, 100u128),
         max_bluechip_lock_per_pool: Uint128::new(10_000_000_000),
         creator_excess_liquidity_lock_days: 7,
-        atom_bluechip_anchor_pool_address: Addr::unchecked(ATOM_BLUECHIP_POOL_CONTRACT_ADDRESS),
+        atom_bluechip_anchor_pool_address: atom_bluechip_pool_addr(),
         bluechip_mint_contract_address: None,
     };
 
     let env = mock_env();
-    let info = mock_info("addr0000", &[]);
+    let info = message_info(&the_admin, &[]);
 
     instantiate(deps.as_mut(), env.clone(), info.clone(), msg.clone()).unwrap();
 
-    let unauthorized_info = mock_info("unauthorized", &[]);
+    let unauthorized_info = message_info(&Addr::unchecked("unauthorized"), &[]);
     let new_config = FactoryInstantiate {
-        factory_admin_address: Addr::unchecked("addr0000"),
+        factory_admin_address: the_admin.clone(),
         ..msg.clone()
     };
     let propose_msg = ExecuteMsg::ProposeConfigUpdate {
@@ -77,7 +88,10 @@ fn test_propose_and_execute_update_config() {
     .unwrap_err();
     assert_eq!(
         err.to_string(),
-        "Generic error: Only the admin can execute this function. Admin: addr0000, Sender: unauthorized"
+        format!(
+            "Generic error: Only the admin can execute this function. Admin: {}, Sender: unauthorized",
+            the_admin
+        )
     );
 
     let res = execute(deps.as_mut(), env.clone(), info.clone(), propose_msg).unwrap();
@@ -139,7 +153,7 @@ fn test_upgrade_pools_with_registry() {
     }
 
     let env = mock_env();
-    let admin_info = mock_info("admin", &[]);
+    let admin_info = message_info(&admin_addr(), &[]);
     let upgrade_msg = ExecuteMsg::UpgradePools {
         new_code_id: 200,
         pool_ids: None,
@@ -191,7 +205,7 @@ fn test_upgrade_pools_with_registry() {
                 new_code_id,
                 ..
             }) => {
-                assert_eq!(contract_addr, &format!("pool_{}", i + 1));
+                assert_eq!(contract_addr.as_str(), &format!("pool_{}", i + 1));
                 assert_eq!(*new_code_id, 200);
             }
             _ => panic!("Expected migrate message"),
@@ -229,7 +243,7 @@ fn test_update_specific_pool_from_registry() {
         .save(&mut deps.storage, pool_id, &pool_details)
         .unwrap();
 
-    let admin_info = mock_info("admin", &[]);
+    let admin_info = message_info(&admin_addr(), &[]);
     let pool_config = PoolConfigUpdate {
         lp_fee: None,
         min_commit_interval: None,
@@ -257,7 +271,7 @@ fn test_update_specific_pool_from_registry() {
     assert_eq!(res.messages.len(), 1);
     match &res.messages[0].msg {
         CosmosMsg::Wasm(WasmMsg::Execute { contract_addr, .. }) => {
-            assert_eq!(contract_addr, "pool_3_address");
+            assert_eq!(contract_addr.as_str(), "pool_3_address");
         }
         _ => panic!("Expected execute message"),
     }
@@ -278,7 +292,7 @@ fn test_migration_with_large_pool_count() {
     }
 
     let env = mock_env();
-    let admin_info = mock_info("admin", &[]);
+    let admin_info = message_info(&admin_addr(), &[]);
     let upgrade_msg = ExecuteMsg::UpgradePools {
         new_code_id: 300,
         pool_ids: None,
@@ -325,7 +339,7 @@ fn test_continue_upgrade_unauthorized() {
     let mut deps = mock_dependencies();
     setup_factory(&mut deps);
 
-    let info = mock_info("hacker", &[]);
+    let info = message_info(&Addr::unchecked("hacker"), &[]);
     let err = execute(
         deps.as_mut(),
         mock_env(),
@@ -349,7 +363,7 @@ fn test_cancel_pool_upgrade() {
     }
 
     let env = mock_env();
-    let admin_info = mock_info("admin", &[]);
+    let admin_info = message_info(&admin_addr(), &[]);
 
     // Propose upgrade
     execute(
@@ -370,7 +384,7 @@ fn test_cancel_pool_upgrade() {
     let err = execute(
         deps.as_mut(),
         env.clone(),
-        mock_info("hacker", &[]),
+        message_info(&Addr::unchecked("hacker"), &[]),
         ExecuteMsg::CancelPoolUpgrade {},
     )
     .unwrap_err();
@@ -390,7 +404,7 @@ fn test_cancel_pool_upgrade() {
 
 fn setup_factory(deps: &mut OwnedDeps<MockStorage, MockApi, MockQuerier>) {
     let msg = FactoryInstantiate {
-        factory_admin_address: Addr::unchecked("admin"),
+        factory_admin_address: admin_addr(),
         commit_amount_for_threshold_bluechip: Uint128::new(25_000_000_000),
         commit_threshold_limit_usd: Uint128::new(25_000_000_000),
         pyth_contract_addr_for_conversions: "oracle".to_string(),
@@ -398,14 +412,14 @@ fn setup_factory(deps: &mut OwnedDeps<MockStorage, MockApi, MockQuerier>) {
         cw20_token_contract_id: 10,
         cw721_nft_contract_id: 20,
         create_pool_wasm_contract_id: 30,
-        bluechip_wallet_address: Addr::unchecked("ubluechip"),
+        bluechip_wallet_address: make_addr("ubluechip"),
         commit_fee_bluechip: Decimal::percent(1),
         commit_fee_creator: Decimal::percent(5),
         max_bluechip_lock_per_pool: Uint128::new(10_000_000_000),
         creator_excess_liquidity_lock_days: 7,
-        atom_bluechip_anchor_pool_address: Addr::unchecked(ATOM_BLUECHIP_POOL_CONTRACT_ADDRESS),
+        atom_bluechip_anchor_pool_address: atom_bluechip_pool_addr(),
         bluechip_mint_contract_address: None,
     };
 
-    instantiate(deps.as_mut(), mock_env(), mock_info("deployer", &[]), msg).unwrap();
+    instantiate(deps.as_mut(), mock_env(), message_info(&make_addr("deployer"), &[]), msg).unwrap();
 }

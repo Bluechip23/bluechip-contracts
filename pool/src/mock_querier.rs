@@ -103,7 +103,7 @@ impl WasmMockQuerier {
     // Seed bluechip bank balances
     pub fn with_balance(&mut self, balances: &[(&String, &[Coin])]) {
         for (addr, coins) in balances {
-            self.base.update_balance(addr.to_string(), coins.to_vec());
+            self.base.bank.update_balance(addr.to_string(), coins.to_vec());
         }
     }
 

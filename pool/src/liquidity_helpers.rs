@@ -314,7 +314,7 @@ pub fn verify_position_ownership(
         },
     )?;
 
-    if owner_response.owner != *expected_owner {
+    if owner_response.owner != expected_owner.to_string() {
         return Err(ContractError::Unauthorized {});
     }
 

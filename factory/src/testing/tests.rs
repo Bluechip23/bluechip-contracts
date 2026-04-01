@@ -19,19 +19,39 @@ use crate::internal_bluechip_price_oracle::{
     usd_to_bluechip, BlueChipPriceInternalOracle, PriceCache, PriceObservation, INTERNAL_ORACLE,
     MOCK_PYTH_PRICE,
 };
-const ATOM_BLUECHIP_POOL_CONTRACT_ADDRESS: &str =
-    "cosmos1atom_bluechip_pool_test_addr_000000000000";
 use crate::mock_querier::{mock_dependencies, WasmMockQuerier};
 use crate::msg::{CreatorTokenInfo, ExecuteMsg};
 use crate::pool_struct::{CommitFeeInfo, CreatePool, PoolDetails, TempPoolCreation};
-use cosmwasm_std::testing::{mock_env, mock_info, MockApi, MockStorage};
+use cosmwasm_std::testing::{mock_env, message_info, MockApi, MockStorage};
 use pool_factory_interfaces::PoolStateResponseForFactory;
 
-const ADMIN: &str = "admin";
+fn atom_bluechip_pool_addr() -> Addr {
+    MockApi::default().addr_make("atom_bluechip_pool")
+}
+
+fn admin_addr() -> Addr {
+    MockApi::default().addr_make("admin")
+}
+
+fn ubluechip_addr() -> Addr {
+    MockApi::default().addr_make("ubluechip")
+}
+
+fn bluechip_wallet_addr() -> Addr {
+    MockApi::default().addr_make("bluechip_wallet")
+}
+
+fn addr0000() -> Addr {
+    MockApi::default().addr_make("addr0000")
+}
+
+fn make_addr(label: &str) -> Addr {
+    MockApi::default().addr_make(label)
+}
 #[cfg(test)]
 fn create_default_instantiate_msg() -> FactoryInstantiate {
     FactoryInstantiate {
-        factory_admin_address: Addr::unchecked(ADMIN),
+        factory_admin_address: admin_addr(),
         cw721_nft_contract_id: 58,
         commit_amount_for_threshold_bluechip: Uint128::zero(),
         commit_threshold_limit_usd: Uint128::new(25_000_000_000),
@@ -39,18 +59,18 @@ fn create_default_instantiate_msg() -> FactoryInstantiate {
         pyth_atom_usd_price_feed_id: "ubluechip".to_string(),
         cw20_token_contract_id: 10,
         create_pool_wasm_contract_id: 11,
-        bluechip_wallet_address: Addr::unchecked("ubluechip"),
+        bluechip_wallet_address: ubluechip_addr(),
         commit_fee_bluechip: Decimal::percent(1),
         commit_fee_creator: Decimal::percent(5),
         max_bluechip_lock_per_pool: Uint128::new(1),
         creator_excess_liquidity_lock_days: 7,
-        atom_bluechip_anchor_pool_address: Addr::unchecked(ATOM_BLUECHIP_POOL_CONTRACT_ADDRESS),
+        atom_bluechip_anchor_pool_address: atom_bluechip_pool_addr(),
         bluechip_mint_contract_address: None,
     }
 }
 
 pub fn setup_atom_pool(deps: &mut OwnedDeps<MockStorage, MockApi, WasmMockQuerier>) {
-    let atom_pool_addr = Addr::unchecked(ATOM_BLUECHIP_POOL_CONTRACT_ADDRESS);
+    let atom_pool_addr = atom_bluechip_pool_addr();
     let atom_pool_state = PoolStateResponseForFactory {
         pool_contract_address: atom_pool_addr.clone(),
         nft_ownership_accepted: true,
@@ -74,8 +94,9 @@ fn proper_initialization() {
 
     setup_atom_pool(&mut deps);
 
+    let the_admin = addr0000();
     let msg = FactoryInstantiate {
-        factory_admin_address: Addr::unchecked(ADMIN),
+        factory_admin_address: the_admin.clone(),
         cw721_nft_contract_id: 58,
         commit_amount_for_threshold_bluechip: Uint128::zero(),
         commit_threshold_limit_usd: Uint128::new(100),
@@ -83,18 +104,17 @@ fn proper_initialization() {
         pyth_atom_usd_price_feed_id: "ORCL".to_string(),
         cw20_token_contract_id: 10,
         create_pool_wasm_contract_id: 11,
-        bluechip_wallet_address: Addr::unchecked("ubluechip"),
+        bluechip_wallet_address: ubluechip_addr(),
         commit_fee_bluechip: Decimal::percent(10),
         commit_fee_creator: Decimal::percent(10),
         max_bluechip_lock_per_pool: Uint128::new(10_000_000_000),
         creator_excess_liquidity_lock_days: 7,
-        atom_bluechip_anchor_pool_address: Addr::unchecked(ATOM_BLUECHIP_POOL_CONTRACT_ADDRESS),
+        atom_bluechip_anchor_pool_address: atom_bluechip_pool_addr(),
         bluechip_mint_contract_address: None,
     };
 
     let env = mock_env();
-    let addr = Addr::unchecked("addr0000");
-    let info = mock_info(addr.as_str(), &[]);
+    let info = message_info(&the_admin, &[]);
 
     let res = instantiate(deps.as_mut(), env.clone(), info, msg.clone()).unwrap();
 
@@ -105,13 +125,13 @@ fn proper_initialization() {
     );
     assert_eq!(
         oracle.atom_pool_contract_address,
-        Addr::unchecked(ATOM_BLUECHIP_POOL_CONTRACT_ADDRESS),
+        atom_bluechip_pool_addr(),
         "ATOM pool address should be set correctly"
     );
     assert!(
         oracle
             .selected_pools
-            .contains(&ATOM_BLUECHIP_POOL_CONTRACT_ADDRESS.to_string()),
+            .contains(&atom_bluechip_pool_addr().to_string()),
         "Selected pools should include ATOM pool"
     );
 
@@ -124,8 +144,7 @@ fn proper_initialization() {
     setup_atom_pool(&mut deps2);
 
     let env = mock_env();
-    let addr = Addr::unchecked("addr0001");
-    let info = mock_info(addr.as_str(), &[]);
+    let info = message_info(&the_admin, &[]);
 
     let _res1 = instantiate(deps2.as_mut(), env.clone(), info, msg.clone()).unwrap();
 
@@ -133,8 +152,7 @@ fn proper_initialization() {
     setup_atom_pool(&mut deps3);
 
     let env = mock_env();
-    let addr = Addr::unchecked("addr0002");
-    let info = mock_info(addr.as_str(), &[]);
+    let info = message_info(&the_admin, &[]);
 
     instantiate(deps3.as_mut(), env.clone(), info, msg.clone()).unwrap();
 }
@@ -148,7 +166,7 @@ fn test_oracle_initialization_with_no_other_pools() {
 
     let msg = create_default_instantiate_msg();
     let env = mock_env();
-    let info = mock_info(ADMIN, &[]);
+    let info = message_info(&admin_addr(), &[]);
 
     instantiate(deps.as_mut(), env.clone(), info, msg).unwrap();
 
@@ -160,7 +178,7 @@ fn test_oracle_initialization_with_no_other_pools() {
     );
     assert_eq!(
         oracle.selected_pools[0],
-        ATOM_BLUECHIP_POOL_CONTRACT_ADDRESS
+        atom_bluechip_pool_addr().to_string()
     );
 
     assert_eq!(oracle.bluechip_price_cache.last_price, Uint128::zero());
@@ -176,7 +194,7 @@ fn test_oracle_initialization_with_multiple_pools() {
 
     // Add 5 more creator pools with sufficient liquidity
     for i in 1..=5 {
-        let pool_addr = Addr::unchecked(format!("creator_pool_{}", i));
+        let pool_addr = make_addr(&format!("creator_pool_{}", i));
         let pool_details = PoolDetails {
             pool_id: i,
             pool_token_info: [
@@ -196,7 +214,7 @@ fn test_oracle_initialization_with_multiple_pools() {
 
     let msg = create_default_instantiate_msg();
     let env = mock_env();
-    let info = mock_info(ADMIN, &[]);
+    let info = message_info(&admin_addr(), &[]);
 
     instantiate(deps.as_mut(), env.clone(), info, msg).unwrap();
 
@@ -213,7 +231,7 @@ fn test_oracle_initialization_with_multiple_pools() {
     assert!(
         oracle
             .selected_pools
-            .contains(&ATOM_BLUECHIP_POOL_CONTRACT_ADDRESS.to_string()),
+            .contains(&atom_bluechip_pool_addr().to_string()),
         "Should always include ATOM pool"
     );
 }
@@ -224,8 +242,9 @@ fn create_pair() {
 
     setup_atom_pool(&mut deps);
 
+    let the_admin = addr0000();
     let msg = FactoryInstantiate {
-        factory_admin_address: Addr::unchecked("addr0000"),
+        factory_admin_address: the_admin.clone(),
         cw721_nft_contract_id: 58,
         commit_amount_for_threshold_bluechip: Uint128::zero(),
         commit_threshold_limit_usd: Uint128::new(25_000_000_000),
@@ -233,18 +252,17 @@ fn create_pair() {
         pyth_atom_usd_price_feed_id: "BLUECHIP".to_string(),
         cw20_token_contract_id: 10,
         create_pool_wasm_contract_id: 11,
-        bluechip_wallet_address: Addr::unchecked("ubluechip"),
+        bluechip_wallet_address: ubluechip_addr(),
         commit_fee_bluechip: Decimal::percent(1),
         commit_fee_creator: Decimal::percent(5),
         max_bluechip_lock_per_pool: Uint128::new(10_000_000_000),
         creator_excess_liquidity_lock_days: 7,
-        atom_bluechip_anchor_pool_address: Addr::unchecked(ATOM_BLUECHIP_POOL_CONTRACT_ADDRESS),
+        atom_bluechip_anchor_pool_address: atom_bluechip_pool_addr(),
         bluechip_mint_contract_address: None,
     };
 
     let env = mock_env();
-    let addr = Addr::unchecked("addr0000");
-    let info = mock_info(addr.as_str(), &[]);
+    let info = message_info(&the_admin, &[]);
 
     let _res = instantiate(deps.as_mut(), env, info, msg.clone()).unwrap();
 
@@ -258,8 +276,7 @@ fn create_pair() {
     ];
 
     let env = mock_env();
-    let addr = Addr::unchecked("addr0000");
-    let info = mock_info(addr.as_str(), &[]);
+    let info = message_info(&the_admin, &[]);
 
     let res = execute(
         deps.as_mut(),
@@ -272,7 +289,7 @@ fn create_pair() {
                 factory_to_create_pool_addr: Addr::unchecked("factory"),
                 threshold_payout: None,
                 commit_fee_info: CommitFeeInfo {
-                    bluechip_wallet_address: Addr::unchecked("ubluechip"),
+                    bluechip_wallet_address: ubluechip_addr(),
                     creator_wallet_address: Addr::unchecked("creator"),
                     commit_fee_bluechip: Decimal::percent(1),
                     commit_fee_creator: Decimal::percent(5),
@@ -310,7 +327,7 @@ fn test_create_pair_with_custom_params() {
     setup_atom_pool(&mut deps);
 
     let msg = FactoryInstantiate {
-        factory_admin_address: Addr::unchecked(ADMIN),
+        factory_admin_address: admin_addr(),
         cw721_nft_contract_id: 58,
         commit_amount_for_threshold_bluechip: Uint128::zero(),
         commit_threshold_limit_usd: Uint128::new(25_000_000_000),
@@ -318,17 +335,17 @@ fn test_create_pair_with_custom_params() {
         pyth_atom_usd_price_feed_id: "BLUECHIP".to_string(),
         cw20_token_contract_id: 10,
         create_pool_wasm_contract_id: 11,
-        bluechip_wallet_address: Addr::unchecked("ubluechip"),
+        bluechip_wallet_address: ubluechip_addr(),
         commit_fee_bluechip: Decimal::percent(1),
         commit_fee_creator: Decimal::percent(5),
         max_bluechip_lock_per_pool: Uint128::new(10_000_000_000),
         creator_excess_liquidity_lock_days: 7,
-        atom_bluechip_anchor_pool_address: Addr::unchecked(ATOM_BLUECHIP_POOL_CONTRACT_ADDRESS),
+        atom_bluechip_anchor_pool_address: atom_bluechip_pool_addr(),
         bluechip_mint_contract_address: None,
     };
 
     let env = mock_env();
-    let info = mock_info(ADMIN, &[]);
+    let info = message_info(&admin_addr(), &[]);
     instantiate(deps.as_mut(), env, info, msg).unwrap();
 
     let custom_params = Binary::from(b"custom_pool_params");
@@ -347,8 +364,8 @@ fn test_create_pair_with_custom_params() {
             factory_to_create_pool_addr: Addr::unchecked("factory"),
             threshold_payout: Some(custom_params),
             commit_fee_info: CommitFeeInfo {
-                bluechip_wallet_address: Addr::unchecked("ubluechip"),
-                creator_wallet_address: Addr::unchecked(ADMIN),
+                bluechip_wallet_address: ubluechip_addr(),
+                creator_wallet_address: admin_addr(),
                 commit_fee_bluechip: Decimal::percent(1),
                 commit_fee_creator: Decimal::percent(5),
             },
@@ -369,7 +386,7 @@ fn test_create_pair_with_custom_params() {
     };
 
     let env = mock_env();
-    let info = mock_info(ADMIN, &[]);
+    let info = message_info(&admin_addr(), &[]);
     let res = execute(deps.as_mut(), env, info, create_msg).unwrap();
 
     assert!(
@@ -394,7 +411,7 @@ fn create_pool_msg(name: &str) -> ExecuteMsg {
             factory_to_create_pool_addr: Addr::unchecked("factory"),
             threshold_payout: None,
             commit_fee_info: CommitFeeInfo {
-                bluechip_wallet_address: Addr::unchecked("ubluechip"),
+                bluechip_wallet_address: ubluechip_addr(),
                 creator_wallet_address: Addr::unchecked("creator"),
                 commit_fee_bluechip: Decimal::percent(1),
                 commit_fee_creator: Decimal::percent(5),
@@ -421,13 +438,16 @@ fn simulate_complete_reply_chain(
     env: Env,
     pool_id: u64,
 ) {
-    let token_reply = create_instantiate_reply(encode_reply_id(pool_id, SET_TOKENS), &format!("token_address_{}", pool_id));
+    let token_addr = make_addr(&format!("token_address_{}", pool_id));
+    let token_reply = create_instantiate_reply(encode_reply_id(pool_id, SET_TOKENS), token_addr.as_str());
     pool_creation_reply(deps.as_mut(), env.clone(), token_reply).unwrap();
 
-    let nft_reply = create_instantiate_reply(encode_reply_id(pool_id, MINT_CREATE_POOL), &format!("nft_address_{}", pool_id));
+    let nft_addr = make_addr(&format!("nft_address_{}", pool_id));
+    let nft_reply = create_instantiate_reply(encode_reply_id(pool_id, MINT_CREATE_POOL), nft_addr.as_str());
     pool_creation_reply(deps.as_mut(), env.clone(), nft_reply).unwrap();
 
-    let pool_reply = create_instantiate_reply(encode_reply_id(pool_id, FINALIZE_POOL), &format!("pool_address_{}", pool_id));
+    let pool_addr = make_addr(&format!("pool_address_{}", pool_id));
+    let pool_reply = create_instantiate_reply(encode_reply_id(pool_id, FINALIZE_POOL), pool_addr.as_str());
     pool_creation_reply(deps.as_mut(), env.clone(), pool_reply).unwrap();
 }
 
@@ -449,6 +469,7 @@ fn test_asset_info() {
     assert!(!bluechip_info.equal(&token_info));
 }
 
+#[allow(deprecated)]
 pub fn create_instantiate_reply(id: u64, contract_addr: &str) -> Reply {
     Reply {
         id,
@@ -456,8 +477,11 @@ pub fn create_instantiate_reply(id: u64, contract_addr: &str) -> Reply {
             events: vec![
                 Event::new("instantiate").add_attribute("_contract_address", contract_addr)
             ],
+            msg_responses: vec![],
             data: None,
         }),
+        gas_used: 0,
+        payload: Binary::default(),
     }
 }
 
@@ -469,7 +493,7 @@ fn test_multiple_pool_creation() {
 
     let msg = create_default_instantiate_msg();
     let env = mock_env();
-    let info = mock_info(ADMIN, &[]);
+    let info = message_info(&admin_addr(), &[]);
     instantiate(deps.as_mut(), env.clone(), info, msg).unwrap();
 
     // Create 3 pools and verify they're created with unique IDs
@@ -478,7 +502,7 @@ fn test_multiple_pool_creation() {
     for i in 1u64..=3u64 {
         // Create pool
         let create_msg = create_pool_msg(&format!("Token{}", i));
-        let info = mock_info(ADMIN, &[]);
+        let info = message_info(&admin_addr(), &[]);
         let res = execute(deps.as_mut(), env.clone(), info, create_msg).unwrap();
 
         assert!(
@@ -532,7 +556,7 @@ fn test_complete_pool_creation_flow() {
     setup_atom_pool(&mut deps);
 
     let msg = FactoryInstantiate {
-        factory_admin_address: Addr::unchecked(ADMIN),
+        factory_admin_address: admin_addr(),
         cw721_nft_contract_id: 58,
         commit_amount_for_threshold_bluechip: Uint128::zero(),
         commit_threshold_limit_usd: Uint128::new(25_000_000_000),
@@ -540,17 +564,17 @@ fn test_complete_pool_creation_flow() {
         pyth_atom_usd_price_feed_id: "BLUECHIP".to_string(),
         cw20_token_contract_id: 10,
         create_pool_wasm_contract_id: 11,
-        bluechip_wallet_address: Addr::unchecked("ubluechip"),
+        bluechip_wallet_address: ubluechip_addr(),
         commit_fee_bluechip: Decimal::percent(1),
         commit_fee_creator: Decimal::percent(5),
         max_bluechip_lock_per_pool: Uint128::new(10_000_000_000),
         creator_excess_liquidity_lock_days: 7,
-        atom_bluechip_anchor_pool_address: Addr::unchecked(ATOM_BLUECHIP_POOL_CONTRACT_ADDRESS),
+        atom_bluechip_anchor_pool_address: atom_bluechip_pool_addr(),
         bluechip_mint_contract_address: None,
     };
 
     let env = mock_env();
-    let info = mock_info(ADMIN, &[]);
+    let info = message_info(&admin_addr(), &[]);
     instantiate(deps.as_mut(), env.clone(), info, msg).unwrap();
 
     // Create the pool message
@@ -567,7 +591,7 @@ fn test_complete_pool_creation_flow() {
         cw20_token_contract_id: 10,
         threshold_payout: None,
         commit_fee_info: CommitFeeInfo {
-            bluechip_wallet_address: Addr::unchecked("ubluechip"),
+            bluechip_wallet_address: ubluechip_addr(),
             creator_wallet_address: Addr::unchecked("addr0000"),
             commit_fee_bluechip: Decimal::from_ratio(10u128, 100u128),
             commit_fee_creator: Decimal::from_ratio(10u128, 100u128),
@@ -591,7 +615,7 @@ fn test_complete_pool_creation_flow() {
         },
     };
 
-    let info = mock_info(ADMIN, &[]);
+    let info = message_info(&admin_addr(), &[]);
     let res = execute(deps.as_mut(), env.clone(), info, create_msg).unwrap();
 
     assert!(
@@ -609,18 +633,19 @@ fn test_complete_pool_creation_flow() {
     let _creator = pool_context.temp_creator_wallet.clone();
 
     assert!(pool_id > 0);
-    assert_eq!(pool_context.temp_creator_wallet, Addr::unchecked(ADMIN));
+    assert_eq!(pool_context.temp_creator_wallet, admin_addr());
     assert!(pool_context.creator_token_addr.is_none());
     assert!(pool_context.nft_addr.is_none());
 
-    let token_reply = create_instantiate_reply(encode_reply_id(pool_id, SET_TOKENS), "token_address");
+    let token_addr = make_addr("token_address");
+    let token_reply = create_instantiate_reply(encode_reply_id(pool_id, SET_TOKENS), token_addr.as_str());
     let res = pool_creation_reply(deps.as_mut(), env.clone(), token_reply).unwrap();
 
     // Reload context and check token was set
     let pool_context = TEMP_POOL_CREATION.load(&deps.storage, pool_id).unwrap();
     assert_eq!(
         pool_context.creator_token_addr,
-        Some(Addr::unchecked("token_address"))
+        Some(token_addr.clone())
     );
     assert_eq!(res.messages.len(), 1);
 
@@ -628,39 +653,41 @@ fn test_complete_pool_creation_flow() {
     assert_eq!(updated_state.status, CreationStatus::TokenCreated);
     assert_eq!(
         updated_state.creator_token_address,
-        Some(Addr::unchecked("token_address"))
+        Some(token_addr.clone())
     );
 
     // Step 2: NFT Creation Reply
-    let nft_reply = create_instantiate_reply(encode_reply_id(pool_id, MINT_CREATE_POOL), "nft_address");
+    let nft_addr = make_addr("nft_address");
+    let nft_reply = create_instantiate_reply(encode_reply_id(pool_id, MINT_CREATE_POOL), nft_addr.as_str());
     let res = pool_creation_reply(deps.as_mut(), env.clone(), nft_reply).unwrap();
 
     let pool_context = TEMP_POOL_CREATION.load(&deps.storage, pool_id).unwrap();
-    assert_eq!(pool_context.nft_addr, Some(Addr::unchecked("nft_address")));
+    assert_eq!(pool_context.nft_addr, Some(nft_addr.clone()));
     assert_eq!(res.messages.len(), 1);
 
     let updated_state = POOL_CREATION_STATES.load(&deps.storage, pool_id).unwrap();
     assert_eq!(updated_state.status, CreationStatus::NftCreated);
     assert_eq!(
         updated_state.mint_new_position_nft_address,
-        Some(Addr::unchecked("nft_address"))
+        Some(nft_addr.clone())
     );
 
     // Step 3: Pool Finalization Reply
-    let pool_reply = create_instantiate_reply(encode_reply_id(pool_id, FINALIZE_POOL), "pool_address");
+    let pool_addr = make_addr("pool_address");
+    let pool_reply = create_instantiate_reply(encode_reply_id(pool_id, FINALIZE_POOL), pool_addr.as_str());
     let res = pool_creation_reply(deps.as_mut(), env.clone(), pool_reply).unwrap();
 
     let commit_info = SETCOMMIT.load(&deps.storage, pool_id).unwrap();
     assert_eq!(commit_info.pool_id, pool_id);
     assert_eq!(
         commit_info.creator_pool_addr,
-        Addr::unchecked("pool_address")
+        pool_addr.clone()
     );
 
     let pool_by_id = POOLS_BY_ID.load(&deps.storage, pool_id).unwrap();
     assert_eq!(
         pool_by_id.creator_pool_addr,
-        Addr::unchecked("pool_address")
+        pool_addr.clone()
     );
 
     assert!(TEMP_POOL_CREATION.load(&deps.storage, pool_id).is_err());
@@ -669,7 +696,7 @@ fn test_complete_pool_creation_flow() {
     assert_eq!(final_state.status, CreationStatus::Completed);
     assert_eq!(
         final_state.pool_address,
-        Some(Addr::unchecked("pool_address"))
+        Some(pool_addr)
     );
 
     assert_eq!(res.messages.len(), 2);
@@ -711,7 +738,7 @@ fn test_config() {
         commit_fee_creator: Decimal::percent(10),
         max_bluechip_lock_per_pool: Uint128::new(10_000_000_000),
         creator_excess_liquidity_lock_days: 7,
-        atom_bluechip_anchor_pool_address: Addr::unchecked(ATOM_BLUECHIP_POOL_CONTRACT_ADDRESS),
+        atom_bluechip_anchor_pool_address: atom_bluechip_pool_addr(),
         bluechip_mint_contract_address: None,
     };
 
@@ -726,6 +753,7 @@ fn test_config() {
     assert_eq!(config.commit_fee_creator, Decimal::percent(10));
 }
 
+#[allow(deprecated)]
 #[test]
 fn test_reply_handling() {
     let mut deps = mock_dependencies(&[]);
@@ -733,8 +761,9 @@ fn test_reply_handling() {
     // Set up ATOM pool
     setup_atom_pool(&mut deps);
 
+    let the_admin = addr0000();
     let msg = FactoryInstantiate {
-        factory_admin_address: Addr::unchecked("addr0000"),
+        factory_admin_address: the_admin.clone(),
         cw721_nft_contract_id: 58,
         commit_amount_for_threshold_bluechip: Uint128::zero(),
         commit_threshold_limit_usd: Uint128::new(100),
@@ -742,18 +771,17 @@ fn test_reply_handling() {
         pyth_atom_usd_price_feed_id: "ORCL".to_string(),
         cw20_token_contract_id: 10,
         create_pool_wasm_contract_id: 11,
-        bluechip_wallet_address: Addr::unchecked("ubluechip"),
+        bluechip_wallet_address: ubluechip_addr(),
         commit_fee_bluechip: Decimal::from_ratio(10u128, 100u128),
         commit_fee_creator: Decimal::from_ratio(10u128, 100u128),
         max_bluechip_lock_per_pool: Uint128::new(10_000_000_000),
         creator_excess_liquidity_lock_days: 7,
-        atom_bluechip_anchor_pool_address: Addr::unchecked(ATOM_BLUECHIP_POOL_CONTRACT_ADDRESS),
+        atom_bluechip_anchor_pool_address: atom_bluechip_pool_addr(),
         bluechip_mint_contract_address: None,
     };
 
     let env = mock_env();
-    let addr = Addr::unchecked("addr0000");
-    let info = mock_info(addr.as_str(), &[]);
+    let info = message_info(&the_admin, &[]);
 
     let _res = instantiate(deps.as_mut(), env.clone(), info, msg).unwrap();
 
@@ -773,7 +801,7 @@ fn test_reply_handling() {
         cw20_token_contract_id: 10,
         threshold_payout: None,
         commit_fee_info: CommitFeeInfo {
-            bluechip_wallet_address: Addr::unchecked("ubluechip"),
+            bluechip_wallet_address: ubluechip_addr(),
             creator_wallet_address: Addr::unchecked("addr0000"),
             commit_fee_bluechip: Decimal::from_ratio(10u128, 100u128),
             commit_fee_creator: Decimal::from_ratio(10u128, 100u128),
@@ -790,7 +818,7 @@ fn test_reply_handling() {
 
     let pool_context = TempPoolCreation {
         pool_id,
-        temp_creator_wallet: addr.clone(),
+        temp_creator_wallet: the_admin.clone(),
         temp_pool_info: pool_msg,
         creator_token_addr: None,
         nft_addr: None,
@@ -803,7 +831,7 @@ fn test_reply_handling() {
     // Set up the creation state
     let creation_state = PoolCreationState {
         pool_id,
-        creator: addr.clone(),
+        creator: the_admin.clone(),
         creator_token_address: None,
         mint_new_position_nft_address: None,
         pool_address: None,
@@ -815,7 +843,8 @@ fn test_reply_handling() {
         .save(deps.as_mut().storage, pool_id, &creation_state)
         .unwrap();
 
-    let contract_addr = "token_contract_address";
+    let contract_addr_obj = make_addr("token_contract_address");
+    let contract_addr = contract_addr_obj.as_str();
 
     // Create the reply message with pool_id encoded in the reply ID
     let reply_msg = Reply {
@@ -824,8 +853,11 @@ fn test_reply_handling() {
             events: vec![
                 Event::new("instantiate").add_attribute("_contract_address", contract_addr)
             ],
+            msg_responses: vec![],
             data: None,
         }),
+        gas_used: 0,
+        payload: Binary::default(),
     };
 
     let res = pool_creation_reply(deps.as_mut(), env.clone(), reply_msg).unwrap();
@@ -850,7 +882,7 @@ fn test_reply_handling() {
         Some(Addr::unchecked(contract_addr))
     );
     assert_eq!(updated_context.pool_id, pool_id);
-    assert_eq!(updated_context.temp_creator_wallet, addr);
+    assert_eq!(updated_context.temp_creator_wallet, the_admin);
 }
 
 #[test]
@@ -860,7 +892,7 @@ fn test_oracle_execute_update_price() {
     setup_atom_pool(&mut deps);
 
     for i in 1..=3 {
-        let pool_addr = Addr::unchecked(format!("creator_pool_{}", i));
+        let pool_addr = make_addr(&format!("creator_pool_{}", i));
         let pool_state = PoolStateResponseForFactory {
             pool_contract_address: pool_addr.clone(),
             nft_ownership_accepted: true,
@@ -879,7 +911,7 @@ fn test_oracle_execute_update_price() {
 
     let msg = create_default_instantiate_msg();
     let env = mock_env();
-    let info = mock_info(ADMIN, &[]);
+    let info = message_info(&admin_addr(), &[]);
     instantiate(deps.as_mut(), env.clone(), info, msg).unwrap();
 
     let mut oracle = INTERNAL_ORACLE.load(&deps.storage).unwrap();
@@ -889,7 +921,7 @@ fn test_oracle_execute_update_price() {
         .unwrap();
 
     let update_msg = ExecuteMsg::UpdateOraclePrice {};
-    let info = mock_info(ADMIN, &[]);
+    let info = message_info(&admin_addr(), &[]);
     let result = execute(deps.as_mut(), env.clone(), info.clone(), update_msg.clone());
 
     assert!(result.is_err());
@@ -921,7 +953,7 @@ fn test_oracle_force_rotate_pools() {
     setup_atom_pool(&mut deps);
 
     for i in 1..=10 {
-        let pool_addr = Addr::unchecked(format!("creator_pool_{}", i));
+        let pool_addr = make_addr(&format!("creator_pool_{}", i));
         let pool_state = PoolStateResponseForFactory {
             pool_contract_address: pool_addr.clone(),
             nft_ownership_accepted: true,
@@ -940,14 +972,14 @@ fn test_oracle_force_rotate_pools() {
 
     let msg = create_default_instantiate_msg();
     let env = mock_env();
-    let info = mock_info(ADMIN, &[]);
+    let info = message_info(&admin_addr(), &[]);
     instantiate(deps.as_mut(), env.clone(), info, msg).unwrap();
 
     let oracle = INTERNAL_ORACLE.load(&deps.storage).unwrap();
     let initial_pools = oracle.selected_pools.clone();
 
     // Try to force rotate as non-admin - fail
-    let unauthorized_info = mock_info("unauthorized", &[]);
+    let unauthorized_info = message_info(&Addr::unchecked("unauthorized"), &[]);
     let rotate_msg = ExecuteMsg::ForceRotateOraclePools {};
     let result = execute(
         deps.as_mut(),
@@ -958,7 +990,7 @@ fn test_oracle_force_rotate_pools() {
     assert!(result.is_err());
 
     // Force rotate as admin - success
-    let admin_info = mock_info(ADMIN, &[]);
+    let admin_info = message_info(&admin_addr(), &[]);
     let result = execute(deps.as_mut(), env.clone(), admin_info, rotate_msg);
     assert!(result.is_ok());
 
@@ -973,7 +1005,7 @@ fn test_oracle_force_rotate_pools() {
     let new_pools = oracle.selected_pools.clone();
 
     // ATOM pool should always be present
-    assert!(new_pools.contains(&ATOM_BLUECHIP_POOL_CONTRACT_ADDRESS.to_string()));
+    assert!(new_pools.contains(&atom_bluechip_pool_addr().to_string()));
 
     // With 10 creator pools, rotation should potentially select different pools
     assert_eq!(new_pools.len(), initial_pools.len());
@@ -1127,7 +1159,7 @@ fn test_oracle_twap_observations_are_timestamped() {
 
     let msg = create_default_instantiate_msg();
     let env = mock_env();
-    let info = mock_info(ADMIN, &[]);
+    let info = message_info(&admin_addr(), &[]);
     instantiate(deps.as_mut(), env.clone(), info, msg).unwrap();
 
     // First update
@@ -1137,7 +1169,7 @@ fn test_oracle_twap_observations_are_timestamped() {
     execute(
         deps.as_mut(),
         env1.clone(),
-        mock_info(ADMIN, &[]),
+        message_info(&admin_addr(), &[]),
         ExecuteMsg::UpdateOraclePrice {},
     )
     .unwrap();
@@ -1149,7 +1181,7 @@ fn test_oracle_twap_observations_are_timestamped() {
     execute(
         deps.as_mut(),
         env2.clone(),
-        mock_info(ADMIN, &[]),
+        message_info(&admin_addr(), &[]),
         ExecuteMsg::UpdateOraclePrice {},
     )
     .unwrap();
@@ -1181,7 +1213,7 @@ fn test_oracle_twap_observations_max_length() {
 
     let msg = create_default_instantiate_msg();
     let mut env = mock_env();
-    let info = mock_info(ADMIN, &[]);
+    let info = message_info(&admin_addr(), &[]);
     instantiate(deps.as_mut(), env.clone(), info, msg).unwrap();
 
     for i in 1..=15 {
@@ -1190,7 +1222,7 @@ fn test_oracle_twap_observations_max_length() {
         execute(
             deps.as_mut(),
             env.clone(),
-            mock_info(ADMIN, &[]),
+            message_info(&admin_addr(), &[]),
             ExecuteMsg::UpdateOraclePrice {},
         )
         .unwrap();
@@ -1335,7 +1367,7 @@ fn test_oracle_aggregates_multiple_pool_prices() {
 
     add_test_pool(
         &mut deps,
-        Addr::unchecked("creator_pool_1"),
+        make_addr("creator_pool_1"),
         1,
         45_000_000_000, // 45k bluechip
         10_000_000_000, // 10k creator token
@@ -1343,7 +1375,7 @@ fn test_oracle_aggregates_multiple_pool_prices() {
 
     add_test_pool(
         &mut deps,
-        Addr::unchecked("creator_pool_2"),
+        make_addr("creator_pool_2"),
         2,
         55_000_000_000, // 55k bluechip
         15_000_000_000, // 10k creator token
@@ -1351,7 +1383,7 @@ fn test_oracle_aggregates_multiple_pool_prices() {
 
     add_test_pool(
         &mut deps,
-        Addr::unchecked("creator_pool_3"),
+        make_addr("creator_pool_3"),
         3,
         50_000_000_000, // 50k bluechip
         10_000_000_000, // 10k creator token
@@ -1359,7 +1391,7 @@ fn test_oracle_aggregates_multiple_pool_prices() {
 
     let msg = create_default_instantiate_msg();
     let env = mock_env();
-    let info = mock_info(ADMIN, &[]);
+    let info = message_info(&admin_addr(), &[]);
     instantiate(deps.as_mut(), env.clone(), info, msg).unwrap();
 
     let mut future_env = env.clone();
@@ -1367,7 +1399,7 @@ fn test_oracle_aggregates_multiple_pool_prices() {
     execute(
         deps.as_mut(),
         future_env.clone(),
-        mock_info(ADMIN, &[]),
+        message_info(&admin_addr(), &[]),
         ExecuteMsg::UpdateOraclePrice {},
     )
     .unwrap();
@@ -1399,7 +1431,7 @@ fn test_oracle_filters_outlier_pool_prices() {
     setup_atom_pool(&mut deps);
 
     for i in 1..=3 {
-        let pool_addr = Addr::unchecked(format!("normal_pool_{}", i));
+        let pool_addr = make_addr(&format!("normal_pool_{}", i));
         let pool_state = PoolStateResponseForFactory {
             pool_contract_address: pool_addr.clone(),
             nft_ownership_accepted: true,
@@ -1416,7 +1448,7 @@ fn test_oracle_filters_outlier_pool_prices() {
             .unwrap();
     }
 
-    let manipulated_pool = Addr::unchecked("manipulated_pool");
+    let manipulated_pool = make_addr("manipulated_pool");
     let manipulated_state = PoolStateResponseForFactory {
         pool_contract_address: manipulated_pool.clone(),
         nft_ownership_accepted: true,
@@ -1438,7 +1470,7 @@ fn test_oracle_filters_outlier_pool_prices() {
 
     let msg = create_default_instantiate_msg();
     let env = mock_env();
-    let info = mock_info(ADMIN, &[]);
+    let info = message_info(&admin_addr(), &[]);
     instantiate(deps.as_mut(), env.clone(), info, msg).unwrap();
 
     // Check which pools were selected
@@ -1455,7 +1487,7 @@ fn test_oracle_filters_outlier_pool_prices() {
     execute(
         deps.as_mut(),
         future_env.clone(),
-        mock_info(ADMIN, &[]),
+        message_info(&admin_addr(), &[]),
         ExecuteMsg::UpdateOraclePrice {},
     )
     .unwrap();
@@ -1490,7 +1522,7 @@ fn test_oracle_handles_pools_with_different_liquidities() {
     let mut deps = mock_dependencies(&[]);
     setup_atom_pool(&mut deps);
 
-    let small_pool = Addr::unchecked("small_pool");
+    let small_pool = make_addr("small_pool");
     let small_state = PoolStateResponseForFactory {
         pool_contract_address: small_pool.clone(),
         nft_ownership_accepted: true,
@@ -1506,7 +1538,7 @@ fn test_oracle_handles_pools_with_different_liquidities() {
         .save(deps.as_mut().storage, small_pool, &small_state)
         .unwrap();
 
-    let large_pool = Addr::unchecked("large_pool");
+    let large_pool = make_addr("large_pool");
     let large_state = PoolStateResponseForFactory {
         pool_contract_address: large_pool.clone(),
         nft_ownership_accepted: true,
@@ -1524,7 +1556,7 @@ fn test_oracle_handles_pools_with_different_liquidities() {
 
     let msg = create_default_instantiate_msg();
     let env = mock_env();
-    let info = mock_info(ADMIN, &[]);
+    let info = message_info(&admin_addr(), &[]);
     instantiate(deps.as_mut(), env.clone(), info, msg).unwrap();
 
     // Update price
@@ -1533,7 +1565,7 @@ fn test_oracle_handles_pools_with_different_liquidities() {
     let result = execute(
         deps.as_mut(),
         future_env.clone(),
-        mock_info(ADMIN, &[]),
+        message_info(&admin_addr(), &[]),
         ExecuteMsg::UpdateOraclePrice {},
     );
     assert!(result.is_ok(), "Should handle pools with varying liquidity");
@@ -1544,7 +1576,7 @@ fn test_query_pyth_atom_usd_price_success() {
     let mut deps = mock_dependencies(&[]);
 
     let config = FactoryInstantiate {
-        factory_admin_address: Addr::unchecked(ADMIN),
+        factory_admin_address: admin_addr(),
         cw721_nft_contract_id: 58,
         commit_amount_for_threshold_bluechip: Uint128::zero(),
         commit_threshold_limit_usd: Uint128::new(100),
@@ -1552,12 +1584,12 @@ fn test_query_pyth_atom_usd_price_success() {
         pyth_atom_usd_price_feed_id: "ATOM_USD".to_string(),
         cw20_token_contract_id: 10,
         create_pool_wasm_contract_id: 11,
-        bluechip_wallet_address: Addr::unchecked("ubluechip"),
+        bluechip_wallet_address: ubluechip_addr(),
         commit_fee_bluechip: Decimal::percent(10),
         commit_fee_creator: Decimal::percent(10),
         max_bluechip_lock_per_pool: Uint128::new(10_000_000_000),
         creator_excess_liquidity_lock_days: 7,
-        atom_bluechip_anchor_pool_address: Addr::unchecked(ATOM_BLUECHIP_POOL_CONTRACT_ADDRESS),
+        atom_bluechip_anchor_pool_address: atom_bluechip_pool_addr(),
         bluechip_mint_contract_address: None,
     };
     FACTORYINSTANTIATEINFO
@@ -1586,7 +1618,7 @@ fn test_query_pyth_atom_usd_price_default() {
     let mut deps = mock_dependencies(&[]);
 
     let config = FactoryInstantiate {
-        factory_admin_address: Addr::unchecked(ADMIN),
+        factory_admin_address: admin_addr(),
         cw721_nft_contract_id: 58,
         commit_amount_for_threshold_bluechip: Uint128::zero(),
         commit_threshold_limit_usd: Uint128::new(100),
@@ -1594,12 +1626,12 @@ fn test_query_pyth_atom_usd_price_default() {
         pyth_atom_usd_price_feed_id: "ATOM_USD".to_string(),
         cw20_token_contract_id: 10,
         create_pool_wasm_contract_id: 11,
-        bluechip_wallet_address: Addr::unchecked("ubluechip"),
+        bluechip_wallet_address: ubluechip_addr(),
         commit_fee_bluechip: Decimal::percent(10),
         commit_fee_creator: Decimal::percent(10),
         max_bluechip_lock_per_pool: Uint128::new(10_000_000_000),
         creator_excess_liquidity_lock_days: 7,
-        atom_bluechip_anchor_pool_address: Addr::unchecked(ATOM_BLUECHIP_POOL_CONTRACT_ADDRESS),
+        atom_bluechip_anchor_pool_address: atom_bluechip_pool_addr(),
         bluechip_mint_contract_address: None,
     };
     FACTORYINSTANTIATEINFO
@@ -1618,7 +1650,7 @@ fn test_query_pyth_extreme_atom_prices() {
     let mut deps = mock_dependencies(&[]);
 
     let config = FactoryInstantiate {
-        factory_admin_address: Addr::unchecked(ADMIN),
+        factory_admin_address: admin_addr(),
         cw721_nft_contract_id: 58,
         commit_amount_for_threshold_bluechip: Uint128::zero(),
         commit_threshold_limit_usd: Uint128::new(100),
@@ -1626,12 +1658,12 @@ fn test_query_pyth_extreme_atom_prices() {
         pyth_atom_usd_price_feed_id: "ATOM_USD".to_string(),
         cw20_token_contract_id: 10,
         create_pool_wasm_contract_id: 11,
-        bluechip_wallet_address: Addr::unchecked("ubluechip"),
+        bluechip_wallet_address: ubluechip_addr(),
         commit_fee_bluechip: Decimal::percent(10),
         commit_fee_creator: Decimal::percent(10),
         max_bluechip_lock_per_pool: Uint128::new(10_000_000_000),
         creator_excess_liquidity_lock_days: 7,
-        atom_bluechip_anchor_pool_address: Addr::unchecked(ATOM_BLUECHIP_POOL_CONTRACT_ADDRESS),
+        atom_bluechip_anchor_pool_address: atom_bluechip_pool_addr(),
         bluechip_mint_contract_address: None,
     };
     FACTORYINSTANTIATEINFO
@@ -1669,7 +1701,7 @@ fn test_get_bluechip_usd_price_with_pyth() {
     setup_atom_pool(&mut deps);
 
     let config = FactoryInstantiate {
-        factory_admin_address: Addr::unchecked(ADMIN),
+        factory_admin_address: admin_addr(),
         cw721_nft_contract_id: 58,
         commit_amount_for_threshold_bluechip: Uint128::zero(),
         commit_threshold_limit_usd: Uint128::new(100),
@@ -1677,12 +1709,12 @@ fn test_get_bluechip_usd_price_with_pyth() {
         pyth_atom_usd_price_feed_id: "ATOM_USD".to_string(),
         cw20_token_contract_id: 10,
         create_pool_wasm_contract_id: 11,
-        bluechip_wallet_address: Addr::unchecked("ubluechip"),
+        bluechip_wallet_address: ubluechip_addr(),
         commit_fee_bluechip: Decimal::percent(10),
         commit_fee_creator: Decimal::percent(10),
         max_bluechip_lock_per_pool: Uint128::new(10_000_000_000),
         creator_excess_liquidity_lock_days: 7,
-        atom_bluechip_anchor_pool_address: Addr::unchecked(ATOM_BLUECHIP_POOL_CONTRACT_ADDRESS),
+        atom_bluechip_anchor_pool_address: atom_bluechip_pool_addr(),
         bluechip_mint_contract_address: None,
     };
     FACTORYINSTANTIATEINFO
@@ -1697,8 +1729,8 @@ fn test_get_bluechip_usd_price_with_pyth() {
     // Initialize oracle with TWAP price of 10 (10 Bluechip per ATOM)
     // This matches the implied ratio in the test (ATOM=$10, Bluechip=$1)
     let oracle = BlueChipPriceInternalOracle {
-        atom_pool_contract_address: Addr::unchecked(ATOM_BLUECHIP_POOL_CONTRACT_ADDRESS),
-        selected_pools: vec![ATOM_BLUECHIP_POOL_CONTRACT_ADDRESS.to_string()],
+        atom_pool_contract_address: atom_bluechip_pool_addr(),
+        selected_pools: vec![atom_bluechip_pool_addr().to_string()],
         bluechip_price_cache: PriceCache {
             last_price: Uint128::new(10_000_000), // 10.0 ratio
             last_update: 1000,
@@ -1736,7 +1768,7 @@ fn test_bluechip_usd_price_with_different_atom_prices() {
     setup_atom_pool(&mut deps);
 
     let config = FactoryInstantiate {
-        factory_admin_address: Addr::unchecked(ADMIN),
+        factory_admin_address: admin_addr(),
         cw721_nft_contract_id: 58,
         commit_amount_for_threshold_bluechip: Uint128::zero(),
         commit_threshold_limit_usd: Uint128::new(100),
@@ -1744,12 +1776,12 @@ fn test_bluechip_usd_price_with_different_atom_prices() {
         pyth_atom_usd_price_feed_id: "ATOM_USD".to_string(),
         cw20_token_contract_id: 10,
         create_pool_wasm_contract_id: 11,
-        bluechip_wallet_address: Addr::unchecked("ubluechip"),
+        bluechip_wallet_address: ubluechip_addr(),
         commit_fee_bluechip: Decimal::percent(10),
         commit_fee_creator: Decimal::percent(10),
         max_bluechip_lock_per_pool: Uint128::new(10_000_000_000),
         creator_excess_liquidity_lock_days: 7,
-        atom_bluechip_anchor_pool_address: Addr::unchecked(ATOM_BLUECHIP_POOL_CONTRACT_ADDRESS),
+        atom_bluechip_anchor_pool_address: atom_bluechip_pool_addr(),
         bluechip_mint_contract_address: None,
     };
     FACTORYINSTANTIATEINFO
@@ -1758,8 +1790,8 @@ fn test_bluechip_usd_price_with_different_atom_prices() {
 
     // Initialize oracle with TWAP price of 10 (10 Bluechip per ATOM)
     let oracle = BlueChipPriceInternalOracle {
-        atom_pool_contract_address: Addr::unchecked(ATOM_BLUECHIP_POOL_CONTRACT_ADDRESS),
-        selected_pools: vec![ATOM_BLUECHIP_POOL_CONTRACT_ADDRESS.to_string()],
+        atom_pool_contract_address: atom_bluechip_pool_addr(),
+        selected_pools: vec![atom_bluechip_pool_addr().to_string()],
         bluechip_price_cache: PriceCache {
             last_price: Uint128::new(10_000_000), // 10.0 ratio
             last_update: 1000,
@@ -1806,7 +1838,7 @@ fn test_conversion_functions_with_pyth() {
     setup_atom_pool(&mut deps);
 
     let config = FactoryInstantiate {
-        factory_admin_address: Addr::unchecked(ADMIN),
+        factory_admin_address: admin_addr(),
         cw721_nft_contract_id: 58,
         commit_amount_for_threshold_bluechip: Uint128::zero(),
         commit_threshold_limit_usd: Uint128::new(100),
@@ -1814,12 +1846,12 @@ fn test_conversion_functions_with_pyth() {
         pyth_atom_usd_price_feed_id: "ATOM_USD".to_string(),
         cw20_token_contract_id: 10,
         create_pool_wasm_contract_id: 11,
-        bluechip_wallet_address: Addr::unchecked("ubluechip"),
+        bluechip_wallet_address: ubluechip_addr(),
         commit_fee_bluechip: Decimal::percent(10),
         commit_fee_creator: Decimal::percent(10),
         max_bluechip_lock_per_pool: Uint128::new(10_000_000_000),
         creator_excess_liquidity_lock_days: 7,
-        atom_bluechip_anchor_pool_address: Addr::unchecked(ATOM_BLUECHIP_POOL_CONTRACT_ADDRESS),
+        atom_bluechip_anchor_pool_address: atom_bluechip_pool_addr(),
         bluechip_mint_contract_address: None,
     };
     FACTORYINSTANTIATEINFO
@@ -1833,8 +1865,8 @@ fn test_conversion_functions_with_pyth() {
 
     // Initialize oracle
     let oracle = BlueChipPriceInternalOracle {
-        atom_pool_contract_address: Addr::unchecked(ATOM_BLUECHIP_POOL_CONTRACT_ADDRESS),
-        selected_pools: vec![ATOM_BLUECHIP_POOL_CONTRACT_ADDRESS.to_string()],
+        atom_pool_contract_address: atom_bluechip_pool_addr(),
+        selected_pools: vec![atom_bluechip_pool_addr().to_string()],
         bluechip_price_cache: PriceCache {
             last_price: Uint128::new(1_000_000), // $1.00
             last_update: 1000,
@@ -1886,7 +1918,7 @@ fn test_bluechip_minting_on_threshold_crossing() {
 
     setup_atom_pool(&mut deps);
     let msg = FactoryInstantiate {
-        factory_admin_address: Addr::unchecked(ADMIN),
+        factory_admin_address: admin_addr(),
         cw721_nft_contract_id: 58,
         commit_amount_for_threshold_bluechip: Uint128::zero(),
         commit_threshold_limit_usd: Uint128::new(25_000_000_000),
@@ -1894,17 +1926,17 @@ fn test_bluechip_minting_on_threshold_crossing() {
         pyth_atom_usd_price_feed_id: "BLUECHIP".to_string(),
         cw20_token_contract_id: 10,
         create_pool_wasm_contract_id: 11,
-        bluechip_wallet_address: Addr::unchecked("bluechip_wallet"),
+        bluechip_wallet_address: bluechip_wallet_addr(),
         commit_fee_bluechip: Decimal::percent(1),
         commit_fee_creator: Decimal::percent(5),
         max_bluechip_lock_per_pool: Uint128::new(10_000_000_000),
         creator_excess_liquidity_lock_days: 7,
-        atom_bluechip_anchor_pool_address: Addr::unchecked(ATOM_BLUECHIP_POOL_CONTRACT_ADDRESS),
+        atom_bluechip_anchor_pool_address: atom_bluechip_pool_addr(),
         bluechip_mint_contract_address: None,
     };
 
     let env = mock_env();
-    let info = mock_info(ADMIN, &[]);
+    let info = message_info(&admin_addr(), &[]);
     instantiate(deps.as_mut(), env.clone(), info, msg).unwrap();
 
     // Create first pool - should NOT mint (minting moved to threshold crossing)
@@ -1917,7 +1949,7 @@ fn test_bluechip_minting_on_threshold_crossing() {
         },
     };
 
-    let info = mock_info(ADMIN, &[]);
+    let info = message_info(&admin_addr(), &[]);
     let res = execute(deps.as_mut(), env.clone(), info, create_msg).unwrap();
 
     // Pool creation should NOT have a mint BankMsg anymore
@@ -1939,7 +1971,7 @@ fn test_bluechip_minting_on_threshold_crossing() {
 
     // Now simulate the pool notifying threshold crossed
     let notify_msg = ExecuteMsg::NotifyThresholdCrossed { pool_id: 1 };
-    let pool_info = mock_info(pool_addr.as_str(), &[]);
+    let pool_info = message_info(&pool_addr, &[]);
     let res = execute(deps.as_mut(), env.clone(), pool_info, notify_msg).unwrap();
 
     // Should now have a mint message
@@ -1954,7 +1986,7 @@ fn test_bluechip_minting_on_threshold_crossing() {
     );
 
     if let CosmosMsg::Bank(BankMsg::Send { to_address, amount }) = &mint_msg.unwrap().msg {
-        assert_eq!(to_address, "bluechip_wallet");
+        assert_eq!(to_address, bluechip_wallet_addr().as_str());
         assert_eq!(amount.len(), 1);
         assert_eq!(amount[0].denom, "ubluechip");
         assert!(amount[0].amount > Uint128::new(499_000_000));
@@ -1963,7 +1995,7 @@ fn test_bluechip_minting_on_threshold_crossing() {
 
     // Verify double-minting is prevented
     let notify_msg2 = ExecuteMsg::NotifyThresholdCrossed { pool_id: 1 };
-    let pool_info2 = mock_info(pool_addr.as_str(), &[]);
+    let pool_info2 = message_info(&pool_addr, &[]);
     let err = execute(deps.as_mut(), env.clone(), pool_info2, notify_msg2);
     assert!(err.is_err(), "Should reject duplicate threshold notification");
 
@@ -1977,7 +2009,7 @@ fn test_no_mint_when_amount_is_zero() {
     let mut deps = mock_dependencies(&[]);
     setup_atom_pool(&mut deps);
     let msg = FactoryInstantiate {
-        factory_admin_address: Addr::unchecked(ADMIN),
+        factory_admin_address: admin_addr(),
         cw721_nft_contract_id: 58,
         commit_amount_for_threshold_bluechip: Uint128::zero(),
         commit_threshold_limit_usd: Uint128::new(25_000_000_000),
@@ -1985,17 +2017,17 @@ fn test_no_mint_when_amount_is_zero() {
         pyth_atom_usd_price_feed_id: "BLUECHIP".to_string(),
         cw20_token_contract_id: 10,
         create_pool_wasm_contract_id: 11,
-        bluechip_wallet_address: Addr::unchecked("bluechip_wallet"),
+        bluechip_wallet_address: bluechip_wallet_addr(),
         commit_fee_bluechip: Decimal::percent(1),
         commit_fee_creator: Decimal::percent(5),
         max_bluechip_lock_per_pool: Uint128::new(10_000_000_000),
         creator_excess_liquidity_lock_days: 7,
-        atom_bluechip_anchor_pool_address: Addr::unchecked(ATOM_BLUECHIP_POOL_CONTRACT_ADDRESS),
+        atom_bluechip_anchor_pool_address: atom_bluechip_pool_addr(),
         bluechip_mint_contract_address: None,
     };
 
     let env = mock_env();
-    instantiate(deps.as_mut(), env.clone(), mock_info(ADMIN, &[]), msg).unwrap();
+    instantiate(deps.as_mut(), env.clone(), message_info(&admin_addr(), &[]), msg).unwrap();
 
     POOL_COUNTER
         .save(&mut deps.storage, &10_000_000_000_000)
@@ -2014,7 +2046,7 @@ fn test_no_mint_when_amount_is_zero() {
         },
     };
 
-    let info = mock_info(ADMIN, &[]);
+    let info = message_info(&admin_addr(), &[]);
     let res = execute(deps.as_mut(), env, info, create_msg).unwrap();
 
     let has_bank_msg = res
@@ -2040,8 +2072,8 @@ fn create_test_pool_msg() -> CreatePool {
         cw20_token_contract_id: 10,
         threshold_payout: None,
         commit_fee_info: CommitFeeInfo {
-            bluechip_wallet_address: Addr::unchecked("ubluechip"),
-            creator_wallet_address: Addr::unchecked(ADMIN),
+            bluechip_wallet_address: ubluechip_addr(),
+            creator_wallet_address: admin_addr(),
             commit_fee_bluechip: Decimal::percent(1),
             commit_fee_creator: Decimal::percent(5),
         },

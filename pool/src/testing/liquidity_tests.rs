@@ -1,7 +1,7 @@
 
 use std::str::FromStr;
 
-use cosmwasm_std::{testing::{mock_dependencies, mock_env, mock_info, MockApi, MockQuerier, MockStorage, }, to_json_binary, Addr, BankMsg, Binary, Coin, ContractResult, CosmosMsg, Decimal, OwnedDeps, SystemError, SystemResult, Timestamp, Uint128, WasmMsg, WasmQuery
+use cosmwasm_std::{testing::{mock_dependencies, mock_env, message_info, MockApi, MockQuerier, MockStorage, }, to_json_binary, Addr, BankMsg, Binary, Coin, ContractResult, CosmosMsg, Decimal, OwnedDeps, SystemError, SystemResult, Timestamp, Uint128, WasmMsg, WasmQuery
 };
 
 use cw721::OwnerOfResponse;
@@ -27,7 +27,7 @@ fn test_deposit_liquidity_first_position() {
     let bluechip_amount = Uint128::new(1_000_000_000); // 1k bluechip
     let token_amount = Uint128::new(14_893_617_021); // Approximately correct ratio
     
-    let info = mock_info(user.as_str(), &[Coin {
+    let info = message_info(&user, &[Coin {
         denom: "ubluechip".to_string(),
         amount: bluechip_amount,
     }]);
@@ -69,7 +69,7 @@ fn test_deposit_liquidity_with_slippage() {
     let bluechip_amount = Uint128::new(1_000_000_000);
     let token_amount = Uint128::new(10_000_000_000); // Incorrect ratio
     
-    let info = mock_info(user.as_str(), &[Coin {
+    let info = message_info(&user, &[Coin {
         denom: "ubluechip".to_string(),
         amount: bluechip_amount,
     }]);
@@ -129,7 +129,7 @@ fn test_add_to_existing_position() {
     let bluechip_amount = Uint128::new(500_000_000); // 500 bluechip
     let token_amount = Uint128::new(7_500_000_000); // Approximately correct ratio
     
-    let info = mock_info(user.as_str(), &[Coin {
+    let info = message_info(&user, &[Coin {
         denom: "ubluechip".to_string(),
         amount: bluechip_amount,
     }]);
@@ -188,7 +188,7 @@ fn test_add_to_position_not_owner() {
     
     let env = mock_env();
     let user = Addr::unchecked("liquidity_provider");
-    let info = mock_info(user.as_str(), &[Coin {
+    let info = message_info(&user, &[Coin {
         denom: "ubluechip".to_string(),
         amount: Uint128::new(1_000_000),
     }]);
@@ -254,7 +254,7 @@ fn test_collect_fees_with_accrued_fees() {
     POOL_FEE_STATE.save(&mut deps.storage, &fee_state).unwrap();
     
     let env = mock_env();
-    let info = mock_info("fee_collector", &[]);
+    let info = message_info(&Addr::unchecked("fee_collector"), &[]);
     
     let res = execute_collect_fees(
         deps.as_mut(),
@@ -306,7 +306,7 @@ fn test_remove_all_liquidity() {
     });
     
     let env = mock_env();
-    let info = mock_info("liquidity_provider", &[]);
+    let info = message_info(&Addr::unchecked("liquidity_provider"), &[]);
     let res = execute_remove_all_liquidity(
         deps.as_mut(),
         env,
@@ -336,7 +336,7 @@ fn test_deposit_liquidity_imbalanced_amounts() {
     let bluechip_amount = Uint128::new(10_000_000_000); // 10k bluechip
     let token_amount = Uint128::new(1_000_000_000); // Only 1k tokens (should need ~149k)
     
-    let info = mock_info(user.as_str(), &[Coin {
+    let info = message_info(&user, &[Coin {
         denom: "ubluechip".to_string(),
         amount: bluechip_amount,
     }]);
@@ -398,7 +398,7 @@ fn test_remove_liquidity_with_slippage_protection() {
     POOL_STATE.save(&mut deps.storage, &pool_state).unwrap();
     
     let env = mock_env();
-    let info = mock_info("liquidity_provider", &[]);
+    let info = message_info(&Addr::unchecked("liquidity_provider"), &[]);
     
     let msg = ExecuteMsg::RemoveAllLiquidity {
         position_id: "1".to_string(),
@@ -449,7 +449,7 @@ fn test_remove_partial_liquidity_amount() {
     // Create position with 1M liquidity
     
     let env = mock_env();
-    let info = mock_info("liquidity_provider", &[]);
+    let info = message_info(&Addr::unchecked("liquidity_provider"), &[]);
     
     // Remove 300k liquidity
     let msg = ExecuteMsg::RemovePartialLiquidity {
@@ -503,7 +503,7 @@ fn test_remove_partial_liquidity_by_percent() {
     });
     
     let env = mock_env();
-    let info = mock_info("liquidity_provider", &[]);
+    let info = message_info(&Addr::unchecked("liquidity_provider"), &[]);
     
     let msg = ExecuteMsg::RemovePartialLiquidityByPercent {
         position_id: "1".to_string(),
@@ -549,7 +549,7 @@ fn test_zero_liquidity_fee_collection() {
     
     // Try to update fee growth
     let env = mock_env();
-    let info = mock_info("trader", &[Coin {
+    let info = message_info(&Addr::unchecked("trader"), &[Coin {
         denom: "ubluechip".to_string(),
         amount: Uint128::new(1_000_000),
     }]);
@@ -622,7 +622,7 @@ fn test_collect_fees_no_fees_accrued() {
         }
     });
     let env = mock_env();
-    let info = mock_info("fee_collector", &[]);
+    let info = message_info(&Addr::unchecked("fee_collector"), &[]);
     let msg = ExecuteMsg::CollectFees {
         position_id: "1".to_string(),
     };
@@ -663,7 +663,7 @@ fn test_invalid_percentage_removal() {
         }
     });
     let env = mock_env();
-    let info = mock_info("liquidity_provider", &[]);
+    let info = message_info(&Addr::unchecked("liquidity_provider"), &[]);
     
     // Try to remove more than 100%
     let msg = ExecuteMsg::RemovePartialLiquidityByPercent {
@@ -833,7 +833,7 @@ fn test_fee_calculation_after_swap() {
     POOL_FEE_STATE.save(&mut deps.storage, &fee_state).unwrap();
     
     let env = mock_env();
-    let info = mock_info("liquidity_provider", &[]);
+    let info = message_info(&Addr::unchecked("liquidity_provider"), &[]);
     
     // Collect fees
     let res = execute_collect_fees(
@@ -908,7 +908,7 @@ fn test_multiple_positions_independent_fee_tracking() {
     let env = mock_env();
     
     // User1 collects fees - should get fees from 0 to 200
-    let info1 = mock_info("user1", &[]);
+    let info1 = message_info(&Addr::unchecked("user1"), &[]);
     let res1 = execute_collect_fees(deps.as_mut(), env.clone(), info1, "1".to_string()).unwrap();
     let fees_user1 = Uint128::from_str(
         &res1.attributes.iter().find(|a| a.key == "fees_0").unwrap().value
@@ -939,7 +939,7 @@ fn test_multiple_positions_independent_fee_tracking() {
         }
     });
     
-    let info2 = mock_info("user2", &[]);
+    let info2 = message_info(&Addr::unchecked("user2"), &[]);
     let res2 = execute_collect_fees(deps.as_mut(), env, info2, "2".to_string()).unwrap();
     let fees_user2 = Uint128::from_str(
         &res2.attributes.iter().find(|a| a.key == "fees_0").unwrap().value
@@ -988,7 +988,7 @@ fn test_remove_more_than_position_has() {
     });
     
     let env = mock_env();
-    let info = mock_info("liquidity_provider", &[]);
+    let info = message_info(&Addr::unchecked("liquidity_provider"), &[]);
     
     // Try to remove more than exists
     let msg = ExecuteMsg::RemovePartialLiquidity {
@@ -1040,7 +1040,7 @@ fn test_remove_zero_liquidity() {
     });
     
     let env = mock_env();
-    let info = mock_info("liquidity_provider", &[]);
+    let info = message_info(&Addr::unchecked("liquidity_provider"), &[]);
     
     let msg = ExecuteMsg::RemovePartialLiquidity {
         position_id: "1".to_string(),
@@ -1094,7 +1094,7 @@ fn test_position_ownership_transfer() {
     let env = mock_env();
     
     // Original owner can collect fees
-    let info = mock_info("original_owner", &[]);
+    let info = message_info(&Addr::unchecked("original_owner"), &[]);
     let res = execute_collect_fees(deps.as_mut(), env.clone(), info, "1".to_string());
     assert!(res.is_ok());
     
@@ -1123,12 +1123,12 @@ fn test_position_ownership_transfer() {
         }
     });
     
-    let info_orig = mock_info("original_owner", &[]);
+    let info_orig = message_info(&Addr::unchecked("original_owner"), &[]);
     let err = execute_collect_fees(deps.as_mut(), env.clone(), info_orig, "1".to_string());
     assert!(err.is_err());
     
     // New owner can now collect fees
-    let info_new = mock_info("new_owner", &[]);
+    let info_new = message_info(&Addr::unchecked("new_owner"), &[]);
     let res = execute_collect_fees(deps.as_mut(), env, info_new, "1".to_string());
     assert!(res.is_ok());
 }
@@ -1174,7 +1174,7 @@ fn test_add_to_position_collects_fees_first() {
     
     let env = mock_env();
     let user = Addr::unchecked("liquidity_provider");
-    let info = mock_info(user.as_str(), &[Coin {
+    let info = message_info(&user, &[Coin {
         denom: "ubluechip".to_string(),
         amount: Uint128::new(500_000_000),
     }]);
@@ -1242,7 +1242,7 @@ fn test_transaction_deadline_enforcement() {
     let mut env = mock_env();
     env.block.time = Timestamp::from_seconds(1_700_000_000); // Current time
     
-    let info = mock_info("liquidity_provider", &[]);
+    let info = message_info(&Addr::unchecked("liquidity_provider"), &[]);
     
     // Set deadline in the past
     let past_deadline = Timestamp::from_seconds(1_600_000_000);
@@ -1327,7 +1327,7 @@ fn test_dust_position_low_fees() {
     });
     
     let env = mock_env();
-    let info = mock_info("dust_provider", &[]);
+    let info = message_info(&Addr::unchecked("dust_provider"), &[]);
     
     let res = execute_collect_fees(deps.as_mut(), env, info, "1".to_string()).unwrap();
     
@@ -1355,7 +1355,7 @@ fn test_refund_calculation_accuracy() {
     let sent_bluechip = Uint128::new(10_000_000_000); // 10k
     let sent_token = Uint128::new(1_000_000_000); // 1k
     
-    let info = mock_info(user.as_str(), &[Coin {
+    let info = message_info(&user, &[Coin {
         denom: "ubluechip".to_string(),
         amount: sent_bluechip,
     }]);
@@ -1434,7 +1434,7 @@ fn test_pool_total_liquidity_consistency() {
     });
     
     let env = mock_env();
-    let info = mock_info("user1", &[]);
+    let info = message_info(&Addr::unchecked("user1"), &[]);
     execute_remove_all_liquidity(
         deps.as_mut(),
         env,
@@ -1789,11 +1789,11 @@ fn test_fee_distribution_proportional() {
     let lp2 = Addr::unchecked("lp2");
     
     // LP1 deposits 1_000_000 bluechip + proportional token (Optimal size -> 1.0 multiplier)
-    let info1 = mock_info("lp1", &[Coin { denom: "ubluechip".to_string(), amount: Uint128::new(1_000_000) }]);
+    let info1 = message_info(&Addr::unchecked("lp1"), &[Coin { denom: "ubluechip".to_string(), amount: Uint128::new(1_000_000) }]);
     execute_deposit_liquidity(deps.as_mut(), mock_env(), info1, lp1.clone(), Uint128::new(1_000_000), Uint128::new(15_000_000), None, None, None).unwrap();
     
     // LP2 deposits 2_000_000 bluechip + proportional token (2x LP1, also > Optimal -> 1.0 multiplier)
-    let info2 = mock_info("lp2", &[Coin { denom: "ubluechip".to_string(), amount: Uint128::new(2_000_000) }]);
+    let info2 = message_info(&Addr::unchecked("lp2"), &[Coin { denom: "ubluechip".to_string(), amount: Uint128::new(2_000_000) }]);
     execute_deposit_liquidity(deps.as_mut(), mock_env(), info2, lp2.clone(), Uint128::new(2_000_000), Uint128::new(30_000_000), None, None, None).unwrap();
 
     // Now generate some fees
@@ -1806,10 +1806,10 @@ fn test_fee_distribution_proportional() {
 
     // Collect fees for LP1
     // LP1 has position ID "2" (1 is seed, 2 is LP1, 3 is LP2)
-    let res1 = execute_collect_fees(deps.as_mut(), mock_env(), mock_info("lp1", &[]), "2".to_string()).unwrap();
+    let res1 = execute_collect_fees(deps.as_mut(), mock_env(), message_info(&Addr::unchecked("lp1"), &[]), "2".to_string()).unwrap();
     
     // Collect fees for LP2
-    let res2 = execute_collect_fees(deps.as_mut(), mock_env(), mock_info("lp2", &[]), "3".to_string()).unwrap();
+    let res2 = execute_collect_fees(deps.as_mut(), mock_env(), message_info(&Addr::unchecked("lp2"), &[]), "3".to_string()).unwrap();
 
     let fee1 = res1.attributes.iter().find(|a| a.key == "fees_0").unwrap().value.parse::<u128>().unwrap();
     let fee2 = res2.attributes.iter().find(|a| a.key == "fees_0").unwrap().value.parse::<u128>().unwrap();
@@ -1856,7 +1856,7 @@ fn test_deposit_underpayment_overflow() {
     let bluechip_amount = Uint128::new(10); 
     let token_amount = Uint128::new(9_984_614_792); 
     
-    let info = mock_info(user.as_str(), &[Coin {
+    let info = message_info(&user, &[Coin {
         denom: "ubluechip".to_string(),
         amount: bluechip_amount,
     }]);

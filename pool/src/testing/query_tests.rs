@@ -198,16 +198,17 @@ fn test_query_positions_by_owner() {
     let mut deps = mock_dependencies();
     setup_pool_post_threshold(&mut deps);
 
+    let alice = MockApi::default().addr_make("alice");
+    let bob = MockApi::default().addr_make("bob");
+    let charlie = MockApi::default().addr_make("charlie");
+
     // Create positions for different owners
-    create_test_position(&mut deps, 1, "alice", Uint128::new(1_000_000));
-    create_test_position(&mut deps, 2, "bob", Uint128::new(2_000_000));
-    create_test_position(&mut deps, 3, "alice", Uint128::new(3_000_000));
-    create_test_position(&mut deps, 4, "charlie", Uint128::new(500_000));
+    create_test_position(&mut deps, 1, alice.as_str(), Uint128::new(1_000_000));
+    create_test_position(&mut deps, 2, bob.as_str(), Uint128::new(2_000_000));
+    create_test_position(&mut deps, 3, alice.as_str(), Uint128::new(3_000_000));
+    create_test_position(&mut deps, 4, charlie.as_str(), Uint128::new(500_000));
 
     // Register in OWNER_POSITIONS secondary index
-    let alice = Addr::unchecked("alice");
-    let bob = Addr::unchecked("bob");
-    let charlie = Addr::unchecked("charlie");
     OWNER_POSITIONS.save(&mut deps.storage, (&alice, "1"), &true).unwrap();
     OWNER_POSITIONS.save(&mut deps.storage, (&bob, "2"), &true).unwrap();
     OWNER_POSITIONS.save(&mut deps.storage, (&alice, "3"), &true).unwrap();
@@ -217,7 +218,7 @@ fn test_query_positions_by_owner() {
 
     // Query Alice's positions
     let msg = QueryMsg::PositionsByOwner {
-        owner: "alice".to_string(),
+        owner: MockApi::default().addr_make("alice").to_string(),
         start_after: None,
         limit: None,
     };
@@ -228,12 +229,12 @@ fn test_query_positions_by_owner() {
 
     // Verify both are Alice's
     for pos in &positions.positions {
-        assert_eq!(pos.owner, Addr::unchecked("alice"));
+        assert_eq!(pos.owner, MockApi::default().addr_make("alice"));
     }
 
     // Query Bob's positions
     let msg = QueryMsg::PositionsByOwner {
-        owner: "bob".to_string(),
+        owner: MockApi::default().addr_make("bob").to_string(),
         start_after: None,
         limit: None,
     };
@@ -241,7 +242,7 @@ fn test_query_positions_by_owner() {
     let positions: PositionsResponse = from_json(res).unwrap();
 
     assert_eq!(positions.positions.len(), 1, "Bob should have 1 position");
-    assert_eq!(positions.positions[0].owner, Addr::unchecked("bob"));
+    assert_eq!(positions.positions[0].owner, MockApi::default().addr_make("bob"));
 }
 
 #[test]
@@ -253,7 +254,7 @@ fn test_query_positions_by_owner_empty() {
 
     // Query for user with no positions
     let msg = QueryMsg::PositionsByOwner {
-        owner: "nobody".to_string(),
+        owner: MockApi::default().addr_make("nobody").to_string(),
         start_after: None,
         limit: None,
     };
@@ -268,11 +269,11 @@ fn test_query_positions_by_owner_pagination() {
     let mut deps = mock_dependencies();
     setup_pool_post_threshold(&mut deps);
 
-    let alice = Addr::unchecked("alice");
+    let alice = MockApi::default().addr_make("alice");
 
     // Create 5 positions for Alice
     for i in 1..=5 {
-        create_test_position(&mut deps, i, "alice", Uint128::new(1_000_000));
+        create_test_position(&mut deps, i, alice.as_str(), Uint128::new(1_000_000));
         OWNER_POSITIONS.save(&mut deps.storage, (&alice, &i.to_string()), &true).unwrap();
     }
 
@@ -280,7 +281,7 @@ fn test_query_positions_by_owner_pagination() {
 
     // Get first 2
     let msg = QueryMsg::PositionsByOwner {
-        owner: "alice".to_string(),
+        owner: MockApi::default().addr_make("alice").to_string(),
         start_after: None,
         limit: Some(2),
     };
@@ -291,7 +292,7 @@ fn test_query_positions_by_owner_pagination() {
     // Get next page starting after the last position ID from page 1
     let last_id = &page1.positions.last().unwrap().position_id;
     let msg = QueryMsg::PositionsByOwner {
-        owner: "alice".to_string(),
+        owner: MockApi::default().addr_make("alice").to_string(),
         start_after: Some(last_id.clone()),
         limit: Some(2),
     };
@@ -375,7 +376,7 @@ fn test_query_commiting_info_exists() {
     let mut deps = mock_dependencies();
     setup_pool_storage(&mut deps);
 
-    let user = Addr::unchecked("committer1");
+    let user = MockApi::default().addr_make("committer1");
     COMMIT_INFO.save(&mut deps.storage, &user, &Commiting {
         pool_contract_address: Addr::unchecked("pool_contract"),
         commiter: user.clone(),
@@ -387,7 +388,7 @@ fn test_query_commiting_info_exists() {
     }).unwrap();
 
     let env = mock_env();
-    let msg = QueryMsg::CommitingInfo { wallet: "committer1".to_string() };
+    let msg = QueryMsg::CommitingInfo { wallet: MockApi::default().addr_make("committer1").to_string() };
     let res = query(deps.as_ref(), env, msg).unwrap();
     let info: Option<Commiting> = from_json(res).unwrap();
 
@@ -403,7 +404,7 @@ fn test_query_commiting_info_not_found() {
     setup_pool_storage(&mut deps);
 
     let env = mock_env();
-    let msg = QueryMsg::CommitingInfo { wallet: "nobody".to_string() };
+    let msg = QueryMsg::CommitingInfo { wallet: MockApi::default().addr_make("nobody").to_string() };
     let res = query(deps.as_ref(), env, msg).unwrap();
     let info: Option<Commiting> = from_json(res).unwrap();
 
@@ -416,7 +417,7 @@ fn test_query_last_commited_exists() {
     let mut deps = mock_dependencies();
     setup_pool_storage(&mut deps);
 
-    let user = Addr::unchecked("committer1");
+    let user = MockApi::default().addr_make("committer1");
     COMMIT_INFO.save(&mut deps.storage, &user, &Commiting {
         pool_contract_address: Addr::unchecked("pool_contract"),
         commiter: user.clone(),
@@ -428,7 +429,7 @@ fn test_query_last_commited_exists() {
     }).unwrap();
 
     let env = mock_env();
-    let msg = QueryMsg::LastCommited { wallet: "committer1".to_string() };
+    let msg = QueryMsg::LastCommited { wallet: MockApi::default().addr_make("committer1").to_string() };
     let res = query(deps.as_ref(), env, msg).unwrap();
     let resp: LastCommitedResponse = from_json(res).unwrap();
 
@@ -444,7 +445,7 @@ fn test_query_last_commited_not_found() {
     setup_pool_storage(&mut deps);
 
     let env = mock_env();
-    let msg = QueryMsg::LastCommited { wallet: "nobody".to_string() };
+    let msg = QueryMsg::LastCommited { wallet: MockApi::default().addr_make("nobody").to_string() };
     let res = query(deps.as_ref(), env, msg).unwrap();
     let resp: LastCommitedResponse = from_json(res).unwrap();
 

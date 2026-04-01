@@ -3,10 +3,11 @@ use crate::contract::{execute, instantiate};
 use crate::msg::CommitFeeInfo;
 use crate::msg::{ExecuteMsg, PoolConfigUpdate, PoolInstantiateMsg};
 use crate::state::{ORACLE_INFO, POOL_PAUSED, POOL_SPECS, POOL_STATE};
-use cosmwasm_std::testing::{mock_dependencies, mock_env, mock_info};
+use cosmwasm_std::testing::{mock_dependencies, mock_env, message_info, MockApi};
 use cosmwasm_std::{Addr, Coin, Decimal, Uint128};
 
 fn mock_instantiate_msg() -> PoolInstantiateMsg {
+    let api = MockApi::default();
     PoolInstantiateMsg {
         pool_id: 1,
         pool_token_info: [
@@ -14,7 +15,7 @@ fn mock_instantiate_msg() -> PoolInstantiateMsg {
                 denom: "ublue".to_string(),
             },
             TokenType::CreatorToken {
-                contract_addr: Addr::unchecked("creator_token"),
+                contract_addr: api.addr_make("creator_token"),
             },
         ],
         cw20_token_contract_id: 123,
@@ -40,7 +41,7 @@ fn mock_instantiate_msg() -> PoolInstantiateMsg {
 fn test_pause_unpause() {
     let mut deps = mock_dependencies();
     let msg = mock_instantiate_msg();
-    let info = mock_info("factory_addr", &[]);
+    let info = message_info(&Addr::unchecked("factory_addr"), &[]);
     instantiate(deps.as_mut(), mock_env(), info.clone(), msg).unwrap();
 
     // Verify initial state (not paused)
@@ -67,9 +68,9 @@ fn test_pause_unpause() {
         to: None,
         transaction_deadline: None,
     };
-    let user_info = mock_info("user", &[Coin::new(100, "ublue")]);
+    let user_info = message_info(&Addr::unchecked("user"), &[Coin::new(100u128, "ublue")]);
     let res = execute(deps.as_mut(), mock_env(), user_info.clone(), swap_msg);
-   
+
     match res {
         Err(e) => {
             let debug_err = format!("{:?}", e);
@@ -90,7 +91,7 @@ fn test_pause_unpause() {
 fn test_emergency_withdraw() {
     let mut deps = mock_dependencies();
     let msg = mock_instantiate_msg();
-    let info = mock_info("factory_addr", &[]);
+    let info = message_info(&Addr::unchecked("factory_addr"), &[]);
     let base_env = mock_env();
     instantiate(deps.as_mut(), base_env.clone(), info.clone(), msg).unwrap();
 
@@ -159,7 +160,7 @@ fn test_emergency_withdraw() {
 fn test_cancel_emergency_withdraw() {
     let mut deps = mock_dependencies();
     let msg = mock_instantiate_msg();
-    let info = mock_info("factory_addr", &[]);
+    let info = message_info(&Addr::unchecked("factory_addr"), &[]);
     instantiate(deps.as_mut(), mock_env(), info.clone(), msg).unwrap();
 
     // Inject reserves.
@@ -201,14 +202,16 @@ fn test_cancel_emergency_withdraw() {
 fn test_update_config_all() {
     let mut deps = mock_dependencies();
     let msg = mock_instantiate_msg();
-    let info = mock_info("factory_addr", &[]);
+    let api = MockApi::default();
+    let new_oracle = api.addr_make("new_oracle");
+    let info = message_info(&Addr::unchecked("factory_addr"), &[]);
     instantiate(deps.as_mut(), mock_env(), info.clone(), msg).unwrap();
 
     let update = PoolConfigUpdate {
         lp_fee: Some(Decimal::percent(5)),    // was 0.3%
         min_commit_interval: Some(60),        // was something else
         usd_payment_tolerance_bps: Some(200), // 2%
-        oracle_address: Some("new_oracle".to_string()),
+        oracle_address: Some(new_oracle.to_string()),
     };
 
     let exec_msg = ExecuteMsg::UpdateConfigFromFactory { update };
@@ -221,17 +224,17 @@ fn test_update_config_all() {
     assert_eq!(specs.usd_payment_tolerance_bps, 200);
 
     let oracle_info = ORACLE_INFO.load(&deps.storage).unwrap();
-    assert_eq!(oracle_info.oracle_addr, Addr::unchecked("new_oracle"));
+    assert_eq!(oracle_info.oracle_addr, new_oracle);
 }
 
 #[test]
 fn test_unauthorized_admin_actions() {
     let mut deps = mock_dependencies();
     let msg = mock_instantiate_msg();
-    let info = mock_info("factory_addr", &[]);
+    let info = message_info(&Addr::unchecked("factory_addr"), &[]);
     instantiate(deps.as_mut(), mock_env(), info.clone(), msg).unwrap();
 
-    let hacker = mock_info("hacker", &[]);
+    let hacker = message_info(&Addr::unchecked("hacker"), &[]);
 
     let err = execute(
         deps.as_mut(),

@@ -1,6 +1,6 @@
 use cosmwasm_std::{
-    testing::{mock_dependencies, mock_env, mock_info},
-    Decimal,
+    testing::{mock_dependencies, mock_env, message_info},
+    Addr, Decimal,
 };
 
 use crate::{
@@ -16,7 +16,7 @@ fn test_pool_update_config_from_factory() {
     setup_pool_storage(&mut deps);
 
     // Only factory can update
-    let factory_info = mock_info("factory_contract", &[]);
+    let factory_info = message_info(&Addr::unchecked("factory_contract"), &[]);
     let update = PoolConfigUpdate {
         lp_fee: Some(Decimal::permille(3)),   // 0.3% LP fee
         min_commit_interval: Some(120),       // 2 minutes between commits
@@ -41,7 +41,7 @@ fn test_pool_update_config_from_factory() {
         oracle_address: None,
     };
 
-    let hacker = mock_info("hacker", &[]);
+    let hacker = message_info(&Addr::unchecked("hacker"), &[]);
     let err = execute(
         deps.as_mut(),
         mock_env(),

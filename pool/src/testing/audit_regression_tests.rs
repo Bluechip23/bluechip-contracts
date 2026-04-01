@@ -1,5 +1,5 @@
 use cosmwasm_std::{
-    testing::{mock_dependencies, mock_env, mock_info, MockApi, MockQuerier, MockStorage},
+    testing::{mock_dependencies, mock_env, message_info, MockApi, MockQuerier, MockStorage},
     Addr, Coin, CosmosMsg, Decimal, OwnedDeps,
     Timestamp, Uint128,
 };
@@ -29,7 +29,7 @@ fn mock_dependencies_with_balance(
 ) -> OwnedDeps<MockStorage, MockApi, MockQuerier> {
     let mut deps = mock_dependencies();
     deps.querier
-        .update_balance(cosmwasm_std::testing::MOCK_CONTRACT_ADDR, balances.to_vec());
+        .bank.update_balance(cosmwasm_std::testing::MOCK_CONTRACT_ADDR, balances.to_vec());
     deps
 }
 
@@ -54,7 +54,7 @@ fn test_swap_reserve_deducts_return_and_commission() {
     let res = execute_simple_swap(
         &mut deps_mut,
         env.clone(),
-        mock_info(user.as_str(), &[Coin { denom: "ubluechip".to_string(), amount: swap_amount }]),
+        message_info(&user, &[Coin { denom: "ubluechip".to_string(), amount: swap_amount }]),
         user.clone(),
         TokenInfo {
             info: TokenType::Bluechip { denom: "ubluechip".to_string() },
@@ -112,7 +112,7 @@ fn test_recover_stuck_reentrancy_guard() {
     assert!(RATE_LIMIT_GUARD.load(&deps.storage).unwrap());
 
     let env = mock_env();
-    let factory_info = mock_info("factory_contract", &[]);
+    let factory_info = message_info(&Addr::unchecked("factory_contract"), &[]);
 
     // Recover via RecoverStuckStates
     let msg = ExecuteMsg::RecoverStuckStates {
@@ -144,7 +144,7 @@ fn test_recover_stuck_reentrancy_guard_unauthorized() {
 
     let env = mock_env();
     // Not the factory - should fail
-    let hacker_info = mock_info("hacker", &[]);
+    let hacker_info = message_info(&Addr::unchecked("hacker"), &[]);
 
     let msg = ExecuteMsg::RecoverStuckStates {
         recovery_type: RecoveryType::StuckReentrancyGuard,
@@ -170,7 +170,7 @@ fn test_recover_not_stuck_returns_error() {
     RATE_LIMIT_GUARD.save(&mut deps.storage, &false).unwrap();
 
     let env = mock_env();
-    let factory_info = mock_info("factory_contract", &[]);
+    let factory_info = message_info(&Addr::unchecked("factory_contract"), &[]);
 
     let msg = ExecuteMsg::RecoverStuckStates {
         recovery_type: RecoveryType::StuckReentrancyGuard,
@@ -203,7 +203,7 @@ fn test_recover_both_resets_all_stuck_states() {
     let mut env = mock_env();
     env.block.time = Timestamp::from_seconds(7200); // 2 hours later
 
-    let factory_info = mock_info("factory_contract", &[]);
+    let factory_info = message_info(&Addr::unchecked("factory_contract"), &[]);
 
     let msg = ExecuteMsg::RecoverStuckStates {
         recovery_type: RecoveryType::Both,
@@ -241,7 +241,7 @@ fn test_first_deposit_locks_minimum_liquidity() {
     let bluechip_amount = Uint128::new(1_000_000_000); // 1k
     let token_amount = Uint128::new(1_000_000_000);    // 1k
 
-    let info = mock_info(user.as_str(), &[Coin {
+    let info = message_info(&user, &[Coin {
         denom: "ubluechip".to_string(),
         amount: bluechip_amount,
     }]);
@@ -330,7 +330,7 @@ fn test_distribution_bounty_from_reserves() {
     DISTRIBUTION_STATE.save(&mut deps.storage, &dist_state).unwrap();
 
     let env = mock_env();
-    let caller_info = mock_info("bounty_hunter", &[]);
+    let caller_info = message_info(&Addr::unchecked("bounty_hunter"), &[]);
 
     let msg = ExecuteMsg::ContinueDistribution {};
     let res = execute(deps.as_mut(), env, caller_info, msg).unwrap();
@@ -591,7 +591,7 @@ fn test_distribution_bounty_does_not_distort_fee_growth() {
     DISTRIBUTION_STATE.save(&mut deps.storage, &dist_state).unwrap();
 
     let env = mock_env();
-    let caller_info = mock_info("bounty_hunter", &[]);
+    let caller_info = message_info(&Addr::unchecked("bounty_hunter"), &[]);
     let msg = ExecuteMsg::ContinueDistribution {};
     execute(deps.as_mut(), env, caller_info, msg).unwrap();
 
@@ -641,7 +641,7 @@ fn test_emergency_withdraw_clears_distribution() {
     // Phase 1: initiate emergency withdrawal
     let mut env = mock_env();
     env.block.time = Timestamp::from_seconds(1_700_000_000);
-    let factory_info = mock_info("factory_contract", &[]);
+    let factory_info = message_info(&Addr::unchecked("factory_contract"), &[]);
     execute(deps.as_mut(), env.clone(), factory_info.clone(), ExecuteMsg::EmergencyWithdraw {}).unwrap();
 
     // Phase 2: execute after timelock (24h + 1s)
