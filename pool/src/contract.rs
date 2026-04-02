@@ -195,12 +195,12 @@ pub fn execute(
     match msg {
         // --- Admin ---
         ExecuteMsg::UpdateConfigFromFactory { update } => {
-            execute_update_config_from_factory(deps, info, update)
+            execute_update_config_from_factory(deps, env, info, update)
         }
-        ExecuteMsg::Pause {} => execute_pause(deps, info),
-        ExecuteMsg::Unpause {} => execute_unpause(deps, info),
+        ExecuteMsg::Pause {} => execute_pause(deps, env, info),
+        ExecuteMsg::Unpause {} => execute_unpause(deps, env, info),
         ExecuteMsg::EmergencyWithdraw {} => execute_emergency_withdraw(deps, env, info),
-        ExecuteMsg::CancelEmergencyWithdraw {} => execute_cancel_emergency_withdraw(deps, info),
+        ExecuteMsg::CancelEmergencyWithdraw {} => execute_cancel_emergency_withdraw(deps, env, info),
         ExecuteMsg::RecoverStuckStates { recovery_type } => {
             execute_recover_stuck_states(deps, env, info, recovery_type)
         }

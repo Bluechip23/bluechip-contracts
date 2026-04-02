@@ -35,7 +35,7 @@ pub fn ensure_not_drained(storage: &dyn Storage) -> Result<(), ContractError> {
 // Pause / Unpause
 // ---------------------------------------------------------------------------
 
-pub fn execute_pause(deps: DepsMut, info: MessageInfo) -> Result<Response, ContractError> {
+pub fn execute_pause(deps: DepsMut, env: Env, info: MessageInfo) -> Result<Response, ContractError> {
     let pool_info = POOL_INFO.load(deps.storage)?;
     if info.sender != pool_info.factory_addr {
         return Err(ContractError::Unauthorized {});
@@ -45,10 +45,12 @@ pub fn execute_pause(deps: DepsMut, info: MessageInfo) -> Result<Response, Contr
     Ok(Response::new()
         .add_attribute("action", "pause")
         .add_attribute("pool_contract", pool_contract)
-        .add_attribute("paused_by", info.sender.to_string()))
+        .add_attribute("paused_by", info.sender.to_string())
+        .add_attribute("block_height", env.block.height.to_string())
+        .add_attribute("block_time", env.block.time.seconds().to_string()))
 }
 
-pub fn execute_unpause(deps: DepsMut, info: MessageInfo) -> Result<Response, ContractError> {
+pub fn execute_unpause(deps: DepsMut, env: Env, info: MessageInfo) -> Result<Response, ContractError> {
     let pool_info = POOL_INFO.load(deps.storage)?;
     if info.sender != pool_info.factory_addr {
         return Err(ContractError::Unauthorized {});
@@ -58,7 +60,9 @@ pub fn execute_unpause(deps: DepsMut, info: MessageInfo) -> Result<Response, Con
     Ok(Response::new()
         .add_attribute("action", "unpause")
         .add_attribute("pool_contract", pool_contract)
-        .add_attribute("unpaused_by", info.sender.to_string()))
+        .add_attribute("unpaused_by", info.sender.to_string())
+        .add_attribute("block_height", env.block.height.to_string())
+        .add_attribute("block_time", env.block.time.seconds().to_string()))
 }
 
 // ---------------------------------------------------------------------------
@@ -183,6 +187,7 @@ pub fn execute_emergency_withdraw(
 
 pub fn execute_cancel_emergency_withdraw(
     deps: DepsMut,
+    env: Env,
     info: MessageInfo,
 ) -> Result<Response, ContractError> {
     let pool_info = POOL_INFO.load(deps.storage)?;
@@ -194,7 +199,12 @@ pub fn execute_cancel_emergency_withdraw(
     }
     PENDING_EMERGENCY_WITHDRAW.remove(deps.storage);
     POOL_PAUSED.save(deps.storage, &false)?;
-    Ok(Response::new().add_attribute("action", "emergency_withdraw_cancelled"))
+    Ok(Response::new()
+        .add_attribute("action", "emergency_withdraw_cancelled")
+        .add_attribute("pool_contract", pool_info.pool_info.contract_addr.to_string())
+        .add_attribute("cancelled_by", info.sender.to_string())
+        .add_attribute("block_height", env.block.height.to_string())
+        .add_attribute("block_time", env.block.time.seconds().to_string()))
 }
 
 // ---------------------------------------------------------------------------
@@ -203,6 +213,7 @@ pub fn execute_cancel_emergency_withdraw(
 
 pub fn execute_update_config_from_factory(
     deps: DepsMut,
+    env: Env,
     info: MessageInfo,
     update: PoolConfigUpdate,
 ) -> Result<Response, ContractError> {
@@ -263,7 +274,12 @@ pub fn execute_update_config_from_factory(
         attributes.push(("oracle_address", "updated"));
     }
 
-    Ok(Response::new().add_attributes(attributes))
+    Ok(Response::new()
+        .add_attributes(attributes)
+        .add_attribute("pool_contract", pool_info.pool_info.contract_addr.to_string())
+        .add_attribute("updated_by", info.sender.to_string())
+        .add_attribute("block_height", env.block.height.to_string())
+        .add_attribute("block_time", env.block.time.seconds().to_string()))
 }
 
 // ---------------------------------------------------------------------------
@@ -305,7 +321,12 @@ pub fn execute_recover_stuck_states(
         return Err(ContractError::NothingToRecover {});
     }
 
+    let pool_info = POOL_INFO.load(deps.storage)?;
     attributes.push(("recovered", recovered_items.join(",")));
+    attributes.push(("pool_contract", pool_info.pool_info.contract_addr.to_string()));
+    attributes.push(("recovered_by", info.sender.to_string()));
+    attributes.push(("block_height", env.block.height.to_string()));
+    attributes.push(("block_time", env.block.time.seconds().to_string()));
     Ok(Response::new().add_attributes(attributes))
 }
 

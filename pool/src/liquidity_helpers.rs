@@ -2,7 +2,7 @@ use std::str::FromStr;
 
 use crate::state::{
     PoolFeeState, PoolInfo, Position, TokenMetadata, LIQUIDITY_POSITIONS, MINIMUM_LIQUIDITY,
-    NEXT_POSITION_ID, OWNER_POSITIONS, POOL_FEE_STATE, POOL_INFO, POOL_STATE,
+    NEXT_POSITION_ID, OWNER_POSITIONS, POOL_ANALYTICS, POOL_FEE_STATE, POOL_INFO, POOL_STATE,
 };
 use cosmwasm_std::Storage;
 use crate::{error::ContractError, state::CREATOR_EXCESS_POSITION};
@@ -414,6 +414,11 @@ pub fn execute_claim_creator_excess(
 
     CREATOR_EXCESS_POSITION.remove(deps.storage);
 
+    // Update analytics
+    let mut analytics = POOL_ANALYTICS.load(deps.storage).unwrap_or_default();
+    analytics.total_lp_deposit_count += 1;
+    POOL_ANALYTICS.save(deps.storage, &analytics)?;
+
     Ok(Response::new()
         .add_message(CosmosMsg::Wasm(mint_liquidity_nft))
         .add_attribute("action", "claim_creator_excess")
@@ -425,6 +430,7 @@ pub fn execute_claim_creator_excess(
         .add_attribute("reserve0_after", pool_state.reserve0.to_string())
         .add_attribute("reserve1_after", pool_state.reserve1.to_string())
         .add_attribute("total_liquidity_after", pool_state.total_liquidity.to_string())
+        .add_attribute("total_lp_deposit_count", analytics.total_lp_deposit_count.to_string())
         .add_attribute("pool_contract", env.contract.address.to_string())
         .add_attribute("block_height", env.block.height.to_string())
         .add_attribute("block_time", env.block.time.seconds().to_string()))

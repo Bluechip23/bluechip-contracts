@@ -234,6 +234,7 @@ pub fn execute_deposit_liquidity(
         .add_attribute("pool_contract", pool_state.pool_contract_address.to_string())
         .add_attribute("block_height", env.block.height.to_string())
         .add_attribute("block_time", env.block.time.seconds().to_string())
+        .add_attribute("total_lp_deposit_count", analytics.total_lp_deposit_count.to_string())
         .add_attribute(
             "pool_unpaused",
             if unpaused { "true" } else { "false" },
@@ -386,7 +387,8 @@ pub fn add_to_position(
         .add_attribute("total_liquidity_after", pool_state.total_liquidity.to_string())
         .add_attribute("pool_contract", pool_state.pool_contract_address.to_string())
         .add_attribute("block_height", env.block.height.to_string())
-        .add_attribute("block_time", env.block.time.seconds().to_string());
+        .add_attribute("block_time", env.block.time.seconds().to_string())
+        .add_attribute("total_lp_deposit_count", analytics.total_lp_deposit_count.to_string());
     let fee_msgs = build_fee_transfer_msgs(&prep.pool_info, &user, fees_owed_0, fees_owed_1)?;
     messages.extend(fee_msgs);
     response = response.add_messages(messages);
@@ -484,7 +486,8 @@ pub fn remove_all_liquidity(
         .add_attribute("total_liquidity_after", pool_state.total_liquidity.to_string())
         .add_attribute("pool_contract", pool_state.pool_contract_address.to_string())
         .add_attribute("block_height", env.block.height.to_string())
-        .add_attribute("block_time", env.block.time.seconds().to_string());
+        .add_attribute("block_time", env.block.time.seconds().to_string())
+        .add_attribute("total_lp_withdrawal_count", analytics.total_lp_withdrawal_count.to_string());
     let transfer_msgs = build_fee_transfer_msgs(&pool_info, &info.sender, total_amount_0, total_amount_1)?;
     response = response.add_messages(transfer_msgs);
 
@@ -649,7 +652,8 @@ pub fn remove_partial_liquidity(
         .add_attribute("total_liquidity_after", pool_state.total_liquidity.to_string())
         .add_attribute("pool_contract", pool_state.pool_contract_address.to_string())
         .add_attribute("block_height", env.block.height.to_string())
-        .add_attribute("block_time", env.block.time.seconds().to_string());
+        .add_attribute("block_time", env.block.time.seconds().to_string())
+        .add_attribute("total_lp_withdrawal_count", analytics.total_lp_withdrawal_count.to_string());
     let transfer_msgs = build_fee_transfer_msgs(&pool_info, &info.sender, total_amount_0, total_amount_1)?;
     response = response.add_messages(transfer_msgs);
 
