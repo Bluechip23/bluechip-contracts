@@ -3,9 +3,9 @@ use crate::error::ContractError;
 use crate::msg::{CommitFeeInfo, ExecuteMsg};
 use crate::state::{
     CommitLimitInfo, CreatorExcessLiquidity, DistributionState, ExpectedFactory, RecoveryType,
-    TokenMetadata, COMMITFEEINFO, COMMIT_INFO, COMMIT_LEDGER, COMMIT_LIMIT_INFO,
+    COMMITFEEINFO, COMMIT_INFO, COMMIT_LEDGER, COMMIT_LIMIT_INFO,
     CREATOR_EXCESS_POSITION, DISTRIBUTION_STATE, EXPECTED_FACTORY, IS_THRESHOLD_HIT,
-    LAST_THRESHOLD_ATTEMPT, LIQUIDITY_POSITIONS, NEXT_POSITION_ID, POOL_STATE,
+    LAST_THRESHOLD_ATTEMPT, POOL_STATE,
     THRESHOLD_PROCESSING, USD_RAISED_FROM_COMMIT,
 };
 use crate::testing::swap_tests::with_factory_oracle;
@@ -22,7 +22,6 @@ use cosmwasm_std::{
     testing::{mock_dependencies, mock_env, message_info},
     to_json_binary, Addr, ContractResult, CosmosMsg, SystemResult, Uint128, WasmMsg,
 };
-use pool_factory_interfaces::cw721_msgs::Cw721ExecuteMsg;
 use pool_factory_interfaces::ConversionResponse;
 
 pub fn setup_pool_with_excess_config(deps: &mut OwnedDeps<MockStorage, MockApi, MockQuerier>) {
@@ -185,32 +184,34 @@ fn test_claim_excess_after_unlock_succeeds() {
         )
         .unwrap();
 
-    NEXT_POSITION_ID.save(&mut deps.storage, &0u64).unwrap();
-
     let info = message_info(&Addr::unchecked("creator"), &[]);
     let msg = ExecuteMsg::ClaimCreatorExcessLiquidity {};
 
     let res = execute(deps.as_mut(), env.clone(), info, msg).unwrap();
-    assert_eq!(res.messages.len(), 1);
+    // Should have 2 messages: bank send for bluechip + CW20 transfer for creator tokens
+    assert_eq!(res.messages.len(), 2);
     match &res.messages[0].msg {
+        CosmosMsg::Bank(cosmwasm_std::BankMsg::Send { to_address, amount }) => {
+            assert_eq!(to_address, "creator");
+            assert_eq!(amount[0].amount, Uint128::new(50_000_000_000));
+        }
+        _ => panic!("Expected Bank Send message for bluechip"),
+    }
+    match &res.messages[1].msg {
         CosmosMsg::Wasm(WasmMsg::Execute { msg, .. }) => {
-            let mint_msg: Cw721ExecuteMsg<TokenMetadata> = from_json(msg).unwrap();
-            match mint_msg {
-                Cw721ExecuteMsg::Mint { owner, .. } => {
-                    assert_eq!(owner, "creator");
+            let transfer_msg: cw20::Cw20ExecuteMsg = from_json(msg).unwrap();
+            match transfer_msg {
+                cw20::Cw20ExecuteMsg::Transfer { recipient, amount } => {
+                    assert_eq!(recipient, "creator");
+                    assert_eq!(amount, Uint128::new(175_000_000_000));
                 }
-                _ => panic!("Expected Mint message"),
+                _ => panic!("Expected CW20 Transfer message"),
             }
         }
-        _ => panic!("Expected Wasm Execute message"),
+        _ => panic!("Expected Wasm Execute message for creator token"),
     }
 
-    let position = LIQUIDITY_POSITIONS
-        .load(&deps.storage, "1")
-        .unwrap();
-    assert_eq!(position.owner, Addr::unchecked("creator"));
-    assert!(position.liquidity > Uint128::zero());
-
+    // Excess position should be cleared
     let excess = CREATOR_EXCESS_POSITION.load(&deps.storage);
     assert!(excess.is_err());
 }
