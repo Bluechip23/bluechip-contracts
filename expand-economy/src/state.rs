@@ -18,9 +18,8 @@ pub struct PendingWithdrawal {
     pub execute_after: Timestamp,
 }
 
-// 48-hours
 pub const WITHDRAW_TIMELOCK_SECONDS: u64 = 172_800;
-pub const CONFIG_TIMELOCK_SECONDS: u64 = 172_800; // 48 hours — matches withdrawal
+pub const CONFIG_TIMELOCK_SECONDS: u64 = 172_800;
 pub const PENDING_WITHDRAWAL: Item<PendingWithdrawal> = Item::new("pending_withdrawal");
 
 #[cw_serde]

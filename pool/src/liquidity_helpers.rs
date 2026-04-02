@@ -11,19 +11,18 @@ use cosmwasm_std::{
     StdResult, Uint128, WasmMsg,
 };
 use pool_factory_interfaces::cw721_msgs::Cw721ExecuteMsg;
+use crate::asset::get_bluechip_denom;
+
 pub const OPTIMAL_LIQUIDITY: Uint128 = Uint128::new(1_000_000);
-// 10% fees for tiny positions
 pub const MIN_MULTIPLIER: &str = "0.1";
+
 pub fn calculate_unclaimed_fees(
     liquidity: Uint128,
-    //the fee_growth_global number the last time the position collected fees
     fee_growth_inside_last: Decimal,
-    //fee growth of pool PER liquidity unit
     fee_growth_global: Decimal,
 ) -> StdResult<Uint128> {
     if fee_growth_global > fee_growth_inside_last {
         let fee_growth_delta = fee_growth_global - fee_growth_inside_last;
-        //number of liquidity units * delta
         liquidity.checked_mul_floor(fee_growth_delta).map_err(|e| {
             StdError::generic_err(format!("Fee calculation overflow: {}", e))
         })
@@ -43,7 +42,6 @@ pub fn calculate_fees_owed(
         let earned_base = liquidity.checked_mul_floor(fee_growth_delta).map_err(|e| {
             ContractError::Std(StdError::generic_err(format!("Fee base overflow: {}", e)))
         })?;
-        //apply size base multipliers
         let earned_adjusted = earned_base.checked_mul_floor(fee_multiplier).map_err(|e| {
             ContractError::Std(StdError::generic_err(format!("Fee multiplier overflow: {}", e)))
         })?;
@@ -52,10 +50,7 @@ pub fn calculate_fees_owed(
         Ok(Uint128::zero())
     }
 }
-//used to protect against many small liquidity positions
-use crate::asset::get_bluechip_denom;
 
-/// Calculate fees owed on a position (including unclaimed), capped against fee reserves.
 pub fn calc_capped_fees(
     position: &Position,
     pool_fee_state: &PoolFeeState,
@@ -82,7 +77,6 @@ pub fn calc_capped_fees(
     ))
 }
 
-/// Build transfer messages to send bluechip (bank) and cw20 tokens to a recipient.
 pub fn build_fee_transfer_msgs(
     pool_info: &PoolInfo,
     recipient: &Addr,
@@ -177,21 +171,19 @@ pub fn check_ratio_deviation(
     Ok(())
 }
 
+/// Linear scaling from MIN_MULTIPLIER (10%) to 100% based on position size
+/// relative to OPTIMAL_LIQUIDITY. Penalizes small positions to discourage
+/// dust griefing.
 pub fn calculate_fee_size_multiplier(liquidity: Uint128) -> Decimal {
-    //if position has optimal liquidity they will not be punished
-
     if liquidity >= OPTIMAL_LIQUIDITY {
-        //provide full fees for optimal size
         Decimal::one()
     } else {
-        // linear scaling from 10% to 100% relative to position size
         let ratio = Decimal::from_ratio(liquidity, OPTIMAL_LIQUIDITY);
         let min_mult = Decimal::from_str(MIN_MULTIPLIER).unwrap_or(Decimal::percent(10));
         min_mult + (Decimal::one() - min_mult) * ratio
     }
 }
 
-//geometric mean for liquidity providing.
 pub fn integer_sqrt(value: Uint128) -> Uint128 {
     if value.is_zero() {
         return Uint128::zero();
@@ -215,7 +207,6 @@ pub fn calc_liquidity_for_deposit(
     let current_reserve1 = pool_state.reserve1;
     let total_liquidity = pool_state.total_liquidity;
 
-    // Case 1: First deposit OR post-threshold with unowned seed liquidity (total_liquidity == 0)
     if current_reserve0.is_zero() || current_reserve1.is_zero() || total_liquidity.is_zero() {
         if amount0.is_zero() || amount1.is_zero() {
             return Err(ContractError::Std(StdError::generic_err(
@@ -223,9 +214,9 @@ pub fn calc_liquidity_for_deposit(
             )));
         }
 
-        // If reserves exist (post-threshold), maintain the existing ratio
         let (final_amount0, final_amount1) =
             if !current_reserve0.is_zero() && !current_reserve1.is_zero() {
+                // Post-threshold: maintain existing ratio
                 let optimal_amount1 = current_reserve1.multiply_ratio(amount0, current_reserve0);
                 let optimal_amount0 = current_reserve0.multiply_ratio(amount1, current_reserve1);
 
@@ -235,7 +226,6 @@ pub fn calc_liquidity_for_deposit(
                     (optimal_amount0, amount1)
                 }
             } else {
-                // True first deposit with no reserves - use amounts as provided
                 (amount0, amount1)
             };
 
@@ -247,13 +237,12 @@ pub fn calc_liquidity_for_deposit(
         let raw_liquidity = integer_sqrt(product).max(Uint128::new(1));
 
         let liquidity = if current_reserve0.is_zero() && current_reserve1.is_zero() {
-            // True first deposit - subtract minimum liquidity (locked permanently)
+            // First deposit ever: lock MINIMUM_LIQUIDITY permanently
             if raw_liquidity <= MINIMUM_LIQUIDITY {
                 return Err(ContractError::InsufficientLiquidityMinted {});
             }
             raw_liquidity.checked_sub(MINIMUM_LIQUIDITY)?
         } else {
-            // Post-threshold first LP deposit (reserves exist from seed) - no lock needed
             raw_liquidity
         };
 
@@ -264,7 +253,6 @@ pub fn calc_liquidity_for_deposit(
         return Ok((liquidity, final_amount0, final_amount1));
     }
 
-    // Case 2: Normal deposits when total_liquidity > 0
     if amount0.is_zero() || amount1.is_zero() {
         if amount0.is_zero() {
             return Err(ContractError::Std(StdError::generic_err("amount0 is zero")));
@@ -274,7 +262,6 @@ pub fn calc_liquidity_for_deposit(
         }
     }
 
-    // Calculate optimal amounts to maintain pool ratio
     let optimal_amount1_for_amount0 = current_reserve1.multiply_ratio(amount0, current_reserve0);
     let optimal_amount0_for_amount1 = current_reserve0.multiply_ratio(amount1, current_reserve1);
 
@@ -288,7 +275,6 @@ pub fn calc_liquidity_for_deposit(
         return Err(ContractError::InsufficientLiquidity {});
     }
 
-    // Standard AMM formula: liquidity proportional to contribution
     let liquidity_from_amount0 = total_liquidity.multiply_ratio(final_amount0, current_reserve0);
     let liquidity_from_amount1 = total_liquidity.multiply_ratio(final_amount1, current_reserve1);
     let liquidity = liquidity_from_amount0.min(liquidity_from_amount1);
@@ -299,7 +285,7 @@ pub fn calc_liquidity_for_deposit(
 
     Ok((liquidity, final_amount0, final_amount1))
 }
-//check to make sure liquidity positions cant be tampered with by non owners
+
 pub fn verify_position_ownership(
     deps: Deps,
     nft_contract: &Addr,
@@ -321,17 +307,8 @@ pub fn verify_position_ownership(
     Ok(())
 }
 
-/// Detect NFT ownership changes and reset fee checkpoints.
-///
-/// When an NFT position is transferred via CW721 TransferNft, no callback
-/// notifies the pool contract. The previous owner's fee snapshots remain,
-/// allowing the new owner to claim fees that accrued before the transfer.
-///
-/// This function must be called after verify_position_ownership succeeds and
-/// the position is loaded. If the stored `position.owner` differs from the
-/// current caller (the verified CW721 owner), it means a transfer occurred.
-/// We reset fee snapshots to current globals, clear unclaimed fees, and
-/// update the OWNER_POSITIONS index.
+/// Detects NFT transfers and resets fee checkpoints so the new owner
+/// cannot claim fees that accrued before the transfer.
 pub fn sync_position_on_transfer(
     storage: &mut dyn Storage,
     position: &mut Position,
@@ -340,29 +317,24 @@ pub fn sync_position_on_transfer(
     pool_fee_state: &PoolFeeState,
 ) -> Result<bool, ContractError> {
     if position.owner == *current_owner {
-        return Ok(false); // No transfer occurred
+        return Ok(false);
     }
 
     let old_owner = position.owner.clone();
 
-    // Reset fee checkpoints to current global values — any fees accrued
-    // before this point belonged to the previous owner and are forfeited.
     position.fee_growth_inside_0_last = pool_fee_state.fee_growth_global_0;
     position.fee_growth_inside_1_last = pool_fee_state.fee_growth_global_1;
     position.unclaimed_fees_0 = Uint128::zero();
     position.unclaimed_fees_1 = Uint128::zero();
 
-    // Update stored owner
     position.owner = current_owner.clone();
 
-    // Update OWNER_POSITIONS index: remove old, add new
     OWNER_POSITIONS.remove(storage, (&old_owner, position_id));
     OWNER_POSITIONS.save(storage, (current_owner, position_id), &true)?;
 
-    // Persist the updated position
     LIQUIDITY_POSITIONS.save(storage, position_id, position)?;
 
-    Ok(true) // Transfer was detected and handled
+    Ok(true)
 }
 
 pub fn execute_claim_creator_excess(
@@ -384,20 +356,17 @@ pub fn execute_claim_creator_excess(
         });
     }
 
-    // Generate position ID
     let position_counter =
         NEXT_POSITION_ID.update(deps.storage, |n| -> StdResult<_> {
             n.checked_add(1).ok_or_else(|| StdError::generic_err("Position ID overflow"))
         })?;
     let position_id = position_counter.to_string();
 
-    // Create metadata for the NFT
     let metadata = TokenMetadata {
         name: Some("Creator excess position".to_string()),
         description: Some("Claim for excess bluechip/token liquidity".to_string()),
     };
 
-    // Use your existing NFT minting pattern
     let mint_liquidity_nft = WasmMsg::Execute {
         contract_addr: pool_info.position_nft_address.to_string(),
         msg: to_json_binary(&Cw721ExecuteMsg::<TokenMetadata>::Mint {
@@ -409,7 +378,6 @@ pub fn execute_claim_creator_excess(
         funds: vec![],
     };
 
-    // Calculate liquidity value for this position
     let product = excess_position
         .bluechip_amount
         .checked_mul(excess_position.token_amount)
@@ -418,7 +386,6 @@ pub fn execute_claim_creator_excess(
 
     let fee_size_multiplier = calculate_fee_size_multiplier(liquidity);
 
-    // Store position using your existing structure
     let position = Position {
         liquidity,
         owner: excess_position.creator.clone(),
@@ -434,9 +401,7 @@ pub fn execute_claim_creator_excess(
     LIQUIDITY_POSITIONS.save(deps.storage, &position_id, &position)?;
     OWNER_POSITIONS.save(deps.storage, (&excess_position.creator, &position_id), &true)?;
 
-    // Update pool: add the excess tokens to reserves AND add liquidity
-    // The excess tokens were held by the pool contract but excluded from reserves
-    // until the creator claims them — now they become part of the active pool
+    // Move excess tokens from held-aside into active reserves
     let mut pool_state = POOL_STATE.load(deps.storage)?;
     pool_state.reserve0 = pool_state
         .reserve0
@@ -447,7 +412,6 @@ pub fn execute_claim_creator_excess(
     pool_state.total_liquidity = pool_state.total_liquidity.checked_add(liquidity)?;
     POOL_STATE.save(deps.storage, &pool_state)?;
 
-    // Clean up the excess position record
     CREATOR_EXCESS_POSITION.remove(deps.storage);
 
     Ok(Response::new()

@@ -212,7 +212,6 @@ fn execute_create_creator_pool(
         admin: Some(env.contract.address.to_string()),
         label: token_info.name,
     };
-    //set the trackingfor pool creation
     let creation_state = PoolCreationState {
         pool_id,
         creator: info.sender,

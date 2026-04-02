@@ -4,30 +4,22 @@ use cosmwasm_std::{Addr, Binary, Decimal, Timestamp, Uint128};
 use cw_storage_plus::{Item, Map};
 use pool_factory_interfaces::PoolStateResponseForFactory;
 
-//there is TEMPdata to keep the creation process going, TEMPdata is eventually removed after sucessful pool creation
 pub const FACTORYINSTANTIATEINFO: Item<FactoryInstantiate> = Item::new("config");
-// Per-pool temporary creation state, keyed by pool_id to prevent concurrent pool
 pub const TEMP_POOL_CREATION: Map<u64, TempPoolCreation> = Map::new("temp_pool_creation_v2");
 pub const PENDING_CONFIG: Item<PendingConfig> = Item::new("pending_config");
 pub const POOL_COUNTER: Item<u64> = Item::new("pool_counter");
-// Commit info per pool, keyed by pool_id (not creator address, to avoid
-// collisions when the same creator makes multiple pools).
+// Keyed by pool_id (not creator address) to avoid collisions when the
+// same creator makes multiple pools.
 pub const SETCOMMIT: Map<u64, CommitInfo> = Map::new("commit_info");
-//tracking pool id for querys etc
-//used in querys to grab multiple pools
 pub const POOLS_BY_ID: Map<u64, PoolDetails> = Map::new("pools_by_id");
 pub const POOLS_BY_CONTRACT_ADDRESS: Map<Addr, PoolStateResponseForFactory> =
     Map::new("pools_by_contract_address");
 pub const POOL_CREATION_STATES: Map<u64, PoolCreationState> = Map::new("creation_states");
-pub const MAX_PRICE_AGE_SECONDS_BEFORE_STALE: u64 = 300; // 5 minutes
+pub const MAX_PRICE_AGE_SECONDS_BEFORE_STALE: u64 = 300;
 pub const POOL_REGISTRY: Map<u64, Addr> = Map::new("pool_registry");
 pub const PENDING_POOL_UPGRADE: Item<PoolUpgrade> = Item::new("pending_upgrade");
 pub const FIRST_POOL_TIMESTAMP: Item<Timestamp> = Item::new("first_pool_timestamp");
-// Tracks which pools have already triggered their bluechip mint on threshold crossing.
-// Prevents double-minting if NotifyThresholdCrossed is called multiple times.
 pub const POOL_THRESHOLD_MINTED: Map<u64, bool> = Map::new("pool_threshold_minted");
-// Pending pool config updates, keyed by pool_id. Enforces a 48-hour
-// timelock before pool configuration changes take effect.
 pub const PENDING_POOL_CONFIG: Map<u64, PendingPoolConfig> = Map::new("pending_pool_config");
 
 #[cw_serde]
@@ -39,68 +31,49 @@ pub struct PendingPoolConfig {
 
 #[cw_serde]
 pub struct FactoryInstantiate {
-    //admin of the factory - will be bluechip or some multisig or something along those lines. person who can edit effectively
     pub factory_admin_address: Addr,
-    //amount of bluechip spent to cross the commit threshold
     pub commit_amount_for_threshold_bluechip: Uint128,
-    //threshold needed to be crossed for pool to become fully active - priced in USD
     pub commit_threshold_limit_usd: Uint128,
-    //pyth is used to obtain atom prices in dollar to eventually convert bluechip to dollars
     pub pyth_contract_addr_for_conversions: String,
     pub pyth_atom_usd_price_feed_id: String,
-    //CW20 contract id that is store on the chain for the pool to use when minting new NFTs
     pub cw20_token_contract_id: u64,
-    //nft contract id that is store on the chain for the pool to use when minting new NFTs
     pub cw721_nft_contract_id: u64,
-    //the pool contract id used by the factory to replicate pools when the pool create function is called.
     pub create_pool_wasm_contract_id: u64,
-    //bluechip wallet address whwere bluechip fees accumulate from commits
     pub bluechip_wallet_address: Addr,
-    //fee distributed to bluechip every commit  - 1%
     pub commit_fee_bluechip: Decimal,
-    //fee distributed to creator ever commit - 5%
     pub commit_fee_creator: Decimal,
-    //max bluechip that can be locked per pool - protects against pools locking to much bluechip in extreme market conditions
     pub max_bluechip_lock_per_pool: Uint128,
-    //days until creator gains access to above max locked bluechip for their pool.
     pub creator_excess_liquidity_lock_days: u64,
     pub atom_bluechip_anchor_pool_address: Addr,
     pub bluechip_mint_contract_address: Option<Addr>,
 }
+
 #[cw_serde]
 pub struct PendingConfig {
     pub new_config: FactoryInstantiate,
     pub effective_after: Timestamp,
 }
-//info about creator and pool for commit tracking
+
 #[cw_serde]
 pub struct CommitInfo {
-    //id of pool - will be some positive integer
     pub pool_id: u64,
     pub creator: Addr,
     pub creator_token_addr: Addr,
     pub creator_pool_addr: Addr,
 }
 
-//used to track the state of the pool throughout creation. Will trigger different events upon partial or complete creation
 #[cw_serde]
 pub struct PoolCreationState {
-    //tracking pool by id
     pub pool_id: u64,
-    //creator of the pool
     pub creator: Addr,
-    //token address of the pool
     pub creator_token_address: Option<Addr>,
-    //nft address used to mint new liquidity position nfts
     pub mint_new_position_nft_address: Option<Addr>,
     pub pool_address: Option<Addr>,
     pub creation_time: Timestamp,
-    //creation status triggers different outcomes based on completion of different status updates
     pub status: CreationStatus,
-    pub retry_count: u8, // Track retries
+    pub retry_count: u8,
 }
 
-//different "stages" of the creation process
 #[cw_serde]
 pub enum CreationStatus {
     Started,
