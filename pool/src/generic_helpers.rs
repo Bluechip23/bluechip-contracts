@@ -1,4 +1,3 @@
-#![allow(non_snake_case)]
 use crate::error::ContractError;
 use crate::liquidity_helpers::integer_sqrt;
 use crate::msg::CommitFeeInfo;
@@ -18,13 +17,12 @@ use cosmwasm_std::{
 };
 use cw20::Cw20ExecuteMsg;
 use cw_storage_plus::Bound;
-use std::vec;
 
 // Update fee growth based on which token was offered
 pub fn update_pool_fee_growth(
     pool_fee_state: &mut PoolFeeState,
     pool_state: &PoolState,
-    offer_contract_addressx: usize,
+    offer_index: usize,
     commission_amt: Uint128,
 ) -> Result<(), ContractError> {
     if pool_state.total_liquidity.is_zero() || commission_amt.is_zero() {
@@ -33,7 +31,7 @@ pub fn update_pool_fee_growth(
 
     let fee_growth = Decimal::from_ratio(commission_amt, pool_state.total_liquidity);
 
-    if offer_contract_addressx == 0 {
+    if offer_index == 0 {
         // Token0 offered → Token1 is ask → fees in token1
         pool_fee_state.fee_growth_global_1 = pool_fee_state.fee_growth_global_1.checked_add(fee_growth)
             .map_err(|_| ContractError::Std(StdError::generic_err("Fee growth overflow")))?;
@@ -96,32 +94,27 @@ pub fn validate_factory_address(
 pub fn validate_pool_threshold_payments(
     params: &ThresholdPayoutAmounts,
 ) -> Result<(), ContractError> {
-    // the ONLY acceptable values
     const EXPECTED_CREATOR: u128 = 325_000_000_000;
     const EXPECTED_BLUECHIP: u128 = 25_000_000_000;
     const EXPECTED_POOL: u128 = 350_000_000_000;
     const EXPECTED_COMMIT: u128 = 500_000_000_000;
     const EXPECTED_TOTAL: u128 = 1_200_000_000_000;
 
-    // verify each amount specifically - creator amount
     if params.creator_reward_amount != Uint128::new(EXPECTED_CREATOR) {
         return Err(ContractError::InvalidThresholdParams {
             msg: format!("Creator amount must be {}", EXPECTED_CREATOR),
         });
     }
-    //bluechip amount
     if params.bluechip_reward_amount != Uint128::new(EXPECTED_BLUECHIP) {
         return Err(ContractError::InvalidThresholdParams {
             msg: format!("BlueChip amount must be {}", EXPECTED_BLUECHIP),
         });
     }
-    //pool seeding amount
     if params.pool_seed_amount != Uint128::new(EXPECTED_POOL) {
         return Err(ContractError::InvalidThresholdParams {
             msg: format!("Pool amount must be {}", EXPECTED_POOL),
         });
     }
-    //amount sent back to original committers
     if params.commit_return_amount != Uint128::new(EXPECTED_COMMIT) {
         return Err(ContractError::InvalidThresholdParams {
             msg: format!("Commit amount must be {}", EXPECTED_COMMIT),
@@ -133,7 +126,6 @@ pub fn validate_pool_threshold_payments(
         .checked_add(params.bluechip_reward_amount)?
         .checked_add(params.pool_seed_amount)?
         .checked_add(params.commit_return_amount)?;
-    //throw error if anything of them is off - there is also a max mint number to help with the exactness
     if total != Uint128::new(EXPECTED_TOTAL) {
         return Err(ContractError::InvalidThresholdParams {
             msg: format!("Total must equal {} (got {})", EXPECTED_TOTAL, total),
@@ -156,8 +148,6 @@ pub fn trigger_threshold_payout(
 ) -> StdResult<Vec<CosmosMsg>> {
     let mut msgs = Vec::new();
 
-    // Notify the factory that this pool's threshold has been crossed,
-    // triggering the bluechip mint for this pool (instead of at pool creation time).
     msgs.push(CosmosMsg::Wasm(WasmMsg::Execute {
         contract_addr: pool_info.factory_addr.to_string(),
         msg: to_json_binary(&pool_factory_interfaces::FactoryExecuteMsg::NotifyThresholdCrossed {
@@ -209,9 +199,7 @@ pub fn trigger_threshold_payout(
             total_to_distribute: payout.commit_return_amount,
             total_committed_usd: commit_config.commit_amount_for_threshold_usd,
             last_processed_key: None,
-            // Set to u32::MAX because committers are no longer counted at crossing
-            // time. The batch loop terminates via cursor-exhaustion (finding no entries
-            // after the last processed key), not by decrementing this counter to zero.
+            // u32::MAX: batch loop terminates via cursor exhaustion, not this counter.
             distributions_remaining: u32::MAX,
             estimated_gas_per_distribution: DEFAULT_ESTIMATED_GAS_PER_DISTRIBUTION,
             max_gas_per_tx: DEFAULT_MAX_GAS_PER_TX,
@@ -219,9 +207,6 @@ pub fn trigger_threshold_payout(
             consecutive_failures: 0,
             started_at: env.block.time,
             last_updated: env.block.time,
-            // Dedicated bounty reserve funded from committed bluechip.  This
-            // is deducted from pools_bluechip_seed below so that LP trading
-            // reserves are never touched by distribution bounty payments.
             bounty_reserve: MAX_DISTRIBUTION_BOUNTY_RESERVE,
         };
         DISTRIBUTION_STATE.save(storage, &dist_state)?;
@@ -235,10 +220,6 @@ pub fn trigger_threshold_payout(
     let pools_bluechip_seed = total_bluechip_raised.checked_mul_floor(one_minus_fee)
         .map_err(|_| StdError::generic_err("Fee deduction overflow"))?;
 
-    // Deduct the distribution bounty reserve from the bluechip available for
-    // pool seeding.  The bounty tokens remain in the contract but are tracked
-    // separately in DistributionState.bounty_reserve rather than in reserve0,
-    // so that ContinueDistribution bounty payments never erode LP liquidity.
     let bounty_allocation = if has_committers {
         // Only allocate if we actually have enough; otherwise take what we can.
         pools_bluechip_seed.min(MAX_DISTRIBUTION_BOUNTY_RESERVE)
@@ -252,13 +233,10 @@ pub fn trigger_threshold_payout(
         let excess_bluechip = pools_bluechip_seed.checked_sub(commit_config.max_bluechip_lock_per_pool)
             .map_err(StdError::overflow)?;
 
-        // Calculate proportional creator tokens for the excess
-        // (excess_bluechip / total_bluechip) * total_creator_tokens
         let excess_creator_tokens = payout
             .pool_seed_amount
             .multiply_ratio(excess_bluechip, pools_bluechip_seed);
 
-        // Store creator's locked excess position
         CREATOR_EXCESS_POSITION.save(
             storage,
             &CreatorExcessLiquidity {
@@ -273,8 +251,6 @@ pub fn trigger_threshold_payout(
             },
         )?;
 
-        // Set reserves to ONLY the capped amounts — excess is held separately
-        // and will be added to reserves when the creator claims their excess position
         pool_state.reserve0 = commit_config.max_bluechip_lock_per_pool;
         pool_state.reserve1 = payout.pool_seed_amount.checked_sub(excess_creator_tokens)
             .map_err(StdError::overflow)?;
@@ -282,9 +258,7 @@ pub fn trigger_threshold_payout(
         pool_state.reserve0 = pools_bluechip_seed;
         pool_state.reserve1 = payout.pool_seed_amount;
     }
-    // Set virtual "unowned" liquidity so that the first depositor cannot inflate
-    // their share against the seed reserves. No position holds this liquidity —
-    // it acts as a permanent base that makes subsequent deposits proportional.
+    // Virtual "unowned" seed liquidity prevents first-depositor share inflation.
     let seed_liquidity = integer_sqrt(pool_state.reserve0.checked_mul(pool_state.reserve1)?);
     pool_state.total_liquidity = seed_liquidity;
 
@@ -318,14 +292,12 @@ pub fn process_distribution_batch(
             "Distribution timeout - requires manual recovery",
         ));
     }
-    // Determine starting point
     let start_after = dist_state
         .last_processed_key
         .as_ref()
         .map(Bound::exclusive);
 
     let effective_batch_size = calculate_effective_batch_size(&dist_state);
-    // Track what we actually process
     let mut processed_count = 0u32;
     let mut last_processed = None;
     let batch_result: StdResult<Vec<(Addr, Uint128)>> = {
@@ -337,9 +309,7 @@ pub fn process_distribution_batch(
 
     match batch_result {
         Ok(batch) => {
-            // Process each committer
             for (payer, usd_paid) in batch.iter() {
-                // Calculate reward with error handling
                 let reward_result = calculate_committer_reward(
                     *usd_paid,
                     dist_state.total_to_distribute,
@@ -360,16 +330,13 @@ pub fn process_distribution_batch(
                     }
                 }
             }
-            // Update state based on what we actually processed
             let new_remaining = dist_state
                 .distributions_remaining
                 .saturating_sub(processed_count);
 
             if new_remaining == 0 {
-                // All done - remove state
                 DISTRIBUTION_STATE.remove(storage);
             } else if processed_count > 0 {
-                // Made progress - update state
                 let updated_state = DistributionState {
                     is_distributing: true,
                     total_to_distribute: dist_state.total_to_distribute,
@@ -379,13 +346,12 @@ pub fn process_distribution_batch(
                     estimated_gas_per_distribution: dist_state.estimated_gas_per_distribution,
                     max_gas_per_tx: dist_state.max_gas_per_tx,
                     last_successful_batch_size: Some(processed_count),
-                    consecutive_failures: 0, // Reset failures on success
+                    consecutive_failures: 0,
                     started_at: dist_state.started_at,
-                    last_updated: env.block.time, // Update timestamp
+                    last_updated: env.block.time,
                     bounty_reserve: dist_state.bounty_reserve,
                 };
                 DISTRIBUTION_STATE.save(storage, &updated_state)?;
-                // Remaining batches will be processed by external ContinueDistribution calls
             } else {
                 let recheck_start = dist_state
                     .last_processed_key
@@ -397,35 +363,28 @@ pub fn process_distribution_batch(
                     .collect::<StdResult<Vec<_>>>()?;
 
                 if remaining_entries.is_empty() {
-                    // No entries left — distribution is complete
                     DISTRIBUTION_STATE.remove(storage);
                 } else {
                     dist_state.consecutive_failures += 1;
 
-                    // Check if we should give up
                     if dist_state.consecutive_failures >= 5 {
-                        // Too many failures, mark for manual recovery
-                        dist_state.is_distributing = false; // Pause distribution
+                        dist_state.is_distributing = false;
                         DISTRIBUTION_STATE.save(storage, &dist_state)?;
 
                         return Err(StdError::generic_err(
                             "Distribution failed too many times - manual recovery needed",
                         ));
                     } else {
-                        // Save with incremented failure count
                         dist_state.last_updated = env.block.time;
                         DISTRIBUTION_STATE.save(storage, &dist_state)?;
-                        // Next external ContinueDistribution call will retry
                     }
                 }
             }
         }
         Err(e) => {
-            // Failed to even read the batch
             dist_state.consecutive_failures += 1;
 
             if dist_state.consecutive_failures >= 5 {
-                // Give up after too many failures
                 dist_state.is_distributing = false;
                 DISTRIBUTION_STATE.save(storage, &dist_state)?;
 
@@ -434,10 +393,7 @@ pub fn process_distribution_batch(
                     e, dist_state.consecutive_failures
                 )));
             } else {
-                // Save failure state but try to continue
                 DISTRIBUTION_STATE.save(storage, &dist_state)?;
-
-                // Return error but don't completely fail
                 return Err(StdError::generic_err(format!(
                     "Batch processing failed (attempt {}): {}",
                     dist_state.consecutive_failures, e
@@ -479,7 +435,6 @@ fn calculate_committer_reward(
     Ok(reward)
 }
 
-//converts decimal to decimal256 for higher precision
 pub fn decimal2decimal256(dec_value: Decimal) -> StdResult<Decimal256> {
     Decimal256::from_atomics(dec_value.atomics(), dec_value.decimal_places()).map_err(|_| {
         StdError::generic_err(format!(
@@ -519,8 +474,6 @@ pub fn mint_tokens(token_addr: &Addr, recipient: &Addr, amount: Uint128) -> StdR
     Ok(exec.into())
 }
 
-/// Shared helper to update or create a COMMIT_INFO record.
-/// Consolidates the 5 identical update patterns throughout commit logic.
 pub fn update_commit_info(
     storage: &mut dyn Storage,
     sender: &Addr,

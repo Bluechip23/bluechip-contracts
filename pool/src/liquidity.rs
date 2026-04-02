@@ -1,4 +1,3 @@
-#![allow(non_snake_case)]
 use crate::error::ContractError;
 use crate::generic_helpers::{check_rate_limit, enforce_transaction_deadline};
 use crate::liquidity_helpers::{
@@ -19,10 +18,6 @@ use cosmwasm_std::{
 };
 use pool_factory_interfaces::cw721_msgs::{Action, Cw721ExecuteMsg};
 
-use std::vec;
-
-/// Result of the shared deposit preparation logic used by both
-/// `execute_deposit_liquidity` and `add_to_position`.
 struct DepositPrep {
     pool_info: PoolInfo,
     native_denom: String,
@@ -32,9 +27,6 @@ struct DepositPrep {
     refund_amount: Uint128,
 }
 
-/// Shared logic for preparing a liquidity deposit: loads pool info, calculates
-/// liquidity, validates the bluechip payment, checks slippage, and computes
-/// the refund amount.
 fn prepare_deposit(
     deps: Deps,
     info: &MessageInfo,
@@ -81,8 +73,6 @@ fn prepare_deposit(
     })
 }
 
-/// Builds the CW20 transfer-from message (if amount > 0) and the bluechip
-/// refund message (if overpaid). Used by both deposit and add-to-position.
 fn build_deposit_transfer_msgs(
     pool_info: &PoolInfo,
     sender: &Addr,
@@ -120,15 +110,14 @@ fn build_deposit_transfer_msgs(
     Ok(messages)
 }
 
-//deposit liquidity in pool
 #[allow(clippy::too_many_arguments)]
 pub fn execute_deposit_liquidity(
     deps: DepsMut,
     env: Env,
     info: MessageInfo,
     user: Addr,
-    amount0: Uint128, // bluechip amount
-    amount1: Uint128, // CW20 amount
+    amount0: Uint128,
+    amount1: Uint128,
     min_amount0: Option<Uint128>,
     min_amount1: Option<Uint128>,
     transaction_deadline: Option<Timestamp>,
@@ -141,7 +130,6 @@ pub fn execute_deposit_liquidity(
     let pool_fee_state = POOL_FEE_STATE.load(deps.storage)?;
 
     let mut messages = vec![];
-    // accept NFT ownership if this is the first deposit
     if !pool_state.nft_ownership_accepted {
         let accept_msg = WasmMsg::Execute {
             contract_addr: prep.pool_info.position_nft_address.to_string(),
@@ -164,7 +152,6 @@ pub fn execute_deposit_liquidity(
     )?;
     messages.extend(transfer_msgs);
 
-    //increment nft id
     let mut pos_id = NEXT_POSITION_ID.load(deps.storage)?;
     pos_id = pos_id.checked_add(1).ok_or_else(|| ContractError::Std(StdError::generic_err("Position ID overflow")))?;
     NEXT_POSITION_ID.save(deps.storage, &pos_id)?;
@@ -174,7 +161,6 @@ pub fn execute_deposit_liquidity(
         name: Some(format!("LP Position #{}", position_id)),
         description: Some("Pool Liquidity Position".to_string()),
     };
-    //mint nft position
     let mint_liquidity_nft = WasmMsg::Execute {
         contract_addr: prep.pool_info.position_nft_address.to_string(),
         msg: to_json_binary(&Cw721ExecuteMsg::<TokenMetadata>::Mint {
@@ -258,7 +244,6 @@ pub fn execute_collect_fees(
     liquidity_position.fee_growth_inside_0_last = pool_fee_state.fee_growth_global_0;
     liquidity_position.fee_growth_inside_1_last = pool_fee_state.fee_growth_global_1;
     liquidity_position.last_fee_collection = env.block.time.seconds();
-    // Clear stored unclaimed fees — they've been included in this payout.
     liquidity_position.unclaimed_fees_0 = Uint128::zero();
     liquidity_position.unclaimed_fees_1 = Uint128::zero();
 
@@ -280,7 +265,6 @@ pub fn execute_collect_fees(
         .add_attribute("fees_1", fees_owed_1))
 }
 
-//add liquidity to an already existing position and collects fees for accounting
 #[allow(clippy::too_many_arguments)]
 pub fn add_to_position(
     deps: &mut DepsMut,
@@ -288,9 +272,7 @@ pub fn add_to_position(
     info: MessageInfo,
     user: Addr,
     position_id: String,
-    //bluechip token
     amount0: Uint128,
-    //creator token
     amount1: Uint128,
     min_amount0: Option<Uint128>,
     min_amount1: Option<Uint128>,
@@ -302,7 +284,6 @@ pub fn add_to_position(
 
     let mut pool_fee_state = POOL_FEE_STATE.load(deps.storage)?;
     let mut pool_state = POOL_STATE.load(deps.storage)?;
-    //make sure position belongs to wallet sending new funds
     verify_position_ownership(
         deps.as_ref(),
         &prep.pool_info.position_nft_address,
@@ -318,7 +299,7 @@ pub fn add_to_position(
         &info.sender,
         &pool_fee_state,
     )?;
-    //send accumulated fees to reset accounting - collect before adding new liquidity
+    // Collect pending fees before adding new liquidity to reset accounting.
     let (fees_owed_0, fees_owed_1) = calc_capped_fees(&liquidity_position, &pool_fee_state)?;
 
     let mut messages = build_deposit_transfer_msgs(
@@ -330,25 +311,21 @@ pub fn add_to_position(
         prep.refund_amount,
     )?;
 
-    //update position with new liquidity
     liquidity_position.liquidity = liquidity_position.liquidity.checked_add(prep.liquidity)?;
     liquidity_position.fee_growth_inside_0_last = pool_fee_state.fee_growth_global_0;
     liquidity_position.fee_growth_inside_1_last = pool_fee_state.fee_growth_global_1;
     liquidity_position.last_fee_collection = env.block.time.seconds();
     liquidity_position.fee_size_multiplier =
         calculate_fee_size_multiplier(liquidity_position.liquidity);
-    // Clear stored unclaimed fees — they've been included in this payout.
     liquidity_position.unclaimed_fees_0 = Uint128::zero();
     liquidity_position.unclaimed_fees_1 = Uint128::zero();
 
     pool_state.total_liquidity = pool_state.total_liquidity.checked_add(prep.liquidity)?;
 
     update_price_accumulator(&mut pool_state, env.block.time.seconds())?;
-    // subtract fees
     pool_fee_state.fee_reserve_0 = pool_fee_state.fee_reserve_0.checked_sub(fees_owed_0)?;
     pool_fee_state.fee_reserve_1 = pool_fee_state.fee_reserve_1.checked_sub(fees_owed_1)?;
 
-    // add actual deposit amounts
     pool_state.reserve0 = pool_state.reserve0.checked_add(prep.actual_amount0)?;
     pool_state.reserve1 = pool_state.reserve1.checked_add(prep.actual_amount1)?;
 
@@ -367,7 +344,6 @@ pub fn add_to_position(
         .add_attribute("refunded_amount0", prep.refund_amount.to_string())
         .add_attribute("fees_collected_0", fees_owed_0)
         .add_attribute("fees_collected_1", fees_owed_1);
-    //actually send fees
     let fee_msgs = build_fee_transfer_msgs(&prep.pool_info, &user, fees_owed_0, fees_owed_1)?;
     messages.extend(fee_msgs);
     response = response.add_messages(messages);
@@ -375,7 +351,6 @@ pub fn add_to_position(
     Ok(response)
 }
 
-// Functionality for user to remove all their liquidity - collect all fees associated with position and deactivate the position
 pub fn remove_all_liquidity(
     deps: &mut DepsMut,
     env: Env,
@@ -415,11 +390,9 @@ pub fn remove_all_liquidity(
         current_reserve0.multiply_ratio(liquidity_position.liquidity, pool_state.total_liquidity);
     let user_share_1 =
         current_reserve1.multiply_ratio(liquidity_position.liquidity, pool_state.total_liquidity);
-    //protect against slippage and error out transaction
     check_slippage(user_share_0, min_amount0, "bluechip")?;
     check_slippage(user_share_1, min_amount1, "cw20")?;
     check_ratio_deviation(user_share_0, user_share_1, min_amount0, min_amount1, max_ratio_deviation_bps)?;
-    //calculate the fees owed to the position and prepare for collection
     let (fees_owed_0, fees_owed_1) = calc_capped_fees(&liquidity_position, &pool_fee_state)?;
 
     let total_amount_0 = user_share_0.checked_add(fees_owed_0)?;
@@ -429,17 +402,13 @@ pub fn remove_all_liquidity(
     pool_state.total_liquidity = pool_state
         .total_liquidity
         .checked_sub(liquidity_to_subtract)?;
-    // NFT is not burned — pool contract is not the owner. The NFT remains
-    // with the user as a historical record; they can burn it manually.
 
-    //update pool fees, collect fees, and reserve prices
     liquidity_position.fee_growth_inside_0_last = pool_fee_state.fee_growth_global_0;
     liquidity_position.fee_growth_inside_1_last = pool_fee_state.fee_growth_global_1;
 
     update_price_accumulator(&mut pool_state, env.block.time.seconds())?;
     pool_state.reserve0 = pool_state.reserve0.checked_sub(user_share_0)?;
     pool_state.reserve1 = pool_state.reserve1.checked_sub(user_share_1)?;
-    // subtract fees
     pool_fee_state.fee_reserve_0 = pool_fee_state.fee_reserve_0.checked_sub(fees_owed_0)?;
     pool_fee_state.fee_reserve_1 = pool_fee_state.fee_reserve_1.checked_sub(fees_owed_1)?;
 
@@ -461,7 +430,6 @@ pub fn remove_all_liquidity(
         .add_attribute("fees_1", fees_owed_1)
         .add_attribute("total_0", total_amount_0)
         .add_attribute("total_1", total_amount_1);
-    //redeem the tokens correlated with the users positions
     let transfer_msgs = build_fee_transfer_msgs(&pool_info, &info.sender, total_amount_0, total_amount_1)?;
     response = response.add_messages(transfer_msgs);
 
@@ -479,7 +447,6 @@ pub fn remove_partial_liquidity(
     min_amount0: Option<Uint128>,
     min_amount1: Option<Uint128>,
     max_ratio_deviation_bps: Option<u16>,
-    // Specific amount of liquidity to remove
 ) -> Result<Response, ContractError> {
     enforce_transaction_deadline(env.block.time, transaction_deadline)?;
 
@@ -505,7 +472,6 @@ pub fn remove_partial_liquidity(
     if liquidity_to_remove.is_zero() {
         return Err(ContractError::InvalidAmount {});
     }
-    //if user removes all their liquidity.
     if liquidity_to_remove == liquidity_position.liquidity {
         return execute_remove_all_liquidity(
             deps.branch(),
@@ -518,34 +484,28 @@ pub fn remove_partial_liquidity(
             max_ratio_deviation_bps,
         );
     }
-    //cant take out what you dont have.
     if liquidity_to_remove > liquidity_position.liquidity {
         return Err(ContractError::InsufficientLiquidity {});
     }
     let current_reserve0 = pool_state.reserve0;
     let current_reserve1 = pool_state.reserve1;
+    // Only calculate fees on the portion being removed.
     let fees_owed_0 = calculate_fees_owed(
-        //only considers the amount of liquidity being removed when collecting fees
         liquidity_to_remove,
-        //everything else remains the same
         pool_fee_state.fee_growth_global_0,
         liquidity_position.fee_growth_inside_0_last,
         liquidity_position.fee_size_multiplier,
     )?;
 
     let fees_owed_1 = calculate_fees_owed(
-        //only considers the amount of liquidity being removed when collecting fees
         liquidity_to_remove,
-        //everything else remains the same
         pool_fee_state.fee_growth_global_1,
         liquidity_position.fee_growth_inside_1_last,
         liquidity_position.fee_size_multiplier,
     )?;
 
-    // Preserve the fees that belong to the portion NOT being removed. Without
-    // this, resetting the snapshot below would discard them permanently. They
-    // are added to unclaimed_fees_0/1 on the position so the LP can collect
-    // them on any future CollectFees, AddToPosition, or Remove call.
+    // Preserve fees on the remaining portion so resetting the snapshot
+    // below doesn't discard them.
     let remaining_liquidity = liquidity_position.liquidity.checked_sub(liquidity_to_remove)?;
     let preserved_fees_0 = calculate_fees_owed(
         remaining_liquidity,
@@ -563,7 +523,6 @@ pub fn remove_partial_liquidity(
     if pool_state.total_liquidity.is_zero() {
         return Err(ContractError::Std(StdError::generic_err("Pool total liquidity is zero")));
     }
-    //finds total amount based on the amount of liquidity the user would like to remove.
     let withdrawal_amount_0 =
         current_reserve0.multiply_ratio(liquidity_to_remove, pool_state.total_liquidity);
 
@@ -576,14 +535,11 @@ pub fn remove_partial_liquidity(
     check_slippage(withdrawal_amount_0, min_amount0, "bluechip")?;
     check_slippage(withdrawal_amount_1, min_amount1, "cw20")?;
     check_ratio_deviation(withdrawal_amount_0, withdrawal_amount_1, min_amount0, min_amount1, max_ratio_deviation_bps)?;
-    //add amounts to transfer back to user
     let total_amount_0 = withdrawal_amount_0.checked_add(fees_owed_0)?;
     let total_amount_1 = withdrawal_amount_1.checked_add(fees_owed_1)?;
-    //update state
     update_price_accumulator(&mut pool_state, env.block.time.seconds())?;
     pool_state.reserve0 = pool_state.reserve0.checked_sub(withdrawal_amount_0)?;
     pool_state.reserve1 = pool_state.reserve1.checked_sub(withdrawal_amount_1)?;
-    // subtract fees
     pool_fee_state.fee_reserve_0 = pool_fee_state.fee_reserve_0.checked_sub(fees_owed_0)?;
     pool_fee_state.fee_reserve_1 = pool_fee_state.fee_reserve_1.checked_sub(fees_owed_1)?;
 
@@ -594,13 +550,9 @@ pub fn remove_partial_liquidity(
     POOL_FEE_STATE.save(deps.storage, &pool_fee_state)?;
 
     liquidity_position.last_fee_collection = env.block.time.seconds();
-    // Reset fee growth snapshots. The fees earned on the removed portion have
-    // been paid out above; the fees earned on the remaining portion have been
-    // stored in unclaimed_fees_0/1 so they won't be lost.
     liquidity_position.fee_growth_inside_0_last = pool_fee_state.fee_growth_global_0;
     liquidity_position.fee_growth_inside_1_last = pool_fee_state.fee_growth_global_1;
 
-    // Accumulate preserved fees — multiple partial removals stack correctly.
     liquidity_position.unclaimed_fees_0 = liquidity_position.unclaimed_fees_0
         .checked_add(preserved_fees_0)?;
     liquidity_position.unclaimed_fees_1 = liquidity_position.unclaimed_fees_1
@@ -631,7 +583,6 @@ pub fn remove_partial_liquidity(
         .add_attribute("preserved_fees_1", preserved_fees_1)
         .add_attribute("total_0", total_amount_0)
         .add_attribute("total_1", total_amount_1);
-    //send assets back to user.
     let transfer_msgs = build_fee_transfer_msgs(&pool_info, &info.sender, total_amount_0, total_amount_1)?;
     response = response.add_messages(transfer_msgs);
 
@@ -645,8 +596,8 @@ pub fn execute_add_to_position(
     info: MessageInfo,
     position_id: String,
     sender: Addr,
-    amount0: Uint128, // bluechip token
-    amount1: Uint128, // cw20 token
+    amount0: Uint128,
+    amount1: Uint128,
     min_amount0: Option<Uint128>,
     min_amount1: Option<Uint128>,
     transaction_deadline: Option<Timestamp>,
@@ -654,7 +605,6 @@ pub fn execute_add_to_position(
     enforce_transaction_deadline(env.block.time, transaction_deadline)?;
     let pool_specs: PoolSpecs = POOL_SPECS.load(deps.storage)?;
 
-    // prohibit spam liquidity
     if let Err(e) = check_rate_limit(&mut deps, &env, &pool_specs, &sender) {
         RATE_LIMIT_GUARD.save(deps.storage, &false)?;
         return Err(e);
@@ -687,7 +637,6 @@ pub fn execute_remove_all_liquidity(
     enforce_transaction_deadline(env.block.time, transaction_deadline)?;
     let pool_specs: PoolSpecs = POOL_SPECS.load(deps.storage)?;
     let sender = info.sender.clone();
-    //spam protection
     if let Err(e) = check_rate_limit(&mut deps, &env, &pool_specs, &sender) {
         RATE_LIMIT_GUARD.save(deps.storage, &false)?;
         return Err(e);
@@ -736,27 +685,23 @@ pub fn execute_remove_partial_liquidity(
     )
 }
 
-//same as remove partial liquidity but with a percent instead of a whole number
 #[allow(clippy::too_many_arguments)]
 pub fn execute_remove_partial_liquidity_by_percent(
     deps: DepsMut,
     env: Env,
     info: MessageInfo,
     position_id: String,
-    //using percentage
     percentage: u64,
     transaction_deadline: Option<Timestamp>,
     min_amount0: Option<Uint128>,
     min_amount1: Option<Uint128>,
     max_ratio_deviation_bps: Option<u16>,
 ) -> Result<Response, ContractError> {
-    // cant remove zero
     if percentage == 0 {
         return Err(ContractError::InvalidPercent {});
     }
 
     if percentage >= 100 {
-        // redirect to full removal
         return execute_remove_all_liquidity(
             deps,
             env,
@@ -769,22 +714,18 @@ pub fn execute_remove_partial_liquidity_by_percent(
         );
     }
 
-    // load position to calculate absolute amount
     let liquidity_position = LIQUIDITY_POSITIONS.load(deps.storage, &position_id)?;
 
-    // convert percentage to whole number to use in execute_remote_partial_liquidity
     let liquidity_to_remove = liquidity_position
         .liquidity
         .checked_mul(Uint128::from(percentage))?
         .checked_div(Uint128::from(100u128))
         .map_err(|_| ContractError::DivideByZero)?;
-    // Call the main partial removal function
     execute_remove_partial_liquidity(
         deps,
         env,
         info,
         position_id,
-        //converted from decimal
         liquidity_to_remove,
         transaction_deadline,
         min_amount0,

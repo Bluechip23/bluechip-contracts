@@ -13,56 +13,34 @@ pub struct TokenMetadata {
     pub description: Option<String>,
 }
 
-//amount raised during the pool funding phase. tops out at commit_limit_usd
 pub const USD_RAISED_FROM_COMMIT: Item<Uint128> = Item::new("usd_raised");
 pub const COMMIT_INFO: Map<&Addr, Commiting> = Map::new("sub_info");
-//5 minutes, oracle will expire due to stale prices
-//fee info for commit transactions
 pub const COMMITFEEINFO: Item<CommitFeeInfo> = Item::new("fee_info");
-//amount of bluechips raised for the pool
 pub const NATIVE_RAISED_FROM_COMMIT: Item<Uint128> = Item::new("bluechip_raised");
-//set to prohibit spam transactions from a single wallet
 pub const RATE_LIMIT_GUARD: Item<bool> = Item::new("rate_limit_guard");
-//Has the threshold been hit for this pool
 pub const IS_THRESHOLD_HIT: Item<bool> = Item::new("threshold_hit");
-//store all the committers and the amount they have committed to the pool prior to the threshold being hit
 pub const COMMIT_LEDGER: cw_storage_plus::Map<&Addr, Uint128> =
     cw_storage_plus::Map::new("commit_usd");
-//the contract of the factory being used for pool creation
 pub const EXPECTED_FACTORY: Item<ExpectedFactory> = Item::new("expected_factory");
 pub const USER_LAST_COMMIT: Map<&Addr, u64> = Map::new("user_last_commit");
-//information for pool including factory, pool, and token addresses
 pub const POOL_INFO: Item<PoolInfo> = Item::new("pool_info");
-//liquidity, reserve, and prices
 pub const POOL_STATE: Item<PoolState> = Item::new("pool_state");
-//lp fee for liquidity pools
 pub const POOL_SPECS: Item<PoolSpecs> = Item::new("pool_specs");
-//used to handle races cases when the threshold is being crossed
 pub const THRESHOLD_PROCESSING: Item<bool> = Item::new("threshold_processing");
-//amounts that get sent to designated areas when threshold is crossed
 pub const THRESHOLD_PAYOUT_AMOUNTS: Item<ThresholdPayoutAmounts> =
     Item::new("threshold_payout_amounts");
-//pool identifier increments by 1 every pool
 pub const NEXT_POSITION_ID: Item<u64> = Item::new("next_position_id");
 pub const DISTRIBUTION_STATE: Item<DistributionState> = Item::new("distribution_state");
-//information for liquidity positions in pools
 pub const LIQUIDITY_POSITIONS: Map<&str, Position> = Map::new("positions");
 pub const OWNER_POSITIONS: Map<(&Addr, &str), bool> = Map::new("owner_positions");
-//commit limit and amount of bluechips that will be stored in pool
 pub const COMMIT_LIMIT_INFO: Item<CommitLimitInfo> = Item::new("commit_config");
-//symbol oracle is tracking along with its price
 pub const ORACLE_INFO: Item<OracleInfo> = Item::new("oracle_info");
-//tracking the global fee growth and total fees collected for the poolS
 pub const POOL_FEE_STATE: Item<PoolFeeState> = Item::new("pool_fee_state");
 pub const CREATOR_EXCESS_POSITION: Item<CreatorExcessLiquidity> = Item::new("creator_excess");
 pub const POOL_PAUSED: Item<bool> = Item::new("pool_paused");
 pub const EMERGENCY_WITHDRAWAL: Item<EmergencyWithdrawalInfo> = Item::new("emergency_withdrawal");
-// may be executed.  Set on initiation; cleared on execution or cancellation.
 pub const PENDING_EMERGENCY_WITHDRAW: Item<Timestamp> = Item::new("pending_emergency_withdraw");
-// Permanently set to `true` after an emergency withdrawal drains all reserves.
-// Prevents any further deposits, swaps, fee collections, or LP operations.
 pub const EMERGENCY_DRAINED: Item<bool> = Item::new("emergency_drained");
-// Timelock duration for emergency withdrawal: 24 hours.
 pub const EMERGENCY_WITHDRAW_DELAY_SECONDS: u64 = 86_400;
 
 #[cw_serde]
@@ -78,15 +56,7 @@ pub const DEFAULT_ESTIMATED_GAS_PER_DISTRIBUTION: u64 = 50_000;
 pub const DEFAULT_MAX_GAS_PER_TX: u64 = 2_000_000;
 pub const MAX_DISTRIBUTIONS_PER_TX: u32 = 40;
 pub const MINIMUM_LIQUIDITY: Uint128 = Uint128::new(1000);
-// Small bounty paid from a dedicated bounty reserve to the caller of
-// ContinueDistribution.  Incentivizes external callers to drive distribution
-// batches to completion.
-// 1_000_000 = 1 bluechip token (6 decimal places), enough to cover gas costs.
 pub const DISTRIBUTION_BOUNTY: Uint128 = Uint128::new(1_000_000);
-// Maximum total bounty allocated per distribution cycle.
-// 50 batches × 1 bluechip = 50 bluechip tokens (50_000_000 ubluechip).
-// Funded once from committed bluechip during threshold crossing, NOT from
-// LP trading reserves, so that bounty payments never erode pool liquidity.
 pub const MAX_DISTRIBUTION_BOUNTY_RESERVE: Uint128 = Uint128::new(50_000_000);
 
 #[cw_serde]
@@ -102,10 +72,8 @@ pub struct DistributionState {
     pub consecutive_failures: u32,
     pub started_at: Timestamp,
     pub last_updated: Timestamp,
-    /// Dedicated reserve for distribution bounty payments, funded once during
-    /// threshold crossing from committed bluechip.  Bounties are paid from here
-    /// instead of pool trading reserves (`reserve0`), preventing LP liquidity
-    /// erosion from repeated `ContinueDistribution` calls.
+    /// Funded once during threshold crossing. Bounties are paid from here
+    /// instead of pool trading reserves, preventing LP liquidity erosion.
     #[serde(default)]
     pub bounty_reserve: Uint128,
 }
@@ -113,49 +81,37 @@ pub struct DistributionState {
 pub enum RecoveryType {
     StuckThreshold,
     StuckDistribution,
-    StuckReentrancyGuard, 
-    Both,                 // Check and clear all stuck states
+    StuckReentrancyGuard,
+    Both,
 }
 
 #[cw_serde]
 pub struct Commiting {
     pub pool_contract_address: Addr,
-    //commit transaction executer
     pub commiter: Addr,
-    //amount paid converted to USD
     pub total_paid_usd: Uint128,
-    //amount of bluechips used to pay for the transaction
     pub total_paid_bluechip: Uint128,
-    //last time someone committed to pool
     pub last_commited: Timestamp,
-    //last amount of bluechips committed
     pub last_payment_bluechip: Uint128,
-    //last amount converted to USD
     pub last_payment_usd: Uint128,
 }
 #[cw_serde]
 pub struct PoolState {
     pub pool_contract_address: Addr,
     pub nft_ownership_accepted: bool,
-    pub reserve0: Uint128, // bluechip token
-    pub reserve1: Uint128, // cw20 token
-    //how many liquidity units are deposited in the pool
+    pub reserve0: Uint128,
+    pub reserve1: Uint128,
     pub total_liquidity: Uint128,
     pub block_time_last: u64,
-    //
     pub price0_cumulative_last: Uint128,
     pub price1_cumulative_last: Uint128,
 }
 
 #[cw_serde]
 pub struct PoolFeeState {
-    //the amount of fees per unit of liquidity - is used as a baseline to track fees for liquidity positions - asset 0
     pub fee_growth_global_0: Decimal,
-    //the amount of fees per unit of liquidity - is used as a baseline to track fees for liquidity positions - asset 1
     pub fee_growth_global_1: Decimal,
-    //the total amount of fees collected from pool for asset 0
     pub total_fees_collected_0: Uint128,
-    //total amount of fees collected from pool for asset 1
     pub total_fees_collected_1: Uint128,
     pub fee_reserve_0: Uint128,
     pub fee_reserve_1: Uint128,
@@ -178,36 +134,27 @@ pub struct PoolInfo {
     pub pool_id: u64,
     pub pool_info: PoolDetails,
     pub factory_addr: Addr,
-    //cw20 token contract address used for creation
     pub token_address: Addr,
-    //cw721 contract address for pool used for creation
     pub position_nft_address: Addr,
 }
 
 #[cw_serde]
 pub struct PoolDetails {
-    // information for the two tokens in the pool
     pub asset_infos: [TokenType; 2],
-    // pool contract address
     pub contract_addr: Addr,
     pub pool_type: PoolPairType,
 }
 
 #[cw_serde]
 pub struct OracleInfo {
-    //oracle contract address
     pub oracle_addr: Addr,
 }
 
 #[cw_serde]
 pub struct ThresholdPayoutAmounts {
-    // once the threshold is crossed, the amount distributed directly to the creator
     pub creator_reward_amount: Uint128,
-    // once the threshold is crossed, the amount distributed directly to the BlueChip
     pub bluechip_reward_amount: Uint128,
-    // once the threshold is crossed, the amount distributed directly to the newly formed creator pool
     pub pool_seed_amount: Uint128,
-    //the total sum of tokens sent back to committers who committed prior to the threshold being crossed
     pub commit_return_amount: Uint128,
 }
 
@@ -221,29 +168,22 @@ pub struct CommitLimitInfo {
 #[cw_serde]
 pub struct CreatorExcessLiquidity {
     pub creator: Addr,
-    pub bluechip_amount: Uint128, // Excess bluechip amount
-    pub token_amount: Uint128,    // Proportional creator tokens
+    pub bluechip_amount: Uint128,
+    pub token_amount: Uint128,
     pub unlock_time: Timestamp,
     pub excess_nft_id: Option<String>,
 }
 
 #[cw_serde]
 pub struct Position {
-    //amount of liquidity units in the liquidity position
     pub liquidity: Uint128,
-    //wallet address of liquidity owner
     pub owner: Addr,
-    //last time the user collected fees in terms of fee accumulation fee_growth_global_0 - fee_growth_inside_0_last = fees owed for asset 0
     pub fee_growth_inside_0_last: Decimal,
     pub fee_growth_inside_1_last: Decimal,
-    // when was position opened
     pub created_at: u64,
     pub last_fee_collection: u64,
-    //when positions are too small, they take a liquidity accumulation penalty.
     pub fee_size_multiplier: Decimal,
-    // Fees preserved from past partial removals. When remove_partial_liquidity
-    // pays proportional fees and resets the snapshot, the remaining portion's
-    // accrued-but-not-yet-paid fees are stored here so they can be collected later.
+    /// Fees preserved from past partial removals so they can be collected later.
     #[serde(default)]
     pub unclaimed_fees_0: Uint128,
     #[serde(default)]

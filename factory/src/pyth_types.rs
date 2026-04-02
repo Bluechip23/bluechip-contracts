@@ -1,6 +1,5 @@
 use cosmwasm_schema::cw_serde;
 
-
 #[cw_serde]
 pub struct PythPriceRetrievalResponse {
     pub price: i64,
@@ -10,7 +9,6 @@ pub struct PythPriceRetrievalResponse {
 }
 
 #[cw_serde]
-//PythPriceFeed
 pub struct PriceFeed {
     pub id: String,
     pub price: PythPriceRetrievalResponse,
@@ -18,20 +16,17 @@ pub struct PriceFeed {
 }
 
 #[cw_serde]
-//PythPriceFeedResponse
 pub struct PriceFeedResponse {
     pub price_feed: Option<PriceFeed>,
-    // Used for mock oracle response which returns price directly
     pub price: Option<PythPriceRetrievalResponse>,
 }
 
 #[cw_serde]
 pub enum PythQueryMsg {
-    PythConversionPriceFeed { 
-        id: String 
+    PythConversionPriceFeed {
+        id: String,
     },
-    //used for mock oracle
     GetPrice {
-        price_id: String
+        price_id: String,
     },
 }

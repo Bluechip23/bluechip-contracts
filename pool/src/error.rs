@@ -126,6 +126,15 @@ pub enum ContractError {
     },
     #[error("The threshold lock is not stuck")]
     NotStuckYet {},
+
+    #[error("Pool has been permanently drained via emergency withdrawal")]
+    EmergencyDrained {},
+
+    #[error("Emergency withdraw timelock not yet elapsed. Executable after: {effective_after}")]
+    EmergencyTimelockPending { effective_after: Timestamp },
+
+    #[error("No pending emergency withdrawal to cancel")]
+    NoPendingEmergencyWithdraw {},
 }
 
 impl From<OverflowError> for ContractError {

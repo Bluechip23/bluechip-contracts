@@ -18,14 +18,10 @@ pub struct PendingWithdrawal {
     pub execute_after: Timestamp,
 }
 
-// 48-hours
 pub const WITHDRAW_TIMELOCK_SECONDS: u64 = 172_800;
-pub const CONFIG_TIMELOCK_SECONDS: u64 = 172_800; // 48 hours — matches withdrawal
+pub const CONFIG_TIMELOCK_SECONDS: u64 = 172_800;
 pub const PENDING_WITHDRAWAL: Item<PendingWithdrawal> = Item::new("pending_withdrawal");
 
-// F2-H1: Pending config update with timelock. Prevents a compromised owner
-// key from instantly redirecting the factory_address (which would bypass the
-// 48-hour withdrawal timelock by draining via RequestExpansion).
 #[cw_serde]
 pub struct PendingConfigUpdate {
     pub factory_address: Option<String>,

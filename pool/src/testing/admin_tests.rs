@@ -127,7 +127,7 @@ fn test_emergency_withdraw() {
         ExecuteMsg::EmergencyWithdraw {},
     )
     .unwrap_err();
-    assert!(format!("{:?}", early_err).contains("timelock not yet elapsed"));
+    assert!(format!("{}", early_err).contains("timelock not yet elapsed"));
 
     let mut env_after = base_env.clone();
     env_after.block.time = env_after.block.time.plus_seconds(86_401); // 24 h + 1 s

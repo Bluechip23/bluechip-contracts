@@ -50,9 +50,7 @@ pub enum ExecuteMsg {
     ExecutePoolUpgrade {},
     CancelPoolUpgrade {},
     ContinuePoolUpgrade {},
-    // F1-C2: Pool config changes now follow a 48-hour timelock, matching
-    // factory-level config updates.  ProposePoolConfigUpdate queues the
-    // change; ExecutePoolConfigUpdate applies it after the delay.
+    // 48-hour timelocked pool config changes.
     ProposePoolConfigUpdate {
         pool_id: u64,
         pool_config: PoolConfigUpdate,

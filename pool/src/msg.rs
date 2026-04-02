@@ -1,11 +1,8 @@
-#[allow(unused_imports)]
 use crate::asset::{PoolPairInfo, TokenInfo, TokenType};
-#[allow(unused_imports)]
 use crate::state::{Commiting, RecoveryType};
 use cosmwasm_schema::{cw_serde, QueryResponses};
 use cosmwasm_std::{Addr, Binary, Decimal, Timestamp, Uint128};
 use cw20::Cw20ReceiveMsg;
-#[allow(unused_imports)]
 use pool_factory_interfaces::{AllPoolsResponse, PoolStateResponseForFactory};
 
 #[cw_serde]
@@ -47,7 +44,7 @@ pub enum ExecuteMsg {
     },
     AddToPosition {
         position_id: String,
-        amount0: Uint128, // bluechip token amount
+        amount0: Uint128,
         amount1: Uint128,
         min_amount0: Option<Uint128>,
         min_amount1: Option<Uint128>,
@@ -56,7 +53,7 @@ pub enum ExecuteMsg {
     RemovePartialLiquidity {
         position_id: String,
         liquidity_to_remove: Uint128,
-        transaction_deadline: Option<Timestamp>, // Specific amount of liquidity to remove
+        transaction_deadline: Option<Timestamp>,
         min_amount0: Option<Uint128>,
         min_amount1: Option<Uint128>,
         max_ratio_deviation_bps: Option<u16>,
@@ -83,12 +80,11 @@ pub enum ExecuteMsg {
 #[cw_serde]
 pub enum MigrateMsg {
     UpdateFees { new_fees: Decimal },
-    UpdateVersion {}, // Simple version update
+    UpdateVersion {},
 }
 
 #[cw_serde]
 pub enum Cw20HookMsg {
-    // Swap a given amount of asset
     Swap {
         belief_price: Option<Decimal>,
         max_spread: Option<Decimal>,
@@ -110,7 +106,6 @@ pub enum Cw20HookMsg {
     },
 }
 
-// This structure describes the query messages available in the contract.
 #[cw_serde]
 #[derive(QueryResponses)]
 pub enum QueryMsg {
@@ -124,40 +119,31 @@ pub enum QueryMsg {
     ReverseSimulation { ask_asset: TokenInfo },
     #[returns(CumulativePricesResponse)]
     CumulativePrices {},
-
     #[returns(FeeInfoResponse)]
     FeeInfo {},
-
     #[returns(CommitStatus)]
     IsFullyCommited {},
-
     #[returns(Option<Commiting>)]
     CommitingInfo { wallet: String },
-
     #[returns(PoolCommitResponse)]
     PoolCommits {
         pool_contract_address: Addr,
         min_payment_usd: Option<Uint128>,
-        after_timestamp: Option<u64>, // Unix timestamp
-        start_after: Option<String>,  // For pagination
+        after_timestamp: Option<u64>,
+        start_after: Option<String>,
         limit: Option<u32>,
     },
-
     #[returns(PoolStateResponse)]
     PoolState {},
-
     #[returns(PoolFeeStateResponse)]
     FeeState {},
-
     #[returns(PositionResponse)]
     Position { position_id: String },
-
     #[returns(PositionsResponse)]
     Positions {
         start_after: Option<String>,
         limit: Option<u32>,
     },
-
     #[returns(PositionsResponse)]
     PositionsByOwner {
         owner: String,
@@ -166,13 +152,10 @@ pub enum QueryMsg {
     },
     #[returns(LastCommitedResponse)]
     LastCommited { wallet: String },
-
     #[returns(PoolInfoResponse)]
     PoolInfo {},
-
     #[returns(PoolStateResponseForFactory)]
     GetPoolState { pool_contract_address: String },
-
     #[returns(AllPoolsResponse)]
     GetAllPools {},
 }
@@ -180,13 +163,9 @@ pub enum QueryMsg {
 #[cw_serde]
 pub struct PoolInstantiateMsg {
     pub pool_id: u64,
-    // Information about the two assets in the pool
     pub pool_token_info: [TokenType; 2],
-    // The token contract code ID used for the tokens in the pool
     pub cw20_token_contract_id: u64,
-    // The factory contract address
     pub used_factory_addr: Addr,
-    // gets set in reply function - amounts that go to each payout party
     pub threshold_payout: Option<Binary>,
     pub commit_fee_info: CommitFeeInfo,
     pub commit_threshold_limit_usd: Uint128,
@@ -200,15 +179,10 @@ pub struct PoolInstantiateMsg {
 
 #[cw_serde]
 pub struct PoolCommitResponse {
-    //number of total commits
     pub total_count: u32,
-    //lists of wallets committed
     pub commiters: Vec<CommiterInfo>,
 }
 
-/// Mutable pool configuration fields. Only these four fields can be changed
-/// post-instantiation via `UpdateConfigFromFactory`. All other pool parameters
-/// (fees, thresholds, Pyth config, code IDs) are immutable after creation.
 #[cw_serde]
 pub struct PoolConfigUpdate {
     pub lp_fee: Option<Decimal>,
@@ -220,86 +194,63 @@ pub struct PoolConfigUpdate {
 #[cw_serde]
 pub struct CommiterInfo {
     pub wallet: String,
-    //last payment in bluechip amount
     pub last_payment_bluechip: Uint128,
-    //last payment converted to USD
     pub last_payment_usd: Uint128,
     pub last_commited: Timestamp,
     pub total_paid_usd: Uint128,
     pub total_paid_bluechip: Uint128,
 }
+
 #[cw_serde]
 pub struct CommitFeeInfo {
-    //BlueChip wallet
     pub bluechip_wallet_address: Addr,
-    //pool creator wallet
     pub creator_wallet_address: Addr,
-    //amount of commit that goes to BlueChip
     pub commit_fee_bluechip: Decimal,
-    //amount of commit that goes to pool creator
     pub commit_fee_creator: Decimal,
 }
 
 #[cw_serde]
 pub struct PoolResponse {
-    // The assets in the pool together with asset amounts
     pub assets: [TokenInfo; 2],
 }
 
 #[cw_serde]
 pub struct ConfigResponse {
-    // Last timestamp when the cumulative prices in the pool were updated
     pub block_time_last: u64,
-    // The pool's parameters
     pub params: Option<Binary>,
 }
 
 #[cw_serde]
 pub struct LastCommitedResponse {
-    //has wallet sent a commit transaction
     pub has_commited: bool,
-    //last time commiting
     pub last_commited: Option<Timestamp>,
-    //last payment in bluechip
     pub last_payment_bluechip: Option<Uint128>,
-    //last payment converted to usd
     pub last_payment_usd: Option<Uint128>,
 }
 
 #[cw_serde]
 pub struct SimulationResponse {
-    //amount of ask assets returned by the swap
     pub return_amount: Uint128,
-    // spread used in the swap operation
     pub spread_amount: Uint128,
-    //amount of fees charged by the transaction
     pub commission_amount: Uint128,
 }
 
 #[cw_serde]
 pub struct ReverseSimulationResponse {
-    // The amount of offer assets returned by the reverse swap
     pub offer_amount: Uint128,
-    // The spread used in the swap operation
     pub spread_amount: Uint128,
-    //The amount of fees charged by the transaction
     pub commission_amount: Uint128,
 }
 
-// This structure is used to return a cumulative prices query response.
 #[cw_serde]
 pub struct CumulativePricesResponse {
-    // The two assets in the pool to query
     pub assets: [TokenInfo; 2],
-    // The last value for the token0 cumulative price
     pub price0_cumulative_last: Uint128,
-    // The last value for the token1 cumulative price
     pub price1_cumulative_last: Uint128,
 }
 
 #[cw_serde]
 pub struct FeeInfoResponse {
-    // The two assets in the pool to query
     pub fee_info: CommitFeeInfo,
 }
 
@@ -312,24 +263,17 @@ pub enum CommitStatus {
 #[cw_serde]
 pub struct PoolStateResponse {
     pub nft_ownership_accepted: bool,
-    //asset 0 amount
     pub reserve0: Uint128,
-    //asset 1 amount
     pub reserve1: Uint128,
-    //total liquidity in pool
     pub total_liquidity: Uint128,
     pub block_time_last: u64,
 }
 
 #[cw_serde]
 pub struct PoolFeeStateResponse {
-    //total fees generated by asset 0 inside pool
     pub fee_growth_global_0: Decimal,
-    //total fees generated by asset 1 inside pool
     pub fee_growth_global_1: Decimal,
-    //total fees collected by positions for asset 0
     pub total_fees_collected_0: Uint128,
-    //total fees collected by positions for asset 1
     pub total_fees_collected_1: Uint128,
 }
 
@@ -337,16 +281,11 @@ pub struct PoolFeeStateResponse {
 pub struct PositionResponse {
     pub position_id: String,
     pub liquidity: Uint128,
-    //wallet address
     pub owner: Addr,
-    // fee_growth_global_0 was when position last collected - this is local to this position
     pub fee_growth_inside_0_last: Decimal,
-    // fee_growth_global_1 was when position last collected - this is local to this position
     pub fee_growth_inside_1_last: Decimal,
     pub created_at: u64,
-    //last time position collected fees from pool.
     pub last_fee_collection: u64,
-    //fee_growth_global - fee_growth_inside
     pub unclaimed_fees_0: Uint128,
     pub unclaimed_fees_1: Uint128,
 }

@@ -67,7 +67,6 @@ pub fn execute(
     }
 }
 
-//triggered when pool crosses threshold. Sends specified amount of ubluechip to the recipient address. Only callable by factory.
 pub fn execute_expand_economy(
     deps: DepsMut,
     info: MessageInfo,
@@ -103,10 +102,6 @@ pub fn execute_expand_economy(
         }
     }
 }
-
-// F2-H1: Config updates now use a 48-hour timelock. This prevents a
-// compromised owner key from instantly changing factory_address to drain
-// funds via RequestExpansion, bypassing the withdrawal timelock.
 
 pub fn execute_propose_config_update(
     deps: DepsMut,
@@ -208,7 +203,6 @@ pub fn execute_cancel_config_update(
     Ok(Response::new().add_attribute("action", "cancel_config_update"))
 }
 
-// only one at a time, and only owner can call
 pub fn execute_propose_withdrawal(
     deps: DepsMut,
     env: Env,
@@ -249,7 +243,6 @@ pub fn execute_propose_withdrawal(
         .add_attribute("execute_after", execute_after.to_string()))
 }
 
-// execute the timelocked withdrawal after the delay has elapsed. 48hrs
 pub fn execute_withdrawal(
     deps: DepsMut,
     env: Env,
@@ -289,7 +282,6 @@ pub fn execute_withdrawal(
         .add_attribute("denom", pending.denom))
 }
 
-// Cancel a pending withdrawal before it executes.
 pub fn execute_cancel_withdrawal(
     deps: DepsMut,
     info: MessageInfo,

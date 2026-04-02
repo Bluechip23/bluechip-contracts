@@ -212,7 +212,6 @@ fn execute_create_creator_pool(
         admin: Some(env.contract.address.to_string()),
         label: token_info.name,
     };
-    //set the trackingfor pool creation
     let creation_state = PoolCreationState {
         pool_id,
         creator: info.sender,
@@ -366,10 +365,6 @@ pub fn execute_cancel_pool_upgrade(
     PENDING_POOL_UPGRADE.remove(deps.storage);
     Ok(Response::new().add_attribute("action", "cancel_pool_upgrade"))
 }
-
-// F1-C2: Pool config updates now use a 48-hour timelock, matching the
-// factory config update pattern.  This prevents a compromised admin key
-// from instantly redirecting a pool's oracle address or fee parameters.
 
 pub fn execute_propose_pool_config_update(
     deps: DepsMut,

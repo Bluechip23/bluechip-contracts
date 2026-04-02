@@ -1,4 +1,3 @@
-#![allow(non_snake_case)]
 use crate::contract::DEFAULT_SLIPPAGE;
 use crate::error::ContractError;
 
@@ -10,13 +9,12 @@ use cosmwasm_std::{Decimal, Decimal256, Deps, Fraction, StdError, StdResult, Uin
 use pool_factory_interfaces::{ConversionResponse, FactoryQueryMsg};
 use std::str::FromStr;
 
-// Wrapper for factory queries to match the factory's QueryMsg structure
 #[cw_serde]
 enum FactoryQueryWrapper {
     InternalBlueChipOracleQuery(FactoryQueryMsg),
 }
 
-// calculates swap amounts using constant product formula (x * y = k)
+/// Constant product swap (x * y = k). Returns (return_amount, spread, commission).
 pub fn compute_swap(
     offer_pool: Uint128,
     ask_pool: Uint128,
@@ -28,7 +26,6 @@ pub fn compute_swap(
     let offer_amount: Uint256 = offer_amount.into();
     let commission_rate = decimal2decimal256(commission_rate)?;
 
-    // constant product - use checked math
     let cp: Uint256 = offer_pool.checked_mul(ask_pool).map_err(|e| {
         StdError::generic_err(format!("Overflow calculating constant product: {}", e))
     })?;
@@ -43,23 +40,19 @@ pub fn compute_swap(
     .numerator()
         / Decimal256::one().denominator();
 
-    // calculate spread - use checked math
     let price_ratio = Decimal256::from_ratio(ask_pool, offer_pool);
-    // calculate spread - saturate to zero if actual > ideal (can happen with rounding)
     let ideal_return = offer_amount
         .checked_mul(price_ratio.numerator())
         .map_err(|e| StdError::generic_err(format!("Overflow calculating spread: {}", e)))?
         .checked_div(price_ratio.denominator())
         .map_err(|e| StdError::generic_err(format!("Division error calculating spread: {}", e)))?;
 
-    // If return_amount > ideal (favorable rounding), spread is zero
     let spread_amount: Uint256 = if ideal_return > return_amount {
         ideal_return - return_amount
     } else {
         Uint256::zero()
     };
 
-    // calculate commission - use checked math
     let commission_amount: Uint256 = return_amount
         .checked_mul(commission_rate.numerator())
         .map_err(|e| StdError::generic_err(format!("Overflow calculating commission: {}", e)))?
@@ -68,7 +61,6 @@ pub fn compute_swap(
             StdError::generic_err(format!("Division error calculating commission: {}", e))
         })?;
 
-    // subtract commission from return amount - use checked math
     let final_return_amount: Uint256 = return_amount
         .checked_sub(commission_amount)
         .map_err(|e| StdError::generic_err(format!("Underflow subtracting commission: {}", e)))?;
@@ -79,22 +71,19 @@ pub fn compute_swap(
         commission_amount.try_into()?,
     ))
 }
-// Update price accumulator with time-weighted average
+
 pub fn update_price_accumulator(
     pool_state: &mut PoolState,
     current_time: u64,
 ) -> Result<(), ContractError> {
     let time_elapsed = current_time.saturating_sub(pool_state.block_time_last);
-    // update if time has passed and both reserves exist
     if time_elapsed > 0 && !pool_state.reserve0.is_zero() && !pool_state.reserve1.is_zero() {
-        // Calculate price0 * time_elapsed directly
         let price0_increment = pool_state
             .reserve1
             .checked_mul(Uint128::from(time_elapsed))
             .map_err(ContractError::from)?
             .checked_div(pool_state.reserve0)
             .map_err(|_| ContractError::DivideByZero)?;
-        // Calculate price1 * time_elapsed directly
         let price1_increment = pool_state
             .reserve0
             .checked_mul(Uint128::from(time_elapsed))
@@ -107,15 +96,12 @@ pub fn update_price_accumulator(
         pool_state.price1_cumulative_last = pool_state
             .price1_cumulative_last
             .saturating_add(price1_increment);
-        //update time for next check
         pool_state.block_time_last = current_time;
     }
 
     Ok(())
 }
 
-// Maximum age (in seconds) for an oracle price to be considered valid in commits.
-// If the oracle price was last updated more than this many seconds ago, commits will be rejected.
 pub const MAX_ORACLE_STALENESS_SECONDS: u64 = 600; // 10 minutes
 
 pub fn get_usd_value_with_staleness_check(
@@ -132,7 +118,6 @@ pub fn get_usd_value_with_staleness_check(
         }),
     )?;
 
-    // Check staleness: reject if oracle price is too old
     if response.timestamp > 0 && current_block_time > response.timestamp + MAX_ORACLE_STALENESS_SECONDS {
         return Err(StdError::generic_err(format!(
             "Oracle price is stale: last updated at {}, current time {}, max age {}s",
@@ -155,12 +140,10 @@ pub fn get_bluechip_value(deps: Deps, usd_amount: Uint128) -> StdResult<Uint128>
 
     Ok(response.amount)
 }
-//used in reverse query to find price for a desired amount of an unowned token in a token pair
-//compuets a required offer amount for a desired ask amount
+
+/// Reverse swap: computes the required offer amount for a desired ask amount.
 pub fn compute_offer_amount(
-    //current pool balance of token being offered
     offer_pool: Uint128,
-    //current pool balance of requested token
     ask_pool: Uint128,
     ask_amount: Uint128,
     commission_rate: Decimal,
@@ -170,8 +153,6 @@ pub fn compute_offer_amount(
     let ask_amount: Uint256 = ask_amount.into();
     let commission_rate = decimal2decimal256(commission_rate)?;
 
-    // Calculate ask_amount before commission is applied
-    // ask_amount_with_commission = ask_amount / (1 - commission _rate)
     let one_minus_commission = Decimal256::one().checked_sub(commission_rate)
         .map_err(|_| StdError::generic_err("Commission rate >= 100%"))?;
     let ask_amount_before_commission =
@@ -192,8 +173,6 @@ pub fn compute_offer_amount(
         .checked_sub(offer_pool)
         .map_err(|_| StdError::generic_err("Invalid offer amount calculation"))?;
 
-    // Calculate spread amount (price impact)
-    // spread = offer_amount - (ask_amount_before_commission * offer_pool / ask_pool)
     let expected_offer_amount = ask_amount_before_commission
         .checked_mul(offer_pool)
         .map_err(|_| StdError::generic_err("Expected offer amount overflow"))?
@@ -201,7 +180,6 @@ pub fn compute_offer_amount(
         .map_err(|_| StdError::generic_err("Expected offer amount division error"))?;
     let spread_amount: Uint256 = offer_amount.saturating_sub(expected_offer_amount);
 
-    // Calculate commission on the ask amount
     let commission_amount: Uint256 =
         ask_amount_before_commission
             .checked_mul(commission_rate.numerator())
@@ -210,19 +188,14 @@ pub fn compute_offer_amount(
             .map_err(|_| StdError::generic_err("Commission calculation division error"))?;
 
     Ok((
-        //amount trader must offer
         offer_amount.try_into()?,
-        //slippage
         spread_amount.try_into()?,
-        //fee to liquidity holders
         commission_amount.try_into()?,
     ))
 }
-//use either belief price or calculated spread amount
+
 pub fn assert_max_spread(
-    //expeccted exchange rate
     belief_price: Option<Decimal>,
-    //max slippage the trader allows
     max_spread: Option<Decimal>,
     offer_amount: Uint128,
     return_amount: Uint128,
@@ -236,7 +209,6 @@ pub fn assert_max_spread(
     }
 
     if let Some(belief_price) = belief_price {
-        //compare against traders expected price
         let inverse = belief_price.inv().ok_or_else(|| {
             ContractError::Std(StdError::generic_err("Invalid belief price: zero"))
         })?;
@@ -265,7 +237,6 @@ pub fn assert_max_spread(
         if total_amount.is_zero() {
             return Err(ContractError::MaxSpreadAssertion {});
         }
-        //use calculated spread amount from swap computation
         if Decimal::from_ratio(spread_amount, total_amount) > max_spread {
             return Err(ContractError::MaxSpreadAssertion {});
         }

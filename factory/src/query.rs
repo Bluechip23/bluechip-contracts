@@ -8,7 +8,6 @@ use crate::internal_bluechip_price_oracle::{bluechip_to_usd, get_bluechip_usd_pr
 use crate::msg::FactoryInstantiateResponse;
 use crate::state::{FACTORYINSTANTIATEINFO, POOLS_BY_CONTRACT_ADDRESS, POOLS_BY_ID};
 use crate::asset::TokenType;
-#[allow(unused_imports)]
 use crate::pool_struct::PoolDetails;
 
 #[cw_serde]
@@ -53,7 +52,6 @@ pub fn query_pool(deps: Deps, pool_address: String) -> StdResult<PoolStateRespon
 pub fn query_creator_token_info(deps: Deps, pool_id: u64) -> StdResult<CreatorTokenInfoResponse> {
     let pool = POOLS_BY_ID.load(deps.storage, pool_id)?;
 
-    // Find the creator token address from the pool's token info
     let token_addr = pool
         .pool_token_info
         .iter()
@@ -63,7 +61,6 @@ pub fn query_creator_token_info(deps: Deps, pool_id: u64) -> StdResult<CreatorTo
         })
         .ok_or_else(|| cosmwasm_std::StdError::generic_err("No creator token found for this pool"))?;
 
-    // Query the CW20 token contract for its metadata
     let token_info: TokenInfoResponse = deps.querier.query(&QueryRequest::Wasm(WasmQuery::Smart {
         contract_addr: token_addr.to_string(),
         msg: to_json_binary(&Cw20QueryMsg::TokenInfo {})?,
@@ -97,7 +94,3 @@ pub fn query_active_factory(deps: Deps) -> StdResult<FactoryInstantiateResponse>
     let factory = FACTORYINSTANTIATEINFO.load(deps.storage)?;
     Ok(FactoryInstantiateResponse { factory })
 }
-
-// Pyth ATOM/USD price queries are handled exclusively through the oracle
-// module (internal_bluechip_price_oracle::query_pyth_atom_usd_price) which
-// includes full validation: staleness, confidence interval, and exponent range.

@@ -1,4 +1,3 @@
-#![allow(non_snake_case)]
 use crate::asset::{call_pool_info, TokenInfo};
 use crate::liquidity_helpers::calculate_unclaimed_fees;
 use crate::msg::{
@@ -19,7 +18,6 @@ use cosmwasm_std::{
 use pool_factory_interfaces::{AllPoolsResponse, PoolQueryMsg, PoolStateResponseForFactory};
 
 use cw_storage_plus::Bound;
-use std::vec;
 
 #[cfg_attr(not(feature = "library"), entry_point)]
 pub fn query(deps: Deps, env: Env, msg: QueryMsg) -> StdResult<Binary> {
@@ -229,10 +227,8 @@ pub fn query_fee_info(deps: Deps) -> StdResult<FeeInfoResponse> {
     Ok(FeeInfoResponse { fee_info })
 }
 
-/// F4-M4: Only allow post-threshold operations when the threshold crossing
-/// has fully completed (IS_THRESHOLD_HIT == true).  The previous secondary
-/// check (usd_raised >= target) could return true even when the crossing
-/// transaction failed, allowing swaps/deposits on an empty pool.
+/// Returns true only after the threshold crossing has fully completed
+/// (IS_THRESHOLD_HIT == true). Gates all post-threshold operations.
 pub fn query_check_commit(deps: Deps) -> StdResult<bool> {
     IS_THRESHOLD_HIT.load(deps.storage)
 }
@@ -262,8 +258,6 @@ pub fn query_position(deps: Deps, position_id: String) -> StdResult<PositionResp
     let liquidity_position = LIQUIDITY_POSITIONS.load(deps.storage, &position_id)?;
 
     let pool_fee_state = POOL_FEE_STATE.load(deps.storage)?;
-    // Total claimable = currently-accumulating delta + fees preserved from
-    // prior partial removals (stored in unclaimed_fees_0/1 on the position).
     let unclaimed_fees_0 = calculate_unclaimed_fees(
         liquidity_position.liquidity,
         liquidity_position.fee_growth_inside_0_last,
@@ -423,64 +417,39 @@ pub fn query_pool_commiters(
     })
 }
 
+/// Build the factory response struct from current pool state.
+fn build_factory_response(deps: Deps) -> StdResult<PoolStateResponseForFactory> {
+    let pool_state = POOL_STATE.load(deps.storage)?;
+    let pool_info = POOL_INFO.load(deps.storage)?;
+    let assets: Vec<String> = pool_info
+        .pool_info
+        .asset_infos
+        .iter()
+        .map(|a| a.to_string())
+        .collect();
+
+    Ok(PoolStateResponseForFactory {
+        pool_contract_address: pool_state.pool_contract_address,
+        nft_ownership_accepted: pool_state.nft_ownership_accepted,
+        reserve0: pool_state.reserve0,
+        reserve1: pool_state.reserve1,
+        total_liquidity: pool_state.total_liquidity,
+        block_time_last: pool_state.block_time_last,
+        price0_cumulative_last: pool_state.price0_cumulative_last,
+        price1_cumulative_last: pool_state.price1_cumulative_last,
+        assets,
+    })
+}
+
 pub fn query_for_factory(deps: Deps, _env: Env, msg: PoolQueryMsg) -> StdResult<Binary> {
     match msg {
         PoolQueryMsg::GetPoolState {
-            pool_contract_address: _, // Ignore address check for now, simply return self state
-        } => {
-            let pool_state = POOL_STATE.load(deps.storage)?;
-
-            // Load pool info to get assets
-            let pool_info = POOL_INFO.load(deps.storage)?;
-
-            // Map TokenType to String
-            let assets: Vec<String> = pool_info
-                .pool_info
-                .asset_infos
-                .iter()
-                .map(|a| a.to_string())
-                .collect();
-
-            // Convert to response
-            let response = PoolStateResponseForFactory {
-                pool_contract_address: pool_state.pool_contract_address,
-                nft_ownership_accepted: pool_state.nft_ownership_accepted,
-                reserve0: pool_state.reserve0,
-                reserve1: pool_state.reserve1,
-                total_liquidity: pool_state.total_liquidity,
-                block_time_last: pool_state.block_time_last,
-                price0_cumulative_last: pool_state.price0_cumulative_last,
-                price1_cumulative_last: pool_state.price1_cumulative_last,
-                assets,
-            };
-
-            to_json_binary(&response)
-        }
+            pool_contract_address: _,
+        } => to_json_binary(&build_factory_response(deps)?),
         PoolQueryMsg::GetAllPools {} => {
-            let pool_state = POOL_STATE.load(deps.storage)?;
-            let pool_info = POOL_INFO.load(deps.storage)?;
-            let assets: Vec<String> = pool_info
-                .pool_info
-                .asset_infos
-                .iter()
-                .map(|a| a.to_string())
-                .collect();
-
-            let response = PoolStateResponseForFactory {
-                pool_contract_address: pool_state.pool_contract_address.clone(),
-                nft_ownership_accepted: pool_state.nft_ownership_accepted,
-                reserve0: pool_state.reserve0,
-                reserve1: pool_state.reserve1,
-                total_liquidity: pool_state.total_liquidity,
-                block_time_last: pool_state.block_time_last,
-                price0_cumulative_last: pool_state.price0_cumulative_last,
-                price1_cumulative_last: pool_state.price1_cumulative_last,
-                assets,
-            };
-
-            // Return vector containing just this pool
+            let response = build_factory_response(deps)?;
             to_json_binary(&AllPoolsResponse {
-                pools: vec![(pool_state.pool_contract_address.to_string(), response)],
+                pools: vec![(response.pool_contract_address.to_string(), response)],
             })
         }
     }
