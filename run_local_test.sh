@@ -281,11 +281,11 @@ print(json.dumps({
 FACTORY_ADDR=$(inst "$FACTORY_CODE" "$FACTORY_MSG" "Factory")
 echo "  Factory: $FACTORY_ADDR"
 
-# 2d. Update Expand Economy to point to real factory
-log_step "Update ExpandEconomy → real factory address"
-UPD_MSG=$(python3 -c "import json; print(json.dumps({'update_config':{'factory_address':'$FACTORY_ADDR','owner':None}}))")
-TXHASH=$(exe "$EXP_ADDR" "$UPD_MSG")
-assert_ok "ExpandEconomy UpdateConfig → Factory" "$TXHASH"
+# 2d. ExpandEconomy factory_address stays as Alice for testing.
+# In production, use ProposeConfigUpdate + ExecuteConfigUpdate (48h timelock).
+# Minting is skipped in local test mode (admin == anchor_pool_address).
+log_step "ExpandEconomy factory_address = Alice (local test mode, minting skipped)"
+echo "  factory_address stays as Alice — minting skipped in local test mode"
 
 # 2e. Create Pool A via Factory (standard settings: max_lock=25B, lock_days=7)
 log_step "Create Pool A (standard settings)"
@@ -502,23 +502,31 @@ sleep 10
 echo "  ExpandEconomy stake balance:"
 qry "$EXP_ADDR" '{"get_balance":{"denom":"stake"}}'
 
-WITHDRAW_ATTACK=$(python3 -c "import json; print(json.dumps({'withdraw':{'amount':'50000','denom':'stake','recipient':'$BOB'}}))")
+WITHDRAW_ATTACK=$(python3 -c "import json; print(json.dumps({'propose_withdrawal':{'amount':'50000','denom':'stake','recipient':'$BOB'}}))")
 TXHASH=$(exe_bob "$EXP_ADDR" "$WITHDRAW_ATTACK")
-assert_blocked "ExpandEconomy Withdraw by Bob (not owner)" "$TXHASH"
+assert_blocked "ExpandEconomy ProposeWithdrawal by Bob (not owner)" "$TXHASH"
 
-# Owner (Alice) should succeed
-log_step "Valid — Alice withdraws her own funds from expand economy"
-WITHDRAW_VALID=$(python3 -c "import json; print(json.dumps({'withdraw':{'amount':'50000','denom':'stake','recipient':None}}))")
+# Owner (Alice) should be able to propose withdrawal
+log_step "Valid — Alice proposes withdrawal from expand economy (48h timelock)"
+WITHDRAW_VALID=$(python3 -c "import json; print(json.dumps({'propose_withdrawal':{'amount':'50000','denom':'stake','recipient':None}}))")
 TXHASH=$(exe "$EXP_ADDR" "$WITHDRAW_VALID")
-assert_ok "Alice Withdraw from ExpandEconomy" "$TXHASH"
+assert_ok "Alice ProposeWithdrawal from ExpandEconomy" "$TXHASH"
+
+# Execute should fail (48h timelock not expired)
+TXHASH=$(exe "$EXP_ADDR" '{"execute_withdrawal":{}}')
+assert_blocked "Alice ExecuteWithdrawal (too early, 48h timelock)" "$TXHASH"
+
+# Cancel the pending withdrawal
+TXHASH=$(exe "$EXP_ADDR" '{"cancel_withdrawal":{}}')
+assert_ok "Alice CancelWithdrawal" "$TXHASH"
 
 # ---------------------------------------------------------------
 # 6.5 Expand Economy UpdateConfig ownership theft by Bob
 # ---------------------------------------------------------------
 log_step "Attack 6.5 — Bob tries to change ExpandEconomy owner/factory"
-UPD_ATTACK=$(python3 -c "import json; print(json.dumps({'update_config':{'factory_address':'$BOB','owner':None}}))")
+UPD_ATTACK=$(python3 -c "import json; print(json.dumps({'propose_config_update':{'factory_address':'$BOB','owner':None}}))")
 TXHASH=$(exe_bob "$EXP_ADDR" "$UPD_ATTACK")
-assert_blocked "ExpandEconomy UpdateConfig by Bob (ownership theft)" "$TXHASH"
+assert_blocked "ExpandEconomy ProposeConfigUpdate by Bob (ownership theft)" "$TXHASH"
 
 # ---------------------------------------------------------------
 # 6.6 Commit after threshold is crossed

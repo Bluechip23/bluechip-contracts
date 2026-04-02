@@ -376,11 +376,12 @@ print(json.dumps({
 FACTORY_ADDR=$(inst "$FACTORY_CODE" "$FACTORY_MSG" "Factory")
 echo "  Factory: $FACTORY_ADDR"
 
-# 2d. Update Expand Economy to point to real factory
-log_step "Update ExpandEconomy → real factory address"
-UPD_MSG=$(python3 -c "import json; print(json.dumps({'update_config':{'factory_address':'$FACTORY_ADDR','owner':None}}))")
-TXHASH=$(exe "$EXP_ADDR" "$UPD_MSG")
-assert_ok "ExpandEconomy UpdateConfig → Factory" "$TXHASH"
+# 2d. ExpandEconomy factory_address stays as Alice for testing.
+# In production, use ProposeConfigUpdate + ExecuteConfigUpdate (48h timelock).
+# Minting is skipped in local test mode (admin == anchor_pool_address) so
+# the factory doesn't need to call ExpandEconomy during threshold crossing.
+log_step "ExpandEconomy factory_address = Alice (local test mode, minting skipped)"
+echo "  factory_address stays as Alice — minting skipped in local test mode"
 
 # 2e. Create Pool via Factory
 log_step "Create Pool via Factory"
@@ -594,10 +595,9 @@ echo "  [MINT CHECK] Testing expand-economy contract directly below..."
 # ---------------------------------------------------------------
 log_step "Direct Expand-Economy Test (verify contract sends ubluechip)"
 
-# Temporarily set expand-economy factory_address to Alice so she can call it
-UPD_EXP_TO_ALICE=$(python3 -c "import json; print(json.dumps({'update_config':{'factory_address':'$ALICE','owner':None}}))")
-TXHASH=$(exe "$EXP_ADDR" "$UPD_EXP_TO_ALICE")
-assert_ok "ExpandEconomy: Set factory to Alice for direct test" "$TXHASH"
+# ExpandEconomy factory_address is already Alice (set at instantiation, never updated
+# in local test mode), so Alice can call RequestExpansion directly.
+echo "  ExpandEconomy factory_address is already Alice — no config change needed"
 
 # Record balances before
 EXP_BAL_DIRECT_PRE=$(get_bal "$EXP_ADDR" "$DENOM")
@@ -633,10 +633,10 @@ else:
     print('  [MINT CHECK] FAIL: No ubluechip minted')
 "
 
-# Restore expand-economy factory_address to real factory
-UPD_EXP_BACK=$(python3 -c "import json; print(json.dumps({'update_config':{'factory_address':'$FACTORY_ADDR','owner':None}}))")
-TXHASH=$(exe "$EXP_ADDR" "$UPD_EXP_BACK")
-assert_ok "ExpandEconomy: Restore factory address" "$TXHASH"
+# In local test mode, factory_address stays as Alice throughout the test.
+# In production, ExpandEconomy would be linked to the real factory via
+# ProposeConfigUpdate + ExecuteConfigUpdate (48h timelock).
+echo "  ExpandEconomy factory_address remains Alice (local test mode)"
 
 # Pool state after threshold
 echo "  Pool state after threshold crossing:"

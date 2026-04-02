@@ -165,13 +165,18 @@ sleep 6
 FACTORY_ADDR=$(get_tx_attr "$FACTORY_TX" "instantiate" "_contract_address")
 echo "  Factory: $FACTORY_ADDR"
 
-# ─── Step 7: Link expand economy to factory ─────────────────────────────────
+# ─── Step 7: Link expand economy to factory (48h timelock) ──────────────────
 echo ""
-echo "Linking expand economy to factory..."
+echo "Proposing expand economy config update to link to factory..."
+echo "NOTE: Config update has a 48-hour timelock. Execute after the timelock expires."
 bluechipChaind tx wasm execute "$ECON_ADDR" \
-  "{\"update_config\":{\"factory_address\":\"$FACTORY_ADDR\",\"owner\":null}}" \
+  "{\"propose_config_update\":{\"factory_address\":\"$FACTORY_ADDR\",\"owner\":null}}" \
   --from $FROM --chain-id $CHAIN_ID --keyring-backend $KEYRING -y | grep -v "WARNING"
 sleep 6
+
+echo ""
+echo "IMPORTANT: After 48 hours, run this command to apply the config update:"
+echo "  bluechipChaind tx wasm execute $ECON_ADDR '{\"execute_config_update\":{}}' --from $FROM --chain-id $CHAIN_ID --keyring-backend $KEYRING -y"
 
 # ─── Step 8: Create test pool ───────────────────────────────────────────────
 echo ""
