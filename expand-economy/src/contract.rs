@@ -104,10 +104,6 @@ pub fn execute_expand_economy(
     }
 }
 
-// F2-H1: Config updates now use a 48-hour timelock. This prevents a
-// compromised owner key from instantly changing factory_address to drain
-// funds via RequestExpansion, bypassing the withdrawal timelock.
-
 pub fn execute_propose_config_update(
     deps: DepsMut,
     env: Env,

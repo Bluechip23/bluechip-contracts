@@ -367,10 +367,6 @@ pub fn execute_cancel_pool_upgrade(
     Ok(Response::new().add_attribute("action", "cancel_pool_upgrade"))
 }
 
-// F1-C2: Pool config updates now use a 48-hour timelock, matching the
-// factory config update pattern.  This prevents a compromised admin key
-// from instantly redirecting a pool's oracle address or fee parameters.
-
 pub fn execute_propose_pool_config_update(
     deps: DepsMut,
     env: Env,
