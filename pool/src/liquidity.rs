@@ -1,4 +1,3 @@
-#![allow(non_snake_case)]
 use crate::error::ContractError;
 use crate::generic_helpers::{check_rate_limit, enforce_transaction_deadline};
 use crate::liquidity_helpers::{
@@ -18,8 +17,6 @@ use cosmwasm_std::{
     StdError, Timestamp, Uint128, WasmMsg,
 };
 use pool_factory_interfaces::cw721_msgs::{Action, Cw721ExecuteMsg};
-
-use std::vec;
 
 /// Result of the shared deposit preparation logic used by both
 /// `execute_deposit_liquidity` and `add_to_position`.

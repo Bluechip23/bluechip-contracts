@@ -1,4 +1,3 @@
-#![allow(non_snake_case)]
 use crate::contract::DEFAULT_SLIPPAGE;
 use crate::error::ContractError;
 

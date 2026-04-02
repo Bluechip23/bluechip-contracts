@@ -1,4 +1,3 @@
-#![allow(non_snake_case)]
 use crate::error::ContractError;
 use crate::liquidity_helpers::integer_sqrt;
 use crate::msg::CommitFeeInfo;
@@ -18,13 +17,12 @@ use cosmwasm_std::{
 };
 use cw20::Cw20ExecuteMsg;
 use cw_storage_plus::Bound;
-use std::vec;
 
 // Update fee growth based on which token was offered
 pub fn update_pool_fee_growth(
     pool_fee_state: &mut PoolFeeState,
     pool_state: &PoolState,
-    offer_contract_addressx: usize,
+    offer_index: usize,
     commission_amt: Uint128,
 ) -> Result<(), ContractError> {
     if pool_state.total_liquidity.is_zero() || commission_amt.is_zero() {
@@ -33,7 +31,7 @@ pub fn update_pool_fee_growth(
 
     let fee_growth = Decimal::from_ratio(commission_amt, pool_state.total_liquidity);
 
-    if offer_contract_addressx == 0 {
+    if offer_index == 0 {
         // Token0 offered → Token1 is ask → fees in token1
         pool_fee_state.fee_growth_global_1 = pool_fee_state.fee_growth_global_1.checked_add(fee_growth)
             .map_err(|_| ContractError::Std(StdError::generic_err("Fee growth overflow")))?;
