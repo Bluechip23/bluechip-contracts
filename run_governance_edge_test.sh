@@ -4,9 +4,11 @@
 # =====================================================================
 # Tests:
 #   Scenario 1: Factory Governance — ProposeConfigUpdate/UpdateConfig/
-#               CancelConfigUpdate/UpdatePoolConfig/UpgradePools.
+#               CancelConfigUpdate/ProposePoolConfigUpdate/ExecutePoolConfigUpdate/
+#               CancelPoolConfigUpdate/UpgradePools.
 #   Scenario 2: ExpandEconomy Treasury — ProposeWithdrawal/ExecuteWithdrawal/
-#               CancelWithdrawal with 48-hour timelock.
+#               CancelWithdrawal (48h timelock), ProposeConfigUpdate/
+#               ExecuteConfigUpdate/CancelConfigUpdate (48h timelock).
 #   Scenario 3: Pool Edge Cases — zero amounts, simulation queries,
 #               position ownership, fee queries.
 # =====================================================================
@@ -242,9 +244,9 @@ log_step "1a. Unauthorized Access (Bob)"
 TX=$(exe_bob "$FACTORY_ADDR" "$PROPOSE_MSG")
 assert_fail_contains "T1: Bob ProposeConfigUpdate → rejected" "$TX" "admin"
 
-# Bob tries UpdatePoolConfig
-TX=$(exe_bob "$FACTORY_ADDR" '{"update_pool_config":{"pool_id":1,"pool_config":{"commit_fee_info":null,"commit_limit_usd":null,"pyth_contract_addr_for_conversions":null,"pyth_atom_usd_price_feed_id":null,"commit_amount_for_threshold":null,"threshold_payout":null,"cw20_token_contract_id":null,"cw721_nft_contract_id":null,"lp_fee":"0.005","min_commit_interval":null,"usd_payment_tolerance_bps":null,"oracle_address":null}}}')
-assert_fail_contains "T2: Bob UpdatePoolConfig → rejected" "$TX" "admin"
+# Bob tries ProposePoolConfigUpdate
+TX=$(exe_bob "$FACTORY_ADDR" '{"propose_pool_config_update":{"pool_id":1,"pool_config":{"lp_fee":"0.005","min_commit_interval":null,"usd_payment_tolerance_bps":null,"oracle_address":null}}}')
+assert_fail_contains "T2: Bob ProposePoolConfigUpdate → rejected" "$TX" "admin"
 
 # Bob tries CancelConfigUpdate
 TX=$(exe_bob "$FACTORY_ADDR" '{"cancel_config_update":{}}')
@@ -289,20 +291,28 @@ assert_ok "T11: Alice CancelPoolUpgrade → succeeds" "$TX"
 TX=$(exe "$FACTORY_ADDR" '{"cancel_pool_upgrade":{}}')
 assert_fail_contains "T12: Alice CancelPoolUpgrade (no pending) → rejected" "$TX" "No pending"
 
-# ---- 1e. UpdatePoolConfig ----
-log_step "1e. UpdatePoolConfig"
+# ---- 1e. ProposePoolConfigUpdate ----
+log_step "1e. ProposePoolConfigUpdate"
 
-# Update pool 1's lp_fee via factory → pool
-TX=$(exe "$FACTORY_ADDR" '{"update_pool_config":{"pool_id":1,"pool_config":{"commit_fee_info":null,"commit_limit_usd":null,"pyth_contract_addr_for_conversions":null,"pyth_atom_usd_price_feed_id":null,"commit_amount_for_threshold":null,"threshold_payout":null,"cw20_token_contract_id":null,"cw721_nft_contract_id":null,"lp_fee":"0.005","min_commit_interval":null,"usd_payment_tolerance_bps":null,"oracle_address":null}}}')
-assert_ok "T13: Alice UpdatePoolConfig (pool 1 lp_fee → 0.5%) → succeeds" "$TX"
+# Propose pool 1's lp_fee update via factory (48h timelock)
+TX=$(exe "$FACTORY_ADDR" '{"propose_pool_config_update":{"pool_id":1,"pool_config":{"lp_fee":"0.005","min_commit_interval":null,"usd_payment_tolerance_bps":null,"oracle_address":null}}}')
+assert_ok "T13: Alice ProposePoolConfigUpdate (pool 1 lp_fee → 0.5%) → succeeds" "$TX"
+
+# ExecutePoolConfigUpdate too early (48h timelock not expired)
+TX=$(exe "$FACTORY_ADDR" '{"execute_pool_config_update":{"pool_id":1}}')
+assert_fail_contains "T13b: Alice ExecutePoolConfigUpdate (too early, 48h timelock) → rejected" "$TX" "timelock"
+
+# CancelPoolConfigUpdate
+TX=$(exe "$FACTORY_ADDR" '{"cancel_pool_config_update":{"pool_id":1}}')
+assert_ok "T13c: Alice CancelPoolConfigUpdate → succeeds" "$TX"
 
 # =====================================================================
 # SCENARIO 2: EXPANDECONOMY TREASURY
 # =====================================================================
 log_header "SCENARIO 2: ExpandEconomy Treasury"
 
-# Note: Deployed contract uses direct "withdraw" (no timelock).
-# Tests: config verification, unauthorized access, withdraw, update_config.
+# Tests: config verification, unauthorized access, propose/execute/cancel
+# withdrawal (48h timelock), propose/execute/cancel config update (48h timelock).
 
 # ---- 2a. Verify Config ----
 log_step "2a. Verify ExpandEconomy Config"
@@ -344,65 +354,89 @@ fi
 # ---- 2c. Unauthorized access ----
 log_step "2c. Unauthorized Treasury Access (Bob)"
 
-TX=$(exe_bob "$EXP_ADDR" '{"withdraw":{"amount":"100000","denom":"ubluechip"}}')
-assert_fail_contains "T16: Bob Withdraw → rejected" "$TX" "Unauthorized"
+TX=$(exe_bob "$EXP_ADDR" '{"propose_withdrawal":{"amount":"100000","denom":"ubluechip","recipient":null}}')
+assert_fail_contains "T16: Bob ProposeWithdrawal → rejected" "$TX" "Unauthorized"
 
-TX=$(exe_bob "$EXP_ADDR" '{"update_config":{"factory_address":null,"owner":null}}')
-assert_fail_contains "T17: Bob UpdateConfig → rejected" "$TX" "Unauthorized"
+TX=$(exe_bob "$EXP_ADDR" '{"propose_config_update":{"factory_address":null,"owner":null}}')
+assert_fail_contains "T17: Bob ProposeConfigUpdate → rejected" "$TX" "Unauthorized"
 
-# ---- 2d. Owner Withdraw ----
-log_step "2d. Owner Withdraw"
+# ---- 2d. Owner Withdrawal Governance (48h timelock) ----
+log_step "2d. Owner Withdrawal Governance"
 
-# Record balance before withdraw
+# Record balance before
 BEFORE_BAL="$EXP_BAL_AMT"
 
-TX=$(exe "$EXP_ADDR" '{"withdraw":{"amount":"100000","denom":"ubluechip"}}')
-assert_ok "T18: Alice Withdraw (100000 ubluechip) → succeeds" "$TX"
+# Propose withdrawal (starts 48h timelock)
+TX=$(exe "$EXP_ADDR" '{"propose_withdrawal":{"amount":"100000","denom":"ubluechip","recipient":null}}')
+assert_ok "T18: Alice ProposeWithdrawal (100000 ubluechip) → succeeds" "$TX"
 
-# Verify balance decreased
+# Execute too early (48h timelock not expired)
+TX=$(exe "$EXP_ADDR" '{"execute_withdrawal":{}}')
+assert_fail_contains "T19: Alice ExecuteWithdrawal (too early, 48h timelock) → rejected" "$TX" "Timelock"
+
+# Verify balance unchanged (withdrawal not executed)
 EXP_BAL_AFTER=$(qry "$EXP_ADDR" '{"get_balance":{"denom":"ubluechip"}}')
 AFTER_BAL=$(echo "$EXP_BAL_AFTER" | python3 -c "import json,sys; d=json.load(sys.stdin); print(d.get('data',d).get('amount','0'))" 2>/dev/null)
 echo "  Balance before: $BEFORE_BAL  after: $AFTER_BAL"
 
-EXPECTED=$(python3 -c "print(int('$BEFORE_BAL') - 100000)")
-if [ "$AFTER_BAL" = "$EXPECTED" ]; then
-  log_pass "T19: Balance decreased by exactly 100000 ($BEFORE_BAL → $AFTER_BAL)"
+if [ "$AFTER_BAL" = "$BEFORE_BAL" ]; then
+  log_pass "T19b: Balance unchanged during timelock ($BEFORE_BAL)"
 else
-  log_fail "T19: Balance mismatch (expected $EXPECTED, got $AFTER_BAL)"
+  log_fail "T19b: Balance changed before timelock expired (before=$BEFORE_BAL, after=$AFTER_BAL)"
 fi
 
-# ---- 2e. Owner UpdateConfig (round-trip) ----
-log_step "2e. Owner UpdateConfig"
+# Cancel withdrawal
+TX=$(exe "$EXP_ADDR" '{"cancel_withdrawal":{}}')
+assert_ok "T20: Alice CancelWithdrawal → succeeds" "$TX"
 
-# Update owner to Bob, then update back to Alice (proves update_config works)
-UPDATE_TO_BOB=$(python3 -c "import json; print(json.dumps({'update_config':{'factory_address':None,'owner':'$BOB'}}))")
-TX=$(exe "$EXP_ADDR" "$UPDATE_TO_BOB")
-assert_ok "T20: Alice UpdateConfig (owner → Bob) → succeeds" "$TX"
+# Cancel again (no pending) — should fail
+TX=$(exe "$EXP_ADDR" '{"cancel_withdrawal":{}}')
+assert_fail_contains "T20b: Alice CancelWithdrawal (no pending) → rejected" "$TX" "pending"
 
-# Verify config changed
+# Verify repeatable: propose + cancel cycle
+TX=$(exe "$EXP_ADDR" '{"propose_withdrawal":{"amount":"50000","denom":"ubluechip","recipient":null}}')
+assert_ok "T20c: Alice ProposeWithdrawal (2nd time) → succeeds" "$TX"
+
+TX=$(exe "$EXP_ADDR" '{"cancel_withdrawal":{}}')
+assert_ok "T20d: Alice CancelWithdrawal (2nd time) → succeeds" "$TX"
+
+# ---- 2e. Owner ConfigUpdate Governance (48h timelock) ----
+log_step "2e. Owner ConfigUpdate Governance"
+
+# Propose config update (owner → Bob)
+PROPOSE_OWNER_BOB=$(python3 -c "import json; print(json.dumps({'propose_config_update':{'factory_address':None,'owner':'$BOB'}}))")
+TX=$(exe "$EXP_ADDR" "$PROPOSE_OWNER_BOB")
+assert_ok "T21: Alice ProposeConfigUpdate (owner → Bob) → succeeds" "$TX"
+
+# Execute too early (48h timelock)
+TX=$(exe "$EXP_ADDR" '{"execute_config_update":{}}')
+assert_fail_contains "T22: Alice ExecuteConfigUpdate (too early, 48h timelock) → rejected" "$TX" "Timelock"
+
+# Verify config unchanged
 EXP_CONFIG2=$(qry "$EXP_ADDR" '{"get_config":{}}')
-NEW_OWNER=$(echo "$EXP_CONFIG2" | python3 -c "import json,sys; d=json.load(sys.stdin); print(d.get('data',d).get('owner','???'))" 2>/dev/null)
+CURRENT_OWNER=$(echo "$EXP_CONFIG2" | python3 -c "import json,sys; d=json.load(sys.stdin); print(d.get('data',d).get('owner','???'))" 2>/dev/null)
 
-if [ "$NEW_OWNER" = "$BOB" ]; then
-  log_pass "T21: Config updated — owner is now Bob"
+if [ "$CURRENT_OWNER" = "$ALICE" ]; then
+  log_pass "T22b: Config unchanged during timelock — owner still Alice"
 else
-  log_fail "T21: Config owner expected=$BOB got=$NEW_OWNER"
+  log_fail "T22b: Config changed before timelock expired (owner=$CURRENT_OWNER)"
 fi
 
-# Now Bob (new owner) updates back to Alice
-UPDATE_TO_ALICE=$(python3 -c "import json; print(json.dumps({'update_config':{'factory_address':None,'owner':'$ALICE'}}))")
-TX=$(exe_bob "$EXP_ADDR" "$UPDATE_TO_ALICE")
-assert_ok "T22: Bob UpdateConfig (owner → Alice) → succeeds" "$TX"
+# Cancel config update
+TX=$(exe "$EXP_ADDR" '{"cancel_config_update":{}}')
+assert_ok "T23: Alice CancelConfigUpdate → succeeds" "$TX"
 
-# Verify config restored
-EXP_CONFIG3=$(qry "$EXP_ADDR" '{"get_config":{}}')
-RESTORED_OWNER=$(echo "$EXP_CONFIG3" | python3 -c "import json,sys; d=json.load(sys.stdin); print(d.get('data',d).get('owner','???'))" 2>/dev/null)
+# Cancel again (no pending) — should fail
+TX=$(exe "$EXP_ADDR" '{"cancel_config_update":{}}')
+assert_fail_contains "T23b: Alice CancelConfigUpdate (no pending) → rejected" "$TX" "pending"
 
-if [ "$RESTORED_OWNER" = "$ALICE" ]; then
-  log_pass "T23: Config restored — owner is Alice again"
-else
-  log_fail "T23: Config owner expected=$ALICE got=$RESTORED_OWNER"
-fi
+# Repeatable cycle
+PROPOSE_OWNER_BOB2=$(python3 -c "import json; print(json.dumps({'propose_config_update':{'factory_address':None,'owner':'$BOB'}}))")
+TX=$(exe "$EXP_ADDR" "$PROPOSE_OWNER_BOB2")
+assert_ok "T23c: Alice ProposeConfigUpdate (2nd time) → succeeds" "$TX"
+
+TX=$(exe "$EXP_ADDR" '{"cancel_config_update":{}}')
+assert_ok "T23d: Alice CancelConfigUpdate (2nd time) → succeeds" "$TX"
 
 # =====================================================================
 # SCENARIO 3: POOL EDGE CASES
