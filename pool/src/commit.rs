@@ -12,9 +12,9 @@ use crate::generic_helpers::{
 use crate::state::{
     PoolState, COMMITFEEINFO, COMMIT_LEDGER, COMMIT_LIMIT_INFO, DISTRIBUTION_BOUNTY,
     DISTRIBUTION_STATE, IS_THRESHOLD_HIT, LAST_THRESHOLD_ATTEMPT,
-    NATIVE_RAISED_FROM_COMMIT, POOL_FEE_STATE, POOL_INFO, POOL_PAUSED, POOL_SPECS,
-    POOL_STATE, RATE_LIMIT_GUARD, THRESHOLD_PAYOUT_AMOUNTS, THRESHOLD_PROCESSING,
-    USD_RAISED_FROM_COMMIT,
+    NATIVE_RAISED_FROM_COMMIT, POOL_ANALYTICS, POOL_FEE_STATE, POOL_INFO, POOL_PAUSED,
+    POOL_SPECS, POOL_STATE, RATE_LIMIT_GUARD, THRESHOLD_PAYOUT_AMOUNTS,
+    THRESHOLD_PROCESSING, USD_RAISED_FROM_COMMIT,
 };
 use crate::swap_helper::{
     assert_max_spread, compute_swap, get_bluechip_value,
@@ -256,13 +256,23 @@ fn execute_commit_logic(
                         )?;
                         THRESHOLD_PROCESSING.save(deps.storage, &false)?;
 
+                        // Update analytics
+                        let mut analytics = POOL_ANALYTICS.load(deps.storage).unwrap_or_default();
+                        analytics.total_commit_count += 1;
+                        POOL_ANALYTICS.save(deps.storage, &analytics)?;
+
                         Ok(Response::new()
                             .add_messages(messages)
                             .add_attribute("action", "commit")
                             .add_attribute("phase", "threshold_hit_exact")
                             .add_attribute("committer", sender)
                             .add_attribute("commit_amount_bluechip", asset.amount.to_string())
-                            .add_attribute("commit_amount_usd", usd_value.to_string()))
+                            .add_attribute("commit_amount_usd", usd_value.to_string())
+                            .add_attribute("total_usd_raised_after", new_total.to_string())
+                            .add_attribute("total_commit_count", analytics.total_commit_count.to_string())
+                            .add_attribute("pool_contract", pool_state.pool_contract_address.to_string())
+                            .add_attribute("block_height", env.block.height.to_string())
+                            .add_attribute("block_time", env.block.time.seconds().to_string()))
                     }
                 } else {
                     process_pre_threshold_commit(
@@ -356,20 +366,33 @@ fn process_pre_threshold_commit(
     update_commit_info(
         deps.storage,
         &sender,
-        pool_state.pool_contract_address,
+        pool_state.pool_contract_address.clone(),
         asset.amount,
         usd_value,
         env.block.time,
     )?;
+
+    // Update analytics
+    let mut analytics = POOL_ANALYTICS.load(deps.storage).unwrap_or_default();
+    analytics.total_commit_count += 1;
+    POOL_ANALYTICS.save(deps.storage, &analytics)?;
+
+    let total_usd_raised = USD_RAISED_FROM_COMMIT.load(deps.storage)?;
+    let total_bluechip_raised = NATIVE_RAISED_FROM_COMMIT.load(deps.storage)?;
 
     Ok(Response::new()
         .add_messages(messages)
         .add_attribute("action", "commit")
         .add_attribute("phase", "funding")
         .add_attribute("committer", sender)
-        .add_attribute("block_committed", env.block.time.to_string())
         .add_attribute("commit_amount_bluechip", asset.amount.to_string())
-        .add_attribute("commit_amount_usd", usd_value.to_string()))
+        .add_attribute("commit_amount_usd", usd_value.to_string())
+        .add_attribute("total_usd_raised_after", total_usd_raised.to_string())
+        .add_attribute("total_bluechip_raised_after", total_bluechip_raised.to_string())
+        .add_attribute("total_commit_count", analytics.total_commit_count.to_string())
+        .add_attribute("pool_contract", pool_state.pool_contract_address.to_string())
+        .add_attribute("block_height", env.block.height.to_string())
+        .add_attribute("block_time", env.block.time.seconds().to_string()))
 }
 
 #[allow(clippy::too_many_arguments)]
@@ -433,6 +456,23 @@ fn process_post_threshold_commit(
         env.block.time,
     )?;
 
+    // Update analytics
+    let mut analytics = POOL_ANALYTICS.load(deps.storage).unwrap_or_default();
+    analytics.total_commit_count += 1;
+    analytics.total_swap_count += 1;
+    analytics.total_volume_0 = analytics.total_volume_0.saturating_add(swap_amount);
+    analytics.total_volume_1 = analytics.total_volume_1.saturating_add(return_amt);
+    analytics.last_trade_block = env.block.height;
+    analytics.last_trade_timestamp = env.block.time.seconds();
+    POOL_ANALYTICS.save(deps.storage, &analytics)?;
+
+    // Effective price: creator tokens received per bluechip spent
+    let effective_price = if !swap_amount.is_zero() {
+        Decimal::from_ratio(return_amt, swap_amount).to_string()
+    } else {
+        "0".to_string()
+    };
+
     Ok(Response::new()
         .add_messages(messages)
         .add_attribute("action", "commit")
@@ -440,8 +480,17 @@ fn process_post_threshold_commit(
         .add_attribute("committer", sender)
         .add_attribute("commit_amount_bluechip", asset.amount.to_string())
         .add_attribute("commit_amount_usd", usd_value.to_string())
-        .add_attribute("block_committed", env.block.time.to_string())
-        .add_attribute("tokens_received", return_amt.to_string()))
+        .add_attribute("swap_amount_bluechip", swap_amount.to_string())
+        .add_attribute("tokens_received", return_amt.to_string())
+        .add_attribute("spread_amount", spread_amt.to_string())
+        .add_attribute("commission_amount", commission_amt.to_string())
+        .add_attribute("effective_price", effective_price)
+        .add_attribute("reserve0_after", pool_state.reserve0.to_string())
+        .add_attribute("reserve1_after", pool_state.reserve1.to_string())
+        .add_attribute("total_commit_count", analytics.total_commit_count.to_string())
+        .add_attribute("pool_contract", pool_state.pool_contract_address.to_string())
+        .add_attribute("block_height", env.block.height.to_string())
+        .add_attribute("block_time", env.block.time.seconds().to_string()))
 }
 
 #[allow(clippy::too_many_arguments)]
@@ -578,6 +627,20 @@ fn process_threshold_crossing_with_excess(
 
     THRESHOLD_PROCESSING.save(deps.storage, &false)?;
 
+    // Update analytics
+    let mut analytics = POOL_ANALYTICS.load(deps.storage).unwrap_or_default();
+    analytics.total_commit_count += 1;
+    if effective_bluechip_excess > Uint128::zero() && !return_amt.is_zero() {
+        analytics.total_swap_count += 1;
+        analytics.total_volume_0 = analytics.total_volume_0.saturating_add(effective_bluechip_excess);
+        analytics.total_volume_1 = analytics.total_volume_1.saturating_add(return_amt);
+        analytics.last_trade_block = env.block.height;
+        analytics.last_trade_timestamp = env.block.time.seconds();
+    }
+    POOL_ANALYTICS.save(deps.storage, &analytics)?;
+
+    let pool_state_final = POOL_STATE.load(deps.storage)?;
+
     Ok(Response::new()
         .add_messages(messages)
         .add_attribute("action", "commit")
@@ -596,7 +659,13 @@ fn process_threshold_crossing_with_excess(
         .add_attribute("swap_amount_usd", usd_excess.to_string())
         .add_attribute("bluechip_excess_spread", spread_amt.to_string())
         .add_attribute("bluechip_excess_returned", return_amt.to_string())
-        .add_attribute("bluechip_excess_commission", commission_amt.to_string()))
+        .add_attribute("bluechip_excess_commission", commission_amt.to_string())
+        .add_attribute("reserve0_after", pool_state_final.reserve0.to_string())
+        .add_attribute("reserve1_after", pool_state_final.reserve1.to_string())
+        .add_attribute("total_commit_count", analytics.total_commit_count.to_string())
+        .add_attribute("pool_contract", pool_state_final.pool_contract_address.to_string())
+        .add_attribute("block_height", env.block.height.to_string())
+        .add_attribute("block_time", env.block.time.seconds().to_string()))
 }
 
 // ---------------------------------------------------------------------------
@@ -637,9 +706,22 @@ pub fn execute_continue_distribution(
         Uint128::zero()
     };
 
+    let updated_dist = DISTRIBUTION_STATE.may_load(deps.storage)?;
+    let remaining_after = updated_dist
+        .as_ref()
+        .map(|d| d.distributions_remaining)
+        .unwrap_or(0);
+    let is_complete = updated_dist.is_none() || !updated_dist.map(|d| d.is_distributing).unwrap_or(false);
+
     Ok(Response::new()
         .add_messages(msgs)
         .add_attribute("action", "continue_distribution")
-        .add_attribute("remaining", dist_state.distributions_remaining.to_string())
-        .add_attribute("bounty_paid", bounty_paid.to_string()))
+        .add_attribute("caller", info.sender.to_string())
+        .add_attribute("remaining_before", dist_state.distributions_remaining.to_string())
+        .add_attribute("remaining_after", remaining_after.to_string())
+        .add_attribute("distribution_complete", is_complete.to_string())
+        .add_attribute("bounty_paid", bounty_paid.to_string())
+        .add_attribute("pool_contract", env.contract.address.to_string())
+        .add_attribute("block_height", env.block.height.to_string())
+        .add_attribute("block_time", env.block.time.seconds().to_string()))
 }

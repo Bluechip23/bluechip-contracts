@@ -40,8 +40,12 @@ pub fn execute_pause(deps: DepsMut, info: MessageInfo) -> Result<Response, Contr
     if info.sender != pool_info.factory_addr {
         return Err(ContractError::Unauthorized {});
     }
+    let pool_contract = pool_info.pool_info.contract_addr.to_string();
     POOL_PAUSED.save(deps.storage, &true)?;
-    Ok(Response::new().add_attribute("action", "pause"))
+    Ok(Response::new()
+        .add_attribute("action", "pause")
+        .add_attribute("pool_contract", pool_contract)
+        .add_attribute("paused_by", info.sender.to_string()))
 }
 
 pub fn execute_unpause(deps: DepsMut, info: MessageInfo) -> Result<Response, ContractError> {
@@ -49,8 +53,12 @@ pub fn execute_unpause(deps: DepsMut, info: MessageInfo) -> Result<Response, Con
     if info.sender != pool_info.factory_addr {
         return Err(ContractError::Unauthorized {});
     }
+    let pool_contract = pool_info.pool_info.contract_addr.to_string();
     POOL_PAUSED.save(deps.storage, &false)?;
-    Ok(Response::new().add_attribute("action", "unpause"))
+    Ok(Response::new()
+        .add_attribute("action", "unpause")
+        .add_attribute("pool_contract", pool_contract)
+        .add_attribute("unpaused_by", info.sender.to_string()))
 }
 
 // ---------------------------------------------------------------------------
@@ -153,7 +161,10 @@ pub fn execute_emergency_withdraw(
             .add_attribute(
                 "total_liquidity",
                 withdrawal_info.total_liquidity_at_withdrawal,
-            ));
+            )
+            .add_attribute("pool_contract", env.contract.address.to_string())
+            .add_attribute("block_height", env.block.height.to_string())
+            .add_attribute("block_time", env.block.time.seconds().to_string()));
     }
 
     // Phase 1: initiate — pause pool and set timelock
@@ -163,7 +174,11 @@ pub fn execute_emergency_withdraw(
 
     Ok(Response::new()
         .add_attribute("action", "emergency_withdraw_initiated")
-        .add_attribute("effective_after", effective_after.to_string()))
+        .add_attribute("effective_after", effective_after.to_string())
+        .add_attribute("pool_contract", env.contract.address.to_string())
+        .add_attribute("initiated_by", info.sender.to_string())
+        .add_attribute("block_height", env.block.height.to_string())
+        .add_attribute("block_time", env.block.time.seconds().to_string()))
 }
 
 pub fn execute_cancel_emergency_withdraw(
