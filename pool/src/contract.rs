@@ -25,11 +25,11 @@ use crate::liquidity_helpers::execute_claim_creator_excess;
 use crate::msg::{Cw20HookMsg, ExecuteMsg, MigrateMsg, PoolInstantiateMsg};
 use crate::query::query_check_commit;
 use crate::state::{
-    CommitLimitInfo, ExpectedFactory, OracleInfo, PoolDetails, PoolFeeState, PoolInfo,
-    PoolSpecs, Position, ThresholdPayoutAmounts, COMMITFEEINFO, COMMIT_LIMIT_INFO,
+    CommitLimitInfo, ExpectedFactory, OracleInfo, PoolAnalytics, PoolDetails, PoolFeeState,
+    PoolInfo, PoolSpecs, Position, ThresholdPayoutAmounts, COMMITFEEINFO, COMMIT_LIMIT_INFO,
     EXPECTED_FACTORY, IS_THRESHOLD_HIT, MINIMUM_LIQUIDITY,
     NATIVE_RAISED_FROM_COMMIT, NEXT_POSITION_ID, ORACLE_INFO, OWNER_POSITIONS,
-    POOL_FEE_STATE, POOL_INFO, POOL_PAUSED, POOL_SPECS, POOL_STATE,
+    POOL_ANALYTICS, POOL_FEE_STATE, POOL_INFO, POOL_PAUSED, POOL_SPECS, POOL_STATE,
     RATE_LIMIT_GUARD, THRESHOLD_PAYOUT_AMOUNTS, USD_RAISED_FROM_COMMIT,
 };
 use crate::state::{PoolState, LIQUIDITY_POSITIONS};
@@ -174,6 +174,7 @@ pub fn instantiate(
     LIQUIDITY_POSITIONS.save(deps.storage, "0", &liquidity_position)?;
     OWNER_POSITIONS.save(deps.storage, (&env.contract.address, "0"), &true)?;
     ORACLE_INFO.save(deps.storage, &oracle_info)?;
+    POOL_ANALYTICS.save(deps.storage, &PoolAnalytics::default())?;
 
     Ok(Response::new()
         .add_attribute("action", "instantiate")
@@ -194,12 +195,12 @@ pub fn execute(
     match msg {
         // --- Admin ---
         ExecuteMsg::UpdateConfigFromFactory { update } => {
-            execute_update_config_from_factory(deps, info, update)
+            execute_update_config_from_factory(deps, env, info, update)
         }
-        ExecuteMsg::Pause {} => execute_pause(deps, info),
-        ExecuteMsg::Unpause {} => execute_unpause(deps, info),
+        ExecuteMsg::Pause {} => execute_pause(deps, env, info),
+        ExecuteMsg::Unpause {} => execute_unpause(deps, env, info),
         ExecuteMsg::EmergencyWithdraw {} => execute_emergency_withdraw(deps, env, info),
-        ExecuteMsg::CancelEmergencyWithdraw {} => execute_cancel_emergency_withdraw(deps, info),
+        ExecuteMsg::CancelEmergencyWithdraw {} => execute_cancel_emergency_withdraw(deps, env, info),
         ExecuteMsg::RecoverStuckStates { recovery_type } => {
             execute_recover_stuck_states(deps, env, info, recovery_type)
         }
@@ -487,32 +488,64 @@ pub fn execute_simple_swap(
     POOL_FEE_STATE.save(deps.storage, &pool_fee_state)?;
     POOL_STATE.save(deps.storage, &pool_state)?;
 
+    // Update analytics counters
+    let mut analytics = POOL_ANALYTICS.load(deps.storage).unwrap_or_default();
+    analytics.total_swap_count += 1;
+    if offer_index == 0 {
+        analytics.total_volume_0 = analytics.total_volume_0.saturating_add(offer_asset.amount);
+        analytics.total_volume_1 = analytics.total_volume_1.saturating_add(return_amt);
+    } else {
+        analytics.total_volume_1 = analytics.total_volume_1.saturating_add(offer_asset.amount);
+        analytics.total_volume_0 = analytics.total_volume_0.saturating_add(return_amt);
+    }
+    analytics.last_trade_block = env.block.height;
+    analytics.last_trade_timestamp = env.block.time.seconds();
+    POOL_ANALYTICS.save(deps.storage, &analytics)?;
+
     let ask_asset_info = if offer_index == 0 {
         pool_info.pool_info.asset_infos[1].clone()
     } else {
         pool_info.pool_info.asset_infos[0].clone()
     };
 
+    let receiver = to.unwrap_or(sender.clone());
     let msgs = if !return_amt.is_zero() {
         vec![TokenInfo {
             info: ask_asset_info.clone(),
             amount: return_amt,
         }
-        .into_msg(&deps.querier, to.unwrap_or(sender.clone()))?]
+        .into_msg(&deps.querier, receiver.clone())?]
     } else {
         vec![]
+    };
+
+    // Effective price: how much ask per unit of offer the trader received
+    let effective_price = if !offer_asset.amount.is_zero() {
+        Decimal::from_ratio(return_amt, offer_asset.amount).to_string()
+    } else {
+        "0".to_string()
     };
 
     Ok(Response::new()
         .add_messages(msgs)
         .add_attribute("action", "swap")
         .add_attribute("sender", sender)
+        .add_attribute("receiver", receiver)
         .add_attribute("offer_asset", offer_asset.info.to_string())
         .add_attribute("ask_asset", ask_asset_info.to_string())
         .add_attribute("offer_amount", offer_asset.amount.to_string())
         .add_attribute("return_amount", return_amt.to_string())
         .add_attribute("spread_amount", spread_amt.to_string())
         .add_attribute("commission_amount", commission_amt.to_string())
+        .add_attribute("effective_price", effective_price)
+        .add_attribute("reserve0_after", pool_state.reserve0.to_string())
+        .add_attribute("reserve1_after", pool_state.reserve1.to_string())
+        .add_attribute("total_fee_collected_0", pool_fee_state.total_fees_collected_0.to_string())
+        .add_attribute("total_fee_collected_1", pool_fee_state.total_fees_collected_1.to_string())
+        .add_attribute("pool_contract", pool_state.pool_contract_address.to_string())
+        .add_attribute("block_height", env.block.height.to_string())
+        .add_attribute("block_time", env.block.time.seconds().to_string())
+        .add_attribute("total_swap_count", analytics.total_swap_count.to_string())
         .add_attribute(
             "belief_price",
             belief_price

@@ -1,5 +1,5 @@
 use crate::asset::{PoolPairInfo, TokenInfo, TokenType};
-use crate::state::{Commiting, RecoveryType};
+use crate::state::{Commiting, PoolAnalytics, RecoveryType};
 use cosmwasm_schema::{cw_serde, QueryResponses};
 use cosmwasm_std::{Addr, Binary, Decimal, Timestamp, Uint128};
 use cw20::Cw20ReceiveMsg;
@@ -154,6 +154,8 @@ pub enum QueryMsg {
     LastCommited { wallet: String },
     #[returns(PoolInfoResponse)]
     PoolInfo {},
+    #[returns(PoolAnalyticsResponse)]
+    Analytics {},
     #[returns(PoolStateResponseForFactory)]
     GetPoolState { pool_contract_address: String },
     #[returns(AllPoolsResponse)]
@@ -299,5 +301,20 @@ pub struct PositionsResponse {
 pub struct PoolInfoResponse {
     pub pool_state: PoolStateResponse,
     pub fee_state: PoolFeeStateResponse,
+    pub total_positions: u64,
+}
+
+#[cw_serde]
+pub struct PoolAnalyticsResponse {
+    pub analytics: PoolAnalytics,
+    pub current_price_0_to_1: String,
+    pub current_price_1_to_0: String,
+    pub total_value_locked_0: Uint128,
+    pub total_value_locked_1: Uint128,
+    pub fee_reserve_0: Uint128,
+    pub fee_reserve_1: Uint128,
+    pub threshold_status: CommitStatus,
+    pub total_usd_raised: Uint128,
+    pub total_bluechip_raised: Uint128,
     pub total_positions: u64,
 }

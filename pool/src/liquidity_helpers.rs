@@ -1,8 +1,8 @@
 use std::str::FromStr;
 
 use crate::state::{
-    PoolFeeState, PoolInfo, Position, TokenMetadata, LIQUIDITY_POSITIONS, MINIMUM_LIQUIDITY,
-    NEXT_POSITION_ID, OWNER_POSITIONS, POOL_FEE_STATE, POOL_INFO, POOL_STATE,
+    PoolFeeState, PoolInfo, Position, LIQUIDITY_POSITIONS, MINIMUM_LIQUIDITY,
+    OWNER_POSITIONS, POOL_INFO, POOL_STATE,
 };
 use cosmwasm_std::Storage;
 use crate::{error::ContractError, state::CREATOR_EXCESS_POSITION};
@@ -10,7 +10,6 @@ use cosmwasm_std::{
     to_json_binary, Addr, CosmosMsg, Decimal, Deps, DepsMut, Env, MessageInfo, Response, StdError,
     StdResult, Uint128, WasmMsg,
 };
-use pool_factory_interfaces::cw721_msgs::Cw721ExecuteMsg;
 use crate::asset::get_bluechip_denom;
 
 pub const OPTIMAL_LIQUIDITY: Uint128 = Uint128::new(1_000_000);
@@ -344,7 +343,6 @@ pub fn execute_claim_creator_excess(
 ) -> Result<Response, ContractError> {
     let excess_position = CREATOR_EXCESS_POSITION.load(deps.storage)?;
     let pool_info = POOL_INFO.load(deps.storage)?;
-    let pool_fee_state = POOL_FEE_STATE.load(deps.storage)?;
 
     if info.sender != excess_position.creator {
         return Err(ContractError::Unauthorized {});
@@ -356,67 +354,41 @@ pub fn execute_claim_creator_excess(
         });
     }
 
-    let position_counter =
-        NEXT_POSITION_ID.update(deps.storage, |n| -> StdResult<_> {
-            n.checked_add(1).ok_or_else(|| StdError::generic_err("Position ID overflow"))
-        })?;
-    let position_id = position_counter.to_string();
-
-    let metadata = TokenMetadata {
-        name: Some("Creator excess position".to_string()),
-        description: Some("Claim for excess bluechip/token liquidity".to_string()),
-    };
-
-    let mint_liquidity_nft = WasmMsg::Execute {
-        contract_addr: pool_info.position_nft_address.to_string(),
-        msg: to_json_binary(&Cw721ExecuteMsg::<TokenMetadata>::Mint {
-            token_id: position_id.clone(),
-            owner: excess_position.creator.to_string(),
-            token_uri: None,
-            extension: metadata,
-        })?,
-        funds: vec![],
-    };
-
-    let product = excess_position
-        .bluechip_amount
-        .checked_mul(excess_position.token_amount)
-        .map_err(|_| ContractError::Std(StdError::generic_err("overflow on multiplication")))?;
-    let liquidity = integer_sqrt(product).max(Uint128::new(1));
-
-    let fee_size_multiplier = calculate_fee_size_multiplier(liquidity);
-
-    let position = Position {
-        liquidity,
-        owner: excess_position.creator.clone(),
-        fee_growth_inside_0_last: pool_fee_state.fee_growth_global_0,
-        fee_growth_inside_1_last: pool_fee_state.fee_growth_global_1,
-        created_at: env.block.time.seconds(),
-        last_fee_collection: env.block.time.seconds(),
-        fee_size_multiplier,
-        unclaimed_fees_0: Uint128::zero(),
-        unclaimed_fees_1: Uint128::zero(),
-    };
-
-    LIQUIDITY_POSITIONS.save(deps.storage, &position_id, &position)?;
-    OWNER_POSITIONS.save(deps.storage, (&excess_position.creator, &position_id), &true)?;
-
-    // Move excess tokens from held-aside into active reserves
-    let mut pool_state = POOL_STATE.load(deps.storage)?;
-    pool_state.reserve0 = pool_state
-        .reserve0
-        .checked_add(excess_position.bluechip_amount)?;
-    pool_state.reserve1 = pool_state
-        .reserve1
-        .checked_add(excess_position.token_amount)?;
-    pool_state.total_liquidity = pool_state.total_liquidity.checked_add(liquidity)?;
-    POOL_STATE.save(deps.storage, &pool_state)?;
-
     CREATOR_EXCESS_POSITION.remove(deps.storage);
 
+    // Send tokens directly to the creator instead of creating an LP position.
+    // The creator can deposit as liquidity themselves if they choose to.
+    let mut messages: Vec<CosmosMsg> = vec![];
+
+    if !excess_position.bluechip_amount.is_zero() {
+        let native_denom = get_bluechip_denom(&pool_info.pool_info.asset_infos)?;
+        messages.push(CosmosMsg::Bank(cosmwasm_std::BankMsg::Send {
+            to_address: excess_position.creator.to_string(),
+            amount: vec![cosmwasm_std::Coin {
+                denom: native_denom,
+                amount: excess_position.bluechip_amount,
+            }],
+        }));
+    }
+
+    if !excess_position.token_amount.is_zero() {
+        messages.push(CosmosMsg::Wasm(WasmMsg::Execute {
+            contract_addr: pool_info.token_address.to_string(),
+            msg: to_json_binary(&cw20::Cw20ExecuteMsg::Transfer {
+                recipient: excess_position.creator.to_string(),
+                amount: excess_position.token_amount,
+            })?,
+            funds: vec![],
+        }));
+    }
+
     Ok(Response::new()
-        .add_message(CosmosMsg::Wasm(mint_liquidity_nft))
+        .add_messages(messages)
         .add_attribute("action", "claim_creator_excess")
-        .add_attribute("position_id", position_id)
-        .add_attribute("liquidity", liquidity.to_string()))
+        .add_attribute("creator", excess_position.creator.to_string())
+        .add_attribute("bluechip_amount", excess_position.bluechip_amount.to_string())
+        .add_attribute("token_amount", excess_position.token_amount.to_string())
+        .add_attribute("pool_contract", env.contract.address.to_string())
+        .add_attribute("block_height", env.block.height.to_string())
+        .add_attribute("block_time", env.block.time.seconds().to_string()))
 }

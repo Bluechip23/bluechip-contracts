@@ -2,13 +2,13 @@ use crate::asset::{call_pool_info, TokenInfo};
 use crate::liquidity_helpers::calculate_unclaimed_fees;
 use crate::msg::{
     CommitStatus, CommiterInfo, ConfigResponse, CumulativePricesResponse, FeeInfoResponse,
-    LastCommitedResponse, PoolCommitResponse, PoolFeeStateResponse, PoolInfoResponse,
-    PoolStateResponse, PositionResponse, PositionsResponse, QueryMsg, ReverseSimulationResponse,
-    SimulationResponse,
+    LastCommitedResponse, PoolAnalyticsResponse, PoolCommitResponse, PoolFeeStateResponse,
+    PoolInfoResponse, PoolStateResponse, PositionResponse, PositionsResponse, QueryMsg,
+    ReverseSimulationResponse, SimulationResponse,
 };
 use crate::state::{
-    PoolDetails, COMMITFEEINFO, COMMIT_LIMIT_INFO, IS_THRESHOLD_HIT, POOL_FEE_STATE,
-    POOL_INFO, POOL_SPECS, POOL_STATE, USD_RAISED_FROM_COMMIT,
+    PoolDetails, COMMITFEEINFO, COMMIT_LIMIT_INFO, IS_THRESHOLD_HIT, NATIVE_RAISED_FROM_COMMIT,
+    POOL_ANALYTICS, POOL_FEE_STATE, POOL_INFO, POOL_SPECS, POOL_STATE, USD_RAISED_FROM_COMMIT,
 };
 use crate::state::{COMMIT_INFO, LIQUIDITY_POSITIONS, NEXT_POSITION_ID, OWNER_POSITIONS};
 use crate::swap_helper::{compute_offer_amount, compute_swap, update_price_accumulator};
@@ -83,6 +83,7 @@ pub fn query(deps: Deps, env: Env, msg: QueryMsg) -> StdResult<Binary> {
             to_json_binary(&info)
         }
 
+        QueryMsg::Analytics {} => to_json_binary(&query_analytics(deps)?),
         QueryMsg::GetPoolState { pool_contract_address } => {
             query_for_factory(deps, env, PoolQueryMsg::GetPoolState { pool_contract_address })
         }
@@ -352,6 +353,41 @@ pub fn query_pool_info(deps: Deps) -> StdResult<PoolInfoResponse> {
             total_fees_collected_0: pool_fee_state.total_fees_collected_0,
             total_fees_collected_1: pool_fee_state.total_fees_collected_1,
         },
+        total_positions: next_position_id,
+    })
+}
+
+pub fn query_analytics(deps: Deps) -> StdResult<PoolAnalyticsResponse> {
+    let analytics = POOL_ANALYTICS.load(deps.storage).unwrap_or_default();
+    let pool_state = POOL_STATE.load(deps.storage)?;
+    let pool_fee_state = POOL_FEE_STATE.load(deps.storage)?;
+    let next_position_id = NEXT_POSITION_ID.load(deps.storage)?;
+    let usd_raised = USD_RAISED_FROM_COMMIT.load(deps.storage)?;
+    let bluechip_raised = NATIVE_RAISED_FROM_COMMIT.load(deps.storage)?;
+    let threshold_status = query_check_threshold_limit(deps)?;
+
+    let current_price_0_to_1 = if !pool_state.reserve0.is_zero() {
+        cosmwasm_std::Decimal::from_ratio(pool_state.reserve1, pool_state.reserve0).to_string()
+    } else {
+        "0".to_string()
+    };
+    let current_price_1_to_0 = if !pool_state.reserve1.is_zero() {
+        cosmwasm_std::Decimal::from_ratio(pool_state.reserve0, pool_state.reserve1).to_string()
+    } else {
+        "0".to_string()
+    };
+
+    Ok(PoolAnalyticsResponse {
+        analytics,
+        current_price_0_to_1,
+        current_price_1_to_0,
+        total_value_locked_0: pool_state.reserve0,
+        total_value_locked_1: pool_state.reserve1,
+        fee_reserve_0: pool_fee_state.fee_reserve_0,
+        fee_reserve_1: pool_fee_state.fee_reserve_1,
+        threshold_status,
+        total_usd_raised: usd_raised,
+        total_bluechip_raised: bluechip_raised,
         total_positions: next_position_id,
     })
 }

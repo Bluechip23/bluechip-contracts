@@ -38,10 +38,46 @@ pub const ORACLE_INFO: Item<OracleInfo> = Item::new("oracle_info");
 pub const POOL_FEE_STATE: Item<PoolFeeState> = Item::new("pool_fee_state");
 pub const CREATOR_EXCESS_POSITION: Item<CreatorExcessLiquidity> = Item::new("creator_excess");
 pub const POOL_PAUSED: Item<bool> = Item::new("pool_paused");
+pub const POOL_ANALYTICS: Item<PoolAnalytics> = Item::new("pool_analytics");
 pub const EMERGENCY_WITHDRAWAL: Item<EmergencyWithdrawalInfo> = Item::new("emergency_withdrawal");
 pub const PENDING_EMERGENCY_WITHDRAW: Item<Timestamp> = Item::new("pending_emergency_withdraw");
 pub const EMERGENCY_DRAINED: Item<bool> = Item::new("emergency_drained");
 pub const EMERGENCY_WITHDRAW_DELAY_SECONDS: u64 = 86_400;
+
+#[cw_serde]
+pub struct PoolAnalytics {
+    /// Total number of swaps executed on this pool.
+    pub total_swap_count: u64,
+    /// Total number of commits (pre- and post-threshold).
+    pub total_commit_count: u64,
+    /// Cumulative volume of token0 (bluechip) that flowed through swaps.
+    pub total_volume_0: Uint128,
+    /// Cumulative volume of token1 (creator token) that flowed through swaps.
+    pub total_volume_1: Uint128,
+    /// Total number of liquidity deposit/add operations.
+    pub total_lp_deposit_count: u64,
+    /// Total number of liquidity removal operations.
+    pub total_lp_withdrawal_count: u64,
+    /// Block height of the last trade (swap or post-threshold commit).
+    pub last_trade_block: u64,
+    /// Block timestamp of the last trade.
+    pub last_trade_timestamp: u64,
+}
+
+impl Default for PoolAnalytics {
+    fn default() -> Self {
+        Self {
+            total_swap_count: 0,
+            total_commit_count: 0,
+            total_volume_0: Uint128::zero(),
+            total_volume_1: Uint128::zero(),
+            total_lp_deposit_count: 0,
+            total_lp_withdrawal_count: 0,
+            last_trade_block: 0,
+            last_trade_timestamp: 0,
+        }
+    }
+}
 
 #[cw_serde]
 pub struct EmergencyWithdrawalInfo {
