@@ -1,0 +1,18 @@
+{
+  "permissions": {
+    "allow": [
+      "Bash(cargo build:*)",
+      "Bash(RUSTFLAGS=\"-C link-arg=-s\" cargo build --release --target wasm32-unknown-unknown -p oracle --features testing)",
+      "Bash(ls -la artifacts/*.wasm)",
+      "Bash(chmod +x run_comprehensive_test.sh)",
+      "Bash(grep -rA 8 \"pub struct CommitFeeInfo\" factory/src/)",
+      "Bash(cargo clean:*)",
+      "Bash(RUSTFLAGS=\"-C link-arg=-s\" cargo build --release --target wasm32-unknown-unknown)",
+      "Bash(python3 -c \"import sys,json; d=json.load\\(sys.stdin\\); print\\(json.dumps\\(d, indent=2\\)\\)\")",
+      "Bash(echo \"Exit: $?\")"
+    ],
+    "additionalDirectories": [
+      "/tmp"
+    ]
+  }
+}

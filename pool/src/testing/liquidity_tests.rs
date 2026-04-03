@@ -4,7 +4,7 @@ use std::str::FromStr;
 use cosmwasm_std::{testing::{mock_dependencies, mock_env, message_info, MockApi, MockQuerier, MockStorage, }, to_json_binary, Addr, BankMsg, Binary, Coin, ContractResult, CosmosMsg, Decimal, OwnedDeps, SystemError, SystemResult, Timestamp, Uint128, WasmMsg, WasmQuery
 };
 
-use cw721::OwnerOfResponse;
+use pool_factory_interfaces::cw721_msgs::OwnerOfResponse;
 
     use crate::{asset::PoolPairType, contract::{execute,}, liquidity::{execute_add_to_position, execute_collect_fees, execute_deposit_liquidity, execute_remove_all_liquidity}, liquidity_helpers::{calculate_fee_size_multiplier, MIN_MULTIPLIER}, msg::{CommitFeeInfo}, state::{CommitLimitInfo, OracleInfo, PoolFeeState, PoolInfo, PoolSpecs, PoolState, ThresholdPayoutAmounts, COMMITFEEINFO, COMMIT_LIMIT_INFO, LIQUIDITY_POSITIONS, NATIVE_RAISED_FROM_COMMIT, ORACLE_INFO, POOL_INFO, POOL_SPECS, THRESHOLD_PAYOUT_AMOUNTS, THRESHOLD_PROCESSING
     }};
@@ -105,7 +105,7 @@ fn test_add_to_existing_position() {
                 if contract_addr == "nft_contract" {
                     // Mock ownership query response
                     SystemResult::Ok(ContractResult::Ok(
-                        to_json_binary(&cw721::OwnerOfResponse {
+                        to_json_binary(&OwnerOfResponse {
                             owner: "liquidity_provider".to_string(),
                             approvals: vec![],
                         }).unwrap()
@@ -167,7 +167,7 @@ fn test_add_to_position_not_owner() {
             WasmQuery::Smart { contract_addr, msg } => {
                 if contract_addr == "nft_contract" {
                     SystemResult::Ok(ContractResult::Ok(
-                        to_json_binary(&cw721::OwnerOfResponse {
+                        to_json_binary(&OwnerOfResponse {
                             owner: "other_user".to_string(), // Different owner
                             approvals: vec![],
                         }).unwrap()
@@ -225,7 +225,7 @@ fn test_collect_fees_with_accrued_fees() {
             WasmQuery::Smart { contract_addr, msg } => {
                 if contract_addr == "nft_contract" {
                     SystemResult::Ok(ContractResult::Ok(
-                        to_json_binary(&cw721::OwnerOfResponse {
+                        to_json_binary(&OwnerOfResponse {
                             owner: "fee_collector".to_string(),
                             approvals: vec![],
                         }).unwrap()
@@ -286,7 +286,7 @@ fn test_remove_all_liquidity() {
             WasmQuery::Smart { contract_addr, msg } => {
                 if contract_addr == "nft_contract" {
                     SystemResult::Ok(ContractResult::Ok(
-                        to_json_binary(&cw721::OwnerOfResponse {
+                        to_json_binary(&OwnerOfResponse {
                             owner: "liquidity_provider".to_string(),
                             approvals: vec![],
                         }).unwrap()
@@ -428,7 +428,7 @@ fn test_remove_partial_liquidity_amount() {
                 if contract_addr == "nft_contract" {
                     // Mock ownership query response
                     SystemResult::Ok(ContractResult::Ok(
-                        to_json_binary(&cw721::OwnerOfResponse {
+                        to_json_binary(&OwnerOfResponse {
                             owner: "liquidity_provider".to_string(),
                             approvals: vec![],
                         }).unwrap()
@@ -603,7 +603,7 @@ fn test_collect_fees_no_fees_accrued() {
             WasmQuery::Smart { contract_addr, msg } => {
                 if contract_addr == "nft_contract" {
                     SystemResult::Ok(ContractResult::Ok(
-                        to_json_binary(&cw721::OwnerOfResponse {
+                        to_json_binary(&OwnerOfResponse {
                             owner: "fee_collector".to_string(),
                             approvals: vec![],
                         }).unwrap()
@@ -644,7 +644,7 @@ fn test_invalid_percentage_removal() {
             WasmQuery::Smart { contract_addr, msg } => {
                 if contract_addr == "nft_contract" {
                     SystemResult::Ok(ContractResult::Ok(
-                        to_json_binary(&cw721::OwnerOfResponse {
+                        to_json_binary(&OwnerOfResponse {
                             owner: "liquidity_provider".to_string(),
                             approvals: vec![],
                         }).unwrap()
@@ -800,7 +800,7 @@ fn test_fee_calculation_after_swap() {
             WasmQuery::Smart { contract_addr, msg } => {
                 if contract_addr == "nft_contract" {
                     SystemResult::Ok(ContractResult::Ok(
-                        to_json_binary(&cw721::OwnerOfResponse {
+                        to_json_binary(&OwnerOfResponse {
                             owner: "liquidity_provider".to_string(),
                             approvals: vec![],
                         }).unwrap()
@@ -886,7 +886,7 @@ fn test_multiple_positions_independent_fee_tracking() {
             WasmQuery::Smart { contract_addr, msg } => {
                 if contract_addr == "nft_contract" {
                     SystemResult::Ok(ContractResult::Ok(
-                        to_json_binary(&cw721::OwnerOfResponse {
+                        to_json_binary(&OwnerOfResponse {
                             owner: "user1".to_string(), // Simplified - should check token_id
                             approvals: vec![],
                         }).unwrap()
@@ -920,7 +920,7 @@ fn test_multiple_positions_independent_fee_tracking() {
             WasmQuery::Smart { contract_addr, msg } => {
                 if contract_addr == "nft_contract" {
                     SystemResult::Ok(ContractResult::Ok(
-                        to_json_binary(&cw721::OwnerOfResponse {
+                        to_json_binary(&OwnerOfResponse {
                             owner: "user2".to_string(),
                             approvals: vec![],
                         }).unwrap()
@@ -968,7 +968,7 @@ fn test_remove_more_than_position_has() {
             WasmQuery::Smart { contract_addr, msg } => {
                 if contract_addr == "nft_contract" {
                     SystemResult::Ok(ContractResult::Ok(
-                        to_json_binary(&cw721::OwnerOfResponse {
+                        to_json_binary(&OwnerOfResponse {
                             owner: "liquidity_provider".to_string(),
                             approvals: vec![],
                         }).unwrap()
@@ -1020,7 +1020,7 @@ fn test_remove_zero_liquidity() {
             WasmQuery::Smart { contract_addr, msg } => {
                 if contract_addr == "nft_contract" {
                     SystemResult::Ok(ContractResult::Ok(
-                        to_json_binary(&cw721::OwnerOfResponse {
+                        to_json_binary(&OwnerOfResponse {
                             owner: "liquidity_provider".to_string(),
                             approvals: vec![],
                         }).unwrap()
@@ -1072,7 +1072,7 @@ fn test_position_ownership_transfer() {
             WasmQuery::Smart { contract_addr, msg } => {
                 if contract_addr == "nft_contract" {
                     SystemResult::Ok(ContractResult::Ok(
-                        to_json_binary(&cw721::OwnerOfResponse {
+                        to_json_binary(&OwnerOfResponse {
                             owner: "original_owner".to_string(),
                             approvals: vec![],
                         }).unwrap()
@@ -1104,7 +1104,7 @@ fn test_position_ownership_transfer() {
             WasmQuery::Smart { contract_addr, msg } => {
                 if contract_addr == "nft_contract" {
                     SystemResult::Ok(ContractResult::Ok(
-                        to_json_binary(&cw721::OwnerOfResponse {
+                        to_json_binary(&OwnerOfResponse {
                             owner: "new_owner".to_string(), // Ownership transferred
                             approvals: vec![],
                         }).unwrap()
@@ -1153,7 +1153,7 @@ fn test_add_to_position_collects_fees_first() {
             WasmQuery::Smart { contract_addr, msg } => {
                 if contract_addr == "nft_contract" {
                     SystemResult::Ok(ContractResult::Ok(
-                        to_json_binary(&cw721::OwnerOfResponse {
+                        to_json_binary(&OwnerOfResponse {
                             owner: "liquidity_provider".to_string(),
                             approvals: vec![],
                         }).unwrap()
@@ -1220,7 +1220,7 @@ fn test_transaction_deadline_enforcement() {
             WasmQuery::Smart { contract_addr, msg } => {
                 if contract_addr == "nft_contract" {
                     SystemResult::Ok(ContractResult::Ok(
-                        to_json_binary(&cw721::OwnerOfResponse {
+                        to_json_binary(&OwnerOfResponse {
                             owner: "liquidity_provider".to_string(),
                             approvals: vec![],
                         }).unwrap()
@@ -1307,7 +1307,7 @@ fn test_dust_position_low_fees() {
             WasmQuery::Smart { contract_addr, msg } => {
                 if contract_addr == "nft_contract" {
                     SystemResult::Ok(ContractResult::Ok(
-                        to_json_binary(&cw721::OwnerOfResponse {
+                        to_json_binary(&OwnerOfResponse {
                             owner: "dust_provider".to_string(),
                             approvals: vec![],
                         }).unwrap()
@@ -1414,7 +1414,7 @@ fn test_pool_total_liquidity_consistency() {
             WasmQuery::Smart { contract_addr, msg } => {
                 if contract_addr == "nft_contract" {
                     SystemResult::Ok(ContractResult::Ok(
-                        to_json_binary(&cw721::OwnerOfResponse {
+                        to_json_binary(&OwnerOfResponse {
                             owner: "user1".to_string(),
                             approvals: vec![],
                         }).unwrap()
@@ -1731,7 +1731,7 @@ pub fn create_test_position(
     }
 
 use cosmwasm_std::from_json;
-use cw721::Cw721QueryMsg;
+use pool_factory_interfaces::cw721_msgs::Cw721QueryMsg;
 
 #[test]
 fn test_fee_distribution_proportional() {
@@ -1757,7 +1757,7 @@ fn test_fee_distribution_proportional() {
                             _ => "any_user",
                         };
                         return SystemResult::Ok(ContractResult::Ok(
-                            to_json_binary(&cw721::OwnerOfResponse {
+                            to_json_binary(&OwnerOfResponse {
                                 owner: owner.to_string(),
                                 approvals: vec![],
                             }).unwrap()
@@ -1766,7 +1766,7 @@ fn test_fee_distribution_proportional() {
                     
                     // Fallback
                     SystemResult::Ok(ContractResult::Ok(
-                        to_json_binary(&cw721::OwnerOfResponse {
+                        to_json_binary(&OwnerOfResponse {
                             owner: "any_user".to_string(),
                             approvals: vec![],
                         }).unwrap()

@@ -11,5 +11,4 @@ cosmwasm-schema = { workspace = true }
 cosmwasm-std = { workspace = true }
 cw20 = { workspace = true }
 cw-utils = { workspace = true }
-cw721 = { workspace = true }
 serde = { version = "1.0", features = ["derive"] }

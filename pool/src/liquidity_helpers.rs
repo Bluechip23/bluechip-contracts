@@ -291,9 +291,9 @@ pub fn verify_position_ownership(
     token_id: &str,
     expected_owner: &Addr,
 ) -> Result<(), ContractError> {
-    let owner_response: cw721::OwnerOfResponse = deps.querier.query_wasm_smart(
+    let owner_response: pool_factory_interfaces::cw721_msgs::OwnerOfResponse = deps.querier.query_wasm_smart(
         nft_contract,
-        &cw721::Cw721QueryMsg::OwnerOf {
+        &pool_factory_interfaces::cw721_msgs::Cw721QueryMsg::OwnerOf {
             token_id: token_id.to_string(),
             include_expired: None,
         },

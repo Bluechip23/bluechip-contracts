@@ -1,46 +1,65 @@
 use cosmwasm_schema::cw_serde;
-use cw721::Expiration;
+use cosmwasm_std::Timestamp;
+
+// Minimal expiration type matching cw721/cw-utils Expiration.
+// Only used as a type annotation in TransferOwnership; variants are never
+// constructed by our contracts.
+#[cw_serde]
+pub enum Expiration {
+    AtHeight(u64),
+    AtTime(Timestamp),
+    Never {},
+}
 
 // Minimal CW721 instantiate message
 // This matches the wire format of cw721_base::msg::InstantiateMsg
 #[cw_serde]
 pub struct Cw721InstantiateMsg {
-    // Name of the NFT contract
     pub name: String,
-    // Symbol of the NFT contract
     pub symbol: String,
-    // The minter is the only one who can create new NFTs
     pub minter: String,
 }
 
 // Minimal CW721 execute message enum
-// Only includes the variants we actually use in our contracts
 #[cw_serde]
 pub enum Cw721ExecuteMsg<T> {
-    // Mint a new NFT, can only be called by the contract minter
     Mint {
-        // Unique ID of the NFT
         token_id: String,
-        // The owner of the newly minted NFT
         owner: String,
-        // Universal resource identifier for this NFT
         token_uri: Option<String>,
-        // Any custom extension used by this contract
         extension: T,
     },
-    // Update the contract's ownership
     UpdateOwnership(Action),
 }
 
 // Ownership actions for UpdateOwnership message
-// This matches cw_ownable::Action
 #[cw_serde]
 pub enum Action {
-    // Propose to transfer the contract's ownership to another account
     TransferOwnership {
         new_owner: String,
         expiry: Option<Expiration>,
     },
-    // Accept the pending ownership transfer
     AcceptOwnership,
+}
+
+// Minimal CW721 query message — only the variant we use
+#[cw_serde]
+pub enum Cw721QueryMsg {
+    OwnerOf {
+        token_id: String,
+        include_expired: Option<bool>,
+    },
+}
+
+// Minimal CW721 query response
+#[cw_serde]
+pub struct OwnerOfResponse {
+    pub owner: String,
+    pub approvals: Vec<Approval>,
+}
+
+#[cw_serde]
+pub struct Approval {
+    pub spender: String,
+    pub expires: Expiration,
 }
