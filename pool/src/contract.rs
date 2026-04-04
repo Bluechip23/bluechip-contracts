@@ -346,6 +346,9 @@ pub fn execute_swap_cw20(
     if !query_check_commit(deps.as_ref())? {
         return Err(ContractError::ShortOfThreshold {});
     }
+    if cw20_msg.amount.is_zero() {
+        return Err(ContractError::ZeroAmount {});
+    }
     let contract_addr = info.sender.clone();
     match from_json(&cw20_msg.msg) {
         Ok(Cw20HookMsg::Swap {
