@@ -2248,7 +2248,10 @@ fn test_concurrent_commits_both_recorded() {
         "Distribution state should be active for batched payout"
     );
 
-    let bob_amount = Uint128::new(100_000_000);
+    // Use a smaller amount relative to the pool reserves. With the 20% excess
+    // swap cap, Alice's threshold crossing leaves the pool thinner, so Bob's
+    // post-threshold commit (swap) must be reasonably sized to stay within spread.
+    let bob_amount = Uint128::new(5_000_000);
     let bob_info = message_info(&Addr::unchecked("bob"),
         &[Coin {
             denom: "ubluechip".to_string(),

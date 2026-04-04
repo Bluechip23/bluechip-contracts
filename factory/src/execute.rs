@@ -188,9 +188,9 @@ fn execute_create_creator_pool(
             nft_addr: None,
         },
     )?;
-    if token_info.decimal > 18 {
+    if token_info.decimal != 6 {
         return Err(ContractError::Std(StdError::generic_err(
-            "Token decimals must be between 0 and 18",
+            "Token decimals must be 6. Threshold payout amounts and mint caps are calibrated for 6-decimal tokens.",
         )));
     }
     let msg = WasmMsg::Instantiate {

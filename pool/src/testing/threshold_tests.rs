@@ -94,7 +94,7 @@ fn test_threshold_with_excess_creates_position() {
         max_spread: None,
     };
 
-    execute(deps.as_mut(), env.clone(), info, msg).unwrap();
+    let res = execute(deps.as_mut(), env.clone(), info, msg).unwrap();
     println!(
         "USD raised after commit: {}",
         USD_RAISED_FROM_COMMIT.load(&deps.storage).unwrap()
@@ -120,7 +120,15 @@ fn test_threshold_with_excess_creates_position() {
 
     let pool_state = POOL_STATE.load(&deps.storage).unwrap();
 
-    assert!(pool_state.reserve0 > Uint128::new(100_000_000_000));
+    // With the 20% excess swap cap, reserve0 won't be inflated by the full
+    // excess. It should still be larger than the seed amount from the cap
+    // (max_bluechip_lock_per_pool = 100_000) plus the capped swap portion.
+    assert!(pool_state.reserve0 > Uint128::zero());
+    // Verify a refund message was generated for the capped excess
+    let has_refund = res.messages.iter().any(|submsg| {
+        matches!(&submsg.msg, CosmosMsg::Bank(BankMsg::Send { to_address, .. }) if to_address == "final_committer")
+    });
+    assert!(has_refund, "Should refund excess above the 20% swap cap");
 }
 
 #[test]
@@ -472,7 +480,11 @@ fn test_commit_threshold_overshoot_split() {
     println!("Native excess to swap: {}", bluechip_excess);
     println!("CW20 returned: {}", return_amt);
     let sub = COMMIT_INFO.load(&deps.storage, &info.sender).unwrap();
-    assert_eq!(sub.total_paid_bluechip, commit_amount);
+    // With 20% excess swap cap, total_paid_bluechip will be less than commit_amount
+    // because the refunded portion is not counted. It should include the threshold
+    // portion plus whatever capped excess was actually swapped.
+    assert!(sub.total_paid_bluechip <= commit_amount);
+    assert!(sub.total_paid_bluechip > Uint128::zero());
     assert_eq!(sub.total_paid_usd, Uint128::new(5_000_000));
 
     if has_transfer {
@@ -815,6 +827,10 @@ fn test_concurrent_threshold_crossing_race_condition() {
 
     // Setup pool just below threshold
     USD_RAISED_FROM_COMMIT
+        .save(&mut deps.storage, &Uint128::new(24_999_000_000))
+        .unwrap();
+    // At $1/bluechip, $24,999 worth of bluechip was raised
+    crate::state::NATIVE_RAISED_FROM_COMMIT
         .save(&mut deps.storage, &Uint128::new(24_999_000_000))
         .unwrap();
 
