@@ -557,10 +557,12 @@ fn process_threshold_crossing_with_excess(
         env.block.time,
     )?;
 
-    // Process the excess as a swap
+    // Process the excess as a swap, capped at 20% of pool reserves to prevent
+    // a single whale from dominating the first trade on a freshly seeded pool.
     let mut return_amt = Uint128::zero();
     let mut spread_amt = Uint128::zero();
     let mut commission_amt = Uint128::zero();
+    let mut refunded_excess = Uint128::zero();
 
     if effective_bluechip_excess > Uint128::zero() {
         let mut pool_state = POOL_STATE.load(deps.storage)?;
@@ -569,11 +571,18 @@ fn process_threshold_crossing_with_excess(
         let offer_pool = pool_state.reserve0;
         let ask_pool = pool_state.reserve1;
 
-        if !ask_pool.is_zero() && !offer_pool.is_zero() {
+        // Cap the excess swap at 20% of the freshly seeded bluechip reserve.
+        // Any remainder is refunded to the sender — they can swap it in
+        // subsequent transactions where other participants can also trade.
+        let max_excess_swap = offer_pool.multiply_ratio(20u128, 100u128);
+        let capped_excess = effective_bluechip_excess.min(max_excess_swap);
+        refunded_excess = effective_bluechip_excess.checked_sub(capped_excess)?;
+
+        if !ask_pool.is_zero() && !offer_pool.is_zero() && !capped_excess.is_zero() {
             let (ret, sp, comm) = compute_swap(
                 offer_pool,
                 ask_pool,
-                effective_bluechip_excess,
+                capped_excess,
                 pool_specs.lp_fee,
             )?;
             return_amt = ret;
@@ -581,19 +590,21 @@ fn process_threshold_crossing_with_excess(
             commission_amt = comm;
         }
 
-        if let Some(max_spread) = max_spread {
-            assert_max_spread(
-                belief_price,
-                Some(max_spread),
-                effective_bluechip_excess,
-                return_amt.checked_add(commission_amt)?,
-                spread_amt,
-            )?;
+        if !capped_excess.is_zero() {
+            if let Some(max_spread) = max_spread {
+                assert_max_spread(
+                    belief_price,
+                    Some(max_spread),
+                    capped_excess,
+                    return_amt.checked_add(commission_amt)?,
+                    spread_amt,
+                )?;
+            }
         }
 
         update_price_accumulator(&mut pool_state, env.block.time.seconds())?;
 
-        pool_state.reserve0 = offer_pool.checked_add(effective_bluechip_excess)?;
+        pool_state.reserve0 = offer_pool.checked_add(capped_excess)?;
         pool_state.reserve1 =
             ask_pool.checked_sub(return_amt.checked_add(commission_amt)?)?;
 
@@ -615,11 +626,21 @@ fn process_threshold_crossing_with_excess(
             );
         }
 
+        // Refund the capped portion back to the sender
+        if !refunded_excess.is_zero() {
+            let bluechip_denom = get_bluechip_denom(&pool_info.pool_info.asset_infos)?;
+            messages.push(get_bank_transfer_to_msg(
+                &sender,
+                &bluechip_denom,
+                refunded_excess,
+            )?);
+        }
+
         update_commit_info(
             deps.storage,
             &sender,
             pool_state.pool_contract_address.clone(),
-            bluechip_excess,
+            bluechip_excess.checked_sub(refunded_excess)?,
             usd_excess,
             env.block.time,
         )?;
@@ -660,6 +681,7 @@ fn process_threshold_crossing_with_excess(
         .add_attribute("bluechip_excess_spread", spread_amt.to_string())
         .add_attribute("bluechip_excess_returned", return_amt.to_string())
         .add_attribute("bluechip_excess_commission", commission_amt.to_string())
+        .add_attribute("bluechip_excess_refunded", refunded_excess.to_string())
         .add_attribute("reserve0_after", pool_state_final.reserve0.to_string())
         .add_attribute("reserve1_after", pool_state_final.reserve1.to_string())
         .add_attribute("total_commit_count", analytics.total_commit_count.to_string())
