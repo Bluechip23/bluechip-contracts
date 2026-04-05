@@ -128,7 +128,7 @@ When total USD committed reaches the threshold ($25,000 default):
 3. **Protocol reward**: 25,000 creator tokens sent to the Bluechip protocol wallet
 4. **Pool seeded**: 350,000 creator tokens + committed bluechip used to initialize AMM liquidity
 5. **Committer distribution**: 500,000 creator tokens distributed to committers proportionally
-6. **Excess handling**: If bluechip exceeds `max_bluechip_lock_per_pool`, excess is time-locked for the creator (see [Creator Limits](#creator-limits--excess-liquidity))
+6. **Excess handling**: If bluechip exceeds `max_bluechip_lock_per_pool`, excess bluechip and proportional creator tokens are sent directly to the creator's wallet (see [Creator Limits](#creator-limits--excess-liquidity))
 7. **State transition**: Pool moves to active trading phase
 
 ```
@@ -374,6 +374,33 @@ Bluechip uses an internal oracle to price the native bluechip token in USD.
 }
 ```
 
+### Pool Analytics
+
+```json
+{
+  "analytics": {}
+}
+```
+
+**Returns:**
+```json
+{
+  "analytics": { "total_swaps": 42, "total_commits": 10, "..." : "..." },
+  "current_price_0_to_1": "5.0",
+  "current_price_1_to_0": "0.2",
+  "total_value_locked_0": "1000000000",
+  "total_value_locked_1": "5000000000",
+  "fee_reserve_0": "50000",
+  "fee_reserve_1": "250000",
+  "threshold_status": { "total_usd_raised": "25000000000", "threshold": "25000000000", "is_active": true },
+  "total_usd_raised": "25000000000",
+  "total_bluechip_raised": "100000000",
+  "total_positions": 15
+}
+```
+
+Provides a comprehensive snapshot of pool state for indexers and analytics dashboards, including pricing, TVL, fee reserves, and threshold status.
+
 ---
 
 ## Integration Guide
@@ -434,9 +461,17 @@ Query the commit ledger to verify subscription status:
 - Batched distribution for large committer sets (>40)
 - Stuck state recovery mechanism (factory admin, after 1 hour timeout)
 
+### Swap Validation
+- Zero-amount CW20 swaps are rejected
+- Creator tokens are enforced to use 6 decimals to match hardcoded payout amounts
+
 ### Commit Rate Limiting
 - Minimum 13 seconds between commits per wallet
-- USD payment tolerance of 1% (100 bps) for oracle price drift
+- USD payment tolerance of 1% (100 bps) for oracle price drift, capped at a maximum of 10% (1000 bps)
+
+### Threshold Crossing Protection
+- Excess swap at threshold crossing is capped at 20% of pool reserves, preventing a single large committer from dominating the first trade on a freshly seeded pool
+- Any excess beyond the cap is refunded to the committer
 
 ### Payout Integrity Validation
 - All threshold payout components validated (no zero amounts)
@@ -544,15 +579,18 @@ When bluechips exceed the per-pool maximum:
 
 1. The excess bluechip and proportional creator tokens are stored in a `CreatorExcessLiquidity` record
 2. An unlock timestamp is set based on `creator_excess_liquidity_lock_days` (configured at the factory level)
-3. After the lock period expires, the creator can claim the excess
+3. After the lock period expires, the creator can claim the excess tokens directly to their wallet
 
 ```
 Threshold Crossing (e.g., 15M bluechip committed, 10M max per pool)
         │
         ├── 10B bluechip → Pool liquidity (immediate)
-        └── 5B bluechip + proportional creator tokens → Locked
+        └── 5B bluechip + proportional creator tokens → Time-locked
                 │
                 └── Unlocks after X days → Creator calls ClaimCreatorExcessLiquidity
+                        │
+                        ├── Bluechip tokens → Sent directly to creator wallet
+                        └── Creator tokens → Sent directly to creator wallet
 ```
 
 ### Claiming Excess Liquidity
@@ -562,6 +600,8 @@ Threshold Crossing (e.g., 15M bluechip committed, 10M max per pool)
   "claim_creator_excess_liquidity": {}
 }
 ```
+
+Tokens are sent directly to the creator's wallet (not deposited as liquidity). The creator can then choose to deposit them as liquidity or use them as they wish.
 
 **Requirements:**
 - Caller must be the creator of the pool
@@ -615,8 +655,16 @@ If distribution gets stuck (>1 hour or 5+ consecutive failures), the factory adm
 Configuration updates use a timelock mechanism:
 
 1. Admin calls `ProposeConfigUpdate` with new values
-2. A 1-second timelock is applied
-3. After the timelock, `UpdateConfig` applies the pending changes
+2. A 48-hour timelock is applied
+3. After the timelock expires, `UpdateConfig` applies the pending changes
+
+### Pool Configuration Updates
+
+Individual pool settings can also be updated through a timelocked process:
+
+1. Admin calls `ProposePoolConfigUpdate` with the pool ID and new values
+2. A 48-hour timelock is applied
+3. After the timelock expires, `ExecutePoolConfigUpdate` applies the changes to the target pool
 
 ### Pool Upgrades
 
@@ -654,6 +702,9 @@ The factory admin can pause individual pools, disabling all swap and liquidity o
 | Commit fee (protocol) | 1% | Sent to Bluechip wallet |
 | Commit fee (creator) | 5% | Sent to creator wallet |
 | LP swap fee | 0.3% | Distributed to liquidity providers |
+| Max excess swap at threshold | 20% of pool reserves | Prevents single committer from dominating first trade |
+| Max usd_payment_tolerance_bps | 1000 (10%) | Hard cap on oracle price drift tolerance |
+| Creator token decimals | 6 | Enforced to match hardcoded payout amounts |
 | Min commit interval | 13 seconds | Rate limit per wallet |
 | Expand economy max mint | 500 | Max bluechip minted per pool creation |
 | Oracle TWAP window | 3600 seconds | Time-weighted average price window |
