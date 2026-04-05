@@ -2,8 +2,6 @@
 //!
 //! Commit logic lives in [`crate::commit`], admin operations in [`crate::admin`].
 
-#![allow(non_snake_case)]
-
 use crate::admin::{
     ensure_not_drained, execute_cancel_emergency_withdraw, execute_emergency_withdraw,
     execute_pause, execute_unpause, execute_recover_stuck_states,
@@ -30,7 +28,7 @@ use crate::state::{
     EXPECTED_FACTORY, IS_THRESHOLD_HIT, MINIMUM_LIQUIDITY,
     NATIVE_RAISED_FROM_COMMIT, NEXT_POSITION_ID, ORACLE_INFO, OWNER_POSITIONS,
     POOL_ANALYTICS, POOL_FEE_STATE, POOL_INFO, POOL_PAUSED, POOL_SPECS, POOL_STATE,
-    RATE_LIMIT_GUARD, THRESHOLD_PAYOUT_AMOUNTS, USD_RAISED_FROM_COMMIT,
+    REENTRANCY_GUARD, THRESHOLD_PAYOUT_AMOUNTS, USD_RAISED_FROM_COMMIT,
 };
 use crate::state::{PoolState, LIQUIDITY_POSITIONS};
 use crate::swap_helper::{
@@ -381,12 +379,6 @@ pub fn execute_swap_cw20(
                 transaction_deadline,
             )
         }
-        Ok(Cw20HookMsg::DepositLiquidity { .. }) | Ok(Cw20HookMsg::AddToPosition { .. }) => {
-            Err(ContractError::Std(StdError::generic_err(
-                "DepositLiquidity and AddToPosition must be called directly, not via CW20 Send hook. \
-                 These operations require native bluechip funds which cannot be sent via CW20 hooks.",
-            )))
-        }
         Err(err) => Err(ContractError::Std(err)),
     }
 }
@@ -405,23 +397,23 @@ fn simple_swap(
 ) -> Result<Response, ContractError> {
     enforce_transaction_deadline(env.block.time, transaction_deadline)?;
 
-    let reentrancy_guard = RATE_LIMIT_GUARD.may_load(deps.storage)?.unwrap_or(false);
+    let reentrancy_guard = REENTRANCY_GUARD.may_load(deps.storage)?.unwrap_or(false);
     if reentrancy_guard {
         return Err(ContractError::ReentrancyGuard {});
     }
-    RATE_LIMIT_GUARD.save(deps.storage, &true)?;
+    REENTRANCY_GUARD.save(deps.storage, &true)?;
 
     let pool_specs = POOL_SPECS.load(deps.storage)?;
 
     if let Err(e) = check_rate_limit(&mut deps, &env, &pool_specs, &sender) {
-        RATE_LIMIT_GUARD.save(deps.storage, &false)?;
+        REENTRANCY_GUARD.save(deps.storage, &false)?;
         return Err(e);
     }
 
     let result = execute_simple_swap(
         &mut deps, env, _info, sender, offer_asset, belief_price, max_spread, to,
     );
-    RATE_LIMIT_GUARD.save(deps.storage, &false)?;
+    REENTRANCY_GUARD.save(deps.storage, &false)?;
     result
 }
 
@@ -548,19 +540,7 @@ pub fn execute_simple_swap(
         .add_attribute("pool_contract", pool_state.pool_contract_address.to_string())
         .add_attribute("block_height", env.block.height.to_string())
         .add_attribute("block_time", env.block.time.seconds().to_string())
-        .add_attribute("total_swap_count", analytics.total_swap_count.to_string())
-        .add_attribute(
-            "belief_price",
-            belief_price
-                .map(|p| p.to_string())
-                .unwrap_or_else(|| "none".to_string()),
-        )
-        .add_attribute(
-            "max_spread",
-            max_spread
-                .map(|s| s.to_string())
-                .unwrap_or_else(|| "none".to_string()),
-        ))
+        .add_attribute("total_swap_count", analytics.total_swap_count.to_string()))
 }
 
 // ---------------------------------------------------------------------------

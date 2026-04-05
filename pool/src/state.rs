@@ -14,10 +14,10 @@ pub struct TokenMetadata {
 }
 
 pub const USD_RAISED_FROM_COMMIT: Item<Uint128> = Item::new("usd_raised");
-pub const COMMIT_INFO: Map<&Addr, Commiting> = Map::new("sub_info");
+pub const COMMIT_INFO: Map<&Addr, Committing> = Map::new("sub_info");
 pub const COMMITFEEINFO: Item<CommitFeeInfo> = Item::new("fee_info");
 pub const NATIVE_RAISED_FROM_COMMIT: Item<Uint128> = Item::new("bluechip_raised");
-pub const RATE_LIMIT_GUARD: Item<bool> = Item::new("rate_limit_guard");
+pub const REENTRANCY_GUARD: Item<bool> = Item::new("rate_limit_guard");
 pub const IS_THRESHOLD_HIT: Item<bool> = Item::new("threshold_hit");
 pub const COMMIT_LEDGER: cw_storage_plus::Map<&Addr, Uint128> =
     cw_storage_plus::Map::new("commit_usd");
@@ -122,12 +122,12 @@ pub enum RecoveryType {
 }
 
 #[cw_serde]
-pub struct Commiting {
+pub struct Committing {
     pub pool_contract_address: Addr,
-    pub commiter: Addr,
+    pub committer: Addr,
     pub total_paid_usd: Uint128,
     pub total_paid_bluechip: Uint128,
-    pub last_commited: Timestamp,
+    pub last_committed: Timestamp,
     pub last_payment_bluechip: Uint128,
     pub last_payment_usd: Uint128,
 }

@@ -13,7 +13,7 @@ use crate::state::{
     PoolState, COMMITFEEINFO, COMMIT_LEDGER, COMMIT_LIMIT_INFO, DISTRIBUTION_BOUNTY,
     DISTRIBUTION_STATE, IS_THRESHOLD_HIT, LAST_THRESHOLD_ATTEMPT,
     NATIVE_RAISED_FROM_COMMIT, POOL_ANALYTICS, POOL_FEE_STATE, POOL_INFO, POOL_PAUSED,
-    POOL_SPECS, POOL_STATE, RATE_LIMIT_GUARD, THRESHOLD_PAYOUT_AMOUNTS,
+    POOL_SPECS, POOL_STATE, REENTRANCY_GUARD, THRESHOLD_PAYOUT_AMOUNTS,
     THRESHOLD_PROCESSING, USD_RAISED_FROM_COMMIT,
 };
 use crate::swap_helper::{
@@ -47,17 +47,17 @@ pub fn commit(
     enforce_transaction_deadline(env.block.time, transaction_deadline)?;
 
     // Reentrancy protection
-    let reentrancy_guard = RATE_LIMIT_GUARD.may_load(deps.storage)?.unwrap_or(false);
+    let reentrancy_guard = REENTRANCY_GUARD.may_load(deps.storage)?.unwrap_or(false);
     if reentrancy_guard {
         return Err(ContractError::ReentrancyGuard {});
     }
-    RATE_LIMIT_GUARD.save(deps.storage, &true)?;
+    REENTRANCY_GUARD.save(deps.storage, &true)?;
 
     let pool_specs = POOL_SPECS.load(deps.storage)?;
     let sender = info.sender.clone();
 
     if let Err(e) = check_rate_limit(&mut deps, &env, &pool_specs, &sender) {
-        RATE_LIMIT_GUARD.save(deps.storage, &false)?;
+        REENTRANCY_GUARD.save(deps.storage, &false)?;
         return Err(e);
     }
 
@@ -70,7 +70,7 @@ pub fn commit(
         belief_price,
         max_spread,
     );
-    RATE_LIMIT_GUARD.save(deps.storage, &false)?;
+    REENTRANCY_GUARD.save(deps.storage, &false)?;
     result
 }
 

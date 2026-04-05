@@ -16,7 +16,7 @@ use crate::state::{
     DEFAULT_ESTIMATED_GAS_PER_DISTRIBUTION, DEFAULT_MAX_GAS_PER_TX,
     DISTRIBUTION_STATE, EXPECTED_FACTORY, LIQUIDITY_POSITIONS,
     NEXT_POSITION_ID, POOL_FEE_STATE,
-    POOL_SPECS, POOL_STATE, RATE_LIMIT_GUARD,
+    POOL_SPECS, POOL_STATE, REENTRANCY_GUARD,
     THRESHOLD_PROCESSING, MINIMUM_LIQUIDITY,
 };
 use crate::liquidity_helpers::sync_position_on_transfer;
@@ -108,8 +108,8 @@ fn test_recover_stuck_reentrancy_guard() {
     }).unwrap();
 
     // Simulate stuck reentrancy guard
-    RATE_LIMIT_GUARD.save(&mut deps.storage, &true).unwrap();
-    assert!(RATE_LIMIT_GUARD.load(&deps.storage).unwrap());
+    REENTRANCY_GUARD.save(&mut deps.storage, &true).unwrap();
+    assert!(REENTRANCY_GUARD.load(&deps.storage).unwrap());
 
     let env = mock_env();
     let factory_info = message_info(&Addr::unchecked("factory_contract"), &[]);
@@ -122,7 +122,7 @@ fn test_recover_stuck_reentrancy_guard() {
     let res = execute(deps.as_mut(), env, factory_info, msg).unwrap();
 
     // Guard should be reset
-    assert!(!RATE_LIMIT_GUARD.load(&deps.storage).unwrap());
+    assert!(!REENTRANCY_GUARD.load(&deps.storage).unwrap());
 
     // Check response attributes
     let recovered_attr = res.attributes.iter()
@@ -140,7 +140,7 @@ fn test_recover_stuck_reentrancy_guard_unauthorized() {
         expected_factory_address: Addr::unchecked("factory_contract"),
     }).unwrap();
 
-    RATE_LIMIT_GUARD.save(&mut deps.storage, &true).unwrap();
+    REENTRANCY_GUARD.save(&mut deps.storage, &true).unwrap();
 
     let env = mock_env();
     // Not the factory - should fail
@@ -154,7 +154,7 @@ fn test_recover_stuck_reentrancy_guard_unauthorized() {
     assert!(matches!(err, ContractError::Unauthorized {}));
 
     // Guard still stuck
-    assert!(RATE_LIMIT_GUARD.load(&deps.storage).unwrap());
+    assert!(REENTRANCY_GUARD.load(&deps.storage).unwrap());
 }
 
 #[test]
@@ -167,7 +167,7 @@ fn test_recover_not_stuck_returns_error() {
     }).unwrap();
 
     // Guard is NOT stuck
-    RATE_LIMIT_GUARD.save(&mut deps.storage, &false).unwrap();
+    REENTRANCY_GUARD.save(&mut deps.storage, &false).unwrap();
 
     let env = mock_env();
     let factory_info = message_info(&Addr::unchecked("factory_contract"), &[]);
@@ -190,7 +190,7 @@ fn test_recover_both_resets_all_stuck_states() {
     }).unwrap();
 
     // Simulate both stuck reentrancy guard and stuck threshold
-    RATE_LIMIT_GUARD.save(&mut deps.storage, &true).unwrap();
+    REENTRANCY_GUARD.save(&mut deps.storage, &true).unwrap();
     THRESHOLD_PROCESSING.save(&mut deps.storage, &true).unwrap();
 
     // Set last threshold attempt to far in the past so it qualifies as stuck
@@ -212,7 +212,7 @@ fn test_recover_both_resets_all_stuck_states() {
     let res = execute(deps.as_mut(), env, factory_info, msg).unwrap();
 
     // Both should be reset
-    assert!(!RATE_LIMIT_GUARD.load(&deps.storage).unwrap());
+    assert!(!REENTRANCY_GUARD.load(&deps.storage).unwrap());
     assert!(!THRESHOLD_PROCESSING.load(&deps.storage).unwrap());
 
     let recovered_attr = res.attributes.iter()

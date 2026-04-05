@@ -6,7 +6,7 @@ use cosmwasm_std::{testing::{mock_dependencies, mock_env, message_info, MockApi,
 
 use pool_factory_interfaces::cw721_msgs::OwnerOfResponse;
 
-    use crate::{asset::PoolPairType, contract::{execute,}, liquidity::{execute_add_to_position, execute_collect_fees, execute_deposit_liquidity, execute_remove_all_liquidity}, liquidity_helpers::{calculate_fee_size_multiplier, MIN_MULTIPLIER}, msg::{CommitFeeInfo}, state::{CommitLimitInfo, OracleInfo, PoolFeeState, PoolInfo, PoolSpecs, PoolState, ThresholdPayoutAmounts, COMMITFEEINFO, COMMIT_LIMIT_INFO, LIQUIDITY_POSITIONS, NATIVE_RAISED_FROM_COMMIT, ORACLE_INFO, POOL_INFO, POOL_SPECS, THRESHOLD_PAYOUT_AMOUNTS, THRESHOLD_PROCESSING
+    use crate::{asset::PoolPairType, contract::{execute,}, liquidity::{execute_add_to_position, execute_collect_fees, execute_deposit_liquidity, execute_remove_all_liquidity}, liquidity_helpers::calculate_fee_size_multiplier, msg::{CommitFeeInfo}, state::{CommitLimitInfo, OracleInfo, PoolFeeState, PoolInfo, PoolSpecs, PoolState, ThresholdPayoutAmounts, COMMITFEEINFO, COMMIT_LIMIT_INFO, LIQUIDITY_POSITIONS, NATIVE_RAISED_FROM_COMMIT, ORACLE_INFO, POOL_INFO, POOL_SPECS, THRESHOLD_PAYOUT_AMOUNTS, THRESHOLD_PROCESSING
     }};
 use crate::msg::ExecuteMsg;
 use crate::state::{
@@ -1291,7 +1291,7 @@ fn test_dust_position_low_fees() {
     
     // Multiplier should be very low (close to MIN_MULTIPLIER)
     let expected_ratio = Decimal::from_ratio(100u128, OPTIMAL_LIQUIDITY);
-    let min_mult = Decimal::from_str(MIN_MULTIPLIER).unwrap();
+    let min_mult = Decimal::percent(10);
     let expected_multiplier = min_mult + (Decimal::one() - min_mult) * expected_ratio;
     
     assert_eq!(position.fee_size_multiplier, expected_multiplier);
@@ -1482,7 +1482,7 @@ pub fn create_test_position(
         let liquidity = Uint128::zero();
         let multiplier = calculate_fee_size_multiplier(liquidity);
         
-        assert_eq!(multiplier, Decimal::from_str(MIN_MULTIPLIER).unwrap());
+        assert_eq!(multiplier, Decimal::percent(10));
     }
 
     #[test]
@@ -1548,7 +1548,7 @@ pub fn create_test_position(
             let multiplier = calculate_fee_size_multiplier(liquidity);
             
             let ratio = Decimal::from_ratio(dust_amount, OPTIMAL_LIQUIDITY);
-            let min_mult = Decimal::from_str(MIN_MULTIPLIER).unwrap();
+            let min_mult = Decimal::percent(10);
             let expected = min_mult + (Decimal::one() - min_mult) * ratio;
             
             assert_eq!(
@@ -1673,7 +1673,7 @@ pub fn create_test_position(
             100_000_000, 1_000_000_000,
         ];
 
-        let min_bound = Decimal::from_str(MIN_MULTIPLIER).unwrap();
+        let min_bound = Decimal::percent(10);
         let max_bound = Decimal::one();
 
         for value in test_values {

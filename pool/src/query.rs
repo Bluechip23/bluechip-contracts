@@ -1,8 +1,8 @@
 use crate::asset::{call_pool_info, TokenInfo};
 use crate::liquidity_helpers::calculate_unclaimed_fees;
 use crate::msg::{
-    CommitStatus, CommiterInfo, ConfigResponse, CumulativePricesResponse, FeeInfoResponse,
-    LastCommitedResponse, PoolAnalyticsResponse, PoolCommitResponse, PoolFeeStateResponse,
+    CommitStatus, CommitterInfo, ConfigResponse, CumulativePricesResponse, FeeInfoResponse,
+    LastCommittedResponse, PoolAnalyticsResponse, PoolCommitResponse, PoolFeeStateResponse,
     PoolInfoResponse, PoolStateResponse, PositionResponse, PositionsResponse, QueryMsg,
     ReverseSimulationResponse, SimulationResponse,
 };
@@ -34,7 +34,7 @@ pub fn query(deps: Deps, env: Env, msg: QueryMsg) -> StdResult<Binary> {
             after_timestamp,
             start_after,
             limit,
-        } => to_json_binary(&query_pool_commiters(
+        } => to_json_binary(&query_pool_committers(
             deps,
             pool_contract_address,
             min_payment_usd,
@@ -58,15 +58,15 @@ pub fn query(deps: Deps, env: Env, msg: QueryMsg) -> StdResult<Binary> {
         QueryMsg::LastCommited { wallet } => {
             let addr = deps.api.addr_validate(&wallet)?;
             let response = match COMMIT_INFO.may_load(deps.storage, &addr)? {
-                Some(commiting) => LastCommitedResponse {
-                    has_commited: true,
-                    last_commited: Some(commiting.last_commited),
-                    last_payment_bluechip: Some(commiting.last_payment_bluechip),
-                    last_payment_usd: Some(commiting.last_payment_usd),
+                Some(committing) => LastCommittedResponse {
+                    has_committed: true,
+                    last_committed: Some(committing.last_committed),
+                    last_payment_bluechip: Some(committing.last_payment_bluechip),
+                    last_payment_usd: Some(committing.last_payment_usd),
                 },
-                None => LastCommitedResponse {
-                    has_commited: false,
-                    last_commited: None,
+                None => LastCommittedResponse {
+                    has_committed: false,
+                    last_committed: None,
                     last_payment_bluechip: None,
                     last_payment_usd: None,
                 },
@@ -77,7 +77,7 @@ pub fn query(deps: Deps, env: Env, msg: QueryMsg) -> StdResult<Binary> {
         QueryMsg::Config {} => to_json_binary(&query_config(deps)?),
         QueryMsg::FeeInfo {} => to_json_binary(&query_fee_info(deps)?),
         QueryMsg::IsFullyCommited {} => to_json_binary(&query_check_threshold_limit(deps)?),
-        QueryMsg::CommitingInfo { wallet } => {
+        QueryMsg::CommittingInfo { wallet } => {
             let addr = deps.api.addr_validate(&wallet)?;
             let info = COMMIT_INFO.may_load(deps.storage, &addr)?;
             to_json_binary(&info)
@@ -392,7 +392,7 @@ pub fn query_analytics(deps: Deps) -> StdResult<PoolAnalyticsResponse> {
     })
 }
 
-pub fn query_pool_commiters(
+pub fn query_pool_committers(
     deps: Deps,
     pool_contract_address: Addr,
     min_payment_usd: Option<Uint128>,
@@ -409,47 +409,47 @@ pub fn query_pool_commiters(
 
     let start = start_addr.as_ref().map(Bound::exclusive);
 
-    let mut commiters = vec![];
+    let mut committers = vec![];
 
     for item in COMMIT_INFO.range(deps.storage, start, None, Order::Ascending) {
-        let (commiter_addr, commiting) = item?;
+        let (committer_addr, committing) = item?;
 
         // Filter by pool_contract_address
-        if commiting.pool_contract_address != pool_contract_address {
+        if committing.pool_contract_address != pool_contract_address {
             continue;
         }
 
         // Apply optional filters
         if let Some(min_usd) = min_payment_usd {
-            if commiting.last_payment_usd < min_usd {
+            if committing.last_payment_usd < min_usd {
                 continue;
             }
         }
 
         if let Some(after_ts) = after_timestamp {
-            if commiting.last_commited.seconds() < after_ts {
+            if committing.last_committed.seconds() < after_ts {
                 continue;
             }
         }
 
-        commiters.push(CommiterInfo {
-            wallet: commiter_addr.to_string(),
-            last_payment_bluechip: commiting.last_payment_bluechip,
-            last_payment_usd: commiting.last_payment_usd,
-            last_commited: commiting.last_commited,
-            total_paid_usd: commiting.total_paid_usd,
-            total_paid_bluechip: commiting.total_paid_bluechip,
+        committers.push(CommitterInfo {
+            wallet: committer_addr.to_string(),
+            last_payment_bluechip: committing.last_payment_bluechip,
+            last_payment_usd: committing.last_payment_usd,
+            last_committed: committing.last_committed,
+            total_paid_usd: committing.total_paid_usd,
+            total_paid_bluechip: committing.total_paid_bluechip,
         });
 
         // Stop if we've collected enough
-        if commiters.len() >= limit {
+        if committers.len() >= limit {
             break;
         }
     }
 
     Ok(PoolCommitResponse {
-        total_count: commiters.len() as u32,
-        commiters,
+        total_count: committers.len() as u32,
+        committers,
     })
 }
 

@@ -1,5 +1,3 @@
-use std::str::FromStr;
-
 use crate::state::{
     PoolFeeState, PoolInfo, Position, LIQUIDITY_POSITIONS, MINIMUM_LIQUIDITY,
     OWNER_POSITIONS, POOL_INFO, POOL_STATE,
@@ -13,7 +11,7 @@ use cosmwasm_std::{
 use crate::asset::get_bluechip_denom;
 
 pub const OPTIMAL_LIQUIDITY: Uint128 = Uint128::new(1_000_000);
-pub const MIN_MULTIPLIER: &str = "0.1";
+const MIN_MULTIPLIER: Decimal = Decimal::percent(10);
 
 pub fn calculate_unclaimed_fees(
     liquidity: Uint128,
@@ -178,8 +176,7 @@ pub fn calculate_fee_size_multiplier(liquidity: Uint128) -> Decimal {
         Decimal::one()
     } else {
         let ratio = Decimal::from_ratio(liquidity, OPTIMAL_LIQUIDITY);
-        let min_mult = Decimal::from_str(MIN_MULTIPLIER).unwrap_or(Decimal::percent(10));
-        min_mult + (Decimal::one() - min_mult) * ratio
+        MIN_MULTIPLIER + (Decimal::one() - MIN_MULTIPLIER) * ratio
     }
 }
 
