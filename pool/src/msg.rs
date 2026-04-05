@@ -1,7 +1,7 @@
 #[allow(unused_imports)]
 use crate::asset::{PoolPairInfo, TokenInfo, TokenType};
 #[allow(unused_imports)]
-use crate::state::{Commiting, PoolAnalytics, RecoveryType};
+use crate::state::{Committing, PoolAnalytics, RecoveryType};
 use cosmwasm_schema::{cw_serde, QueryResponses};
 use cosmwasm_std::{Addr, Binary, Decimal, Timestamp, Uint128};
 use cw20::Cw20ReceiveMsg;
