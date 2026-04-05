@@ -1,5 +1,5 @@
 use crate::asset::{PoolPairInfo, TokenInfo, TokenType};
-use crate::state::{Commiting, PoolAnalytics, RecoveryType};
+use crate::state::{Committing, PoolAnalytics, RecoveryType};
 use cosmwasm_schema::{cw_serde, QueryResponses};
 use cosmwasm_std::{Addr, Binary, Decimal, Timestamp, Uint128};
 use cw20::Cw20ReceiveMsg;
@@ -91,19 +91,6 @@ pub enum Cw20HookMsg {
         to: Option<String>,
         transaction_deadline: Option<Timestamp>,
     },
-    DepositLiquidity {
-        amount0: Uint128,
-        min_amount0: Option<Uint128>,
-        min_amount1: Option<Uint128>,
-        transaction_deadline: Option<Timestamp>,
-    },
-    AddToPosition {
-        position_id: String,
-        amount0: Uint128,
-        min_amount0: Option<Uint128>,
-        min_amount1: Option<Uint128>,
-        transaction_deadline: Option<Timestamp>,
-    },
 }
 
 #[cw_serde]
@@ -123,8 +110,8 @@ pub enum QueryMsg {
     FeeInfo {},
     #[returns(CommitStatus)]
     IsFullyCommited {},
-    #[returns(Option<Commiting>)]
-    CommitingInfo { wallet: String },
+    #[returns(Option<Committing>)]
+    CommittingInfo { wallet: String },
     #[returns(PoolCommitResponse)]
     PoolCommits {
         pool_contract_address: Addr,
@@ -150,7 +137,7 @@ pub enum QueryMsg {
         start_after: Option<String>,
         limit: Option<u32>,
     },
-    #[returns(LastCommitedResponse)]
+    #[returns(LastCommittedResponse)]
     LastCommited { wallet: String },
     #[returns(PoolInfoResponse)]
     PoolInfo {},
@@ -182,7 +169,7 @@ pub struct PoolInstantiateMsg {
 #[cw_serde]
 pub struct PoolCommitResponse {
     pub total_count: u32,
-    pub commiters: Vec<CommiterInfo>,
+    pub committers: Vec<CommitterInfo>,
 }
 
 #[cw_serde]
@@ -194,11 +181,11 @@ pub struct PoolConfigUpdate {
 }
 
 #[cw_serde]
-pub struct CommiterInfo {
+pub struct CommitterInfo {
     pub wallet: String,
     pub last_payment_bluechip: Uint128,
     pub last_payment_usd: Uint128,
-    pub last_commited: Timestamp,
+    pub last_committed: Timestamp,
     pub total_paid_usd: Uint128,
     pub total_paid_bluechip: Uint128,
 }
@@ -223,9 +210,9 @@ pub struct ConfigResponse {
 }
 
 #[cw_serde]
-pub struct LastCommitedResponse {
-    pub has_commited: bool,
-    pub last_commited: Option<Timestamp>,
+pub struct LastCommittedResponse {
+    pub has_committed: bool,
+    pub last_committed: Option<Timestamp>,
     pub last_payment_bluechip: Option<Uint128>,
     pub last_payment_usd: Option<Uint128>,
 }

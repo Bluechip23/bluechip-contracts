@@ -15,7 +15,7 @@ use crate::state::{
     EMERGENCY_WITHDRAW_DELAY_SECONDS, EXPECTED_FACTORY,
     LAST_THRESHOLD_ATTEMPT, ORACLE_INFO, PENDING_EMERGENCY_WITHDRAW,
     POOL_FEE_STATE, POOL_INFO, POOL_PAUSED, POOL_SPECS, POOL_STATE,
-    RATE_LIMIT_GUARD, THRESHOLD_PROCESSING,
+    REENTRANCY_GUARD, THRESHOLD_PROCESSING,
 };
 use cosmwasm_std::{
     Decimal, DepsMut, Env, MessageInfo, Order, Response, StdError, StdResult,
@@ -404,9 +404,9 @@ fn recover_reentrancy_guard(
     storage: &mut dyn Storage,
     recovered: &mut Vec<String>,
 ) -> StdResult<()> {
-    let guard = RATE_LIMIT_GUARD.may_load(storage)?.unwrap_or(false);
+    let guard = REENTRANCY_GUARD.may_load(storage)?.unwrap_or(false);
     if guard {
-        RATE_LIMIT_GUARD.save(storage, &false)?;
+        REENTRANCY_GUARD.save(storage, &false)?;
         recovered.push("reentrancy_guard".to_string());
     }
     Ok(())

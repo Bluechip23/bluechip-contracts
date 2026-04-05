@@ -7,13 +7,13 @@ use std::str::FromStr;
 use crate::asset::{TokenInfo, TokenType};
 use crate::mock_querier;
 use crate::msg::{
-    CommitStatus, FeeInfoResponse, LastCommitedResponse,
+    CommitStatus, FeeInfoResponse, LastCommittedResponse,
     PoolFeeStateResponse, PoolInfoResponse, PoolStateResponse,
     PositionsResponse, QueryMsg, ReverseSimulationResponse, SimulationResponse,
 };
 use crate::query::query;
 use crate::state::{
-    Commiting, COMMIT_INFO,
+    Committing, COMMIT_INFO,
     NEXT_POSITION_ID, OWNER_POSITIONS, POOL_FEE_STATE,
     USD_RAISED_FROM_COMMIT,
 };
@@ -372,25 +372,25 @@ fn test_query_fee_info() {
 }
 
 #[test]
-fn test_query_commiting_info_exists() {
+fn test_query_committing_info_exists() {
     let mut deps = mock_dependencies();
     setup_pool_storage(&mut deps);
 
     let user = MockApi::default().addr_make("committer1");
-    COMMIT_INFO.save(&mut deps.storage, &user, &Commiting {
+    COMMIT_INFO.save(&mut deps.storage, &user, &Committing {
         pool_contract_address: Addr::unchecked("pool_contract"),
-        commiter: user.clone(),
+        committer: user.clone(),
         total_paid_usd: Uint128::new(5_000_000_000),
         total_paid_bluechip: Uint128::new(5_000_000_000),
-        last_commited: Timestamp::from_seconds(1_600_000_000),
+        last_committed: Timestamp::from_seconds(1_600_000_000),
         last_payment_bluechip: Uint128::new(1_000_000_000),
         last_payment_usd: Uint128::new(1_000_000_000),
     }).unwrap();
 
     let env = mock_env();
-    let msg = QueryMsg::CommitingInfo { wallet: MockApi::default().addr_make("committer1").to_string() };
+    let msg = QueryMsg::CommittingInfo { wallet: MockApi::default().addr_make("committer1").to_string() };
     let res = query(deps.as_ref(), env, msg).unwrap();
-    let info: Option<Commiting> = from_json(res).unwrap();
+    let info: Option<Committing> = from_json(res).unwrap();
 
     assert!(info.is_some());
     let info = info.unwrap();
@@ -399,31 +399,31 @@ fn test_query_commiting_info_exists() {
 }
 
 #[test]
-fn test_query_commiting_info_not_found() {
+fn test_query_committing_info_not_found() {
     let mut deps = mock_dependencies();
     setup_pool_storage(&mut deps);
 
     let env = mock_env();
-    let msg = QueryMsg::CommitingInfo { wallet: MockApi::default().addr_make("nobody").to_string() };
+    let msg = QueryMsg::CommittingInfo { wallet: MockApi::default().addr_make("nobody").to_string() };
     let res = query(deps.as_ref(), env, msg).unwrap();
-    let info: Option<Commiting> = from_json(res).unwrap();
+    let info: Option<Committing> = from_json(res).unwrap();
 
     assert!(info.is_none());
 }
 
 
 #[test]
-fn test_query_last_commited_exists() {
+fn test_query_last_committed_exists() {
     let mut deps = mock_dependencies();
     setup_pool_storage(&mut deps);
 
     let user = MockApi::default().addr_make("committer1");
-    COMMIT_INFO.save(&mut deps.storage, &user, &Commiting {
+    COMMIT_INFO.save(&mut deps.storage, &user, &Committing {
         pool_contract_address: Addr::unchecked("pool_contract"),
-        commiter: user.clone(),
+        committer: user.clone(),
         total_paid_usd: Uint128::new(5_000_000_000),
         total_paid_bluechip: Uint128::new(5_000_000_000),
-        last_commited: Timestamp::from_seconds(1_600_000_000),
+        last_committed: Timestamp::from_seconds(1_600_000_000),
         last_payment_bluechip: Uint128::new(1_000_000_000),
         last_payment_usd: Uint128::new(1_000_000_000),
     }).unwrap();
@@ -431,26 +431,26 @@ fn test_query_last_commited_exists() {
     let env = mock_env();
     let msg = QueryMsg::LastCommited { wallet: MockApi::default().addr_make("committer1").to_string() };
     let res = query(deps.as_ref(), env, msg).unwrap();
-    let resp: LastCommitedResponse = from_json(res).unwrap();
+    let resp: LastCommittedResponse = from_json(res).unwrap();
 
-    assert!(resp.has_commited);
-    assert_eq!(resp.last_commited, Some(Timestamp::from_seconds(1_600_000_000)));
+    assert!(resp.has_committed);
+    assert_eq!(resp.last_committed, Some(Timestamp::from_seconds(1_600_000_000)));
     assert_eq!(resp.last_payment_bluechip, Some(Uint128::new(1_000_000_000)));
     assert_eq!(resp.last_payment_usd, Some(Uint128::new(1_000_000_000)));
 }
 
 #[test]
-fn test_query_last_commited_not_found() {
+fn test_query_last_committed_not_found() {
     let mut deps = mock_dependencies();
     setup_pool_storage(&mut deps);
 
     let env = mock_env();
     let msg = QueryMsg::LastCommited { wallet: MockApi::default().addr_make("nobody").to_string() };
     let res = query(deps.as_ref(), env, msg).unwrap();
-    let resp: LastCommitedResponse = from_json(res).unwrap();
+    let resp: LastCommittedResponse = from_json(res).unwrap();
 
-    assert!(!resp.has_commited);
-    assert!(resp.last_commited.is_none());
+    assert!(!resp.has_committed);
+    assert!(resp.last_committed.is_none());
     assert!(resp.last_payment_bluechip.is_none());
 }
 

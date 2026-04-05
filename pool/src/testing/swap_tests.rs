@@ -8,7 +8,7 @@ use crate::state::{
     CommitLimitInfo, OracleInfo, PoolDetails, PoolFeeState, PoolInfo, PoolSpecs, PoolState,
     ThresholdPayoutAmounts, COMMIT_INFO, COMMIT_LEDGER, DEFAULT_ESTIMATED_GAS_PER_DISTRIBUTION,
     DEFAULT_MAX_GAS_PER_TX, IS_THRESHOLD_HIT, NATIVE_RAISED_FROM_COMMIT, NEXT_POSITION_ID,
-    ORACLE_INFO, POOL_FEE_STATE, POOL_PAUSED, POOL_SPECS, POOL_STATE, RATE_LIMIT_GUARD,
+    ORACLE_INFO, POOL_FEE_STATE, POOL_PAUSED, POOL_SPECS, POOL_STATE, REENTRANCY_GUARD,
     USD_RAISED_FROM_COMMIT,
 };
 use crate::{
@@ -184,9 +184,9 @@ fn test_commit_pre_threshold_basic() {
 
     assert!(!IS_THRESHOLD_HIT.load(&deps.storage).unwrap());
 
-    let commiting = COMMIT_INFO.load(&deps.storage, &user_addr).unwrap();
-    assert_eq!(commiting.total_paid_bluechip, commit_amount);
-    assert_eq!(commiting.total_paid_usd, Uint128::new(1_000_000_000));
+    let committing = COMMIT_INFO.load(&deps.storage, &user_addr).unwrap();
+    assert_eq!(committing.total_paid_bluechip, commit_amount);
+    assert_eq!(committing.total_paid_usd, Uint128::new(1_000_000_000));
 }
 
 #[test]
@@ -871,7 +871,7 @@ fn test_commit_reentrancy_protection() {
     let mut deps = mock_dependencies();
     setup_pool_storage(&mut deps);
 
-    RATE_LIMIT_GUARD.save(&mut deps.storage, &true).unwrap();
+    REENTRANCY_GUARD.save(&mut deps.storage, &true).unwrap();
 
     let env = mock_env();
     let info = message_info(&Addr::unchecked("user"),

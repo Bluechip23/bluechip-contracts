@@ -8,7 +8,7 @@ use crate::liquidity_helpers::{
 use crate::asset::get_bluechip_denom;
 use crate::state::{
     PoolInfo, PoolSpecs, MINIMUM_LIQUIDITY, POOL_ANALYTICS, POOL_FEE_STATE, POOL_INFO,
-    POOL_PAUSED, POOL_SPECS, POOL_STATE, RATE_LIMIT_GUARD,
+    POOL_PAUSED, POOL_SPECS, POOL_STATE, REENTRANCY_GUARD,
 };
 use crate::state::{Position, TokenMetadata, LIQUIDITY_POSITIONS, NEXT_POSITION_ID, OWNER_POSITIONS};
 use crate::swap_helper::update_price_accumulator;
@@ -677,7 +677,7 @@ pub fn execute_add_to_position(
     let pool_specs: PoolSpecs = POOL_SPECS.load(deps.storage)?;
 
     if let Err(e) = check_rate_limit(&mut deps, &env, &pool_specs, &sender) {
-        RATE_LIMIT_GUARD.save(deps.storage, &false)?;
+        REENTRANCY_GUARD.save(deps.storage, &false)?;
         return Err(e);
     }
     add_to_position(
@@ -709,7 +709,7 @@ pub fn execute_remove_all_liquidity(
     let pool_specs: PoolSpecs = POOL_SPECS.load(deps.storage)?;
     let sender = info.sender.clone();
     if let Err(e) = check_rate_limit(&mut deps, &env, &pool_specs, &sender) {
-        RATE_LIMIT_GUARD.save(deps.storage, &false)?;
+        REENTRANCY_GUARD.save(deps.storage, &false)?;
         return Err(e);
     }
     remove_all_liquidity(
@@ -740,7 +740,7 @@ pub fn execute_remove_partial_liquidity(
     let sender = info.sender.clone();
 
     if let Err(e) = check_rate_limit(&mut deps, &env, &pool_specs, &sender) {
-        RATE_LIMIT_GUARD.save(deps.storage, &false)?;
+        REENTRANCY_GUARD.save(deps.storage, &false)?;
         return Err(e);
     }
     remove_partial_liquidity(

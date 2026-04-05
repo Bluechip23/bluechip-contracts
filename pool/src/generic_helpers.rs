@@ -2,7 +2,7 @@ use crate::error::ContractError;
 use crate::liquidity_helpers::integer_sqrt;
 use crate::msg::CommitFeeInfo;
 use crate::state::{
-    CommitLimitInfo, Commiting, PoolFeeState, PoolInfo, PoolSpecs, ThresholdPayoutAmounts,
+    CommitLimitInfo, Committing, PoolFeeState, PoolInfo, PoolSpecs, ThresholdPayoutAmounts,
     COMMIT_INFO, COMMIT_LEDGER, DEFAULT_ESTIMATED_GAS_PER_DISTRIBUTION, DEFAULT_MAX_GAS_PER_TX,
     MAX_DISTRIBUTION_BOUNTY_RESERVE, MAX_DISTRIBUTIONS_PER_TX, POOL_FEE_STATE, POOL_STATE,
     USER_LAST_COMMIT,
@@ -485,24 +485,24 @@ pub fn update_commit_info(
     COMMIT_INFO.update(
         storage,
         sender,
-        |maybe_commiting| -> Result<_, ContractError> {
-            match maybe_commiting {
-                Some(mut commiting) => {
-                    commiting.total_paid_bluechip =
-                        commiting.total_paid_bluechip.checked_add(bluechip_amount)?;
-                    commiting.total_paid_usd =
-                        commiting.total_paid_usd.checked_add(usd_amount)?;
-                    commiting.last_payment_bluechip = bluechip_amount;
-                    commiting.last_payment_usd = usd_amount;
-                    commiting.last_commited = timestamp;
-                    Ok(commiting)
+        |maybe_committing| -> Result<_, ContractError> {
+            match maybe_committing {
+                Some(mut committing) => {
+                    committing.total_paid_bluechip =
+                        committing.total_paid_bluechip.checked_add(bluechip_amount)?;
+                    committing.total_paid_usd =
+                        committing.total_paid_usd.checked_add(usd_amount)?;
+                    committing.last_payment_bluechip = bluechip_amount;
+                    committing.last_payment_usd = usd_amount;
+                    committing.last_committed = timestamp;
+                    Ok(committing)
                 }
-                None => Ok(Commiting {
+                None => Ok(Committing {
                     pool_contract_address,
-                    commiter: sender.clone(),
+                    committer: sender.clone(),
                     total_paid_bluechip: bluechip_amount,
                     total_paid_usd: usd_amount,
-                    last_commited: timestamp,
+                    last_committed: timestamp,
                     last_payment_bluechip: bluechip_amount,
                     last_payment_usd: usd_amount,
                 }),
