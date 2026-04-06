@@ -1,13 +1,22 @@
 //! External message surface for the router contract.
 //!
-//! The router intentionally exposes a tiny API: instantiate, two execute
-//! variants (multi-hop swap and admin config update), and two queries
-//! (multi-hop simulation and config read). Any extra surface area would
-//! invite bugs without adding routing capability that frontends/indexers
-//! cannot already build on top of these primitives.
+//! The router exposes:
+//! - `InstantiateMsg` for setup
+//! - `ExecuteMsg::ExecuteMultiHop` for native-offered routes (the user
+//!   attaches bluechip funds with the call)
+//! - `ExecuteMsg::Receive` for CW20-offered routes (the user calls
+//!   `cw20::Send` and the router decodes [`Cw20HookMsg`] from the body)
+//! - `ExecuteMsg::UpdateConfig` for admin rotation
+//! - Two internal variants (`ExecuteSwapOperation`, `AssertReceived`)
+//!   that the router invokes on itself; both reject any caller other
+//!   than the router contract address
+//! - `QueryMsg::SimulateMultiHop` for pre-trade UX
+//! - `QueryMsg::Config` for config reads
 
 use cosmwasm_schema::{cw_serde, QueryResponses};
 use cosmwasm_std::{Addr, Decimal, Timestamp, Uint128};
+use cw20::Cw20ReceiveMsg;
+use pool_factory_interfaces::asset::TokenType;
 use pool_factory_interfaces::routing::SwapOperation;
 
 /// Parameters for instantiating the router. The bluechip denom and
@@ -23,21 +32,16 @@ pub struct InstantiateMsg {
 /// Mutating entry points.
 #[cw_serde]
 pub enum ExecuteMsg {
-    /// Run a multi-hop swap. The caller supplies the entire route -- the
-    /// router does not perform on-chain pathfinding. Each hop's output is
-    /// fed into the next hop's input, and the final output must be at
-    /// least `minimum_receive` or the whole transaction reverts.
+    /// Run a multi-hop swap whose first hop offers the native bluechip
+    /// denom. The caller attaches the offer amount via `info.funds`.
+    /// The router does not perform on-chain pathfinding -- the caller
+    /// supplies the entire route.
     ExecuteMultiHop {
         operations: Vec<SwapOperation>,
         minimum_receive: Uint128,
-        /// Optional belief price passed through to every hop's swap call.
         belief_price: Option<Decimal>,
-        /// Optional max spread passed through to every hop's swap call.
         max_spread: Option<Decimal>,
-        /// Hard deadline; if `Some` and the block time has passed it,
-        /// the entire transaction is rejected before any swaps run.
         deadline: Option<Timestamp>,
-        /// Optional final recipient. Defaults to the message sender.
         recipient: Option<String>,
     },
     /// Admin-only configuration update. Both fields are optional so the
@@ -47,16 +51,58 @@ pub enum ExecuteMsg {
         admin: Option<String>,
         factory_addr: Option<String>,
     },
+    /// CW20 entry path: triggered when a user invokes `cw20::Send`
+    /// targeting the router with [`Cw20HookMsg::ExecuteMultiHop`] in the
+    /// body. Used when the first hop offers a creator token rather than
+    /// native bluechip.
+    Receive(Cw20ReceiveMsg),
+    /// Internal: invoked by the router on itself once per hop. Each
+    /// handler queries the router's current balance of the offer token
+    /// and dispatches the underlying pool swap. Rejected unless the
+    /// caller is the router contract.
+    ExecuteSwapOperation {
+        operation: SwapOperation,
+        hop_index: u32,
+        to: String,
+        belief_price: Option<Decimal>,
+        max_spread: Option<Decimal>,
+    },
+    /// Internal: final slippage assertion. Compares the recipient's
+    /// post-route balance against the captured pre-route balance plus
+    /// the minimum-receive threshold. Rejected unless the caller is the
+    /// router contract.
+    AssertReceived {
+        ask_info: TokenType,
+        recipient: String,
+        prev_balance: Uint128,
+        minimum_receive: Uint128,
+    },
+}
+
+/// Body of `cw20::Send.msg` accepted by the router.
+///
+/// Mirrors the field set of [`ExecuteMsg::ExecuteMultiHop`] because the
+/// only difference between the two entry paths is how the offer token
+/// arrives at the router.
+#[cw_serde]
+pub enum Cw20HookMsg {
+    ExecuteMultiHop {
+        operations: Vec<SwapOperation>,
+        minimum_receive: Uint128,
+        belief_price: Option<Decimal>,
+        max_spread: Option<Decimal>,
+        deadline: Option<Timestamp>,
+        recipient: Option<String>,
+    },
 }
 
 /// Read-only entry points.
 #[cw_serde]
 #[derive(QueryResponses)]
 pub enum QueryMsg {
-    /// Pre-trade simulation that mirrors the execution path. Critical for
-    /// frontend UX: lets users see the expected final amount, every
-    /// intermediate amount, and a coarse price-impact estimate before
-    /// signing a transaction.
+    /// Pre-trade simulation that mirrors the execution path. Lets a
+    /// frontend show the expected final amount, every intermediate
+    /// amount, and a coarse price-impact estimate before signing.
     #[returns(SimulateMultiHopResponse)]
     SimulateMultiHop {
         operations: Vec<SwapOperation>,
@@ -77,9 +123,8 @@ pub struct ConfigResponse {
 
 /// Response for [`QueryMsg::SimulateMultiHop`].
 ///
-/// `intermediate_amounts` contains the *output* of every hop in order, so
-/// `intermediate_amounts.last()` always equals `final_amount`. Frontends
-/// can use the per-hop values to render a route preview.
+/// `intermediate_amounts` contains the *output* of every hop in order,
+/// so `intermediate_amounts.last()` always equals `final_amount`.
 #[cw_serde]
 pub struct SimulateMultiHopResponse {
     pub final_amount: Uint128,

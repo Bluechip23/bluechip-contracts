@@ -1,18 +1,21 @@
 //! Router contract entry points.
 //!
-//! This module contains [`instantiate`], [`execute`], [`query`] and the
-//! handlers for the messages that are fully implemented in Phase 2:
-//! instantiate, [`ExecuteMsg::UpdateConfig`], and [`QueryMsg::Config`].
-//! Multi-hop execution and simulation are dispatched here but live in
-//! [`crate::execution`] and [`crate::simulation`] respectively.
+//! This module wires the external [`crate::msg`] surface to the
+//! handlers in [`crate::execution`] and [`crate::simulation`]. Only the
+//! `instantiate`, `UpdateConfig`, and `Config` query handlers live
+//! directly in this file -- everything else is delegated.
 
 use cosmwasm_std::{
-    entry_point, to_json_binary, Binary, Deps, DepsMut, Env, MessageInfo, Response, StdResult,
+    entry_point, to_json_binary, Binary, Deps, DepsMut, Env, MessageInfo, Reply, Response,
+    StdResult,
 };
 use cw2::set_contract_version;
 
 use crate::error::RouterError;
-use crate::execution::execute_multi_hop;
+use crate::execution::{
+    execute_assert_received, execute_multi_hop, execute_receive_cw20, execute_swap_operation,
+    handle_reply,
+};
 use crate::msg::{ConfigResponse, ExecuteMsg, InstantiateMsg, QueryMsg};
 use crate::simulation::simulate_multi_hop;
 use crate::state::{Config, CONFIG};
@@ -73,7 +76,43 @@ pub fn execute(
             admin,
             factory_addr,
         } => execute_update_config(deps, info, admin, factory_addr),
+        ExecuteMsg::Receive(cw20_msg) => execute_receive_cw20(deps, env, info, cw20_msg),
+        ExecuteMsg::ExecuteSwapOperation {
+            operation,
+            hop_index,
+            to,
+            belief_price,
+            max_spread,
+        } => execute_swap_operation(
+            deps,
+            env,
+            info,
+            operation,
+            hop_index,
+            to,
+            belief_price,
+            max_spread,
+        ),
+        ExecuteMsg::AssertReceived {
+            ask_info,
+            recipient,
+            prev_balance,
+            minimum_receive,
+        } => execute_assert_received(
+            deps,
+            env,
+            info,
+            ask_info,
+            recipient,
+            prev_balance,
+            minimum_receive,
+        ),
     }
+}
+
+#[cfg_attr(not(feature = "library"), entry_point)]
+pub fn reply(deps: DepsMut, env: Env, msg: Reply) -> Result<Response, RouterError> {
+    handle_reply(deps, env, msg)
 }
 
 fn execute_update_config(
