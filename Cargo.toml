@@ -5,6 +5,7 @@ members = [
     "factory",
     "mockoracle",
     "expand-economy",
+    "router",
 ]
 
 resolver = "2"
