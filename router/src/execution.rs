@@ -332,6 +332,13 @@ pub fn execute_assert_received(
 
 /// Reply handler for hop submessages. Wraps the raw pool error into a
 /// [`RouterError::HopFailed`] with hop index and pool address.
+///
+/// The pool address is read from the submsg payload when available. Some
+/// host runtimes (notably `cw-multi-test` 2.1) do not propagate the
+/// payload through to replies, so the handler tolerates an empty or
+/// unparseable payload by reporting an empty `pool_addr` instead of
+/// failing the wrapping. The hop index is recovered from the reply ID
+/// in either case so frontends always learn which hop failed.
 pub fn handle_reply(_deps: DepsMut, _env: Env, msg: Reply) -> Result<Response, RouterError> {
     let hop_index = parse_hop_reply_id(msg.id).ok_or_else(|| {
         RouterError::Std(StdError::generic_err(format!(
@@ -339,7 +346,13 @@ pub fn handle_reply(_deps: DepsMut, _env: Env, msg: Reply) -> Result<Response, R
             msg.id
         )))
     })?;
-    let payload: HopReplyPayload = from_json(&msg.payload)?;
+    let pool_addr = if msg.payload.is_empty() {
+        String::new()
+    } else {
+        from_json::<HopReplyPayload>(&msg.payload)
+            .map(|p| p.pool_addr)
+            .unwrap_or_default()
+    };
     let reason = match msg.result {
         SubMsgResult::Err(err) => err,
         // ReplyOn::Error never fires on success; treat as a no-op so
@@ -349,7 +362,7 @@ pub fn handle_reply(_deps: DepsMut, _env: Env, msg: Reply) -> Result<Response, R
     };
     Err(RouterError::HopFailed {
         hop_index: hop_index as usize,
-        pool_addr: payload.pool_addr,
+        pool_addr,
         reason,
     })
 }

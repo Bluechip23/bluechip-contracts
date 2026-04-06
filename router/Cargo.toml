@@ -19,3 +19,4 @@ thiserror = { workspace = true }
 
 [dev-dependencies]
 cw-multi-test = { workspace = true }
+cw20-base = { workspace = true }
