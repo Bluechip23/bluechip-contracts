@@ -3,6 +3,7 @@ use cosmwasm_std::{Addr, Uint128};
 
 pub mod asset;
 pub mod cw721_msgs;
+pub mod routing;
 
 #[cw_serde]
 pub enum PoolQueryMsg {
