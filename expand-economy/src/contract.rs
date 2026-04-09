@@ -155,9 +155,11 @@ pub fn execute_apply_config_update(
         return Err(ContractError::Unauthorized {});
     }
 
-    let pending = PENDING_CONFIG_UPDATE.may_load(deps.storage)?.ok_or_else(|| {
-        ContractError::Std(StdError::generic_err("No pending config update to execute"))
-    })?;
+    let pending = PENDING_CONFIG_UPDATE
+        .may_load(deps.storage)?
+        .ok_or_else(|| {
+            ContractError::Std(StdError::generic_err("No pending config update to execute"))
+        })?;
 
     if env.block.time < pending.effective_after {
         return Err(ContractError::Std(StdError::generic_err(format!(

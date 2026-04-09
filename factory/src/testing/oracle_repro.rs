@@ -72,11 +72,7 @@ fn test_repro_token_sort_order_bug() {
         assets: vec!["BC".to_string(), "atom_addr_123".to_string()],
     };
     POOLS_BY_CONTRACT_ADDRESS
-        .save(
-            deps.as_mut().storage,
-            atom_pool.clone(),
-            &atom_pool_state,
-        )
+        .save(deps.as_mut().storage, atom_pool.clone(), &atom_pool_state)
         .unwrap();
 
     // Calculate Price - Expected 1.0 (1_000_000 precision)
@@ -119,11 +115,7 @@ fn test_repro_token_sort_order_bug() {
         assets: vec!["atom_addr_123".to_string(), "BC".to_string()],
     };
     POOLS_BY_CONTRACT_ADDRESS
-        .save(
-            deps.as_mut().storage,
-            atom_pool.clone(),
-            &inverted_state,
-        )
+        .save(deps.as_mut().storage, atom_pool.clone(), &inverted_state)
         .unwrap();
 
     let (price_inverted, _, _) =

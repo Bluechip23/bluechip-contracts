@@ -1,5 +1,5 @@
 use cosmwasm_std::{
-    testing::{mock_dependencies, mock_env, message_info},
+    testing::{message_info, mock_dependencies, mock_env},
     Addr, Decimal,
 };
 

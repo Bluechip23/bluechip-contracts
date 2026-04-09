@@ -1,0 +1,42 @@
+# cargo-deny configuration
+# Run locally: cargo deny check
+# Docs: https://embarkstudios.github.io/cargo-deny/
+
+[advisories]
+# Deny any crate with a known security vulnerability
+vulnerability = "deny"
+# Warn on unmaintained crates
+unmaintained = "warn"
+# Warn on crates that have been yanked
+yanked = "warn"
+# Warn on crates with open notices (not necessarily vulnerabilities)
+notice = "warn"
+
+[licenses]
+# Allow common open source licenses used in the Cosmos ecosystem
+allow = [
+    "MIT",
+    "Apache-2.0",
+    "BSD-2-Clause",
+    "BSD-3-Clause",
+    "ISC",
+    "Unicode-3.0",
+    "Unicode-DFS-2016",
+    "Zlib",
+    "MPL-2.0",
+]
+# Confidence threshold for license detection
+confidence-threshold = 0.8
+
+[bans]
+# Warn on multiple versions of the same crate
+multiple-versions = "warn"
+# Warn if a crate shows up as both a normal and build dependency
+wildcards = "allow"
+
+[sources]
+# Ensure all crates come from crates.io
+unknown-registry = "deny"
+unknown-git = "warn"
+allow-registry = ["https://github.com/rust-lang/crates.io-index"]
+allow-git = []

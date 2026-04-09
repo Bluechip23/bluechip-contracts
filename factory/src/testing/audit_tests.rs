@@ -1,28 +1,25 @@
-
 use cosmwasm_std::testing::{
-    mock_env, message_info, MockApi, MockQuerier, MockStorage, MOCK_CONTRACT_ADDR,
+    message_info, mock_env, MockApi, MockQuerier, MockStorage, MOCK_CONTRACT_ADDR,
 };
-use cosmwasm_std::{
+use cosmwasm_std::{Addr, Coin, Decimal, Empty, OwnedDeps, Uint128};
 
-    Addr, Coin, Decimal, Empty, OwnedDeps, Uint128,
-
-};
-
-use crate::error::ContractError;
-use crate::execute::{execute, instantiate, pool_creation_reply, encode_reply_id, FINALIZE_POOL, MINT_CREATE_POOL, SET_TOKENS};
-use crate::internal_bluechip_price_oracle::{
-    calculate_weighted_price_with_atom,
-    PoolCumulativeSnapshot,
-};
 use crate::asset::TokenType;
+use crate::error::ContractError;
+use crate::execute::{
+    encode_reply_id, execute, instantiate, pool_creation_reply, FINALIZE_POOL, MINT_CREATE_POOL,
+    SET_TOKENS,
+};
+use crate::internal_bluechip_price_oracle::{
+    calculate_weighted_price_with_atom, PoolCumulativeSnapshot,
+};
 use crate::mock_querier::WasmMockQuerier;
 use crate::msg::{CreatorTokenInfo, ExecuteMsg};
 use crate::pool_struct::{CommitFeeInfo, CreatePool, PoolConfigUpdate, PoolDetails};
 use crate::state::{
-    FactoryInstantiate, PENDING_CONFIG, POOL_COUNTER, POOL_REGISTRY, POOL_THRESHOLD_MINTED,
-    POOLS_BY_CONTRACT_ADDRESS, POOLS_BY_ID, SETCOMMIT,
+    FactoryInstantiate, PENDING_CONFIG, POOLS_BY_CONTRACT_ADDRESS, POOLS_BY_ID, POOL_COUNTER,
+    POOL_REGISTRY, POOL_THRESHOLD_MINTED, SETCOMMIT,
 };
-use crate::testing::tests::{setup_atom_pool, create_instantiate_reply};
+use crate::testing::tests::{create_instantiate_reply, setup_atom_pool};
 use pool_factory_interfaces::PoolStateResponseForFactory;
 
 fn make_addr(label: &str) -> Addr {
@@ -71,9 +68,7 @@ fn default_factory_config() -> FactoryInstantiate {
     }
 }
 
-fn setup_factory(
-    deps: &mut OwnedDeps<MockStorage, MockApi, WasmMockQuerier>,
-) {
+fn setup_factory(deps: &mut OwnedDeps<MockStorage, MockApi, WasmMockQuerier>) {
     let config = default_factory_config();
     let env = mock_env();
     let info = message_info(&admin_addr(), &[]);
@@ -87,7 +82,9 @@ fn test_notify_threshold_crossed_unauthorized_caller() {
     setup_factory(&mut deps);
 
     // Register pool 1 at a specific address
-    POOL_REGISTRY.save(&mut deps.storage, 1, &Addr::unchecked("pool_contract_1")).unwrap();
+    POOL_REGISTRY
+        .save(&mut deps.storage, 1, &Addr::unchecked("pool_contract_1"))
+        .unwrap();
 
     let env = mock_env();
 
@@ -97,7 +94,8 @@ fn test_notify_threshold_crossed_unauthorized_caller() {
 
     let err = execute(deps.as_mut(), env, hacker_info, msg).unwrap_err();
     assert!(
-        err.to_string().contains("Only the registered pool contract"),
+        err.to_string()
+            .contains("Only the registered pool contract"),
         "Expected pool authorization error, got: {}",
         err
     );
@@ -105,16 +103,21 @@ fn test_notify_threshold_crossed_unauthorized_caller() {
 
 #[test]
 fn test_notify_threshold_crossed_double_call_prevention() {
-    let mut deps = mock_deps_with_querier(&[
-        Coin { denom: "ubluechip".to_string(), amount: Uint128::new(1_000_000_000_000) },
-    ]);
+    let mut deps = mock_deps_with_querier(&[Coin {
+        denom: "ubluechip".to_string(),
+        amount: Uint128::new(1_000_000_000_000),
+    }]);
     setup_factory(&mut deps);
 
     // Register pool 1
-    POOL_REGISTRY.save(&mut deps.storage, 1, &Addr::unchecked("pool_contract_1")).unwrap();
+    POOL_REGISTRY
+        .save(&mut deps.storage, 1, &Addr::unchecked("pool_contract_1"))
+        .unwrap();
 
     // Mark as already minted
-    POOL_THRESHOLD_MINTED.save(&mut deps.storage, 1, &true).unwrap();
+    POOL_THRESHOLD_MINTED
+        .save(&mut deps.storage, 1, &true)
+        .unwrap();
 
     let env = mock_env();
     let pool_info = message_info(&Addr::unchecked("pool_contract_1"), &[]);
@@ -167,7 +170,10 @@ fn test_cancel_config_update() {
     let cancel_msg = ExecuteMsg::CancelConfigUpdate {};
     let res = execute(deps.as_mut(), env, admin_info, cancel_msg).unwrap();
 
-    assert!(res.attributes.iter().any(|a| a.value == "cancel_config_update"));
+    assert!(res
+        .attributes
+        .iter()
+        .any(|a| a.value == "cancel_config_update"));
 
     // Pending config should be gone
     assert!(PENDING_CONFIG.may_load(&deps.storage).unwrap().is_none());
@@ -182,7 +188,9 @@ fn test_cancel_config_update_unauthorized() {
     let admin_info = message_info(&admin_addr(), &[]);
 
     // Propose
-    let propose_msg = ExecuteMsg::ProposeConfigUpdate { config: default_factory_config() };
+    let propose_msg = ExecuteMsg::ProposeConfigUpdate {
+        config: default_factory_config(),
+    };
     execute(deps.as_mut(), env.clone(), admin_info, propose_msg).unwrap();
 
     // Non-admin tries to cancel
@@ -191,7 +199,6 @@ fn test_cancel_config_update_unauthorized() {
     let err = execute(deps.as_mut(), env, hacker_info, cancel_msg).unwrap_err();
     assert!(err.to_string().contains("Only the admin"));
 }
-
 
 #[test]
 fn test_config_update_before_timelock_fails() {
@@ -202,12 +209,20 @@ fn test_config_update_before_timelock_fails() {
     let admin_info = message_info(&admin_addr(), &[]);
 
     // Propose config update
-    let propose_msg = ExecuteMsg::ProposeConfigUpdate { config: default_factory_config() };
+    let propose_msg = ExecuteMsg::ProposeConfigUpdate {
+        config: default_factory_config(),
+    };
     execute(deps.as_mut(), env.clone(), admin_info.clone(), propose_msg).unwrap();
 
     // Try to execute immediately (before 48h timelock)
     let update_msg = ExecuteMsg::UpdateConfig {};
-    let err = execute(deps.as_mut(), env.clone(), admin_info.clone(), update_msg.clone()).unwrap_err();
+    let err = execute(
+        deps.as_mut(),
+        env.clone(),
+        admin_info.clone(),
+        update_msg.clone(),
+    )
+    .unwrap_err();
 
     match err {
         ContractError::TimelockNotExpired { effective_after } => {
@@ -219,9 +234,11 @@ fn test_config_update_before_timelock_fails() {
     // Advance time past 48 hours
     env.block.time = env.block.time.plus_seconds(86400 * 2 + 1);
     let res = execute(deps.as_mut(), env, admin_info, update_msg).unwrap();
-    assert!(res.attributes.iter().any(|a| a.value == "execute_update_config"));
+    assert!(res
+        .attributes
+        .iter()
+        .any(|a| a.value == "execute_update_config"));
 }
-
 
 #[test]
 fn test_update_pool_config_sends_message_to_pool() {
@@ -229,7 +246,9 @@ fn test_update_pool_config_sends_message_to_pool() {
     setup_factory(&mut deps);
 
     // Register a pool
-    POOL_REGISTRY.save(&mut deps.storage, 1, &Addr::unchecked("pool_contract_1")).unwrap();
+    POOL_REGISTRY
+        .save(&mut deps.storage, 1, &Addr::unchecked("pool_contract_1"))
+        .unwrap();
 
     let env = mock_env();
     let admin_info = message_info(&admin_addr(), &[]);
@@ -248,7 +267,10 @@ fn test_update_pool_config_sends_message_to_pool() {
     };
     let res = execute(deps.as_mut(), env.clone(), admin_info.clone(), msg).unwrap();
     assert_eq!(res.messages.len(), 0);
-    assert!(res.attributes.iter().any(|a| a.key == "pool_id" && a.value == "1"));
+    assert!(res
+        .attributes
+        .iter()
+        .any(|a| a.key == "pool_id" && a.value == "1"));
 
     // Step 2: Execute after timelock — should send WasmMsg to pool
     let mut future_env = env;
@@ -256,7 +278,10 @@ fn test_update_pool_config_sends_message_to_pool() {
     let apply_msg = ExecuteMsg::ExecutePoolConfigUpdate { pool_id: 1 };
     let res = execute(deps.as_mut(), future_env, admin_info, apply_msg).unwrap();
     assert_eq!(res.messages.len(), 1);
-    assert!(res.attributes.iter().any(|a| a.key == "pool_id" && a.value == "1"));
+    assert!(res
+        .attributes
+        .iter()
+        .any(|a| a.key == "pool_id" && a.value == "1"));
 }
 
 #[test]
@@ -264,7 +289,9 @@ fn test_update_pool_config_unauthorized() {
     let mut deps = mock_deps_with_querier(&[]);
     setup_factory(&mut deps);
 
-    POOL_REGISTRY.save(&mut deps.storage, 1, &Addr::unchecked("pool_contract_1")).unwrap();
+    POOL_REGISTRY
+        .save(&mut deps.storage, 1, &Addr::unchecked("pool_contract_1"))
+        .unwrap();
 
     let env = mock_env();
     let hacker_info = message_info(&Addr::unchecked("hacker"), &[]);
@@ -308,7 +335,9 @@ fn test_update_pool_config_nonexistent_pool() {
 
     let err = execute(deps.as_mut(), env, admin_info, msg).unwrap_err();
     // Pool 99 not found in registry
-    assert!(err.to_string().contains("not found") || err.to_string().contains("type: cw_storage_plus"));
+    assert!(
+        err.to_string().contains("not found") || err.to_string().contains("type: cw_storage_plus")
+    );
 }
 
 #[test]
@@ -323,12 +352,18 @@ fn test_m_new_3_rotation_skips_pools_without_prior_snapshot() {
     let pool_details = PoolDetails {
         pool_id: 1,
         pool_token_info: [
-            TokenType::Bluechip { denom: "ubluechip".to_string() },
-            TokenType::CreatorToken { contract_addr: Addr::unchecked(&creator_addr) },
+            TokenType::Bluechip {
+                denom: "ubluechip".to_string(),
+            },
+            TokenType::CreatorToken {
+                contract_addr: Addr::unchecked(&creator_addr),
+            },
         ],
         creator_pool_addr: Addr::unchecked(&creator_addr),
     };
-    POOLS_BY_ID.save(&mut deps.storage, 1, &pool_details).unwrap();
+    POOLS_BY_ID
+        .save(&mut deps.storage, 1, &pool_details)
+        .unwrap();
 
     // Save pool state for the creator pool with enough liquidity
     let creator_pool_state = PoolStateResponseForFactory {
@@ -343,40 +378,49 @@ fn test_m_new_3_rotation_skips_pools_without_prior_snapshot() {
         assets: vec![],
     };
     POOLS_BY_CONTRACT_ADDRESS
-        .save(&mut deps.storage, Addr::unchecked(&creator_addr), &creator_pool_state)
+        .save(
+            &mut deps.storage,
+            Addr::unchecked(&creator_addr),
+            &creator_pool_state,
+        )
         .unwrap();
 
     let pool_addresses = vec![atom_addr.clone(), creator_addr.clone()];
 
     // Provide a previous snapshot ONLY for the atom pool (simulates rotation
     // where atom pool was retained but creator_pool is newly selected).
-    let prev_snapshots = vec![
-        PoolCumulativeSnapshot {
-            pool_address: atom_addr.clone(),
-            price0_cumulative: Uint128::new(50_000),
-            block_time: 500,
-        },
-    ];
+    let prev_snapshots = vec![PoolCumulativeSnapshot {
+        pool_address: atom_addr.clone(),
+        price0_cumulative: Uint128::new(50_000),
+        block_time: 500,
+    }];
 
-    let result = calculate_weighted_price_with_atom(
-        deps.as_ref(),
-        &pool_addresses,
-        &prev_snapshots,
-    );
+    let result =
+        calculate_weighted_price_with_atom(deps.as_ref(), &pool_addresses, &prev_snapshots);
 
     // Should succeed — atom pool has a snapshot and produces a price.
     // Creator pool should be skipped (not fall back to spot).
-    assert!(result.is_ok(), "Oracle should succeed with at least the atom pool: {:?}", result.err());
+    assert!(
+        result.is_ok(),
+        "Oracle should succeed with at least the atom pool: {:?}",
+        result.err()
+    );
 
     let (weighted_price, atom_price, new_snapshots) = result.unwrap();
 
     // Both pools should get new snapshots (for next update cycle)
-    assert_eq!(new_snapshots.len(), 2, "Both pools should record snapshots for next cycle");
+    assert_eq!(
+        new_snapshots.len(),
+        2,
+        "Both pools should record snapshots for next cycle"
+    );
 
     // The weighted price should come only from the atom pool (since creator
     // pool was skipped). This means weighted_price == atom_pool_price.
-    assert_eq!(weighted_price, atom_price,
-        "Price should come only from atom pool since creator pool had no prior snapshot");
+    assert_eq!(
+        weighted_price, atom_price,
+        "Price should come only from atom pool since creator pool had no prior snapshot"
+    );
 }
 
 /// When prev_snapshots is completely empty (bootstrap / first-ever update),
@@ -391,18 +435,26 @@ fn test_m_new_3_bootstrap_uses_spot_price_for_all() {
     let pool_addresses = vec![atom_addr.clone()];
     let prev_snapshots: Vec<PoolCumulativeSnapshot> = vec![];
 
-    let result = calculate_weighted_price_with_atom(
-        deps.as_ref(),
-        &pool_addresses,
-        &prev_snapshots,
-    );
+    let result =
+        calculate_weighted_price_with_atom(deps.as_ref(), &pool_addresses, &prev_snapshots);
 
     // Should succeed using spot price (bootstrap case)
-    assert!(result.is_ok(), "Bootstrap case should use spot price: {:?}", result.err());
+    assert!(
+        result.is_ok(),
+        "Bootstrap case should use spot price: {:?}",
+        result.err()
+    );
 
     let (weighted_price, _atom_price, new_snapshots) = result.unwrap();
-    assert!(!weighted_price.is_zero(), "Should produce a non-zero price from spot reserves");
-    assert_eq!(new_snapshots.len(), 1, "Should record snapshot for next cycle");
+    assert!(
+        !weighted_price.is_zero(),
+        "Should produce a non-zero price from spot reserves"
+    );
+    assert_eq!(
+        new_snapshots.len(),
+        1,
+        "Should record snapshot for next cycle"
+    );
 }
 
 #[test]
@@ -416,11 +468,17 @@ fn test_m_new_4_confidence_interval_threshold_arithmetic() {
     let conf: u64 = 49;
     let threshold = (price as u64) / 20;
     assert_eq!(threshold, 50);
-    assert!(conf <= threshold, "4.9% confidence should pass the 5% threshold");
+    assert!(
+        conf <= threshold,
+        "4.9% confidence should pass the 5% threshold"
+    );
 
     // Case 2: price = 1000, conf = 51 (5.1%) -> should FAIL
     let conf: u64 = 51;
-    assert!(conf > threshold, "5.1% confidence should fail the 5% threshold");
+    assert!(
+        conf > threshold,
+        "5.1% confidence should fail the 5% threshold"
+    );
 
     // Case 3: price = 1000, conf = 50 (exactly 5%) -> should PASS (<=)
     let conf: u64 = 50;
@@ -430,11 +488,17 @@ fn test_m_new_4_confidence_interval_threshold_arithmetic() {
     let price: i64 = 1_050_000_000;
     let conf: u64 = 60_000_000; // ~5.7% -> should FAIL
     let threshold = (price as u64) / 20; // 52_500_000
-    assert!(conf > threshold, "5.7% confidence on real Pyth price should fail");
+    assert!(
+        conf > threshold,
+        "5.7% confidence on real Pyth price should fail"
+    );
 
     // Case 5: tight confidence on real price
     let conf: u64 = 10_000_000; // ~0.95% -> should PASS
-    assert!(conf <= threshold, "~1% confidence on real Pyth price should pass");
+    assert!(
+        conf <= threshold,
+        "~1% confidence on real Pyth price should pass"
+    );
 }
 
 /// When the same creator creates two pools, both pool's CommitInfo entries
@@ -451,8 +515,12 @@ fn test_m_new_5_multi_pool_creator_no_setcommit_collision() {
     let create_msg_1 = ExecuteMsg::Create {
         pool_msg: CreatePool {
             pool_token_info: [
-                TokenType::Bluechip { denom: "ubluechip".to_string() },
-                TokenType::CreatorToken { contract_addr: Addr::unchecked("WILL_BE_CREATED") },
+                TokenType::Bluechip {
+                    denom: "ubluechip".to_string(),
+                },
+                TokenType::CreatorToken {
+                    contract_addr: Addr::unchecked("WILL_BE_CREATED"),
+                },
             ],
             factory_to_create_pool_addr: Addr::unchecked("factory"),
             cw20_token_contract_id: 10,
@@ -484,13 +552,16 @@ fn test_m_new_5_multi_pool_creator_no_setcommit_collision() {
 
     // Complete the reply chain for pool 1
     let token_1 = make_addr("token_addr_1");
-    let token_reply = create_instantiate_reply(encode_reply_id(pool_id_1, SET_TOKENS), token_1.as_str());
+    let token_reply =
+        create_instantiate_reply(encode_reply_id(pool_id_1, SET_TOKENS), token_1.as_str());
     pool_creation_reply(deps.as_mut(), env.clone(), token_reply).unwrap();
     let nft_1 = make_addr("nft_addr_1");
-    let nft_reply = create_instantiate_reply(encode_reply_id(pool_id_1, MINT_CREATE_POOL), nft_1.as_str());
+    let nft_reply =
+        create_instantiate_reply(encode_reply_id(pool_id_1, MINT_CREATE_POOL), nft_1.as_str());
     pool_creation_reply(deps.as_mut(), env.clone(), nft_reply).unwrap();
     let pool_1 = make_addr("pool_addr_1");
-    let pool_reply = create_instantiate_reply(encode_reply_id(pool_id_1, FINALIZE_POOL), pool_1.as_str());
+    let pool_reply =
+        create_instantiate_reply(encode_reply_id(pool_id_1, FINALIZE_POOL), pool_1.as_str());
     pool_creation_reply(deps.as_mut(), env.clone(), pool_reply).unwrap();
 
     // Verify pool 1 commit info
@@ -502,8 +573,12 @@ fn test_m_new_5_multi_pool_creator_no_setcommit_collision() {
     let create_msg_2 = ExecuteMsg::Create {
         pool_msg: CreatePool {
             pool_token_info: [
-                TokenType::Bluechip { denom: "ubluechip".to_string() },
-                TokenType::CreatorToken { contract_addr: Addr::unchecked("WILL_BE_CREATED") },
+                TokenType::Bluechip {
+                    denom: "ubluechip".to_string(),
+                },
+                TokenType::CreatorToken {
+                    contract_addr: Addr::unchecked("WILL_BE_CREATED"),
+                },
             ],
             factory_to_create_pool_addr: Addr::unchecked("factory"),
             cw20_token_contract_id: 10,
@@ -536,13 +611,16 @@ fn test_m_new_5_multi_pool_creator_no_setcommit_collision() {
 
     // Complete the reply chain for pool 2
     let token_2 = make_addr("token_addr_2");
-    let token_reply = create_instantiate_reply(encode_reply_id(pool_id_2, SET_TOKENS), token_2.as_str());
+    let token_reply =
+        create_instantiate_reply(encode_reply_id(pool_id_2, SET_TOKENS), token_2.as_str());
     pool_creation_reply(deps.as_mut(), env.clone(), token_reply).unwrap();
     let nft_2 = make_addr("nft_addr_2");
-    let nft_reply = create_instantiate_reply(encode_reply_id(pool_id_2, MINT_CREATE_POOL), nft_2.as_str());
+    let nft_reply =
+        create_instantiate_reply(encode_reply_id(pool_id_2, MINT_CREATE_POOL), nft_2.as_str());
     pool_creation_reply(deps.as_mut(), env.clone(), nft_reply).unwrap();
     let pool_2 = make_addr("pool_addr_2");
-    let pool_reply = create_instantiate_reply(encode_reply_id(pool_id_2, FINALIZE_POOL), pool_2.as_str());
+    let pool_reply =
+        create_instantiate_reply(encode_reply_id(pool_id_2, FINALIZE_POOL), pool_2.as_str());
     pool_creation_reply(deps.as_mut(), env.clone(), pool_reply).unwrap();
 
     // Verify pool 2 commit info
@@ -553,10 +631,14 @@ fn test_m_new_5_multi_pool_creator_no_setcommit_collision() {
     // KEY ASSERTION: Pool 1's commit info should still be intact
     // (This would fail with the old creator-address key, as pool 2 would overwrite pool 1)
     let commit_1_after = SETCOMMIT.load(&deps.storage, pool_id_1).unwrap();
-    assert_eq!(commit_1_after.pool_id, pool_id_1,
-        "Pool 1 commit info should not be overwritten by pool 2");
-    assert_eq!(commit_1_after.creator_pool_addr, pool_1,
-        "Pool 1 pool address should still be pool_addr_1, not pool_addr_2");
+    assert_eq!(
+        commit_1_after.pool_id, pool_id_1,
+        "Pool 1 commit info should not be overwritten by pool 2"
+    );
+    assert_eq!(
+        commit_1_after.creator_pool_addr, pool_1,
+        "Pool 1 pool address should still be pool_addr_1, not pool_addr_2"
+    );
 }
 
 #[test]
@@ -566,8 +648,10 @@ fn test_l_new_8_factory_migration_contract_name() {
 
     // After instantiate, cw2 should be set
     let version_info = cw2::get_contract_version(&deps.storage).unwrap();
-    assert_eq!(version_info.contract, "crates.io:bluechip-factory",
-        "Instantiate should set contract name to crates.io:bluechip-factory");
+    assert_eq!(
+        version_info.contract, "crates.io:bluechip-factory",
+        "Instantiate should set contract name to crates.io:bluechip-factory"
+    );
 
     // Simulate migration (set version to older to allow migration)
     cw2::set_contract_version(&mut deps.storage, "crates.io:bluechip-factory", "0.1.0").unwrap();
@@ -578,7 +662,8 @@ fn test_l_new_8_factory_migration_contract_name() {
 
     // After migration, contract name should still be "crates.io:bluechip-factory"
     let version_info = cw2::get_contract_version(&deps.storage).unwrap();
-    assert_eq!(version_info.contract, "crates.io:bluechip-factory",
-        "Migration should maintain the same contract name");
+    assert_eq!(
+        version_info.contract, "crates.io:bluechip-factory",
+        "Migration should maintain the same contract name"
+    );
 }
-

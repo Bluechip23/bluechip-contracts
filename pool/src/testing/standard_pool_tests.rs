@@ -4,7 +4,7 @@ use crate::error::ContractError;
 use crate::msg::{CommitFeeInfo, ExecuteMsg, PoolInstantiateMsg};
 use crate::state::IS_THRESHOLD_HIT;
 use cosmwasm_std::{
-    testing::{mock_dependencies, mock_env, message_info, MockApi},
+    testing::{message_info, mock_dependencies, mock_env, MockApi},
     Addr, Coin, Decimal, Uint128,
 };
 
@@ -86,7 +86,8 @@ fn test_standard_pool_immediate_swap_and_deposit() {
     instantiate(deps.as_mut(), env.clone(), info, msg).unwrap();
 
     // Try a swap (should NOT return ShortOfThreshold error, but might return InsufficientLiquidity if reserves are 0)
-    let swap_info = message_info(&Addr::unchecked("trader"),
+    let swap_info = message_info(
+        &Addr::unchecked("trader"),
         &[Coin {
             denom: "ubluechip".to_string(),
             amount: Uint128::new(1000),
@@ -109,7 +110,8 @@ fn test_standard_pool_immediate_swap_and_deposit() {
     // It should be InsufficientReserves, NOT ShortOfThreshold
     assert_eq!(err, ContractError::InsufficientReserves {});
 
-    let deposit_info = message_info(&Addr::unchecked("provider"),
+    let deposit_info = message_info(
+        &Addr::unchecked("provider"),
         &[Coin {
             denom: "ubluechip".to_string(),
             amount: Uint128::new(100_000),

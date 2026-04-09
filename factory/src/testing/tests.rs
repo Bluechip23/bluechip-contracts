@@ -22,7 +22,7 @@ use crate::internal_bluechip_price_oracle::{
 use crate::mock_querier::{mock_dependencies, WasmMockQuerier};
 use crate::msg::{CreatorTokenInfo, ExecuteMsg};
 use crate::pool_struct::{CommitFeeInfo, CreatePool, PoolDetails, TempPoolCreation};
-use cosmwasm_std::testing::{mock_env, message_info, MockApi, MockStorage};
+use cosmwasm_std::testing::{message_info, mock_env, MockApi, MockStorage};
 use pool_factory_interfaces::PoolStateResponseForFactory;
 
 fn atom_bluechip_pool_addr() -> Addr {
@@ -74,8 +74,8 @@ pub fn setup_atom_pool(deps: &mut OwnedDeps<MockStorage, MockApi, WasmMockQuerie
     let atom_pool_state = PoolStateResponseForFactory {
         pool_contract_address: atom_pool_addr.clone(),
         nft_ownership_accepted: true,
-        reserve0: Uint128::new(1_000_000_000_000), 
-        reserve1: Uint128::new(100_000_000_000),   
+        reserve0: Uint128::new(1_000_000_000_000),
+        reserve1: Uint128::new(100_000_000_000),
         total_liquidity: Uint128::new(100_000_000),
         block_time_last: 0,
         price0_cumulative_last: Uint128::zero(),
@@ -439,15 +439,20 @@ fn simulate_complete_reply_chain(
     pool_id: u64,
 ) {
     let token_addr = make_addr(&format!("token_address_{}", pool_id));
-    let token_reply = create_instantiate_reply(encode_reply_id(pool_id, SET_TOKENS), token_addr.as_str());
+    let token_reply =
+        create_instantiate_reply(encode_reply_id(pool_id, SET_TOKENS), token_addr.as_str());
     pool_creation_reply(deps.as_mut(), env.clone(), token_reply).unwrap();
 
     let nft_addr = make_addr(&format!("nft_address_{}", pool_id));
-    let nft_reply = create_instantiate_reply(encode_reply_id(pool_id, MINT_CREATE_POOL), nft_addr.as_str());
+    let nft_reply = create_instantiate_reply(
+        encode_reply_id(pool_id, MINT_CREATE_POOL),
+        nft_addr.as_str(),
+    );
     pool_creation_reply(deps.as_mut(), env.clone(), nft_reply).unwrap();
 
     let pool_addr = make_addr(&format!("pool_address_{}", pool_id));
-    let pool_reply = create_instantiate_reply(encode_reply_id(pool_id, FINALIZE_POOL), pool_addr.as_str());
+    let pool_reply =
+        create_instantiate_reply(encode_reply_id(pool_id, FINALIZE_POOL), pool_addr.as_str());
     pool_creation_reply(deps.as_mut(), env.clone(), pool_reply).unwrap();
 }
 
@@ -638,15 +643,13 @@ fn test_complete_pool_creation_flow() {
     assert!(pool_context.nft_addr.is_none());
 
     let token_addr = make_addr("token_address");
-    let token_reply = create_instantiate_reply(encode_reply_id(pool_id, SET_TOKENS), token_addr.as_str());
+    let token_reply =
+        create_instantiate_reply(encode_reply_id(pool_id, SET_TOKENS), token_addr.as_str());
     let res = pool_creation_reply(deps.as_mut(), env.clone(), token_reply).unwrap();
 
     // Reload context and check token was set
     let pool_context = TEMP_POOL_CREATION.load(&deps.storage, pool_id).unwrap();
-    assert_eq!(
-        pool_context.creator_token_addr,
-        Some(token_addr.clone())
-    );
+    assert_eq!(pool_context.creator_token_addr, Some(token_addr.clone()));
     assert_eq!(res.messages.len(), 1);
 
     let updated_state = POOL_CREATION_STATES.load(&deps.storage, pool_id).unwrap();
@@ -658,7 +661,10 @@ fn test_complete_pool_creation_flow() {
 
     // Step 2: NFT Creation Reply
     let nft_addr = make_addr("nft_address");
-    let nft_reply = create_instantiate_reply(encode_reply_id(pool_id, MINT_CREATE_POOL), nft_addr.as_str());
+    let nft_reply = create_instantiate_reply(
+        encode_reply_id(pool_id, MINT_CREATE_POOL),
+        nft_addr.as_str(),
+    );
     let res = pool_creation_reply(deps.as_mut(), env.clone(), nft_reply).unwrap();
 
     let pool_context = TEMP_POOL_CREATION.load(&deps.storage, pool_id).unwrap();
@@ -674,30 +680,22 @@ fn test_complete_pool_creation_flow() {
 
     // Step 3: Pool Finalization Reply
     let pool_addr = make_addr("pool_address");
-    let pool_reply = create_instantiate_reply(encode_reply_id(pool_id, FINALIZE_POOL), pool_addr.as_str());
+    let pool_reply =
+        create_instantiate_reply(encode_reply_id(pool_id, FINALIZE_POOL), pool_addr.as_str());
     let res = pool_creation_reply(deps.as_mut(), env.clone(), pool_reply).unwrap();
 
     let commit_info = SETCOMMIT.load(&deps.storage, pool_id).unwrap();
     assert_eq!(commit_info.pool_id, pool_id);
-    assert_eq!(
-        commit_info.creator_pool_addr,
-        pool_addr.clone()
-    );
+    assert_eq!(commit_info.creator_pool_addr, pool_addr.clone());
 
     let pool_by_id = POOLS_BY_ID.load(&deps.storage, pool_id).unwrap();
-    assert_eq!(
-        pool_by_id.creator_pool_addr,
-        pool_addr.clone()
-    );
+    assert_eq!(pool_by_id.creator_pool_addr, pool_addr.clone());
 
     assert!(TEMP_POOL_CREATION.load(&deps.storage, pool_id).is_err());
 
     let final_state = POOL_CREATION_STATES.load(&deps.storage, pool_id).unwrap();
     assert_eq!(final_state.status, CreationStatus::Completed);
-    assert_eq!(
-        final_state.pool_address,
-        Some(pool_addr)
-    );
+    assert_eq!(final_state.pool_address, Some(pool_addr));
 
     assert_eq!(res.messages.len(), 2);
 }
@@ -876,7 +874,9 @@ fn test_reply_handling() {
         Some(Addr::unchecked(contract_addr))
     );
 
-    let updated_context = TEMP_POOL_CREATION.load(deps.as_ref().storage, pool_id).unwrap();
+    let updated_context = TEMP_POOL_CREATION
+        .load(deps.as_ref().storage, pool_id)
+        .unwrap();
     assert_eq!(
         updated_context.creator_token_addr,
         Some(Addr::unchecked(contract_addr))
@@ -1997,7 +1997,10 @@ fn test_bluechip_minting_on_threshold_crossing() {
     let notify_msg2 = ExecuteMsg::NotifyThresholdCrossed { pool_id: 1 };
     let pool_info2 = message_info(&pool_addr, &[]);
     let err = execute(deps.as_mut(), env.clone(), pool_info2, notify_msg2);
-    assert!(err.is_err(), "Should reject duplicate threshold notification");
+    assert!(
+        err.is_err(),
+        "Should reject duplicate threshold notification"
+    );
 
     // Verify pool counter incremented correctly
     let pool_count = POOL_COUNTER.load(&deps.storage).unwrap();
@@ -2027,7 +2030,13 @@ fn test_no_mint_when_amount_is_zero() {
     };
 
     let env = mock_env();
-    instantiate(deps.as_mut(), env.clone(), message_info(&admin_addr(), &[]), msg).unwrap();
+    instantiate(
+        deps.as_mut(),
+        env.clone(),
+        message_info(&admin_addr(), &[]),
+        msg,
+    )
+    .unwrap();
 
     POOL_COUNTER
         .save(&mut deps.storage, &10_000_000_000_000)

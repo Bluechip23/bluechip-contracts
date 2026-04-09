@@ -17,7 +17,7 @@ version = "1.0.0"
 optimize = """docker run --rm -v "$(pwd)":/home/sweetdream/Work/coswasm/bluechip-contracts \
   --mount type=volume,source="$(basename "$(pwd)")_cache",target=/target \
   --mount type=volume,source=registry_cache,target=/usr/local/cargo/registry \
-  cosmwasm/optimizer:0.15.0 ./pool
+  cosmwasm/optimizer:0.16.0 ./pool
 """
 
 [workspace.dependencies]

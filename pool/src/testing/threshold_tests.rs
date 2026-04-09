@@ -3,9 +3,8 @@ use crate::error::ContractError;
 use crate::msg::{CommitFeeInfo, ExecuteMsg};
 use crate::state::{
     CommitLimitInfo, CreatorExcessLiquidity, DistributionState, ExpectedFactory, RecoveryType,
-    COMMITFEEINFO, COMMIT_INFO, COMMIT_LEDGER, COMMIT_LIMIT_INFO,
-    CREATOR_EXCESS_POSITION, DISTRIBUTION_STATE, EXPECTED_FACTORY, IS_THRESHOLD_HIT,
-    LAST_THRESHOLD_ATTEMPT, POOL_STATE,
+    COMMITFEEINFO, COMMIT_INFO, COMMIT_LEDGER, COMMIT_LIMIT_INFO, CREATOR_EXCESS_POSITION,
+    DISTRIBUTION_STATE, EXPECTED_FACTORY, IS_THRESHOLD_HIT, LAST_THRESHOLD_ATTEMPT, POOL_STATE,
     THRESHOLD_PROCESSING, USD_RAISED_FROM_COMMIT,
 };
 use crate::testing::swap_tests::with_factory_oracle;
@@ -19,7 +18,7 @@ use cosmwasm_std::{
 };
 use cosmwasm_std::{
     from_json,
-    testing::{mock_dependencies, mock_env, message_info},
+    testing::{message_info, mock_dependencies, mock_env},
     to_json_binary, Addr, ContractResult, CosmosMsg, SystemResult, Uint128, WasmMsg,
 };
 use pool_factory_interfaces::ConversionResponse;
@@ -79,7 +78,10 @@ fn test_threshold_with_excess_creates_position() {
         }),
     });
     let env = mock_env();
-    let info = message_info(&Addr::unchecked("final_committer"), &[coin(100_000_000_000_000, "ubluechip")]);
+    let info = message_info(
+        &Addr::unchecked("final_committer"),
+        &[coin(100_000_000_000_000, "ubluechip")],
+    );
 
     let msg = ExecuteMsg::Commit {
         asset: TokenInfo {
@@ -292,7 +294,10 @@ fn test_no_excess_when_under_cap() {
     });
 
     let env = mock_env();
-    let info = message_info(&Addr::unchecked("final_committer"), &[coin(100_000_000, "ubluechip")]);
+    let info = message_info(
+        &Addr::unchecked("final_committer"),
+        &[coin(100_000_000, "ubluechip")],
+    );
 
     let msg = ExecuteMsg::Commit {
         asset: TokenInfo {
@@ -348,7 +353,8 @@ fn test_commit_threshold_overshoot_split() {
 
     let commit_amount = Uint128::new(5_000_000);
 
-    let info = message_info(&Addr::unchecked("whale"),
+    let info = message_info(
+        &Addr::unchecked("whale"),
         &[Coin {
             denom: "ubluechip".to_string(),
             amount: commit_amount,
@@ -438,7 +444,10 @@ fn test_commit_threshold_overshoot_split() {
         "Threshold-crosser's entry should remain in ledger pending batched distribution"
     );
     assert!(
-        DISTRIBUTION_STATE.may_load(&deps.storage).unwrap().is_some(),
+        DISTRIBUTION_STATE
+            .may_load(&deps.storage)
+            .unwrap()
+            .is_some(),
         "Distribution state should be initialized for batched payout"
     );
 
@@ -527,7 +536,8 @@ fn test_commit_exact_threshold() {
 
     let commit_amount = Uint128::new(1_000_000);
 
-    let info = message_info(&Addr::unchecked("user"),
+    let info = message_info(
+        &Addr::unchecked("user"),
         &[Coin {
             denom: "ubluechip".to_string(),
             amount: commit_amount,
@@ -628,7 +638,8 @@ fn test_concurrent_threshold_crossing_attempts() {
         .unwrap();
 
     // Second user tries to commit while first is processing
-    let info2 = message_info(&Addr::unchecked("user2"),
+    let info2 = message_info(
+        &Addr::unchecked("user2"),
         &[Coin {
             denom: "ubluechip".to_string(),
             amount: Uint128::new(2_000_000),
@@ -761,7 +772,7 @@ fn test_accumulated_bluechips_respected() {
             let response = ConversionResponse {
                 amount: Uint128::new(2_000_000_000), // 000 = 2000 bluechips
                 rate_used: Uint128::new(500_000),    // /bin/bash.50
-                timestamp: 1571797419u64, // matches mock_env block time
+                timestamp: 1571797419u64,            // matches mock_env block time
             };
             SystemResult::Ok(ContractResult::Ok(to_json_binary(&response).unwrap()))
         }
@@ -773,7 +784,10 @@ fn test_accumulated_bluechips_respected() {
 
     let env = mock_env();
     // Commit remaining ,000 (requires 2,000 bluechips at /bin/bash.50)
-    let info = message_info(&Addr::unchecked("final_committer"), &[coin(2_000_000_000, "ubluechip")]);
+    let info = message_info(
+        &Addr::unchecked("final_committer"),
+        &[coin(2_000_000_000, "ubluechip")],
+    );
 
     let msg = ExecuteMsg::Commit {
         asset: TokenInfo {
@@ -838,7 +852,8 @@ fn test_concurrent_threshold_crossing_race_condition() {
     with_factory_oracle(&mut deps, Uint128::new(1_000_000));
 
     // User 1 commits enough to cross
-    let info1 = message_info(&Addr::unchecked("user1"),
+    let info1 = message_info(
+        &Addr::unchecked("user1"),
         &[Coin {
             denom: "ubluechip".to_string(),
             amount: Uint128::new(2_000_000),
@@ -858,7 +873,8 @@ fn test_concurrent_threshold_crossing_race_condition() {
     };
 
     // User 2 commits enough to cross (simulating same block execution)
-    let info2 = message_info(&Addr::unchecked("user2"),
+    let info2 = message_info(
+        &Addr::unchecked("user2"),
         &[Coin {
             denom: "ubluechip".to_string(),
             amount: Uint128::new(2_000_000),

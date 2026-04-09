@@ -7,9 +7,7 @@ use pool_factory_interfaces::cw721_msgs::{Action, Cw721ExecuteMsg};
 
 use crate::error::ContractError;
 use crate::execute::{encode_reply_id, BURN_ADDRESS, CLEANUP_NFT_STEP, CLEANUP_TOKEN_STEP};
-use crate::state::{
-    CreationStatus, PoolCreationState, POOL_CREATION_STATES, TEMP_POOL_CREATION,
-};
+use crate::state::{CreationStatus, PoolCreationState, POOL_CREATION_STATES, TEMP_POOL_CREATION};
 
 pub fn cleanup_temp_state(storage: &mut dyn Storage, pool_id: u64) -> StdResult<()> {
     TEMP_POOL_CREATION.remove(storage, pool_id);
@@ -27,7 +25,10 @@ pub fn create_cleanup_messages(
             msg: to_json_binary(&Cw20ExecuteMsg::UpdateMinter { new_minter: None })?,
             funds: vec![],
         };
-        let sub_msg: SubMsg = SubMsg::reply_always(disable_token_msg, encode_reply_id(pool_id, CLEANUP_TOKEN_STEP));
+        let sub_msg: SubMsg = SubMsg::reply_always(
+            disable_token_msg,
+            encode_reply_id(pool_id, CLEANUP_TOKEN_STEP),
+        );
         messages.push(sub_msg);
     }
     if let Some(nft_addr) = &creation_state.mint_new_position_nft_address {
@@ -41,7 +42,8 @@ pub fn create_cleanup_messages(
             ))?,
             funds: vec![],
         };
-        let sub_msg: SubMsg = SubMsg::reply_always(disable_nft_msg, encode_reply_id(pool_id, CLEANUP_NFT_STEP));
+        let sub_msg: SubMsg =
+            SubMsg::reply_always(disable_nft_msg, encode_reply_id(pool_id, CLEANUP_NFT_STEP));
         messages.push(sub_msg);
     }
 
@@ -73,7 +75,10 @@ pub fn handle_cleanup_reply(
     }
 }
 
-pub fn extract_contract_address(deps: &DepsMut, result: &SubMsgResponse) -> Result<Addr, ContractError> {
+pub fn extract_contract_address(
+    deps: &DepsMut,
+    result: &SubMsgResponse,
+) -> Result<Addr, ContractError> {
     let addr_str = result
         .events
         .iter()

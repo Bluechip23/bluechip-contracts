@@ -80,29 +80,38 @@ pub fn select_random_pools_with_atom(
         return Ok(all_pools);
     }
 
-    let oracle_state = INTERNAL_ORACLE.may_load(deps.storage)?.unwrap_or_else(|| {
-        BlueChipPriceInternalOracle {
-            selected_pools: vec![],
-            atom_pool_contract_address: factory_config.atom_bluechip_anchor_pool_address.clone(),
-            last_rotation: 0,
-            rotation_interval: ROTATION_INTERVAL,
-            pool_cumulative_snapshots: vec![],
-            bluechip_price_cache: PriceCache {
-                last_price: Uint128::zero(),
-                last_update: 0,
-                twap_observations: vec![],
-                cached_pyth_price: Uint128::zero(),
-                cached_pyth_timestamp: 0,
-            },
-            update_interval: UPDATE_INTERVAL,
-        }
-    });
+    let oracle_state =
+        INTERNAL_ORACLE
+            .may_load(deps.storage)?
+            .unwrap_or_else(|| BlueChipPriceInternalOracle {
+                selected_pools: vec![],
+                atom_pool_contract_address: factory_config
+                    .atom_bluechip_anchor_pool_address
+                    .clone(),
+                last_rotation: 0,
+                rotation_interval: ROTATION_INTERVAL,
+                pool_cumulative_snapshots: vec![],
+                bluechip_price_cache: PriceCache {
+                    last_price: Uint128::zero(),
+                    last_update: 0,
+                    twap_observations: vec![],
+                    cached_pyth_price: Uint128::zero(),
+                    cached_pyth_timestamp: 0,
+                },
+                update_interval: UPDATE_INTERVAL,
+            });
     let mut hasher = Sha256::new();
     hasher.update(env.block.time.seconds().to_be_bytes());
     hasher.update(env.block.height.to_be_bytes());
     hasher.update(env.block.chain_id.as_bytes());
     // Unpredictable at block-production time: determined by previous oracle update
-    hasher.update(oracle_state.bluechip_price_cache.last_price.u128().to_be_bytes());
+    hasher.update(
+        oracle_state
+            .bluechip_price_cache
+            .last_price
+            .u128()
+            .to_be_bytes(),
+    );
     hasher.update(oracle_state.bluechip_price_cache.last_update.to_be_bytes());
     hasher.update((oracle_state.bluechip_price_cache.twap_observations.len() as u64).to_be_bytes());
     let hash = hasher.finalize();
@@ -220,15 +229,20 @@ pub fn get_eligible_creator_pools(
 pub fn update_internal_oracle_price(deps: DepsMut, env: Env) -> Result<Response, ContractError> {
     let mut oracle = INTERNAL_ORACLE.load(deps.storage)?;
     let current_time = env.block.time.seconds();
-    let next_update = oracle.bluechip_price_cache.last_update.saturating_add(oracle.update_interval);
+    let next_update = oracle
+        .bluechip_price_cache
+        .last_update
+        .saturating_add(oracle.update_interval);
     if current_time < next_update {
-        return Err(ContractError::UpdateTooSoon {
-            next_update,
-        });
+        return Err(ContractError::UpdateTooSoon { next_update });
     }
 
     let mut pools_to_use = oracle.selected_pools.clone();
-    if current_time >= oracle.last_rotation.saturating_add(oracle.rotation_interval) {
+    if current_time
+        >= oracle
+            .last_rotation
+            .saturating_add(oracle.rotation_interval)
+    {
         pools_to_use =
             select_random_pools_with_atom(deps.as_ref(), env.clone(), ORACLE_POOL_COUNT)?;
         oracle.selected_pools = pools_to_use.clone();
@@ -238,12 +252,11 @@ pub fn update_internal_oracle_price(deps: DepsMut, env: Env) -> Result<Response,
             .pool_cumulative_snapshots
             .retain(|s| pools_to_use.contains(&s.pool_address));
     }
-    let (weighted_price, atom_price, new_snapshots) =
-        calculate_weighted_price_with_atom(
-            deps.as_ref(),
-            &pools_to_use,
-            &oracle.pool_cumulative_snapshots,
-        )?;
+    let (weighted_price, atom_price, new_snapshots) = calculate_weighted_price_with_atom(
+        deps.as_ref(),
+        &pools_to_use,
+        &oracle.pool_cumulative_snapshots,
+    )?;
     oracle.pool_cumulative_snapshots = new_snapshots;
     oracle
         .bluechip_price_cache
@@ -263,7 +276,7 @@ pub fn update_internal_oracle_price(deps: DepsMut, env: Env) -> Result<Response,
     oracle.bluechip_price_cache.last_price = twap_price;
     oracle.bluechip_price_cache.last_update = current_time;
 
-    // Cache the Pyth ATOM/USD price alongside the TWAP update 
+    // Cache the Pyth ATOM/USD price alongside the TWAP update
     if let Ok(pyth_price) = query_pyth_atom_usd_price(deps.as_ref(), env) {
         oracle.bluechip_price_cache.cached_pyth_price = pyth_price;
         oracle.bluechip_price_cache.cached_pyth_timestamp = current_time;
@@ -313,10 +326,16 @@ pub fn calculate_weighted_price_with_atom(
                 // Determine if Bluechip is reserve0 or reserve1 by looking up the
                 let is_bluechip_second = {
                     let mut found = false;
-                    for (_id, pool_details) in POOLS_BY_ID.range(deps.storage, None, None, Order::Ascending).flatten() {
+                    for (_id, pool_details) in POOLS_BY_ID
+                        .range(deps.storage, None, None, Order::Ascending)
+                        .flatten()
+                    {
                         if pool_details.creator_pool_addr.as_str() == pool_address.as_str() {
                             // asset_infos[0] is CreatorToken => bluechip is second (index 1)
-                            found = matches!(pool_details.pool_token_info[0], TokenType::CreatorToken { .. });
+                            found = matches!(
+                                pool_details.pool_token_info[0],
+                                TokenType::CreatorToken { .. }
+                            );
                             break;
                         }
                     }
@@ -387,9 +406,7 @@ pub fn calculate_weighted_price_with_atom(
                     // ATOM pool gets 2x weight
                     bluechip_reserve
                         .checked_mul(Uint128::from(2u128))
-                        .map_err(|_| {
-                            ContractError::Std(StdError::generic_err("Weight overflow"))
-                        })?
+                        .map_err(|_| ContractError::Std(StdError::generic_err("Weight overflow")))?
                 } else {
                     bluechip_reserve
                 };
@@ -399,14 +416,10 @@ pub fn calculate_weighted_price_with_atom(
                         Uint256::from(price)
                             .checked_mul(Uint256::from(liquidity_weight))
                             .map_err(|_| {
-                                ContractError::Std(StdError::generic_err(
-                                    "Weighted sum overflow",
-                                ))
+                                ContractError::Std(StdError::generic_err("Weighted sum overflow"))
                             })?,
                     )
-                    .map_err(|_| {
-                        ContractError::Std(StdError::generic_err("Sum overflow"))
-                    })?;
+                    .map_err(|_| ContractError::Std(StdError::generic_err("Sum overflow")))?;
 
                 total_weight = total_weight
                     .checked_add(Uint256::from(liquidity_weight))
@@ -460,29 +473,40 @@ pub fn calculate_twap(observations: &[PriceObservation]) -> Result<Uint128, Cont
     let mut total_time = 0u64;
 
     for i in 1..observations.len() {
-        let time_delta = observations[i].timestamp.saturating_sub(observations[i - 1].timestamp);
-        let avg_price = observations[i].price
+        let time_delta = observations[i]
+            .timestamp
+            .saturating_sub(observations[i - 1].timestamp);
+        let avg_price = observations[i]
+            .price
             .checked_add(observations[i - 1].price)
             .map_err(|_| ContractError::Std(StdError::generic_err("Price addition overflow")))?
             / Uint128::from(2u128);
 
-        weighted_sum = weighted_sum.checked_add(
-            Uint256::from(avg_price).checked_mul(Uint256::from(time_delta))
-                .map_err(|_| ContractError::Std(StdError::generic_err("TWAP weighted sum overflow")))?
-        ).map_err(|_| ContractError::Std(StdError::generic_err("TWAP accumulator overflow")))?;
+        weighted_sum = weighted_sum
+            .checked_add(
+                Uint256::from(avg_price)
+                    .checked_mul(Uint256::from(time_delta))
+                    .map_err(|_| {
+                        ContractError::Std(StdError::generic_err("TWAP weighted sum overflow"))
+                    })?,
+            )
+            .map_err(|_| ContractError::Std(StdError::generic_err("TWAP accumulator overflow")))?;
         total_time = total_time.saturating_add(time_delta);
     }
 
     if total_time == 0 {
-        return observations.last()
+        return observations
+            .last()
             .map(|obs| obs.price)
             .ok_or_else(|| ContractError::Std(StdError::generic_err("No observations available")));
     }
 
     let weighted_average = Uint128::try_from(
-        weighted_sum.checked_div(Uint256::from(total_time))
-            .map_err(|_| ContractError::Std(StdError::generic_err("TWAP division error")))?
-    ).map_err(|_| ContractError::Std(StdError::generic_err("conversion overflow")))?;
+        weighted_sum
+            .checked_div(Uint256::from(total_time))
+            .map_err(|_| ContractError::Std(StdError::generic_err("TWAP division error")))?,
+    )
+    .map_err(|_| ContractError::Std(StdError::generic_err("conversion overflow")))?;
 
     Ok(weighted_average)
 }
@@ -527,7 +551,9 @@ pub fn query_pyth_atom_usd_price(deps: Deps, env: Env) -> StdResult<Uint128> {
             ));
         };
 
-        if current_time - price_data.publish_time > crate::state::MAX_PRICE_AGE_SECONDS_BEFORE_STALE as i64 {
+        if current_time - price_data.publish_time
+            > crate::state::MAX_PRICE_AGE_SECONDS_BEFORE_STALE as i64
+        {
             return Err(StdError::generic_err("ATOM price is stale"));
         }
 
@@ -668,13 +694,19 @@ fn convert_with_oracle(
     } else {
         (Uint128::from(PRICE_PRECISION), cached_price)
     };
-    let direction = if to_usd { "bluechip to USD" } else { "USD to bluechip" };
+    let direction = if to_usd {
+        "bluechip to USD"
+    } else {
+        "USD to bluechip"
+    };
 
     let converted = amount
         .checked_mul(numerator)
         .map_err(|e| StdError::generic_err(format!("Overflow in {} conversion: {}", direction, e)))?
         .checked_div(denominator)
-        .map_err(|e| StdError::generic_err(format!("Division error in {} conversion: {}", direction, e)))?;
+        .map_err(|e| {
+            StdError::generic_err(format!("Division error in {} conversion: {}", direction, e))
+        })?;
 
     Ok(ConversionResponse {
         amount: converted,
@@ -683,7 +715,11 @@ fn convert_with_oracle(
     })
 }
 
-pub fn bluechip_to_usd(deps: Deps, bluechip_amount: Uint128, env: Env) -> StdResult<ConversionResponse> {
+pub fn bluechip_to_usd(
+    deps: Deps,
+    bluechip_amount: Uint128,
+    env: Env,
+) -> StdResult<ConversionResponse> {
     convert_with_oracle(deps, env, bluechip_amount, true)
 }
 
@@ -699,7 +735,12 @@ pub fn get_price_with_staleness_check(
     let oracle = INTERNAL_ORACLE.load(deps.storage)?;
     let current_time = env.block.time.seconds();
 
-    if current_time > oracle.bluechip_price_cache.last_update.saturating_add(max_staleness) {
+    if current_time
+        > oracle
+            .bluechip_price_cache
+            .last_update
+            .saturating_add(max_staleness)
+    {
         return Err(StdError::generic_err("Price is stale"));
     }
 

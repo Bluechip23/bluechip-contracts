@@ -23,10 +23,6 @@ pub struct PriceFeedResponse {
 
 #[cw_serde]
 pub enum PythQueryMsg {
-    PythConversionPriceFeed {
-        id: String,
-    },
-    GetPrice {
-        price_id: String,
-    },
+    PythConversionPriceFeed { id: String },
+    GetPrice { price_id: String },
 }

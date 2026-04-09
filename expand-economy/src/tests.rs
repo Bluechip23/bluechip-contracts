@@ -3,7 +3,7 @@ mod expand_economy_tests {
     use crate::contract::query;
     use crate::contract::{execute, instantiate};
     use crate::msg::{ConfigResponse, ExecuteMsg, ExpandEconomyMsg, InstantiateMsg, QueryMsg};
-    use cosmwasm_std::testing::{mock_dependencies, mock_env, message_info, MockApi};
+    use cosmwasm_std::testing::{message_info, mock_dependencies, mock_env, MockApi};
     use cosmwasm_std::{coins, from_json, BankMsg, CosmosMsg, Uint128};
 
     #[test]
@@ -84,7 +84,13 @@ mod expand_economy_tests {
             factory_address: factory_addr.to_string(),
             owner: Some(owner_addr.to_string()),
         };
-        instantiate(deps.as_mut(), mock_env(), message_info(&creator_addr, &[]), msg).unwrap();
+        instantiate(
+            deps.as_mut(),
+            mock_env(),
+            message_info(&creator_addr, &[]),
+            msg,
+        )
+        .unwrap();
 
         // Propose config update (owner only)
         let info = message_info(&owner_addr, &[]);

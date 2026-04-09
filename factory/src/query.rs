@@ -1,15 +1,19 @@
+use crate::asset::TokenType;
+use crate::internal_bluechip_price_oracle::{
+    bluechip_to_usd, get_bluechip_usd_price, usd_to_bluechip,
+};
+use crate::msg::FactoryInstantiateResponse;
+#[allow(unused_imports)]
+use crate::pool_struct::PoolDetails;
+use crate::state::{FACTORYINSTANTIATEINFO, POOLS_BY_CONTRACT_ADDRESS, POOLS_BY_ID};
 use cosmwasm_schema::{cw_serde, QueryResponses};
 #[cfg(not(feature = "library"))]
 use cosmwasm_std::entry_point;
-use cosmwasm_std::{to_json_binary, Addr, Binary, Deps, Env, QueryRequest, StdResult, Uint128, WasmQuery};
+use cosmwasm_std::{
+    to_json_binary, Addr, Binary, Deps, Env, QueryRequest, StdResult, Uint128, WasmQuery,
+};
 use cw20::{Cw20QueryMsg, TokenInfoResponse};
 use pool_factory_interfaces::{FactoryQueryMsg, PoolStateResponseForFactory};
-use crate::internal_bluechip_price_oracle::{bluechip_to_usd, get_bluechip_usd_price, usd_to_bluechip};
-use crate::msg::FactoryInstantiateResponse;
-use crate::state::{FACTORYINSTANTIATEINFO, POOLS_BY_CONTRACT_ADDRESS, POOLS_BY_ID};
-use crate::asset::TokenType;
-#[allow(unused_imports)]
-use crate::pool_struct::PoolDetails;
 
 #[cw_serde]
 pub struct CreatorTokenInfoResponse {
@@ -30,7 +34,7 @@ pub enum QueryMsg {
     #[returns(CreatorTokenInfoResponse)]
     CreatorTokenInfo { pool_id: u64 },
     #[returns(cosmwasm_std::Binary)]
-    InternalBlueChipOracleQuery (FactoryQueryMsg),
+    InternalBlueChipOracleQuery(FactoryQueryMsg),
 }
 
 #[cfg_attr(not(feature = "library"), entry_point)]
@@ -38,8 +42,12 @@ pub fn query(deps: Deps, env: Env, msg: QueryMsg) -> StdResult<Binary> {
     match msg {
         QueryMsg::Factory {} => to_json_binary(&query_active_factory(deps)?),
         QueryMsg::Pool { pool_address } => to_json_binary(&query_pool(deps, pool_address)?),
-        QueryMsg::CreatorTokenInfo { pool_id } => to_json_binary(&query_creator_token_info(deps, pool_id)?),
-        QueryMsg::InternalBlueChipOracleQuery(oracle_msg) => handle_internal_bluechip_oracle_query(deps, env, oracle_msg),
+        QueryMsg::CreatorTokenInfo { pool_id } => {
+            to_json_binary(&query_creator_token_info(deps, pool_id)?)
+        }
+        QueryMsg::InternalBlueChipOracleQuery(oracle_msg) => {
+            handle_internal_bluechip_oracle_query(deps, env, oracle_msg)
+        }
     }
 }
 
@@ -60,12 +68,15 @@ pub fn query_creator_token_info(deps: Deps, pool_id: u64) -> StdResult<CreatorTo
             TokenType::CreatorToken { contract_addr } => Some(contract_addr.clone()),
             _ => None,
         })
-        .ok_or_else(|| cosmwasm_std::StdError::generic_err("No creator token found for this pool"))?;
+        .ok_or_else(|| {
+            cosmwasm_std::StdError::generic_err("No creator token found for this pool")
+        })?;
 
-    let token_info: TokenInfoResponse = deps.querier.query(&QueryRequest::Wasm(WasmQuery::Smart {
-        contract_addr: token_addr.to_string(),
-        msg: to_json_binary(&Cw20QueryMsg::TokenInfo {})?,
-    }))?;
+    let token_info: TokenInfoResponse =
+        deps.querier.query(&QueryRequest::Wasm(WasmQuery::Smart {
+            contract_addr: token_addr.to_string(),
+            msg: to_json_binary(&Cw20QueryMsg::TokenInfo {})?,
+        }))?;
 
     Ok(CreatorTokenInfoResponse {
         name: token_info.name,
@@ -76,19 +87,22 @@ pub fn query_creator_token_info(deps: Deps, pool_id: u64) -> StdResult<CreatorTo
     })
 }
 
-pub fn handle_internal_bluechip_oracle_query(deps: Deps, env: Env, msg: FactoryQueryMsg) -> StdResult<Binary> {
+pub fn handle_internal_bluechip_oracle_query(
+    deps: Deps,
+    env: Env,
+    msg: FactoryQueryMsg,
+) -> StdResult<Binary> {
     match msg {
         FactoryQueryMsg::GetBluechipUsdPrice {} => {
             to_json_binary(&get_bluechip_usd_price(deps, env)?)
-        },
+        }
         FactoryQueryMsg::ConvertBluechipToUsd { amount } => {
             to_json_binary(&bluechip_to_usd(deps, amount, env)?)
-        },
+        }
         FactoryQueryMsg::ConvertUsdToBluechip { amount } => {
             to_json_binary(&usd_to_bluechip(deps, amount, env)?)
-        },
+        }
     }
-    
 }
 
 pub fn query_active_factory(deps: Deps) -> StdResult<FactoryInstantiateResponse> {

@@ -1,6 +1,6 @@
-use cosmwasm_schema::{cw_serde, QueryResponses};
-use cosmwasm_std::{to_json_binary,Binary, Deps, Env, StdResult, Uint128};
 use crate::internal_bluechip_price_oracle::{bluechip_to_usd, usd_to_bluechip, INTERNAL_ORACLE};
+use cosmwasm_schema::{cw_serde, QueryResponses};
+use cosmwasm_std::{to_json_binary, Binary, Deps, Env, StdResult, Uint128};
 #[allow(unused_imports)]
 use pool_factory_interfaces::ConversionResponse;
 
@@ -23,10 +23,10 @@ pub fn query(deps: Deps, env: Env, msg: QueryMsg) -> StdResult<Binary> {
         QueryMsg::GetOracleState {} => to_json_binary(&query_oracle_state(deps)?),
         QueryMsg::ConvertBluechipToUsd { amount } => {
             to_json_binary(&bluechip_to_usd(deps, amount, env)?)
-        },
+        }
         QueryMsg::ConvertUsdToBluechip { amount } => {
             to_json_binary(&usd_to_bluechip(deps, amount, env)?)
-        },
+        }
     }
 }
 

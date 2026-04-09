@@ -3,7 +3,7 @@ mod tests {
     use crate::contract::{execute, instantiate};
     use crate::msg::{ExecuteMsg, ExpandEconomyMsg, InstantiateMsg};
     use crate::state::WITHDRAW_TIMELOCK_SECONDS;
-    use cosmwasm_std::testing::{mock_dependencies, mock_env, message_info, MockApi};
+    use cosmwasm_std::testing::{message_info, mock_dependencies, mock_env, MockApi};
     use cosmwasm_std::{coins, BankMsg, CosmosMsg, Uint128};
 
     fn setup_contract(
@@ -21,7 +21,13 @@ mod tests {
             factory_address: factory_addr.to_string(),
             owner: Some(owner_addr.to_string()),
         };
-        instantiate(deps.as_mut(), mock_env(), message_info(&creator_addr, &[]), msg).unwrap();
+        instantiate(
+            deps.as_mut(),
+            mock_env(),
+            message_info(&creator_addr, &[]),
+            msg,
+        )
+        .unwrap();
     }
 
     #[test]
@@ -37,9 +43,17 @@ mod tests {
             recipient: Some("".to_string()), // invalid — empty address
         };
 
-        let err = execute(deps.as_mut(), mock_env(), message_info(&owner_addr, &[]), msg).unwrap_err();
+        let err = execute(
+            deps.as_mut(),
+            mock_env(),
+            message_info(&owner_addr, &[]),
+            msg,
+        )
+        .unwrap_err();
         assert!(
-            err.to_string().contains("addr") || err.to_string().contains("empty") || err.to_string().contains("bech32"),
+            err.to_string().contains("addr")
+                || err.to_string().contains("empty")
+                || err.to_string().contains("bech32"),
             "Invalid address should be rejected at propose time, got: {}",
             err
         );
@@ -58,7 +72,13 @@ mod tests {
             recipient: None,
         };
 
-        let err = execute(deps.as_mut(), mock_env(), message_info(&hacker_addr, &[]), msg).unwrap_err();
+        let err = execute(
+            deps.as_mut(),
+            mock_env(),
+            message_info(&hacker_addr, &[]),
+            msg,
+        )
+        .unwrap_err();
         assert!(matches!(err, crate::error::ContractError::Unauthorized {}));
     }
 
@@ -75,10 +95,22 @@ mod tests {
             recipient: None,
         };
 
-        execute(deps.as_mut(), mock_env(), message_info(&owner_addr, &[]), msg()).unwrap();
+        execute(
+            deps.as_mut(),
+            mock_env(),
+            message_info(&owner_addr, &[]),
+            msg(),
+        )
+        .unwrap();
 
         // Second proposal before the first is cancelled or executed should fail
-        let err = execute(deps.as_mut(), mock_env(), message_info(&owner_addr, &[]), msg()).unwrap_err();
+        let err = execute(
+            deps.as_mut(),
+            mock_env(),
+            message_info(&owner_addr, &[]),
+            msg(),
+        )
+        .unwrap_err();
         assert!(
             err.to_string().contains("already pending"),
             "Duplicate proposal should be rejected, got: {}",
@@ -100,7 +132,13 @@ mod tests {
             denom: "ubluechip".to_string(),
             recipient: Some(recipient_addr.to_string()),
         };
-        execute(deps.as_mut(), mock_env(), message_info(&owner_addr, &[]), propose_msg).unwrap();
+        execute(
+            deps.as_mut(),
+            mock_env(),
+            message_info(&owner_addr, &[]),
+            propose_msg,
+        )
+        .unwrap();
 
         // Try to execute immediately — timelock has not elapsed
         let err = execute(
@@ -131,12 +169,20 @@ mod tests {
             denom: "ubluechip".to_string(),
             recipient: Some(recipient_addr.to_string()),
         };
-        execute(deps.as_mut(), mock_env(), message_info(&owner_addr, &[]), propose_msg).unwrap();
+        execute(
+            deps.as_mut(),
+            mock_env(),
+            message_info(&owner_addr, &[]),
+            propose_msg,
+        )
+        .unwrap();
 
         // Advance time past the 48-hour timelock
         let mut future_env = mock_env();
-        future_env.block.time =
-            future_env.block.time.plus_seconds(WITHDRAW_TIMELOCK_SECONDS + 1);
+        future_env.block.time = future_env
+            .block
+            .time
+            .plus_seconds(WITHDRAW_TIMELOCK_SECONDS + 1);
 
         let res = execute(
             deps.as_mut(),
@@ -168,11 +214,19 @@ mod tests {
             denom: "ubluechip".to_string(),
             recipient: None, // should default to owner
         };
-        execute(deps.as_mut(), mock_env(), message_info(&owner_addr, &[]), propose_msg).unwrap();
+        execute(
+            deps.as_mut(),
+            mock_env(),
+            message_info(&owner_addr, &[]),
+            propose_msg,
+        )
+        .unwrap();
 
         let mut future_env = mock_env();
-        future_env.block.time =
-            future_env.block.time.plus_seconds(WITHDRAW_TIMELOCK_SECONDS + 1);
+        future_env.block.time = future_env
+            .block
+            .time
+            .plus_seconds(WITHDRAW_TIMELOCK_SECONDS + 1);
 
         let res = execute(
             deps.as_mut(),
@@ -225,11 +279,19 @@ mod tests {
             denom: "ubluechip".to_string(),
             recipient: None,
         };
-        execute(deps.as_mut(), mock_env(), message_info(&owner_addr, &[]), propose_msg).unwrap();
+        execute(
+            deps.as_mut(),
+            mock_env(),
+            message_info(&owner_addr, &[]),
+            propose_msg,
+        )
+        .unwrap();
 
         let mut future_env = mock_env();
-        future_env.block.time =
-            future_env.block.time.plus_seconds(WITHDRAW_TIMELOCK_SECONDS + 1);
+        future_env.block.time = future_env
+            .block
+            .time
+            .plus_seconds(WITHDRAW_TIMELOCK_SECONDS + 1);
 
         let err = execute(
             deps.as_mut(),
@@ -253,7 +315,13 @@ mod tests {
             denom: "ubluechip".to_string(),
             recipient: None,
         };
-        execute(deps.as_mut(), mock_env(), message_info(&owner_addr, &[]), propose_msg).unwrap();
+        execute(
+            deps.as_mut(),
+            mock_env(),
+            message_info(&owner_addr, &[]),
+            propose_msg,
+        )
+        .unwrap();
 
         // Cancel before timelock expires
         let res = execute(
@@ -308,7 +376,6 @@ mod tests {
         );
     }
 
-
     #[test]
     fn test_cancel_withdrawal_unauthorized() {
         let mut deps = mock_dependencies();
@@ -322,7 +389,13 @@ mod tests {
             denom: "ubluechip".to_string(),
             recipient: None,
         };
-        execute(deps.as_mut(), mock_env(), message_info(&owner_addr, &[]), propose_msg).unwrap();
+        execute(
+            deps.as_mut(),
+            mock_env(),
+            message_info(&owner_addr, &[]),
+            propose_msg,
+        )
+        .unwrap();
 
         let err = execute(
             deps.as_mut(),
@@ -347,8 +420,13 @@ mod tests {
             amount: Uint128::zero(),
         });
 
-        let res =
-            execute(deps.as_mut(), mock_env(), message_info(&factory_addr, &[]), msg).unwrap();
+        let res = execute(
+            deps.as_mut(),
+            mock_env(),
+            message_info(&factory_addr, &[]),
+            msg,
+        )
+        .unwrap();
         assert_eq!(res.messages.len(), 0);
 
         let action_attr = res
@@ -372,7 +450,13 @@ mod tests {
             amount: Uint128::new(1_000_000),
         });
 
-        let err = execute(deps.as_mut(), mock_env(), message_info(&random_addr, &[]), msg).unwrap_err();
+        let err = execute(
+            deps.as_mut(),
+            mock_env(),
+            message_info(&random_addr, &[]),
+            msg,
+        )
+        .unwrap_err();
         assert!(matches!(err, crate::error::ContractError::Unauthorized {}));
     }
 

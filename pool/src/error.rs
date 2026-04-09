@@ -10,10 +10,10 @@ pub enum ContractError {
     Unauthorized {},
     #[error("Ratio deviation exceeded: expected {expected_ratio}, got {actual_ratio}, max {max_deviation_bps}bps vs actual {actual_deviation_bps}bps")]
     RatioDeviationExceeded {
-    expected_ratio: Decimal,
-    actual_ratio: Decimal,
-    max_deviation_bps: u16,
-    actual_deviation_bps: u16
+        expected_ratio: Decimal,
+        actual_ratio: Decimal,
+        max_deviation_bps: u16,
+        actual_deviation_bps: u16,
     },
     #[error("Position locked until {unlock_time}")]
     PositionLocked { unlock_time: Timestamp },
