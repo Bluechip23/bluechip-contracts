@@ -9,15 +9,14 @@ use crate::pool_creation_reply::{finalize_pool, mint_create_pool, set_tokens};
 use crate::pool_struct::{CreatePool, PoolConfigUpdate, TempPoolCreation};
 use crate::state::{
     CreationStatus, FactoryInstantiate, PendingConfig, PendingPoolConfig, PoolCreationState,
-    PoolUpgrade, FACTORYINSTANTIATEINFO, PENDING_CONFIG, PENDING_POOL_CONFIG,
-    PENDING_POOL_UPGRADE, POOL_COUNTER, POOL_CREATION_STATES, POOL_REGISTRY,
-    POOL_THRESHOLD_MINTED, TEMP_POOL_CREATION,
+    PoolUpgrade, FACTORYINSTANTIATEINFO, PENDING_CONFIG, PENDING_POOL_CONFIG, PENDING_POOL_UPGRADE,
+    POOL_COUNTER, POOL_CREATION_STATES, POOL_REGISTRY, POOL_THRESHOLD_MINTED, TEMP_POOL_CREATION,
 };
 #[cfg(not(feature = "library"))]
 use cosmwasm_std::entry_point;
 use cosmwasm_std::{
-    to_json_binary, Deps, DepsMut, Env, MessageInfo, Reply, Response, StdError,
-    StdResult, SubMsg, Uint128, WasmMsg,
+    to_json_binary, Deps, DepsMut, Env, MessageInfo, Reply, Response, StdError, StdResult, SubMsg,
+    Uint128, WasmMsg,
 };
 use cosmwasm_std::{Binary, CosmosMsg, Order};
 use cw20::MinterResponse;
@@ -51,8 +50,10 @@ pub fn instantiate(
     cw2::set_contract_version(deps.storage, CONTRACT_NAME, CONTRACT_VERSION)?;
 
     deps.api.addr_validate(msg.factory_admin_address.as_str())?;
-    deps.api.addr_validate(msg.bluechip_wallet_address.as_str())?;
-    deps.api.addr_validate(msg.atom_bluechip_anchor_pool_address.as_str())?;
+    deps.api
+        .addr_validate(msg.bluechip_wallet_address.as_str())?;
+    deps.api
+        .addr_validate(msg.atom_bluechip_anchor_pool_address.as_str())?;
     if let Some(ref mint_addr) = msg.bluechip_mint_contract_address {
         deps.api.addr_validate(mint_addr.as_str())?;
     }
@@ -117,7 +118,11 @@ pub fn assert_correct_factory_address(deps: Deps, info: MessageInfo) -> StdResul
     Ok(true)
 }
 
-pub fn execute_update_factory_config(deps: DepsMut, env: Env, info: MessageInfo) -> Result<Response, ContractError> {
+pub fn execute_update_factory_config(
+    deps: DepsMut,
+    env: Env,
+    info: MessageInfo,
+) -> Result<Response, ContractError> {
     assert_correct_factory_address(deps.as_ref(), info)?;
 
     let pending = PENDING_CONFIG.load(deps.storage)?;
@@ -139,9 +144,12 @@ pub fn execute_propose_factory_config_update(
     config: FactoryInstantiate,
 ) -> Result<Response, ContractError> {
     assert_correct_factory_address(deps.as_ref(), info)?;
-    deps.api.addr_validate(config.factory_admin_address.as_str())?;
-    deps.api.addr_validate(config.bluechip_wallet_address.as_str())?;
-    deps.api.addr_validate(config.atom_bluechip_anchor_pool_address.as_str())?;
+    deps.api
+        .addr_validate(config.factory_admin_address.as_str())?;
+    deps.api
+        .addr_validate(config.bluechip_wallet_address.as_str())?;
+    deps.api
+        .addr_validate(config.atom_bluechip_anchor_pool_address.as_str())?;
     if let Some(ref mint_addr) = config.bluechip_mint_contract_address {
         deps.api.addr_validate(mint_addr.as_str())?;
     }
@@ -223,7 +231,10 @@ fn execute_create_creator_pool(
         retry_count: 0,
     };
     POOL_CREATION_STATES.save(deps.storage, pool_id, &creation_state)?;
-    let sub_msg = vec![SubMsg::reply_on_success(msg, encode_reply_id(pool_id, SET_TOKENS))];
+    let sub_msg = vec![SubMsg::reply_on_success(
+        msg,
+        encode_reply_id(pool_id, SET_TOKENS),
+    )];
 
     Ok(Response::new()
         .add_attribute("action", "create")
@@ -254,7 +265,7 @@ pub fn execute_propose_pool_upgrade(
     info: MessageInfo,
     new_code_id: u64,
     // None = all pools
-    pool_ids: Option<Vec<u64>>, 
+    pool_ids: Option<Vec<u64>>,
     migrate_msg: Binary,
 ) -> Result<Response, ContractError> {
     assert_correct_factory_address(deps.as_ref(), info)?;
@@ -378,7 +389,10 @@ pub fn execute_propose_pool_config_update(
     // Verify pool exists
     let _pool_addr = POOL_REGISTRY.load(deps.storage, pool_id)?;
 
-    if PENDING_POOL_CONFIG.may_load(deps.storage, pool_id)?.is_some() {
+    if PENDING_POOL_CONFIG
+        .may_load(deps.storage, pool_id)?
+        .is_some()
+    {
         return Err(ContractError::Std(StdError::generic_err(
             "A pool config update is already pending for this pool. Cancel it first.",
         )));
@@ -410,11 +424,13 @@ pub fn execute_apply_pool_config_update(
 ) -> Result<Response, ContractError> {
     assert_correct_factory_address(deps.as_ref(), info)?;
 
-    let pending = PENDING_POOL_CONFIG.load(deps.storage, pool_id).map_err(|_| {
-        ContractError::Std(StdError::generic_err(
-            "No pending pool config update for this pool",
-        ))
-    })?;
+    let pending = PENDING_POOL_CONFIG
+        .load(deps.storage, pool_id)
+        .map_err(|_| {
+            ContractError::Std(StdError::generic_err(
+                "No pending pool config update for this pool",
+            ))
+        })?;
 
     if env.block.time < pending.effective_after {
         return Err(ContractError::TimelockNotExpired {
@@ -452,7 +468,10 @@ pub fn execute_cancel_pool_config_update(
 ) -> Result<Response, ContractError> {
     assert_correct_factory_address(deps.as_ref(), info)?;
 
-    if PENDING_POOL_CONFIG.may_load(deps.storage, pool_id)?.is_none() {
+    if PENDING_POOL_CONFIG
+        .may_load(deps.storage, pool_id)?
+        .is_none()
+    {
         return Err(ContractError::Std(StdError::generic_err(
             "No pending pool config update to cancel",
         )));

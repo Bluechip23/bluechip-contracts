@@ -1,14 +1,14 @@
+use crate::asset::get_bluechip_denom;
 use crate::state::{
-    PoolFeeState, PoolInfo, Position, LIQUIDITY_POSITIONS, MINIMUM_LIQUIDITY,
-    OWNER_POSITIONS, POOL_INFO, POOL_STATE,
+    PoolFeeState, PoolInfo, Position, LIQUIDITY_POSITIONS, MINIMUM_LIQUIDITY, OWNER_POSITIONS,
+    POOL_INFO, POOL_STATE,
 };
-use cosmwasm_std::Storage;
 use crate::{error::ContractError, state::CREATOR_EXCESS_POSITION};
+use cosmwasm_std::Storage;
 use cosmwasm_std::{
     to_json_binary, Addr, CosmosMsg, Decimal, Deps, DepsMut, Env, MessageInfo, Response, StdError,
     StdResult, Uint128, WasmMsg,
 };
-use crate::asset::get_bluechip_denom;
 
 pub const OPTIMAL_LIQUIDITY: Uint128 = Uint128::new(1_000_000);
 const MIN_MULTIPLIER: Decimal = Decimal::percent(10);
@@ -20,9 +20,9 @@ pub fn calculate_unclaimed_fees(
 ) -> StdResult<Uint128> {
     if fee_growth_global > fee_growth_inside_last {
         let fee_growth_delta = fee_growth_global - fee_growth_inside_last;
-        liquidity.checked_mul_floor(fee_growth_delta).map_err(|e| {
-            StdError::generic_err(format!("Fee calculation overflow: {}", e))
-        })
+        liquidity
+            .checked_mul_floor(fee_growth_delta)
+            .map_err(|e| StdError::generic_err(format!("Fee calculation overflow: {}", e)))
     } else {
         Ok(Uint128::zero())
     }
@@ -40,7 +40,10 @@ pub fn calculate_fees_owed(
             ContractError::Std(StdError::generic_err(format!("Fee base overflow: {}", e)))
         })?;
         let earned_adjusted = earned_base.checked_mul_floor(fee_multiplier).map_err(|e| {
-            ContractError::Std(StdError::generic_err(format!("Fee multiplier overflow: {}", e)))
+            ContractError::Std(StdError::generic_err(format!(
+                "Fee multiplier overflow: {}",
+                e
+            )))
         })?;
         Ok(earned_adjusted)
     } else {
@@ -155,7 +158,11 @@ pub fn check_ratio_deviation(
         / smaller)
         .to_uint_floor()
         .u128();
-    let deviation_bps = if raw > u16::MAX as u128 { u16::MAX } else { raw as u16 };
+    let deviation_bps = if raw > u16::MAX as u128 {
+        u16::MAX
+    } else {
+        raw as u16
+    };
 
     if deviation_bps > max_deviation_bps {
         return Err(ContractError::RatioDeviationExceeded {
@@ -288,13 +295,14 @@ pub fn verify_position_ownership(
     token_id: &str,
     expected_owner: &Addr,
 ) -> Result<(), ContractError> {
-    let owner_response: pool_factory_interfaces::cw721_msgs::OwnerOfResponse = deps.querier.query_wasm_smart(
-        nft_contract,
-        &pool_factory_interfaces::cw721_msgs::Cw721QueryMsg::OwnerOf {
-            token_id: token_id.to_string(),
-            include_expired: None,
-        },
-    )?;
+    let owner_response: pool_factory_interfaces::cw721_msgs::OwnerOfResponse =
+        deps.querier.query_wasm_smart(
+            nft_contract,
+            &pool_factory_interfaces::cw721_msgs::Cw721QueryMsg::OwnerOf {
+                token_id: token_id.to_string(),
+                include_expired: None,
+            },
+        )?;
 
     if owner_response.owner != expected_owner.to_string() {
         return Err(ContractError::Unauthorized {});
@@ -383,7 +391,10 @@ pub fn execute_claim_creator_excess(
         .add_messages(messages)
         .add_attribute("action", "claim_creator_excess")
         .add_attribute("creator", excess_position.creator.to_string())
-        .add_attribute("bluechip_amount", excess_position.bluechip_amount.to_string())
+        .add_attribute(
+            "bluechip_amount",
+            excess_position.bluechip_amount.to_string(),
+        )
         .add_attribute("token_amount", excess_position.token_amount.to_string())
         .add_attribute("pool_contract", env.contract.address.to_string())
         .add_attribute("block_height", env.block.height.to_string())

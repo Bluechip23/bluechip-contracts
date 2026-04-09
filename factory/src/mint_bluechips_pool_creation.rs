@@ -71,7 +71,11 @@ pub fn calculate_and_mint_bluechip(
     }
 
     let config = FACTORYINSTANTIATEINFO.load(deps.storage)?;
-    let seconds_elapsed = env.block.time.seconds().saturating_sub(first_pool_time.seconds());
+    let seconds_elapsed = env
+        .block
+        .time
+        .seconds()
+        .saturating_sub(first_pool_time.seconds());
 
     let mint_amount = calculate_mint_amount(seconds_elapsed, pool_id)?;
     let mut msgs = Vec::new();

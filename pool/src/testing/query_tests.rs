@@ -1,42 +1,48 @@
 use cosmwasm_std::{
+    from_json,
     testing::{mock_dependencies, mock_env, MockApi, MockStorage},
-    from_json, Addr, Coin, Decimal, OwnedDeps, Timestamp, Uint128,
+    Addr, Coin, Decimal, OwnedDeps, Timestamp, Uint128,
 };
 use std::str::FromStr;
 
 use crate::asset::{TokenInfo, TokenType};
 use crate::mock_querier;
 use crate::msg::{
-    CommitStatus, FeeInfoResponse, LastCommittedResponse,
-    PoolFeeStateResponse, PoolInfoResponse, PoolStateResponse,
-    PositionsResponse, QueryMsg, ReverseSimulationResponse, SimulationResponse,
+    CommitStatus, FeeInfoResponse, LastCommittedResponse, PoolFeeStateResponse, PoolInfoResponse,
+    PoolStateResponse, PositionsResponse, QueryMsg, ReverseSimulationResponse, SimulationResponse,
 };
 use crate::query::query;
 use crate::state::{
-    Committing, COMMIT_INFO,
-    NEXT_POSITION_ID, OWNER_POSITIONS, POOL_FEE_STATE,
+    Committing, COMMIT_INFO, NEXT_POSITION_ID, OWNER_POSITIONS, POOL_FEE_STATE,
     USD_RAISED_FROM_COMMIT,
 };
-use crate::testing::liquidity_tests::{create_test_position, setup_pool_post_threshold, setup_pool_storage};
+use crate::testing::liquidity_tests::{
+    create_test_position, setup_pool_post_threshold, setup_pool_storage,
+};
 
 // Setup pool storage on the custom mock querier that supports simulation queries.
 // Simulation queries call `query_pools()` which needs bank balance + CW20 balance queries.
 fn setup_pool_with_querier() -> OwnedDeps<MockStorage, MockApi, mock_querier::WasmMockQuerier> {
-    let mut deps = mock_querier::mock_dependencies(&[
-        Coin { denom: "ubluechip".to_string(), amount: Uint128::new(23_500_000_000) },
-    ]);
+    let mut deps = mock_querier::mock_dependencies(&[Coin {
+        denom: "ubluechip".to_string(),
+        amount: Uint128::new(23_500_000_000),
+    }]);
 
     // Reuse setup_pool_post_threshold logic but on custom querier deps
     use crate::asset::PoolPairType;
-    use crate::state::*;
     use crate::msg::CommitFeeInfo;
+    use crate::state::*;
 
     let pool_info = PoolInfo {
         pool_id: 1u64,
         pool_info: PoolDetails {
             asset_infos: [
-                TokenType::Bluechip { denom: "ubluechip".to_string() },
-                TokenType::CreatorToken { contract_addr: Addr::unchecked("token_contract") },
+                TokenType::Bluechip {
+                    denom: "ubluechip".to_string(),
+                },
+                TokenType::CreatorToken {
+                    contract_addr: Addr::unchecked("token_contract"),
+                },
             ],
             contract_addr: Addr::unchecked(cosmwasm_std::testing::MOCK_CONTRACT_ADDR),
             pool_type: PoolPairType::Xyk {},
@@ -67,7 +73,9 @@ fn setup_pool_with_querier() -> OwnedDeps<MockStorage, MockApi, mock_querier::Wa
         fee_reserve_0: Uint128::zero(),
         fee_reserve_1: Uint128::zero(),
     };
-    POOL_FEE_STATE.save(&mut deps.storage, &pool_fee_state).unwrap();
+    POOL_FEE_STATE
+        .save(&mut deps.storage, &pool_fee_state)
+        .unwrap();
 
     let pool_specs = PoolSpecs {
         lp_fee: Decimal::percent(3) / Uint128::new(10),
@@ -82,7 +90,9 @@ fn setup_pool_with_querier() -> OwnedDeps<MockStorage, MockApi, mock_querier::Wa
         max_bluechip_lock_per_pool: Uint128::new(10_000_000_000),
         creator_excess_liquidity_lock_days: 7,
     };
-    COMMIT_LIMIT_INFO.save(&mut deps.storage, &commit_config).unwrap();
+    COMMIT_LIMIT_INFO
+        .save(&mut deps.storage, &commit_config)
+        .unwrap();
 
     let commit_fee_info = CommitFeeInfo {
         bluechip_wallet_address: Addr::unchecked("bluechip_treasury"),
@@ -90,16 +100,23 @@ fn setup_pool_with_querier() -> OwnedDeps<MockStorage, MockApi, mock_querier::Wa
         commit_fee_bluechip: Decimal::percent(1),
         commit_fee_creator: Decimal::percent(5),
     };
-    COMMITFEEINFO.save(&mut deps.storage, &commit_fee_info).unwrap();
+    COMMITFEEINFO
+        .save(&mut deps.storage, &commit_fee_info)
+        .unwrap();
 
     IS_THRESHOLD_HIT.save(&mut deps.storage, &true).unwrap();
-    USD_RAISED_FROM_COMMIT.save(&mut deps.storage, &Uint128::new(25_000_000_000)).unwrap();
+    USD_RAISED_FROM_COMMIT
+        .save(&mut deps.storage, &Uint128::new(25_000_000_000))
+        .unwrap();
     NEXT_POSITION_ID.save(&mut deps.storage, &1u64).unwrap();
 
     // Seed CW20 balances so query_pools() works
     deps.querier.with_token_balances(&[(
         &"token_contract".to_string(),
-        &[(&cosmwasm_std::testing::MOCK_CONTRACT_ADDR.to_string(), &Uint128::new(350_000_000_000))],
+        &[(
+            &cosmwasm_std::testing::MOCK_CONTRACT_ADDR.to_string(),
+            &Uint128::new(350_000_000_000),
+        )],
     )]);
 
     deps
@@ -113,7 +130,9 @@ fn test_query_simulation_bluechip_to_token() {
 
     // Simulate swapping 1k bluechip for creator tokens
     let offer = TokenInfo {
-        info: TokenType::Bluechip { denom: "ubluechip".to_string() },
+        info: TokenType::Bluechip {
+            denom: "ubluechip".to_string(),
+        },
         amount: Uint128::new(1_000_000_000),
     };
 
@@ -123,11 +142,20 @@ fn test_query_simulation_bluechip_to_token() {
 
     // With 23.5k bluechip and 350k token reserves:
     // return_amount should be positive
-    assert!(sim.return_amount > Uint128::zero(), "return_amount should be > 0");
+    assert!(
+        sim.return_amount > Uint128::zero(),
+        "return_amount should be > 0"
+    );
     // spread should exist
-    assert!(sim.spread_amount > Uint128::zero(), "spread_amount should be > 0");
+    assert!(
+        sim.spread_amount > Uint128::zero(),
+        "spread_amount should be > 0"
+    );
     // commission should exist (0.3% fee)
-    assert!(sim.commission_amount > Uint128::zero(), "commission_amount should be > 0");
+    assert!(
+        sim.commission_amount > Uint128::zero(),
+        "commission_amount should be > 0"
+    );
     // return_amount + spread + commission should approximate the "ideal" swap output
     let total = sim.return_amount + sim.spread_amount + sim.commission_amount;
     assert!(total > Uint128::zero());
@@ -141,7 +169,9 @@ fn test_query_simulation_token_to_bluechip() {
 
     // Simulate swapping creator tokens for bluechip
     let offer = TokenInfo {
-        info: TokenType::CreatorToken { contract_addr: Addr::unchecked("token_contract") },
+        info: TokenType::CreatorToken {
+            contract_addr: Addr::unchecked("token_contract"),
+        },
         amount: Uint128::new(10_000_000_000), // 10k tokens
     };
 
@@ -161,7 +191,9 @@ fn test_query_simulation_wrong_asset() {
 
     // Unknown asset should fail
     let offer = TokenInfo {
-        info: TokenType::Bluechip { denom: "uatom".to_string() }, // wrong denom
+        info: TokenType::Bluechip {
+            denom: "uatom".to_string(),
+        }, // wrong denom
         amount: Uint128::new(1_000_000_000),
     };
 
@@ -169,7 +201,6 @@ fn test_query_simulation_wrong_asset() {
     let err = query(deps.as_ref(), env, msg).unwrap_err();
     assert!(err.to_string().contains("does not belong"));
 }
-
 
 #[test]
 fn test_query_reverse_simulation() {
@@ -179,7 +210,9 @@ fn test_query_reverse_simulation() {
 
     // "I want 5k creator tokens, how much bluechip do I need?"
     let ask = TokenInfo {
-        info: TokenType::CreatorToken { contract_addr: Addr::unchecked("token_contract") },
+        info: TokenType::CreatorToken {
+            contract_addr: Addr::unchecked("token_contract"),
+        },
         amount: Uint128::new(5_000_000_000),
     };
 
@@ -187,11 +220,19 @@ fn test_query_reverse_simulation() {
     let res = query(deps.as_ref(), env, msg).unwrap();
     let rsim: ReverseSimulationResponse = from_json(res).unwrap();
 
-    assert!(rsim.offer_amount > Uint128::zero(), "offer_amount should be > 0");
-    assert!(rsim.spread_amount > Uint128::zero(), "spread_amount should be > 0");
-    assert!(rsim.commission_amount > Uint128::zero(), "commission_amount should be > 0");
+    assert!(
+        rsim.offer_amount > Uint128::zero(),
+        "offer_amount should be > 0"
+    );
+    assert!(
+        rsim.spread_amount > Uint128::zero(),
+        "spread_amount should be > 0"
+    );
+    assert!(
+        rsim.commission_amount > Uint128::zero(),
+        "commission_amount should be > 0"
+    );
 }
-
 
 #[test]
 fn test_query_positions_by_owner() {
@@ -209,10 +250,18 @@ fn test_query_positions_by_owner() {
     create_test_position(&mut deps, 4, charlie.as_str(), Uint128::new(500_000));
 
     // Register in OWNER_POSITIONS secondary index
-    OWNER_POSITIONS.save(&mut deps.storage, (&alice, "1"), &true).unwrap();
-    OWNER_POSITIONS.save(&mut deps.storage, (&bob, "2"), &true).unwrap();
-    OWNER_POSITIONS.save(&mut deps.storage, (&alice, "3"), &true).unwrap();
-    OWNER_POSITIONS.save(&mut deps.storage, (&charlie, "4"), &true).unwrap();
+    OWNER_POSITIONS
+        .save(&mut deps.storage, (&alice, "1"), &true)
+        .unwrap();
+    OWNER_POSITIONS
+        .save(&mut deps.storage, (&bob, "2"), &true)
+        .unwrap();
+    OWNER_POSITIONS
+        .save(&mut deps.storage, (&alice, "3"), &true)
+        .unwrap();
+    OWNER_POSITIONS
+        .save(&mut deps.storage, (&charlie, "4"), &true)
+        .unwrap();
 
     let env = mock_env();
 
@@ -225,7 +274,11 @@ fn test_query_positions_by_owner() {
     let res = query(deps.as_ref(), env.clone(), msg).unwrap();
     let positions: PositionsResponse = from_json(res).unwrap();
 
-    assert_eq!(positions.positions.len(), 2, "Alice should have 2 positions");
+    assert_eq!(
+        positions.positions.len(),
+        2,
+        "Alice should have 2 positions"
+    );
 
     // Verify both are Alice's
     for pos in &positions.positions {
@@ -242,7 +295,10 @@ fn test_query_positions_by_owner() {
     let positions: PositionsResponse = from_json(res).unwrap();
 
     assert_eq!(positions.positions.len(), 1, "Bob should have 1 position");
-    assert_eq!(positions.positions[0].owner, MockApi::default().addr_make("bob"));
+    assert_eq!(
+        positions.positions[0].owner,
+        MockApi::default().addr_make("bob")
+    );
 }
 
 #[test]
@@ -274,7 +330,9 @@ fn test_query_positions_by_owner_pagination() {
     // Create 5 positions for Alice
     for i in 1..=5 {
         create_test_position(&mut deps, i, alice.as_str(), Uint128::new(1_000_000));
-        OWNER_POSITIONS.save(&mut deps.storage, (&alice, &i.to_string()), &true).unwrap();
+        OWNER_POSITIONS
+            .save(&mut deps.storage, (&alice, &i.to_string()), &true)
+            .unwrap();
     }
 
     let env = mock_env();
@@ -329,7 +387,6 @@ fn test_query_pool_info() {
     assert_eq!(info.fee_state.total_fees_collected_0, Uint128::zero());
 }
 
-
 #[test]
 fn test_query_fee_state() {
     let mut deps = mock_dependencies();
@@ -354,7 +411,6 @@ fn test_query_fee_state() {
     assert_eq!(resp.total_fees_collected_1, Uint128::new(750_000));
 }
 
-
 #[test]
 fn test_query_fee_info() {
     let mut deps = mock_dependencies();
@@ -367,8 +423,14 @@ fn test_query_fee_info() {
 
     assert_eq!(resp.fee_info.commit_fee_bluechip, Decimal::percent(1));
     assert_eq!(resp.fee_info.commit_fee_creator, Decimal::percent(5));
-    assert_eq!(resp.fee_info.bluechip_wallet_address, Addr::unchecked("bluechip_treasury"));
-    assert_eq!(resp.fee_info.creator_wallet_address, Addr::unchecked("creator_wallet"));
+    assert_eq!(
+        resp.fee_info.bluechip_wallet_address,
+        Addr::unchecked("bluechip_treasury")
+    );
+    assert_eq!(
+        resp.fee_info.creator_wallet_address,
+        Addr::unchecked("creator_wallet")
+    );
 }
 
 #[test]
@@ -377,18 +439,26 @@ fn test_query_committing_info_exists() {
     setup_pool_storage(&mut deps);
 
     let user = MockApi::default().addr_make("committer1");
-    COMMIT_INFO.save(&mut deps.storage, &user, &Committing {
-        pool_contract_address: Addr::unchecked("pool_contract"),
-        committer: user.clone(),
-        total_paid_usd: Uint128::new(5_000_000_000),
-        total_paid_bluechip: Uint128::new(5_000_000_000),
-        last_committed: Timestamp::from_seconds(1_600_000_000),
-        last_payment_bluechip: Uint128::new(1_000_000_000),
-        last_payment_usd: Uint128::new(1_000_000_000),
-    }).unwrap();
+    COMMIT_INFO
+        .save(
+            &mut deps.storage,
+            &user,
+            &Committing {
+                pool_contract_address: Addr::unchecked("pool_contract"),
+                committer: user.clone(),
+                total_paid_usd: Uint128::new(5_000_000_000),
+                total_paid_bluechip: Uint128::new(5_000_000_000),
+                last_committed: Timestamp::from_seconds(1_600_000_000),
+                last_payment_bluechip: Uint128::new(1_000_000_000),
+                last_payment_usd: Uint128::new(1_000_000_000),
+            },
+        )
+        .unwrap();
 
     let env = mock_env();
-    let msg = QueryMsg::CommittingInfo { wallet: MockApi::default().addr_make("committer1").to_string() };
+    let msg = QueryMsg::CommittingInfo {
+        wallet: MockApi::default().addr_make("committer1").to_string(),
+    };
     let res = query(deps.as_ref(), env, msg).unwrap();
     let info: Option<Committing> = from_json(res).unwrap();
 
@@ -404,13 +474,14 @@ fn test_query_committing_info_not_found() {
     setup_pool_storage(&mut deps);
 
     let env = mock_env();
-    let msg = QueryMsg::CommittingInfo { wallet: MockApi::default().addr_make("nobody").to_string() };
+    let msg = QueryMsg::CommittingInfo {
+        wallet: MockApi::default().addr_make("nobody").to_string(),
+    };
     let res = query(deps.as_ref(), env, msg).unwrap();
     let info: Option<Committing> = from_json(res).unwrap();
 
     assert!(info.is_none());
 }
-
 
 #[test]
 fn test_query_last_committed_exists() {
@@ -418,24 +489,38 @@ fn test_query_last_committed_exists() {
     setup_pool_storage(&mut deps);
 
     let user = MockApi::default().addr_make("committer1");
-    COMMIT_INFO.save(&mut deps.storage, &user, &Committing {
-        pool_contract_address: Addr::unchecked("pool_contract"),
-        committer: user.clone(),
-        total_paid_usd: Uint128::new(5_000_000_000),
-        total_paid_bluechip: Uint128::new(5_000_000_000),
-        last_committed: Timestamp::from_seconds(1_600_000_000),
-        last_payment_bluechip: Uint128::new(1_000_000_000),
-        last_payment_usd: Uint128::new(1_000_000_000),
-    }).unwrap();
+    COMMIT_INFO
+        .save(
+            &mut deps.storage,
+            &user,
+            &Committing {
+                pool_contract_address: Addr::unchecked("pool_contract"),
+                committer: user.clone(),
+                total_paid_usd: Uint128::new(5_000_000_000),
+                total_paid_bluechip: Uint128::new(5_000_000_000),
+                last_committed: Timestamp::from_seconds(1_600_000_000),
+                last_payment_bluechip: Uint128::new(1_000_000_000),
+                last_payment_usd: Uint128::new(1_000_000_000),
+            },
+        )
+        .unwrap();
 
     let env = mock_env();
-    let msg = QueryMsg::LastCommited { wallet: MockApi::default().addr_make("committer1").to_string() };
+    let msg = QueryMsg::LastCommited {
+        wallet: MockApi::default().addr_make("committer1").to_string(),
+    };
     let res = query(deps.as_ref(), env, msg).unwrap();
     let resp: LastCommittedResponse = from_json(res).unwrap();
 
     assert!(resp.has_committed);
-    assert_eq!(resp.last_committed, Some(Timestamp::from_seconds(1_600_000_000)));
-    assert_eq!(resp.last_payment_bluechip, Some(Uint128::new(1_000_000_000)));
+    assert_eq!(
+        resp.last_committed,
+        Some(Timestamp::from_seconds(1_600_000_000))
+    );
+    assert_eq!(
+        resp.last_payment_bluechip,
+        Some(Uint128::new(1_000_000_000))
+    );
     assert_eq!(resp.last_payment_usd, Some(Uint128::new(1_000_000_000)));
 }
 
@@ -445,7 +530,9 @@ fn test_query_last_committed_not_found() {
     setup_pool_storage(&mut deps);
 
     let env = mock_env();
-    let msg = QueryMsg::LastCommited { wallet: MockApi::default().addr_make("nobody").to_string() };
+    let msg = QueryMsg::LastCommited {
+        wallet: MockApi::default().addr_make("nobody").to_string(),
+    };
     let res = query(deps.as_ref(), env, msg).unwrap();
     let resp: LastCommittedResponse = from_json(res).unwrap();
 
@@ -460,7 +547,9 @@ fn test_query_is_fully_commited_in_progress() {
     setup_pool_storage(&mut deps);
 
     // Pool not yet at threshold
-    USD_RAISED_FROM_COMMIT.save(&mut deps.storage, &Uint128::new(10_000_000_000)).unwrap();
+    USD_RAISED_FROM_COMMIT
+        .save(&mut deps.storage, &Uint128::new(10_000_000_000))
+        .unwrap();
 
     let env = mock_env();
     let msg = QueryMsg::IsFullyCommited {};
@@ -488,7 +577,6 @@ fn test_query_is_fully_commited_fully_committed() {
 
     assert!(matches!(status, CommitStatus::FullyCommitted));
 }
-
 
 #[test]
 fn test_query_pool_state() {

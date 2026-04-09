@@ -3,7 +3,7 @@ use crate::contract::{execute, instantiate};
 use crate::msg::CommitFeeInfo;
 use crate::msg::{ExecuteMsg, PoolConfigUpdate, PoolInstantiateMsg};
 use crate::state::{ORACLE_INFO, POOL_PAUSED, POOL_SPECS, POOL_STATE};
-use cosmwasm_std::testing::{mock_dependencies, mock_env, message_info, MockApi};
+use cosmwasm_std::testing::{message_info, mock_dependencies, mock_env, MockApi};
 use cosmwasm_std::{Addr, Coin, Decimal, Uint128};
 
 fn mock_instantiate_msg() -> PoolInstantiateMsg {
@@ -108,7 +108,11 @@ fn test_emergency_withdraw() {
     )
     .unwrap();
 
-    let action = initiate_res.attributes.iter().find(|a| a.key == "action").unwrap();
+    let action = initiate_res
+        .attributes
+        .iter()
+        .find(|a| a.key == "action")
+        .unwrap();
     assert_eq!(action.value, "emergency_withdraw_initiated");
 
     // Pool should be paused immediately on initiation.
@@ -140,13 +144,25 @@ fn test_emergency_withdraw() {
     )
     .unwrap();
 
-    let action = exec_res.attributes.iter().find(|a| a.key == "action").unwrap();
+    let action = exec_res
+        .attributes
+        .iter()
+        .find(|a| a.key == "action")
+        .unwrap();
     assert_eq!(action.value, "emergency_withdraw");
 
-    let amount0 = exec_res.attributes.iter().find(|a| a.key == "amount0").unwrap();
+    let amount0 = exec_res
+        .attributes
+        .iter()
+        .find(|a| a.key == "amount0")
+        .unwrap();
     assert_eq!(amount0.value, "1000");
 
-    let amount1 = exec_res.attributes.iter().find(|a| a.key == "amount1").unwrap();
+    let amount1 = exec_res
+        .attributes
+        .iter()
+        .find(|a| a.key == "amount1")
+        .unwrap();
     assert_eq!(amount1.value, "2000");
 
     let pool_state = POOL_STATE.load(&deps.storage).unwrap();
@@ -188,7 +204,11 @@ fn test_cancel_emergency_withdraw() {
     )
     .unwrap();
 
-    let action = cancel_res.attributes.iter().find(|a| a.key == "action").unwrap();
+    let action = cancel_res
+        .attributes
+        .iter()
+        .find(|a| a.key == "action")
+        .unwrap();
     assert_eq!(action.value, "emergency_withdraw_cancelled");
 
     // Pool unpaused, reserves intact.

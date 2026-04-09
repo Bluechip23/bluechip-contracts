@@ -1,3 +1,4 @@
+use crate::asset::get_bluechip_denom;
 use crate::error::ContractError;
 use crate::generic_helpers::{check_rate_limit, enforce_transaction_deadline};
 use crate::liquidity_helpers::{
@@ -5,12 +6,13 @@ use crate::liquidity_helpers::{
     calculate_fee_size_multiplier, calculate_fees_owed, check_ratio_deviation, check_slippage,
     sync_position_on_transfer, verify_position_ownership,
 };
-use crate::asset::get_bluechip_denom;
 use crate::state::{
-    PoolInfo, PoolSpecs, MINIMUM_LIQUIDITY, POOL_ANALYTICS, POOL_FEE_STATE, POOL_INFO,
-    POOL_PAUSED, POOL_SPECS, POOL_STATE, REENTRANCY_GUARD,
+    PoolInfo, PoolSpecs, MINIMUM_LIQUIDITY, POOL_ANALYTICS, POOL_FEE_STATE, POOL_INFO, POOL_PAUSED,
+    POOL_SPECS, POOL_STATE, REENTRANCY_GUARD,
 };
-use crate::state::{Position, TokenMetadata, LIQUIDITY_POSITIONS, NEXT_POSITION_ID, OWNER_POSITIONS};
+use crate::state::{
+    Position, TokenMetadata, LIQUIDITY_POSITIONS, NEXT_POSITION_ID, OWNER_POSITIONS,
+};
 use crate::swap_helper::update_price_accumulator;
 use cosmwasm_std::{
     to_json_binary, Addr, BankMsg, Coin, CosmosMsg, Deps, DepsMut, Env, MessageInfo, Response,
@@ -124,7 +126,14 @@ pub fn execute_deposit_liquidity(
 ) -> Result<Response, ContractError> {
     enforce_transaction_deadline(env.block.time, transaction_deadline)?;
 
-    let prep = prepare_deposit(deps.as_ref(), &info, amount0, amount1, min_amount0, min_amount1)?;
+    let prep = prepare_deposit(
+        deps.as_ref(),
+        &info,
+        amount0,
+        amount1,
+        min_amount0,
+        min_amount1,
+    )?;
 
     let mut pool_state = POOL_STATE.load(deps.storage)?;
     let pool_fee_state = POOL_FEE_STATE.load(deps.storage)?;
@@ -153,7 +162,9 @@ pub fn execute_deposit_liquidity(
     messages.extend(transfer_msgs);
 
     let mut pos_id = NEXT_POSITION_ID.load(deps.storage)?;
-    pos_id = pos_id.checked_add(1).ok_or_else(|| ContractError::Std(StdError::generic_err("Position ID overflow")))?;
+    pos_id = pos_id
+        .checked_add(1)
+        .ok_or_else(|| ContractError::Std(StdError::generic_err("Position ID overflow")))?;
     NEXT_POSITION_ID.save(deps.storage, &pos_id)?;
     let position_id = pos_id.to_string();
 
@@ -194,7 +205,8 @@ pub fn execute_deposit_liquidity(
     update_price_accumulator(&mut pool_state, env.block.time.seconds())?;
     POOL_STATE.save(deps.storage, &pool_state)?;
 
-    let unpaused = pool_state.reserve0 >= MINIMUM_LIQUIDITY && pool_state.reserve1 >= MINIMUM_LIQUIDITY;
+    let unpaused =
+        pool_state.reserve0 >= MINIMUM_LIQUIDITY && pool_state.reserve1 >= MINIMUM_LIQUIDITY;
     if unpaused {
         POOL_PAUSED.save(deps.storage, &false)?;
     }
@@ -229,16 +241,22 @@ pub fn execute_deposit_liquidity(
         .add_attribute("offered_amount1", amount1.to_string())
         .add_attribute("reserve0_after", pool_state.reserve0.to_string())
         .add_attribute("reserve1_after", pool_state.reserve1.to_string())
-        .add_attribute("total_liquidity_after", pool_state.total_liquidity.to_string())
+        .add_attribute(
+            "total_liquidity_after",
+            pool_state.total_liquidity.to_string(),
+        )
         .add_attribute("share_of_pool_bps", share_of_pool_bps)
-        .add_attribute("pool_contract", pool_state.pool_contract_address.to_string())
+        .add_attribute(
+            "pool_contract",
+            pool_state.pool_contract_address.to_string(),
+        )
         .add_attribute("block_height", env.block.height.to_string())
         .add_attribute("block_time", env.block.time.seconds().to_string())
-        .add_attribute("total_lp_deposit_count", analytics.total_lp_deposit_count.to_string())
         .add_attribute(
-            "pool_unpaused",
-            if unpaused { "true" } else { "false" },
-        ))
+            "total_lp_deposit_count",
+            analytics.total_lp_deposit_count.to_string(),
+        )
+        .add_attribute("pool_unpaused", if unpaused { "true" } else { "false" }))
 }
 
 pub fn execute_collect_fees(
@@ -289,9 +307,18 @@ pub fn execute_collect_fees(
         .add_attribute("collector", info.sender.to_string())
         .add_attribute("fees_0", fees_owed_0)
         .add_attribute("fees_1", fees_owed_1)
-        .add_attribute("fee_reserve_0_after", pool_fee_state.fee_reserve_0.to_string())
-        .add_attribute("fee_reserve_1_after", pool_fee_state.fee_reserve_1.to_string())
-        .add_attribute("pool_contract", pool_state.pool_contract_address.to_string())
+        .add_attribute(
+            "fee_reserve_0_after",
+            pool_fee_state.fee_reserve_0.to_string(),
+        )
+        .add_attribute(
+            "fee_reserve_1_after",
+            pool_fee_state.fee_reserve_1.to_string(),
+        )
+        .add_attribute(
+            "pool_contract",
+            pool_state.pool_contract_address.to_string(),
+        )
         .add_attribute("block_height", env.block.height.to_string())
         .add_attribute("block_time", env.block.time.seconds().to_string()))
 }
@@ -311,7 +338,14 @@ pub fn add_to_position(
 ) -> Result<Response, ContractError> {
     enforce_transaction_deadline(env.block.time, transaction_deadline)?;
 
-    let prep = prepare_deposit(deps.as_ref(), &info, amount0, amount1, min_amount0, min_amount1)?;
+    let prep = prepare_deposit(
+        deps.as_ref(),
+        &info,
+        amount0,
+        amount1,
+        min_amount0,
+        min_amount1,
+    )?;
 
     let mut pool_fee_state = POOL_FEE_STATE.load(deps.storage)?;
     let mut pool_state = POOL_STATE.load(deps.storage)?;
@@ -384,11 +418,20 @@ pub fn add_to_position(
         .add_attribute("fees_collected_1", fees_owed_1)
         .add_attribute("reserve0_after", pool_state.reserve0.to_string())
         .add_attribute("reserve1_after", pool_state.reserve1.to_string())
-        .add_attribute("total_liquidity_after", pool_state.total_liquidity.to_string())
-        .add_attribute("pool_contract", pool_state.pool_contract_address.to_string())
+        .add_attribute(
+            "total_liquidity_after",
+            pool_state.total_liquidity.to_string(),
+        )
+        .add_attribute(
+            "pool_contract",
+            pool_state.pool_contract_address.to_string(),
+        )
         .add_attribute("block_height", env.block.height.to_string())
         .add_attribute("block_time", env.block.time.seconds().to_string())
-        .add_attribute("total_lp_deposit_count", analytics.total_lp_deposit_count.to_string());
+        .add_attribute(
+            "total_lp_deposit_count",
+            analytics.total_lp_deposit_count.to_string(),
+        );
     let fee_msgs = build_fee_transfer_msgs(&prep.pool_info, &user, fees_owed_0, fees_owed_1)?;
     messages.extend(fee_msgs);
     response = response.add_messages(messages);
@@ -429,7 +472,9 @@ pub fn remove_all_liquidity(
     let current_reserve1 = pool_state.reserve1;
 
     if pool_state.total_liquidity.is_zero() {
-        return Err(ContractError::Std(StdError::generic_err("Pool total liquidity is zero")));
+        return Err(ContractError::Std(StdError::generic_err(
+            "Pool total liquidity is zero",
+        )));
     }
     let user_share_0 =
         current_reserve0.multiply_ratio(liquidity_position.liquidity, pool_state.total_liquidity);
@@ -437,7 +482,13 @@ pub fn remove_all_liquidity(
         current_reserve1.multiply_ratio(liquidity_position.liquidity, pool_state.total_liquidity);
     check_slippage(user_share_0, min_amount0, "bluechip")?;
     check_slippage(user_share_1, min_amount1, "cw20")?;
-    check_ratio_deviation(user_share_0, user_share_1, min_amount0, min_amount1, max_ratio_deviation_bps)?;
+    check_ratio_deviation(
+        user_share_0,
+        user_share_1,
+        min_amount0,
+        min_amount1,
+        max_ratio_deviation_bps,
+    )?;
     let (fees_owed_0, fees_owed_1) = calc_capped_fees(&liquidity_position, &pool_fee_state)?;
 
     let total_amount_0 = user_share_0.checked_add(fees_owed_0)?;
@@ -483,12 +534,22 @@ pub fn remove_all_liquidity(
         .add_attribute("total_1", total_amount_1)
         .add_attribute("reserve0_after", pool_state.reserve0.to_string())
         .add_attribute("reserve1_after", pool_state.reserve1.to_string())
-        .add_attribute("total_liquidity_after", pool_state.total_liquidity.to_string())
-        .add_attribute("pool_contract", pool_state.pool_contract_address.to_string())
+        .add_attribute(
+            "total_liquidity_after",
+            pool_state.total_liquidity.to_string(),
+        )
+        .add_attribute(
+            "pool_contract",
+            pool_state.pool_contract_address.to_string(),
+        )
         .add_attribute("block_height", env.block.height.to_string())
         .add_attribute("block_time", env.block.time.seconds().to_string())
-        .add_attribute("total_lp_withdrawal_count", analytics.total_lp_withdrawal_count.to_string());
-    let transfer_msgs = build_fee_transfer_msgs(&pool_info, &info.sender, total_amount_0, total_amount_1)?;
+        .add_attribute(
+            "total_lp_withdrawal_count",
+            analytics.total_lp_withdrawal_count.to_string(),
+        );
+    let transfer_msgs =
+        build_fee_transfer_msgs(&pool_info, &info.sender, total_amount_0, total_amount_1)?;
     response = response.add_messages(transfer_msgs);
 
     Ok(response)
@@ -564,7 +625,9 @@ pub fn remove_partial_liquidity(
 
     // Preserve fees on the remaining portion so resetting the snapshot
     // below doesn't discard them.
-    let remaining_liquidity = liquidity_position.liquidity.checked_sub(liquidity_to_remove)?;
+    let remaining_liquidity = liquidity_position
+        .liquidity
+        .checked_sub(liquidity_to_remove)?;
     let preserved_fees_0 = calculate_fees_owed(
         remaining_liquidity,
         pool_fee_state.fee_growth_global_0,
@@ -579,7 +642,9 @@ pub fn remove_partial_liquidity(
     )?;
 
     if pool_state.total_liquidity.is_zero() {
-        return Err(ContractError::Std(StdError::generic_err("Pool total liquidity is zero")));
+        return Err(ContractError::Std(StdError::generic_err(
+            "Pool total liquidity is zero",
+        )));
     }
     let withdrawal_amount_0 =
         current_reserve0.multiply_ratio(liquidity_to_remove, pool_state.total_liquidity);
@@ -592,7 +657,13 @@ pub fn remove_partial_liquidity(
 
     check_slippage(withdrawal_amount_0, min_amount0, "bluechip")?;
     check_slippage(withdrawal_amount_1, min_amount1, "cw20")?;
-    check_ratio_deviation(withdrawal_amount_0, withdrawal_amount_1, min_amount0, min_amount1, max_ratio_deviation_bps)?;
+    check_ratio_deviation(
+        withdrawal_amount_0,
+        withdrawal_amount_1,
+        min_amount0,
+        min_amount1,
+        max_ratio_deviation_bps,
+    )?;
     let total_amount_0 = withdrawal_amount_0.checked_add(fees_owed_0)?;
     let total_amount_1 = withdrawal_amount_1.checked_add(fees_owed_1)?;
     update_price_accumulator(&mut pool_state, env.block.time.seconds())?;
@@ -611,9 +682,11 @@ pub fn remove_partial_liquidity(
     liquidity_position.fee_growth_inside_0_last = pool_fee_state.fee_growth_global_0;
     liquidity_position.fee_growth_inside_1_last = pool_fee_state.fee_growth_global_1;
 
-    liquidity_position.unclaimed_fees_0 = liquidity_position.unclaimed_fees_0
+    liquidity_position.unclaimed_fees_0 = liquidity_position
+        .unclaimed_fees_0
         .checked_add(preserved_fees_0)?;
-    liquidity_position.unclaimed_fees_1 = liquidity_position.unclaimed_fees_1
+    liquidity_position.unclaimed_fees_1 = liquidity_position
+        .unclaimed_fees_1
         .checked_add(preserved_fees_1)?;
 
     liquidity_position.liquidity = liquidity_position
@@ -649,12 +722,22 @@ pub fn remove_partial_liquidity(
         .add_attribute("total_1", total_amount_1)
         .add_attribute("reserve0_after", pool_state.reserve0.to_string())
         .add_attribute("reserve1_after", pool_state.reserve1.to_string())
-        .add_attribute("total_liquidity_after", pool_state.total_liquidity.to_string())
-        .add_attribute("pool_contract", pool_state.pool_contract_address.to_string())
+        .add_attribute(
+            "total_liquidity_after",
+            pool_state.total_liquidity.to_string(),
+        )
+        .add_attribute(
+            "pool_contract",
+            pool_state.pool_contract_address.to_string(),
+        )
         .add_attribute("block_height", env.block.height.to_string())
         .add_attribute("block_time", env.block.time.seconds().to_string())
-        .add_attribute("total_lp_withdrawal_count", analytics.total_lp_withdrawal_count.to_string());
-    let transfer_msgs = build_fee_transfer_msgs(&pool_info, &info.sender, total_amount_0, total_amount_1)?;
+        .add_attribute(
+            "total_lp_withdrawal_count",
+            analytics.total_lp_withdrawal_count.to_string(),
+        );
+    let transfer_msgs =
+        build_fee_transfer_msgs(&pool_info, &info.sender, total_amount_0, total_amount_1)?;
     response = response.add_messages(transfer_msgs);
 
     Ok(response)

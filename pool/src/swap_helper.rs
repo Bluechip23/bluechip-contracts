@@ -118,7 +118,9 @@ pub fn get_usd_value_with_staleness_check(
         }),
     )?;
 
-    if response.timestamp > 0 && current_block_time > response.timestamp + MAX_ORACLE_STALENESS_SECONDS {
+    if response.timestamp > 0
+        && current_block_time > response.timestamp + MAX_ORACLE_STALENESS_SECONDS
+    {
         return Err(StdError::generic_err(format!(
             "Oracle price is stale: last updated at {}, current time {}, max age {}s",
             response.timestamp, current_block_time, MAX_ORACLE_STALENESS_SECONDS
@@ -153,13 +155,15 @@ pub fn compute_offer_amount(
     let ask_amount: Uint256 = ask_amount.into();
     let commission_rate = decimal2decimal256(commission_rate)?;
 
-    let one_minus_commission = Decimal256::one().checked_sub(commission_rate)
+    let one_minus_commission = Decimal256::one()
+        .checked_sub(commission_rate)
         .map_err(|_| StdError::generic_err("Commission rate >= 100%"))?;
     let ask_amount_before_commission =
         (Decimal256::from_ratio(ask_amount, 1u8) / one_minus_commission).numerator()
             / Decimal256::one().denominator();
 
-    let cp: Uint256 = offer_pool.checked_mul(ask_pool)
+    let cp: Uint256 = offer_pool
+        .checked_mul(ask_pool)
         .map_err(|_| StdError::generic_err("Constant product overflow"))?;
     let new_ask_pool = ask_pool
         .checked_sub(ask_amount_before_commission)
@@ -180,12 +184,11 @@ pub fn compute_offer_amount(
         .map_err(|_| StdError::generic_err("Expected offer amount division error"))?;
     let spread_amount: Uint256 = offer_amount.saturating_sub(expected_offer_amount);
 
-    let commission_amount: Uint256 =
-        ask_amount_before_commission
-            .checked_mul(commission_rate.numerator())
-            .map_err(|_| StdError::generic_err("Commission calculation overflow"))?
-            .checked_div(commission_rate.denominator())
-            .map_err(|_| StdError::generic_err("Commission calculation division error"))?;
+    let commission_amount: Uint256 = ask_amount_before_commission
+        .checked_mul(commission_rate.numerator())
+        .map_err(|_| StdError::generic_err("Commission calculation overflow"))?
+        .checked_div(commission_rate.denominator())
+        .map_err(|_| StdError::generic_err("Commission calculation division error"))?;
 
     Ok((
         offer_amount.try_into()?,
@@ -217,7 +220,9 @@ pub fn assert_max_spread(
             .checked_mul(inverse.numerator())
             .map_err(|_| ContractError::Std(StdError::generic_err("Expected return overflow")))?
             .checked_div(inverse.denominator())
-            .map_err(|_| ContractError::Std(StdError::generic_err("Expected return division error")))?;
+            .map_err(|_| {
+                ContractError::Std(StdError::generic_err("Expected return division error"))
+            })?;
         let spread_amount = expected_return
             .checked_sub(return_amount)
             .unwrap_or_else(|_| Uint128::zero());
@@ -232,7 +237,8 @@ pub fn assert_max_spread(
             return Err(ContractError::MaxSpreadAssertion {});
         }
     } else {
-        let total_amount = return_amount.checked_add(spread_amount)
+        let total_amount = return_amount
+            .checked_add(spread_amount)
             .map_err(|_| ContractError::Std(StdError::generic_err("Spread total overflow")))?;
         if total_amount.is_zero() {
             return Err(ContractError::MaxSpreadAssertion {});

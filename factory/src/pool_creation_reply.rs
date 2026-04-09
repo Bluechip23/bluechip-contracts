@@ -9,9 +9,8 @@ use crate::{
     },
     pool_struct::{CommitFeeInfo, PoolDetails, ThresholdPayoutAmounts},
     state::{
-        CommitInfo, CreationStatus, FACTORYINSTANTIATEINFO,
-        POOLS_BY_CONTRACT_ADDRESS, POOLS_BY_ID, POOL_CREATION_STATES, POOL_REGISTRY, SETCOMMIT,
-        TEMP_POOL_CREATION,
+        CommitInfo, CreationStatus, FACTORYINSTANTIATEINFO, POOLS_BY_CONTRACT_ADDRESS, POOLS_BY_ID,
+        POOL_CREATION_STATES, POOL_REGISTRY, SETCOMMIT, TEMP_POOL_CREATION,
     },
 };
 use cosmwasm_std::{
@@ -21,7 +20,12 @@ use pool_factory_interfaces::cw721_msgs::Cw721InstantiateMsg;
 
 // pool_creation_reply.rs
 
-pub fn set_tokens(deps: DepsMut, env: Env, msg: Reply, pool_id: u64) -> Result<Response, ContractError> {
+pub fn set_tokens(
+    deps: DepsMut,
+    env: Env,
+    msg: Reply,
+    pool_id: u64,
+) -> Result<Response, ContractError> {
     let mut pool_context = TEMP_POOL_CREATION.load(deps.storage, pool_id)?;
     let mut creation_state = POOL_CREATION_STATES.load(deps.storage, pool_id)?;
 
@@ -52,7 +56,8 @@ pub fn set_tokens(deps: DepsMut, env: Env, msg: Reply, pool_id: u64) -> Result<R
                 label: format!("AMM-LP-NFT-{}", token_address),
             };
 
-            let sub_msg = SubMsg::reply_on_success(nft_msg, encode_reply_id(pool_id, MINT_CREATE_POOL));
+            let sub_msg =
+                SubMsg::reply_on_success(nft_msg, encode_reply_id(pool_id, MINT_CREATE_POOL));
 
             Ok(Response::new()
                 .add_attribute("action", "token_created_successfully")
@@ -73,7 +78,12 @@ pub fn set_tokens(deps: DepsMut, env: Env, msg: Reply, pool_id: u64) -> Result<R
     }
 }
 
-pub fn mint_create_pool(deps: DepsMut, env: Env, msg: Reply, pool_id: u64) -> Result<Response, ContractError> {
+pub fn mint_create_pool(
+    deps: DepsMut,
+    env: Env,
+    msg: Reply,
+    pool_id: u64,
+) -> Result<Response, ContractError> {
     let mut pool_context = TEMP_POOL_CREATION.load(deps.storage, pool_id)?;
     let mut creation_state = POOL_CREATION_STATES.load(deps.storage, pool_id)?;
 
@@ -143,7 +153,8 @@ pub fn mint_create_pool(deps: DepsMut, env: Env, msg: Reply, pool_id: u64) -> Re
                 label: format!("Pool-{}", pool_id),
             };
 
-            let sub_msg = SubMsg::reply_on_success(pool_msg, encode_reply_id(pool_id, FINALIZE_POOL));
+            let sub_msg =
+                SubMsg::reply_on_success(pool_msg, encode_reply_id(pool_id, FINALIZE_POOL));
 
             Ok(Response::new()
                 .add_attribute("action", "nft_created_successfully")
@@ -166,7 +177,12 @@ pub fn mint_create_pool(deps: DepsMut, env: Env, msg: Reply, pool_id: u64) -> Re
     }
 }
 
-pub fn finalize_pool(deps: DepsMut, _env: Env, msg: Reply, pool_id: u64) -> Result<Response, ContractError> {
+pub fn finalize_pool(
+    deps: DepsMut,
+    _env: Env,
+    msg: Reply,
+    pool_id: u64,
+) -> Result<Response, ContractError> {
     let pool_context = TEMP_POOL_CREATION.load(deps.storage, pool_id)?;
     let mut creation_state = POOL_CREATION_STATES.load(deps.storage, pool_id)?;
 
@@ -199,11 +215,7 @@ pub fn finalize_pool(deps: DepsMut, _env: Env, msg: Reply, pool_id: u64) -> Resu
                 creator_pool_addr: pool_address.clone(),
             };
 
-            SETCOMMIT.save(
-                deps.storage,
-                pool_id,
-                &commit_info,
-            )?;
+            SETCOMMIT.save(deps.storage, pool_id, &commit_info)?;
             POOLS_BY_ID.save(deps.storage, pool_id, &pool_details)?;
 
             // Transfer ownership to pool

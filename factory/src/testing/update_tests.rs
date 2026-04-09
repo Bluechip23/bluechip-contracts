@@ -1,5 +1,6 @@
 use cosmwasm_std::testing::{
-    mock_dependencies, mock_env, message_info, MockApi, MockQuerier, MockStorage, MOCK_CONTRACT_ADDR,
+    message_info, mock_dependencies, mock_env, MockApi, MockQuerier, MockStorage,
+    MOCK_CONTRACT_ADDR,
 };
 use cosmwasm_std::{
     from_json, to_json_binary, Addr, Coin, CosmosMsg, Decimal, Empty, OwnedDeps, Uint128, WasmMsg,
@@ -213,7 +214,10 @@ fn test_upgrade_pools_with_registry() {
     }
 
     // Pending upgrade should be cleaned up (all pools fit in one batch)
-    assert!(PENDING_POOL_UPGRADE.may_load(&deps.storage).unwrap().is_none());
+    assert!(PENDING_POOL_UPGRADE
+        .may_load(&deps.storage)
+        .unwrap()
+        .is_none());
 }
 
 #[test]
@@ -358,7 +362,11 @@ fn test_cancel_pool_upgrade() {
 
     for i in 1..=3 {
         POOL_REGISTRY
-            .save(&mut deps.storage, i, &Addr::unchecked(format!("pool_{}", i)))
+            .save(
+                &mut deps.storage,
+                i,
+                &Addr::unchecked(format!("pool_{}", i)),
+            )
             .unwrap();
     }
 
@@ -378,7 +386,10 @@ fn test_cancel_pool_upgrade() {
     )
     .unwrap();
 
-    assert!(PENDING_POOL_UPGRADE.may_load(&deps.storage).unwrap().is_some());
+    assert!(PENDING_POOL_UPGRADE
+        .may_load(&deps.storage)
+        .unwrap()
+        .is_some());
 
     // Unauthorized cancel should fail
     let err = execute(
@@ -399,7 +410,10 @@ fn test_cancel_pool_upgrade() {
     )
     .unwrap();
     assert_eq!(res.attributes[0], ("action", "cancel_pool_upgrade"));
-    assert!(PENDING_POOL_UPGRADE.may_load(&deps.storage).unwrap().is_none());
+    assert!(PENDING_POOL_UPGRADE
+        .may_load(&deps.storage)
+        .unwrap()
+        .is_none());
 }
 
 fn setup_factory(deps: &mut OwnedDeps<MockStorage, MockApi, MockQuerier>) {
@@ -421,5 +435,11 @@ fn setup_factory(deps: &mut OwnedDeps<MockStorage, MockApi, MockQuerier>) {
         bluechip_mint_contract_address: None,
     };
 
-    instantiate(deps.as_mut(), mock_env(), message_info(&make_addr("deployer"), &[]), msg).unwrap();
+    instantiate(
+        deps.as_mut(),
+        mock_env(),
+        message_info(&make_addr("deployer"), &[]),
+        msg,
+    )
+    .unwrap();
 }

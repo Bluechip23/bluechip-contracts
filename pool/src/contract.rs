@@ -4,7 +4,7 @@
 
 use crate::admin::{
     ensure_not_drained, execute_cancel_emergency_withdraw, execute_emergency_withdraw,
-    execute_pause, execute_unpause, execute_recover_stuck_states,
+    execute_pause, execute_recover_stuck_states, execute_unpause,
     execute_update_config_from_factory,
 };
 use crate::asset::{PoolPairType, TokenInfo, TokenInfoPoolExt, TokenType};
@@ -25,15 +25,13 @@ use crate::query::query_check_commit;
 use crate::state::{
     CommitLimitInfo, ExpectedFactory, OracleInfo, PoolAnalytics, PoolDetails, PoolFeeState,
     PoolInfo, PoolSpecs, Position, ThresholdPayoutAmounts, COMMITFEEINFO, COMMIT_LIMIT_INFO,
-    EXPECTED_FACTORY, IS_THRESHOLD_HIT, MINIMUM_LIQUIDITY,
-    NATIVE_RAISED_FROM_COMMIT, NEXT_POSITION_ID, ORACLE_INFO, OWNER_POSITIONS,
-    POOL_ANALYTICS, POOL_FEE_STATE, POOL_INFO, POOL_PAUSED, POOL_SPECS, POOL_STATE,
-    REENTRANCY_GUARD, THRESHOLD_PAYOUT_AMOUNTS, USD_RAISED_FROM_COMMIT,
+    EXPECTED_FACTORY, IS_THRESHOLD_HIT, MINIMUM_LIQUIDITY, NATIVE_RAISED_FROM_COMMIT,
+    NEXT_POSITION_ID, ORACLE_INFO, OWNER_POSITIONS, POOL_ANALYTICS, POOL_FEE_STATE, POOL_INFO,
+    POOL_PAUSED, POOL_SPECS, POOL_STATE, REENTRANCY_GUARD, THRESHOLD_PAYOUT_AMOUNTS,
+    USD_RAISED_FROM_COMMIT,
 };
 use crate::state::{PoolState, LIQUIDITY_POSITIONS};
-use crate::swap_helper::{
-    assert_max_spread, compute_swap, update_price_accumulator,
-};
+use crate::swap_helper::{assert_max_spread, compute_swap, update_price_accumulator};
 use cosmwasm_std::{
     entry_point, from_json, Addr, Decimal, DepsMut, Env, MessageInfo, Response, StdError,
     StdResult, Uint128,
@@ -198,7 +196,9 @@ pub fn execute(
         ExecuteMsg::Pause {} => execute_pause(deps, env, info),
         ExecuteMsg::Unpause {} => execute_unpause(deps, env, info),
         ExecuteMsg::EmergencyWithdraw {} => execute_emergency_withdraw(deps, env, info),
-        ExecuteMsg::CancelEmergencyWithdraw {} => execute_cancel_emergency_withdraw(deps, env, info),
+        ExecuteMsg::CancelEmergencyWithdraw {} => {
+            execute_cancel_emergency_withdraw(deps, env, info)
+        }
         ExecuteMsg::RecoverStuckStates { recovery_type } => {
             execute_recover_stuck_states(deps, env, info, recovery_type)
         }
@@ -266,7 +266,14 @@ pub fn execute(
             }
             let sender = info.sender.clone();
             execute_deposit_liquidity(
-                deps, env, info, sender, amount0, amount1, min_amount0, min_amount1,
+                deps,
+                env,
+                info,
+                sender,
+                amount0,
+                amount1,
+                min_amount0,
+                min_amount1,
                 transaction_deadline,
             )
         }
@@ -284,8 +291,16 @@ pub fn execute(
             }
             let sender = info.sender.clone();
             execute_add_to_position(
-                deps, env, info, position_id, sender, amount0, amount1, min_amount0,
-                min_amount1, transaction_deadline,
+                deps,
+                env,
+                info,
+                position_id,
+                sender,
+                amount0,
+                amount1,
+                min_amount0,
+                min_amount1,
+                transaction_deadline,
             )
         }
         ExecuteMsg::CollectFees { position_id } => {
@@ -303,8 +318,15 @@ pub fn execute(
             min_amount1,
             max_ratio_deviation_bps,
         } => execute_remove_partial_liquidity(
-            deps, env, info, position_id, liquidity_to_remove, transaction_deadline,
-            min_amount0, min_amount1, max_ratio_deviation_bps,
+            deps,
+            env,
+            info,
+            position_id,
+            liquidity_to_remove,
+            transaction_deadline,
+            min_amount0,
+            min_amount1,
+            max_ratio_deviation_bps,
         ),
         ExecuteMsg::RemoveAllLiquidity {
             position_id,
@@ -313,7 +335,13 @@ pub fn execute(
             min_amount0,
             max_ratio_deviation_bps,
         } => execute_remove_all_liquidity(
-            deps, env, info, position_id, transaction_deadline, min_amount0, min_amount1,
+            deps,
+            env,
+            info,
+            position_id,
+            transaction_deadline,
+            min_amount0,
+            min_amount1,
             max_ratio_deviation_bps,
         ),
         ExecuteMsg::RemovePartialLiquidityByPercent {
@@ -324,8 +352,15 @@ pub fn execute(
             min_amount1,
             max_ratio_deviation_bps,
         } => execute_remove_partial_liquidity_by_percent(
-            deps, env, info, position_id, percentage, transaction_deadline, min_amount0,
-            min_amount1, max_ratio_deviation_bps,
+            deps,
+            env,
+            info,
+            position_id,
+            percentage,
+            transaction_deadline,
+            min_amount0,
+            min_amount1,
+            max_ratio_deviation_bps,
         ),
         ExecuteMsg::ClaimCreatorExcessLiquidity {} => execute_claim_creator_excess(deps, env, info),
     }
@@ -411,7 +446,14 @@ fn simple_swap(
     }
 
     let result = execute_simple_swap(
-        &mut deps, env, _info, sender, offer_asset, belief_price, max_spread, to,
+        &mut deps,
+        env,
+        _info,
+        sender,
+        offer_asset,
+        belief_price,
+        max_spread,
+        to,
     );
     REENTRANCY_GUARD.save(deps.storage, &false)?;
     result
@@ -479,7 +521,12 @@ pub fn execute_simple_swap(
         pool_state.reserve1 = offer_pool_post;
     }
 
-    update_pool_fee_growth(&mut pool_fee_state, &pool_state, offer_index, commission_amt)?;
+    update_pool_fee_growth(
+        &mut pool_fee_state,
+        &pool_state,
+        offer_index,
+        commission_amt,
+    )?;
     POOL_FEE_STATE.save(deps.storage, &pool_fee_state)?;
     POOL_STATE.save(deps.storage, &pool_state)?;
 
@@ -535,9 +582,18 @@ pub fn execute_simple_swap(
         .add_attribute("effective_price", effective_price)
         .add_attribute("reserve0_after", pool_state.reserve0.to_string())
         .add_attribute("reserve1_after", pool_state.reserve1.to_string())
-        .add_attribute("total_fee_collected_0", pool_fee_state.total_fees_collected_0.to_string())
-        .add_attribute("total_fee_collected_1", pool_fee_state.total_fees_collected_1.to_string())
-        .add_attribute("pool_contract", pool_state.pool_contract_address.to_string())
+        .add_attribute(
+            "total_fee_collected_0",
+            pool_fee_state.total_fees_collected_0.to_string(),
+        )
+        .add_attribute(
+            "total_fee_collected_1",
+            pool_fee_state.total_fees_collected_1.to_string(),
+        )
+        .add_attribute(
+            "pool_contract",
+            pool_state.pool_contract_address.to_string(),
+        )
         .add_attribute("block_height", env.block.height.to_string())
         .add_attribute("block_time", env.block.time.seconds().to_string())
         .add_attribute("total_swap_count", analytics.total_swap_count.to_string()))

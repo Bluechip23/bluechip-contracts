@@ -1,7 +1,6 @@
 use cosmwasm_std::{
-    testing::{mock_dependencies, mock_env, message_info, MockApi, MockQuerier, MockStorage},
-    Addr, Coin, CosmosMsg, Decimal, OwnedDeps,
-    Timestamp, Uint128,
+    testing::{message_info, mock_dependencies, mock_env, MockApi, MockQuerier, MockStorage},
+    Addr, Coin, CosmosMsg, Decimal, OwnedDeps, Timestamp, Uint128,
 };
 use std::str::FromStr;
 
@@ -9,19 +8,18 @@ use crate::asset::{TokenInfo, TokenType};
 use crate::contract::{execute, execute_simple_swap, migrate};
 use crate::error::ContractError;
 use crate::liquidity::execute_deposit_liquidity;
+use crate::liquidity_helpers::sync_position_on_transfer;
 use crate::msg::{ExecuteMsg, MigrateMsg};
 use crate::state::{
-    DistributionState, ExpectedFactory, RecoveryType,
-    COMMIT_LEDGER,
-    DEFAULT_ESTIMATED_GAS_PER_DISTRIBUTION, DEFAULT_MAX_GAS_PER_TX,
-    DISTRIBUTION_STATE, EXPECTED_FACTORY, LIQUIDITY_POSITIONS,
-    NEXT_POSITION_ID, POOL_FEE_STATE,
-    POOL_SPECS, POOL_STATE, REENTRANCY_GUARD,
-    THRESHOLD_PROCESSING, MINIMUM_LIQUIDITY,
+    DistributionState, ExpectedFactory, RecoveryType, COMMIT_LEDGER,
+    DEFAULT_ESTIMATED_GAS_PER_DISTRIBUTION, DEFAULT_MAX_GAS_PER_TX, DISTRIBUTION_STATE,
+    EXPECTED_FACTORY, LIQUIDITY_POSITIONS, MINIMUM_LIQUIDITY, NEXT_POSITION_ID, POOL_FEE_STATE,
+    POOL_SPECS, POOL_STATE, REENTRANCY_GUARD, THRESHOLD_PROCESSING,
 };
-use crate::liquidity_helpers::sync_position_on_transfer;
-use crate::testing::liquidity_tests::{create_test_position, setup_pool_post_threshold, setup_pool_storage};
 use crate::state::{EMERGENCY_DRAINED, OWNER_POSITIONS};
+use crate::testing::liquidity_tests::{
+    create_test_position, setup_pool_post_threshold, setup_pool_storage,
+};
 
 #[allow(dead_code)]
 fn mock_dependencies_with_balance(
@@ -29,7 +27,8 @@ fn mock_dependencies_with_balance(
 ) -> OwnedDeps<MockStorage, MockApi, MockQuerier> {
     let mut deps = mock_dependencies();
     deps.querier
-        .bank.update_balance(cosmwasm_std::testing::MOCK_CONTRACT_ADDR, balances.to_vec());
+        .bank
+        .update_balance(cosmwasm_std::testing::MOCK_CONTRACT_ADDR, balances.to_vec());
     deps
 }
 
@@ -54,16 +53,25 @@ fn test_swap_reserve_deducts_return_and_commission() {
     let res = execute_simple_swap(
         &mut deps_mut,
         env.clone(),
-        message_info(&user, &[Coin { denom: "ubluechip".to_string(), amount: swap_amount }]),
+        message_info(
+            &user,
+            &[Coin {
+                denom: "ubluechip".to_string(),
+                amount: swap_amount,
+            }],
+        ),
         user.clone(),
         TokenInfo {
-            info: TokenType::Bluechip { denom: "ubluechip".to_string() },
+            info: TokenType::Bluechip {
+                denom: "ubluechip".to_string(),
+            },
             amount: swap_amount,
         },
         None,
         Some(Decimal::percent(50)), // Allow wide spread for test
         None,
-    ).unwrap();
+    )
+    .unwrap();
 
     let post_state = POOL_STATE.load(&deps.storage).unwrap();
     let post_fee_state = POOL_FEE_STATE.load(&deps.storage).unwrap();
@@ -73,13 +81,20 @@ fn test_swap_reserve_deducts_return_and_commission() {
 
     // The commission was collected in fee_reserve_1 (ask side)
     let commission_in_reserve = post_fee_state.fee_reserve_1;
-    assert!(commission_in_reserve > Uint128::zero(), "Commission should be tracked in fee_reserve");
+    assert!(
+        commission_in_reserve > Uint128::zero(),
+        "Commission should be tracked in fee_reserve"
+    );
 
-    let tokens_sent = res.messages.iter()
+    let tokens_sent = res
+        .messages
+        .iter()
         .filter_map(|m| {
             if let CosmosMsg::Wasm(cosmwasm_std::WasmMsg::Execute { msg, .. }) = &m.msg {
                 // CW20 transfer message
-                if let Ok(cw20::Cw20ExecuteMsg::Transfer { amount, .. }) = cosmwasm_std::from_json(msg) {
+                if let Ok(cw20::Cw20ExecuteMsg::Transfer { amount, .. }) =
+                    cosmwasm_std::from_json(msg)
+                {
                     return Some(amount);
                 }
             }
@@ -103,9 +118,14 @@ fn test_recover_stuck_reentrancy_guard() {
     setup_pool_storage(&mut deps);
 
     // Set up the factory address for authorization
-    EXPECTED_FACTORY.save(&mut deps.storage, &ExpectedFactory {
-        expected_factory_address: Addr::unchecked("factory_contract"),
-    }).unwrap();
+    EXPECTED_FACTORY
+        .save(
+            &mut deps.storage,
+            &ExpectedFactory {
+                expected_factory_address: Addr::unchecked("factory_contract"),
+            },
+        )
+        .unwrap();
 
     // Simulate stuck reentrancy guard
     REENTRANCY_GUARD.save(&mut deps.storage, &true).unwrap();
@@ -125,7 +145,9 @@ fn test_recover_stuck_reentrancy_guard() {
     assert!(!REENTRANCY_GUARD.load(&deps.storage).unwrap());
 
     // Check response attributes
-    let recovered_attr = res.attributes.iter()
+    let recovered_attr = res
+        .attributes
+        .iter()
         .find(|a| a.key == "recovered")
         .expect("Should have 'recovered' attribute");
     assert!(recovered_attr.value.contains("reentrancy_guard"));
@@ -136,9 +158,14 @@ fn test_recover_stuck_reentrancy_guard_unauthorized() {
     let mut deps = mock_dependencies();
     setup_pool_storage(&mut deps);
 
-    EXPECTED_FACTORY.save(&mut deps.storage, &ExpectedFactory {
-        expected_factory_address: Addr::unchecked("factory_contract"),
-    }).unwrap();
+    EXPECTED_FACTORY
+        .save(
+            &mut deps.storage,
+            &ExpectedFactory {
+                expected_factory_address: Addr::unchecked("factory_contract"),
+            },
+        )
+        .unwrap();
 
     REENTRANCY_GUARD.save(&mut deps.storage, &true).unwrap();
 
@@ -162,9 +189,14 @@ fn test_recover_not_stuck_returns_error() {
     let mut deps = mock_dependencies();
     setup_pool_storage(&mut deps);
 
-    EXPECTED_FACTORY.save(&mut deps.storage, &ExpectedFactory {
-        expected_factory_address: Addr::unchecked("factory_contract"),
-    }).unwrap();
+    EXPECTED_FACTORY
+        .save(
+            &mut deps.storage,
+            &ExpectedFactory {
+                expected_factory_address: Addr::unchecked("factory_contract"),
+            },
+        )
+        .unwrap();
 
     // Guard is NOT stuck
     REENTRANCY_GUARD.save(&mut deps.storage, &false).unwrap();
@@ -185,9 +217,14 @@ fn test_recover_both_resets_all_stuck_states() {
     let mut deps = mock_dependencies();
     setup_pool_storage(&mut deps);
 
-    EXPECTED_FACTORY.save(&mut deps.storage, &ExpectedFactory {
-        expected_factory_address: Addr::unchecked("factory_contract"),
-    }).unwrap();
+    EXPECTED_FACTORY
+        .save(
+            &mut deps.storage,
+            &ExpectedFactory {
+                expected_factory_address: Addr::unchecked("factory_contract"),
+            },
+        )
+        .unwrap();
 
     // Simulate both stuck reentrancy guard and stuck threshold
     REENTRANCY_GUARD.save(&mut deps.storage, &true).unwrap();
@@ -195,10 +232,9 @@ fn test_recover_both_resets_all_stuck_states() {
 
     // Set last threshold attempt to far in the past so it qualifies as stuck
     use crate::state::LAST_THRESHOLD_ATTEMPT;
-    LAST_THRESHOLD_ATTEMPT.save(
-        &mut deps.storage,
-        &Timestamp::from_seconds(0),
-    ).unwrap();
+    LAST_THRESHOLD_ATTEMPT
+        .save(&mut deps.storage, &Timestamp::from_seconds(0))
+        .unwrap();
 
     let mut env = mock_env();
     env.block.time = Timestamp::from_seconds(7200); // 2 hours later
@@ -215,13 +251,14 @@ fn test_recover_both_resets_all_stuck_states() {
     assert!(!REENTRANCY_GUARD.load(&deps.storage).unwrap());
     assert!(!THRESHOLD_PROCESSING.load(&deps.storage).unwrap());
 
-    let recovered_attr = res.attributes.iter()
+    let recovered_attr = res
+        .attributes
+        .iter()
         .find(|a| a.key == "recovered")
         .expect("Should have 'recovered' attribute");
     assert!(recovered_attr.value.contains("reentrancy_guard"));
     assert!(recovered_attr.value.contains("threshold"));
 }
-
 
 #[test]
 fn test_first_deposit_locks_minimum_liquidity() {
@@ -239,12 +276,15 @@ fn test_first_deposit_locks_minimum_liquidity() {
     let env = mock_env();
     let user = Addr::unchecked("first_depositor");
     let bluechip_amount = Uint128::new(1_000_000_000); // 1k
-    let token_amount = Uint128::new(1_000_000_000);    // 1k
+    let token_amount = Uint128::new(1_000_000_000); // 1k
 
-    let info = message_info(&user, &[Coin {
-        denom: "ubluechip".to_string(),
-        amount: bluechip_amount,
-    }]);
+    let info = message_info(
+        &user,
+        &[Coin {
+            denom: "ubluechip".to_string(),
+            amount: bluechip_amount,
+        }],
+    );
 
     let _res = execute_deposit_liquidity(
         deps.as_mut(),
@@ -256,7 +296,8 @@ fn test_first_deposit_locks_minimum_liquidity() {
         None,
         None,
         None,
-    ).unwrap();
+    )
+    .unwrap();
 
     let pool_state_after = POOL_STATE.load(&deps.storage).unwrap();
 
@@ -265,9 +306,8 @@ fn test_first_deposit_locks_minimum_liquidity() {
 
     // sqrt(1k * 1k) = 1k = 1_000_000_000 units raw
     // Position should get raw - MINIMUM_LIQUIDITY = 1_000_000_000 - 1000 = 999_999_000
-    let raw_liquidity = crate::liquidity_helpers::integer_sqrt(
-        bluechip_amount.checked_mul(token_amount).unwrap()
-    );
+    let raw_liquidity =
+        crate::liquidity_helpers::integer_sqrt(bluechip_amount.checked_mul(token_amount).unwrap());
     let expected_user_liquidity = raw_liquidity - MINIMUM_LIQUIDITY;
 
     assert_eq!(
@@ -296,9 +336,14 @@ fn test_distribution_bounty_from_reserves() {
     setup_pool_post_threshold(&mut deps);
 
     // Set up factory address
-    EXPECTED_FACTORY.save(&mut deps.storage, &ExpectedFactory {
-        expected_factory_address: Addr::unchecked("factory_contract"),
-    }).unwrap();
+    EXPECTED_FACTORY
+        .save(
+            &mut deps.storage,
+            &ExpectedFactory {
+                expected_factory_address: Addr::unchecked("factory_contract"),
+            },
+        )
+        .unwrap();
 
     // Seed some fee reserves (bluechip side)
     let mut fee_state = POOL_FEE_STATE.load(&deps.storage).unwrap();
@@ -309,7 +354,9 @@ fn test_distribution_bounty_from_reserves() {
 
     // Set up distribution state with committers and a funded bounty reserve
     let committer = Addr::unchecked("committer1");
-    COMMIT_LEDGER.save(&mut deps.storage, &committer, &Uint128::new(5_000_000_000)).unwrap();
+    COMMIT_LEDGER
+        .save(&mut deps.storage, &committer, &Uint128::new(5_000_000_000))
+        .unwrap();
 
     let dist_state = DistributionState {
         is_distributing: true,
@@ -327,7 +374,9 @@ fn test_distribution_bounty_from_reserves() {
         // from here, NOT from pool trading reserves (reserve0).
         bounty_reserve: Uint128::new(5_000_000),
     };
-    DISTRIBUTION_STATE.save(&mut deps.storage, &dist_state).unwrap();
+    DISTRIBUTION_STATE
+        .save(&mut deps.storage, &dist_state)
+        .unwrap();
 
     let env = mock_env();
     let caller_info = message_info(&Addr::unchecked("bounty_hunter"), &[]);
@@ -350,7 +399,9 @@ fn test_distribution_bounty_from_reserves() {
     );
 
     // The bounty_paid attribute should confirm bounty was paid
-    let bounty_attr = res.attributes.iter()
+    let bounty_attr = res
+        .attributes
+        .iter()
         .find(|a| a.key == "bounty_paid")
         .expect("Should have bounty_paid attribute");
     let bounty_amount: u128 = bounty_attr.value.parse().unwrap();
@@ -390,7 +441,10 @@ fn test_migrate_accepts_valid_fees() {
     };
 
     let res = migrate(deps.as_mut(), env.clone(), msg).unwrap();
-    assert!(res.attributes.iter().any(|a| a.key == "action" && a.value == "migrate"));
+    assert!(res
+        .attributes
+        .iter()
+        .any(|a| a.key == "action" && a.value == "migrate"));
 
     // Verify the fee was actually updated
     let pool_specs = POOL_SPECS.load(&deps.storage).unwrap();
@@ -441,26 +495,32 @@ fn test_nft_transfer_resets_fee_checkpoints() {
     let mut position = LIQUIDITY_POSITIONS.load(&deps.storage, "1").unwrap();
     assert_eq!(position.owner, Addr::unchecked("alice"));
 
-    let transferred = sync_position_on_transfer(
-        &mut deps.storage,
-        &mut position,
-        "1",
-        &bob,
-        &fee_state,
-    )
-    .unwrap();
+    let transferred =
+        sync_position_on_transfer(&mut deps.storage, &mut position, "1", &bob, &fee_state).unwrap();
 
     assert!(transferred, "Should detect ownership transfer");
     assert_eq!(position.owner, bob);
     // Fee snapshots should be reset to current globals — Bob gets no pre-transfer fees
-    assert_eq!(position.fee_growth_inside_0_last, fee_state.fee_growth_global_0);
-    assert_eq!(position.fee_growth_inside_1_last, fee_state.fee_growth_global_1);
+    assert_eq!(
+        position.fee_growth_inside_0_last,
+        fee_state.fee_growth_global_0
+    );
+    assert_eq!(
+        position.fee_growth_inside_1_last,
+        fee_state.fee_growth_global_1
+    );
     assert_eq!(position.unclaimed_fees_0, Uint128::zero());
     assert_eq!(position.unclaimed_fees_1, Uint128::zero());
 
     // OWNER_POSITIONS should be updated
-    assert!(OWNER_POSITIONS.may_load(&deps.storage, (&Addr::unchecked("alice"), "1")).unwrap().is_none());
-    assert!(OWNER_POSITIONS.may_load(&deps.storage, (&bob, "1")).unwrap().is_some());
+    assert!(OWNER_POSITIONS
+        .may_load(&deps.storage, (&Addr::unchecked("alice"), "1"))
+        .unwrap()
+        .is_none());
+    assert!(OWNER_POSITIONS
+        .may_load(&deps.storage, (&bob, "1"))
+        .unwrap()
+        .is_some());
 }
 
 /// Verify that sync_position_on_transfer is a no-op when owner hasn't changed
@@ -478,16 +538,14 @@ fn test_no_transfer_no_reset() {
     let alice = Addr::unchecked("alice");
     let mut position = LIQUIDITY_POSITIONS.load(&deps.storage, "1").unwrap();
 
-    let transferred = sync_position_on_transfer(
-        &mut deps.storage,
-        &mut position,
-        "1",
-        &alice,
-        &fee_state,
-    )
-    .unwrap();
+    let transferred =
+        sync_position_on_transfer(&mut deps.storage, &mut position, "1", &alice, &fee_state)
+            .unwrap();
 
-    assert!(!transferred, "Should NOT detect transfer when owner is the same");
+    assert!(
+        !transferred,
+        "Should NOT detect transfer when owner is the same"
+    );
     // Fee snapshots should remain at zero (original values)
     assert_eq!(position.fee_growth_inside_0_last, Decimal::zero());
 }
@@ -588,7 +646,9 @@ fn test_distribution_bounty_does_not_distort_fee_growth() {
         last_updated: Timestamp::from_seconds(1_600_000_000),
         bounty_reserve: Uint128::new(5_000_000),
     };
-    DISTRIBUTION_STATE.save(&mut deps.storage, &dist_state).unwrap();
+    DISTRIBUTION_STATE
+        .save(&mut deps.storage, &dist_state)
+        .unwrap();
 
     let env = mock_env();
     let caller_info = message_info(&Addr::unchecked("bounty_hunter"), &[]);
@@ -636,17 +696,31 @@ fn test_emergency_withdraw_clears_distribution() {
         last_updated: Timestamp::from_seconds(1_600_000_000),
         bounty_reserve: Uint128::zero(),
     };
-    DISTRIBUTION_STATE.save(&mut deps.storage, &dist_state).unwrap();
+    DISTRIBUTION_STATE
+        .save(&mut deps.storage, &dist_state)
+        .unwrap();
 
     // Phase 1: initiate emergency withdrawal
     let mut env = mock_env();
     env.block.time = Timestamp::from_seconds(1_700_000_000);
     let factory_info = message_info(&Addr::unchecked("factory_contract"), &[]);
-    execute(deps.as_mut(), env.clone(), factory_info.clone(), ExecuteMsg::EmergencyWithdraw {}).unwrap();
+    execute(
+        deps.as_mut(),
+        env.clone(),
+        factory_info.clone(),
+        ExecuteMsg::EmergencyWithdraw {},
+    )
+    .unwrap();
 
     // Phase 2: execute after timelock (24h + 1s)
     env.block.time = Timestamp::from_seconds(1_700_000_000 + 86_401);
-    execute(deps.as_mut(), env, factory_info, ExecuteMsg::EmergencyWithdraw {}).unwrap();
+    execute(
+        deps.as_mut(),
+        env,
+        factory_info,
+        ExecuteMsg::EmergencyWithdraw {},
+    )
+    .unwrap();
 
     // Distribution should be cleared
     let post_dist = DISTRIBUTION_STATE.load(&deps.storage).unwrap();

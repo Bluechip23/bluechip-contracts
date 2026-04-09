@@ -84,12 +84,16 @@ pub fn query(deps: Deps, env: Env, msg: QueryMsg) -> StdResult<Binary> {
         }
 
         QueryMsg::Analytics {} => to_json_binary(&query_analytics(deps)?),
-        QueryMsg::GetPoolState { pool_contract_address } => {
-            query_for_factory(deps, env, PoolQueryMsg::GetPoolState { pool_contract_address })
-        }
-        QueryMsg::GetAllPools {} => {
-            query_for_factory(deps, env, PoolQueryMsg::GetAllPools {})
-        }
+        QueryMsg::GetPoolState {
+            pool_contract_address,
+        } => query_for_factory(
+            deps,
+            env,
+            PoolQueryMsg::GetPoolState {
+                pool_contract_address,
+            },
+        ),
+        QueryMsg::GetAllPools {} => query_for_factory(deps, env, PoolQueryMsg::GetAllPools {}),
     }
 }
 
@@ -97,7 +101,6 @@ pub fn query_pair_info(deps: Deps) -> StdResult<PoolDetails> {
     let pool_info = POOL_INFO.load(deps.storage)?;
     Ok(pool_info.pool_info)
 }
-
 
 pub fn query_check_threshold_limit(deps: Deps) -> StdResult<CommitStatus> {
     let threshold_hit = IS_THRESHOLD_HIT.load(deps.storage)?;

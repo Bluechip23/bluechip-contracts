@@ -1,6 +1,6 @@
-use thiserror::Error;
-use semver::Error as SemVerError;
 use cosmwasm_std::{OverflowError, StdError, Timestamp, Uint128};
+use semver::Error as SemVerError;
+use thiserror::Error;
 
 #[derive(Error, Debug)]
 pub enum ContractError {
@@ -41,9 +41,7 @@ pub enum ContractError {
     #[error("SemVer parse error: {0}")]
     SemVer(#[from] SemVerError),
     #[error("Update is not yet effective. Can be applied after {effective_after}")]
-    TimelockNotExpired {
-        effective_after: Timestamp,
-    },
+    TimelockNotExpired { effective_after: Timestamp },
 }
 
 impl From<OverflowError> for ContractError {

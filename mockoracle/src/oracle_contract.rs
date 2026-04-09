@@ -11,7 +11,10 @@
 
 use crate::msg::PriceResponse;
 #[cfg(feature = "testing")]
-use crate::msg::{ExecuteMsg, InstantiateMsg, PythQueryMsg, PriceFeedResponse, PriceFeed, PythPriceRetrievalResponse};
+use crate::msg::{
+    ExecuteMsg, InstantiateMsg, PriceFeed, PriceFeedResponse, PythPriceRetrievalResponse,
+    PythQueryMsg,
+};
 #[cfg(feature = "testing")]
 use cosmwasm_std::{
     entry_point, to_json_binary, Binary, Deps, DepsMut, Env, MessageInfo, Response, StdError,
@@ -46,7 +49,7 @@ pub fn execute(
             let new_price = PriceResponse {
                 price,
                 publish_time: env.block.time.seconds(), // current block timestamp
-                expo: -8,                                // example default
+                expo: -8,                               // example default
                 conf: Uint128::zero(),                  // example default
             };
             PRICES.save(deps.storage, &price_id, &new_price)?;
@@ -63,7 +66,7 @@ pub fn query(deps: Deps, env: Env, msg: PythQueryMsg) -> StdResult<Binary> {
             let mut stored_price = PRICES
                 .may_load(deps.storage, &price_id)?
                 .ok_or_else(|| StdError::generic_err("Symbol not found"))?;
-            
+
             stored_price.publish_time = env.block.time.seconds();
             to_json_binary(&stored_price)
         }
@@ -71,7 +74,7 @@ pub fn query(deps: Deps, env: Env, msg: PythQueryMsg) -> StdResult<Binary> {
             let stored_price = PRICES
                 .may_load(deps.storage, &id)?
                 .ok_or_else(|| StdError::generic_err("Price feed not found"))?;
-            
+
             let current_time = env.block.time.seconds() as i64;
 
             let response = PriceFeedResponse {

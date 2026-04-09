@@ -4,7 +4,7 @@ use crate::msg::CommitFeeInfo;
 use crate::state::{
     CommitLimitInfo, Committing, PoolFeeState, PoolInfo, PoolSpecs, ThresholdPayoutAmounts,
     COMMIT_INFO, COMMIT_LEDGER, DEFAULT_ESTIMATED_GAS_PER_DISTRIBUTION, DEFAULT_MAX_GAS_PER_TX,
-    MAX_DISTRIBUTION_BOUNTY_RESERVE, MAX_DISTRIBUTIONS_PER_TX, POOL_FEE_STATE, POOL_STATE,
+    MAX_DISTRIBUTIONS_PER_TX, MAX_DISTRIBUTION_BOUNTY_RESERVE, POOL_FEE_STATE, POOL_STATE,
     USER_LAST_COMMIT,
 };
 use crate::state::{
@@ -33,15 +33,23 @@ pub fn update_pool_fee_growth(
 
     if offer_index == 0 {
         // Token0 offered → Token1 is ask → fees in token1
-        pool_fee_state.fee_growth_global_1 = pool_fee_state.fee_growth_global_1.checked_add(fee_growth)
+        pool_fee_state.fee_growth_global_1 = pool_fee_state
+            .fee_growth_global_1
+            .checked_add(fee_growth)
             .map_err(|_| ContractError::Std(StdError::generic_err("Fee growth overflow")))?;
-        pool_fee_state.total_fees_collected_1 = pool_fee_state.total_fees_collected_1.checked_add(commission_amt)?;
+        pool_fee_state.total_fees_collected_1 = pool_fee_state
+            .total_fees_collected_1
+            .checked_add(commission_amt)?;
         pool_fee_state.fee_reserve_1 = pool_fee_state.fee_reserve_1.checked_add(commission_amt)?;
     } else {
         // Token1 offered → Token0 is ask → fees in token0
-        pool_fee_state.fee_growth_global_0 = pool_fee_state.fee_growth_global_0.checked_add(fee_growth)
+        pool_fee_state.fee_growth_global_0 = pool_fee_state
+            .fee_growth_global_0
+            .checked_add(fee_growth)
             .map_err(|_| ContractError::Std(StdError::generic_err("Fee growth overflow")))?;
-        pool_fee_state.total_fees_collected_0 = pool_fee_state.total_fees_collected_0.checked_add(commission_amt)?;
+        pool_fee_state.total_fees_collected_0 = pool_fee_state
+            .total_fees_collected_0
+            .checked_add(commission_amt)?;
         pool_fee_state.fee_reserve_0 = pool_fee_state.fee_reserve_0.checked_add(commission_amt)?;
     }
 
@@ -58,7 +66,9 @@ pub fn check_rate_limit(
         let time_since_last = env.block.time.seconds().saturating_sub(last_commit_time);
 
         if time_since_last < pool_specs.min_commit_interval {
-            let wait_time = pool_specs.min_commit_interval.saturating_sub(time_since_last);
+            let wait_time = pool_specs
+                .min_commit_interval
+                .saturating_sub(time_since_last);
             return Err(ContractError::TooFrequentCommits { wait_time });
         }
     }
@@ -122,7 +132,8 @@ pub fn validate_pool_threshold_payments(
     }
 
     // Verify total
-    let total = params.creator_reward_amount
+    let total = params
+        .creator_reward_amount
         .checked_add(params.bluechip_reward_amount)?
         .checked_add(params.pool_seed_amount)?
         .checked_add(params.commit_return_amount)?;
@@ -150,13 +161,16 @@ pub fn trigger_threshold_payout(
 
     msgs.push(CosmosMsg::Wasm(WasmMsg::Execute {
         contract_addr: pool_info.factory_addr.to_string(),
-        msg: to_json_binary(&pool_factory_interfaces::FactoryExecuteMsg::NotifyThresholdCrossed {
-            pool_id: pool_info.pool_id,
-        })?,
+        msg: to_json_binary(
+            &pool_factory_interfaces::FactoryExecuteMsg::NotifyThresholdCrossed {
+                pool_id: pool_info.pool_id,
+            },
+        )?,
         funds: vec![],
     }));
 
-    let total = payout.creator_reward_amount
+    let total = payout
+        .creator_reward_amount
         .checked_add(payout.bluechip_reward_amount)
         .map_err(StdError::overflow)?
         .checked_add(payout.pool_seed_amount)
@@ -212,12 +226,16 @@ pub fn trigger_threshold_payout(
         DISTRIBUTION_STATE.save(storage, &dist_state)?;
     }
 
-    let total_fee_rate = fee_info.commit_fee_bluechip.checked_add(fee_info.commit_fee_creator)
+    let total_fee_rate = fee_info
+        .commit_fee_bluechip
+        .checked_add(fee_info.commit_fee_creator)
         .map_err(|_| StdError::generic_err("Fee rate overflow"))?;
     let total_bluechip_raised = crate::state::NATIVE_RAISED_FROM_COMMIT.load(storage)?;
-    let one_minus_fee = Decimal::one().checked_sub(total_fee_rate)
+    let one_minus_fee = Decimal::one()
+        .checked_sub(total_fee_rate)
         .map_err(|_| StdError::generic_err("Fee rate >= 100%"))?;
-    let pools_bluechip_seed = total_bluechip_raised.checked_mul_floor(one_minus_fee)
+    let pools_bluechip_seed = total_bluechip_raised
+        .checked_mul_floor(one_minus_fee)
         .map_err(|_| StdError::generic_err("Fee deduction overflow"))?;
 
     let bounty_allocation = if has_committers {
@@ -226,11 +244,13 @@ pub fn trigger_threshold_payout(
     } else {
         Uint128::zero()
     };
-    let pools_bluechip_seed = pools_bluechip_seed.checked_sub(bounty_allocation)
+    let pools_bluechip_seed = pools_bluechip_seed
+        .checked_sub(bounty_allocation)
         .map_err(StdError::overflow)?;
 
     if pools_bluechip_seed > commit_config.max_bluechip_lock_per_pool {
-        let excess_bluechip = pools_bluechip_seed.checked_sub(commit_config.max_bluechip_lock_per_pool)
+        let excess_bluechip = pools_bluechip_seed
+            .checked_sub(commit_config.max_bluechip_lock_per_pool)
             .map_err(StdError::overflow)?;
 
         let excess_creator_tokens = payout
@@ -252,7 +272,9 @@ pub fn trigger_threshold_payout(
         )?;
 
         pool_state.reserve0 = commit_config.max_bluechip_lock_per_pool;
-        pool_state.reserve1 = payout.pool_seed_amount.checked_sub(excess_creator_tokens)
+        pool_state.reserve1 = payout
+            .pool_seed_amount
+            .checked_sub(excess_creator_tokens)
             .map_err(StdError::overflow)?;
     } else {
         pool_state.reserve0 = pools_bluechip_seed;
@@ -283,7 +305,11 @@ pub fn process_distribution_batch(
         Some(state) => state,
         None => return Ok(vec![]), // No distribution in progress
     };
-    let time_since_update = env.block.time.seconds().saturating_sub(dist_state.last_updated.seconds());
+    let time_since_update = env
+        .block
+        .time
+        .seconds()
+        .saturating_sub(dist_state.last_updated.seconds());
     if time_since_update > 7200 {
         // 2 hours timeout
         dist_state.consecutive_failures = 99; // Mark as failed
@@ -292,10 +318,7 @@ pub fn process_distribution_batch(
             "Distribution timeout - requires manual recovery",
         ));
     }
-    let start_after = dist_state
-        .last_processed_key
-        .as_ref()
-        .map(Bound::exclusive);
+    let start_after = dist_state.last_processed_key.as_ref().map(Bound::exclusive);
 
     let effective_batch_size = calculate_effective_batch_size(&dist_state);
     let mut processed_count = 0u32;
@@ -353,10 +376,7 @@ pub fn process_distribution_batch(
                 };
                 DISTRIBUTION_STATE.save(storage, &updated_state)?;
             } else {
-                let recheck_start = dist_state
-                    .last_processed_key
-                    .as_ref()
-                    .map(Bound::exclusive);
+                let recheck_start = dist_state.last_processed_key.as_ref().map(Bound::exclusive);
                 let remaining_entries: Vec<_> = COMMIT_LEDGER
                     .range(storage, recheck_start, None, Order::Ascending)
                     .take(1)
@@ -406,12 +426,15 @@ pub fn process_distribution_batch(
 }
 
 pub fn calculate_effective_batch_size(dist_state: &DistributionState) -> u32 {
-
     let base_batch_size = if dist_state.estimated_gas_per_distribution == 0 {
         1u32
     } else {
         let raw = dist_state.max_gas_per_tx / dist_state.estimated_gas_per_distribution;
-        if raw > u32::MAX as u64 { u32::MAX } else { raw as u32 }
+        if raw > u32::MAX as u64 {
+            u32::MAX
+        } else {
+            raw as u32
+        }
     };
 
     base_batch_size.min(MAX_DISTRIBUTIONS_PER_TX).max(1)
@@ -488,8 +511,9 @@ pub fn update_commit_info(
         |maybe_committing| -> Result<_, ContractError> {
             match maybe_committing {
                 Some(mut committing) => {
-                    committing.total_paid_bluechip =
-                        committing.total_paid_bluechip.checked_add(bluechip_amount)?;
+                    committing.total_paid_bluechip = committing
+                        .total_paid_bluechip
+                        .checked_add(bluechip_amount)?;
                     committing.total_paid_usd =
                         committing.total_paid_usd.checked_add(usd_amount)?;
                     committing.last_payment_bluechip = bluechip_amount;
