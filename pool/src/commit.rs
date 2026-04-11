@@ -582,6 +582,7 @@ fn process_threshold_crossing_with_excess(
     let mut spread_amt = Uint128::zero();
     let mut commission_amt = Uint128::zero();
     let mut refunded_excess = Uint128::zero();
+    let mut capped_excess = Uint128::zero();
 
     if effective_bluechip_excess > Uint128::zero() {
         let mut pool_state = POOL_STATE.load(deps.storage)?;
@@ -594,7 +595,7 @@ fn process_threshold_crossing_with_excess(
         // Any remainder is refunded to the sender — they can swap it in
         // subsequent transactions where other participants can also trade.
         let max_excess_swap = offer_pool.multiply_ratio(20u128, 100u128);
-        let capped_excess = effective_bluechip_excess.min(max_excess_swap);
+        capped_excess = effective_bluechip_excess.min(max_excess_swap);
         refunded_excess = effective_bluechip_excess.checked_sub(capped_excess)?;
 
         if !ask_pool.is_zero() && !offer_pool.is_zero() && !capped_excess.is_zero() {
@@ -665,11 +666,9 @@ fn process_threshold_crossing_with_excess(
     // Update analytics
     let mut analytics = POOL_ANALYTICS.load(deps.storage).unwrap_or_default();
     analytics.total_commit_count += 1;
-    if effective_bluechip_excess > Uint128::zero() && !return_amt.is_zero() {
+    if !capped_excess.is_zero() && !return_amt.is_zero() {
         analytics.total_swap_count += 1;
-        analytics.total_volume_0 = analytics
-            .total_volume_0
-            .saturating_add(effective_bluechip_excess);
+        analytics.total_volume_0 = analytics.total_volume_0.saturating_add(capped_excess);
         analytics.total_volume_1 = analytics.total_volume_1.saturating_add(return_amt);
         analytics.last_trade_block = env.block.height;
         analytics.last_trade_timestamp = env.block.time.seconds();
@@ -688,8 +687,9 @@ fn process_threshold_crossing_with_excess(
             "threshold_amount_bluechip",
             bluechip_to_threshold.to_string(),
         )
+        .add_attribute("swap_amount_bluechip", capped_excess.to_string())
         .add_attribute(
-            "swap_amount_bluechip",
+            "swap_amount_bluechip_pre_cap",
             effective_bluechip_excess.to_string(),
         )
         .add_attribute("threshold_amount_usd", usd_to_threshold.to_string())
