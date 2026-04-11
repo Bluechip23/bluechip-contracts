@@ -487,8 +487,13 @@ pub fn execute_simple_swap(
     if POOL_PAUSED.may_load(deps.storage)?.unwrap_or(false) {
         return Err(ContractError::PoolPausedLowLiquidity {});
     }
+    // Drain guard: reject swaps when either side is below MINIMUM_LIQUIDITY.
+    // Don't try to persist POOL_PAUSED here — returning Err would revert the
+    // save, so it's dead state. The reserve check alone is sufficient to
+    // block every swap path; admins unlock the pool by restoring reserves or
+    // by calling the factory's explicit UnpausePool route if POOL_PAUSED was
+    // ever set by a successful admin action.
     if pool_state.reserve0 < MINIMUM_LIQUIDITY || pool_state.reserve1 < MINIMUM_LIQUIDITY {
-        POOL_PAUSED.save(deps.storage, &true)?;
         return Err(ContractError::InsufficientReserves {});
     }
 

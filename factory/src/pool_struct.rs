@@ -29,6 +29,16 @@ pub struct PoolConfigUpdate {
     pub oracle_address: Option<String>,
 }
 
+// Mirrors pool::state::RecoveryType. Redefined here to avoid a pool -> factory
+// dependency; serde serialization must stay in sync with the pool's variant.
+#[cw_serde]
+pub enum RecoveryType {
+    StuckThreshold,
+    StuckDistribution,
+    StuckReentrancyGuard,
+    Both,
+}
+
 #[cw_serde]
 pub struct TempPoolCreation {
     pub temp_pool_info: CreatePool,

@@ -103,6 +103,18 @@ pub fn execute(
         ExecuteMsg::NotifyThresholdCrossed { pool_id } => {
             execute_notify_threshold_crossed(deps, env, info, pool_id)
         }
+        ExecuteMsg::PausePool { pool_id } => execute_pause_pool(deps, info, pool_id),
+        ExecuteMsg::UnpausePool { pool_id } => execute_unpause_pool(deps, info, pool_id),
+        ExecuteMsg::EmergencyWithdrawPool { pool_id } => {
+            execute_emergency_withdraw_pool(deps, info, pool_id)
+        }
+        ExecuteMsg::CancelEmergencyWithdrawPool { pool_id } => {
+            execute_cancel_emergency_withdraw_pool(deps, info, pool_id)
+        }
+        ExecuteMsg::RecoverPoolStuckStates {
+            pool_id,
+            recovery_type,
+        } => execute_recover_pool_stuck_states(deps, info, pool_id, recovery_type),
     }
 }
 
@@ -482,6 +494,109 @@ pub fn execute_cancel_pool_config_update(
     Ok(Response::new()
         .add_attribute("action", "cancel_pool_config_update")
         .add_attribute("pool_id", pool_id.to_string()))
+}
+
+// ---------------------------------------------------------------------------
+// Pool admin forwards (pause / unpause / emergency withdraw / recovery)
+// ---------------------------------------------------------------------------
+// The pool gates these on `info.sender == pool_info.factory_addr`, so the
+// factory contract is the only entity that can issue them. These helpers
+// check the factory admin, look up the pool address, and build a WasmMsg
+// forwarding the corresponding pool ExecuteMsg.
+
+#[derive(serde::Serialize)]
+#[serde(rename_all = "snake_case")]
+enum PoolAdminMsg {
+    Pause {},
+    Unpause {},
+    EmergencyWithdraw {},
+    CancelEmergencyWithdraw {},
+    RecoverStuckStates { recovery_type: crate::pool_struct::RecoveryType },
+}
+
+fn forward_pool_admin(
+    deps: Deps,
+    info: MessageInfo,
+    pool_id: u64,
+    action: &'static str,
+    pool_msg: PoolAdminMsg,
+) -> Result<Response, ContractError> {
+    assert_correct_factory_address(deps, info)?;
+    let pool_addr = POOL_REGISTRY.load(deps.storage, pool_id).map_err(|_| {
+        ContractError::Std(StdError::generic_err(format!(
+            "Pool {} not found in registry",
+            pool_id
+        )))
+    })?;
+    let msg = CosmosMsg::Wasm(WasmMsg::Execute {
+        contract_addr: pool_addr.to_string(),
+        msg: to_json_binary(&pool_msg)?,
+        funds: vec![],
+    });
+    Ok(Response::new()
+        .add_message(msg)
+        .add_attribute("action", action)
+        .add_attribute("pool_id", pool_id.to_string())
+        .add_attribute("pool_addr", pool_addr.to_string()))
+}
+
+pub fn execute_pause_pool(
+    deps: DepsMut,
+    info: MessageInfo,
+    pool_id: u64,
+) -> Result<Response, ContractError> {
+    forward_pool_admin(deps.as_ref(), info, pool_id, "pause_pool", PoolAdminMsg::Pause {})
+}
+
+pub fn execute_unpause_pool(
+    deps: DepsMut,
+    info: MessageInfo,
+    pool_id: u64,
+) -> Result<Response, ContractError> {
+    forward_pool_admin(deps.as_ref(), info, pool_id, "unpause_pool", PoolAdminMsg::Unpause {})
+}
+
+pub fn execute_emergency_withdraw_pool(
+    deps: DepsMut,
+    info: MessageInfo,
+    pool_id: u64,
+) -> Result<Response, ContractError> {
+    forward_pool_admin(
+        deps.as_ref(),
+        info,
+        pool_id,
+        "emergency_withdraw_pool",
+        PoolAdminMsg::EmergencyWithdraw {},
+    )
+}
+
+pub fn execute_cancel_emergency_withdraw_pool(
+    deps: DepsMut,
+    info: MessageInfo,
+    pool_id: u64,
+) -> Result<Response, ContractError> {
+    forward_pool_admin(
+        deps.as_ref(),
+        info,
+        pool_id,
+        "cancel_emergency_withdraw_pool",
+        PoolAdminMsg::CancelEmergencyWithdraw {},
+    )
+}
+
+pub fn execute_recover_pool_stuck_states(
+    deps: DepsMut,
+    info: MessageInfo,
+    pool_id: u64,
+    recovery_type: crate::pool_struct::RecoveryType,
+) -> Result<Response, ContractError> {
+    forward_pool_admin(
+        deps.as_ref(),
+        info,
+        pool_id,
+        "recover_pool_stuck_states",
+        PoolAdminMsg::RecoverStuckStates { recovery_type },
+    )
 }
 
 pub fn execute_continue_pool_upgrade(

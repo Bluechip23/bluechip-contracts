@@ -4,7 +4,7 @@ use cosmwasm_std::{Addr, Binary, Uint128};
 use cw20::{Cw20Coin, MinterResponse};
 
 use crate::asset::TokenType;
-use crate::pool_struct::{CommitFeeInfo, CreatePool, PoolConfigUpdate};
+use crate::pool_struct::{CommitFeeInfo, CreatePool, PoolConfigUpdate, RecoveryType};
 use crate::state::FactoryInstantiate;
 
 //triggers inside factory reply, used to complete the pool creation process.
@@ -65,6 +65,29 @@ pub enum ExecuteMsg {
     // Triggers the bluechip mint for this pool (only fires once per pool).
     NotifyThresholdCrossed {
         pool_id: u64,
+    },
+
+    // Admin-only pool admin forwards. The pool checks that info.sender ==
+    // pool_info.factory_addr, so these must be routed through the factory
+    // contract rather than called directly.
+    PausePool {
+        pool_id: u64,
+    },
+    UnpausePool {
+        pool_id: u64,
+    },
+    // First call (no pending withdraw): initiates the 24h timelock and
+    // pauses the pool. Second call (after the timelock): actually drains
+    // pool reserves. The pool itself decides which phase based on state.
+    EmergencyWithdrawPool {
+        pool_id: u64,
+    },
+    CancelEmergencyWithdrawPool {
+        pool_id: u64,
+    },
+    RecoverPoolStuckStates {
+        pool_id: u64,
+        recovery_type: RecoveryType,
     },
 }
 
