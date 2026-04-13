@@ -2472,15 +2472,18 @@ fn test_swap_fails_when_reserves_below_pause_threshold() {
         None,
     );
 
-    // Should fail and pause the pool
+    // Swap must be rejected when a side is below MINIMUM_LIQUIDITY. The drain
+    // guard no longer tries to persist POOL_PAUSED on this path — a Wasm Err
+    // return would revert the save — so the pool is "soft-paused" solely by
+    // the reserve pre-check firing on every subsequent swap attempt.
     assert!(matches!(
         result,
         Err(ContractError::InsufficientReserves {})
     ));
-
-    // Verify pool is now paused
-    let is_paused = POOL_PAUSED.load(&deps.storage).unwrap();
-    assert!(is_paused, "Pool should be paused after hitting threshold");
+    assert!(
+        POOL_PAUSED.may_load(&deps.storage).unwrap().unwrap_or(false) == false,
+        "POOL_PAUSED should not be set by the drain guard (save would be rolled back on chain)"
+    );
 }
 
 #[test]
@@ -2564,10 +2567,10 @@ fn test_swap_prevented_if_would_deplete_below_minimum() {
 fn test_swap_triggers_pause_at_threshold() {
     let mut deps = mock_dependencies();
 
-    // Set one reserve below SWAP_PAUSE_THRESHOLD (100)
+    // Set one reserve below MINIMUM_LIQUIDITY
     setup_pool_with_reserves(
         &mut deps,
-        Uint128::new(99), // Below SWAP_PAUSE_THRESHOLD!
+        Uint128::new(99), // Below MINIMUM_LIQUIDITY
         Uint128::new(10000),
     );
 
@@ -2598,18 +2601,18 @@ fn test_swap_triggers_pause_at_threshold() {
         None,
     );
 
-    // Should fail with InsufficientReserves at pre-swap check
+    // The drain guard rejects the swap. On chain, any attempt to persist
+    // POOL_PAUSED here would be rolled back with the Err, so the guard
+    // deliberately does not touch POOL_PAUSED. The soft-pause is enforced
+    // by the pre-check running on every swap attempt.
     assert!(
         matches!(result, Err(ContractError::InsufficientReserves {})),
-        "Expected InsufficientReserves error at pre-swap check, got: {:?}",
+        "Expected InsufficientReserves at pre-swap check, got: {:?}",
         result
     );
-
-    // Verify pool is paused
-    let is_paused = POOL_PAUSED.load(&deps.storage).unwrap();
     assert!(
-        is_paused,
-        "Pool should be paused when reserves drop below threshold"
+        POOL_PAUSED.may_load(&deps.storage).unwrap().unwrap_or(false) == false,
+        "POOL_PAUSED flag must stay unset on the drain-guard path (rollback semantics)"
     );
 }
 
@@ -2749,11 +2752,14 @@ fn test_both_reserves_checked() {
 
 #[test]
 fn test_pause_state_persistence() {
+    // A drained pool does not flip POOL_PAUSED via the swap path (that save
+    // would be reverted by the Err return on chain). Repeat calls to the
+    // swap entry point should each be rejected by the reserve pre-check
+    // with InsufficientReserves, NOT the PoolPausedLowLiquidity branch.
     let mut deps = mock_dependencies();
     setup_pool_with_reserves(&mut deps, Uint128::new(15), Uint128::new(15));
 
-    // First swap triggers pause
-    let _ = execute_simple_swap(
+    let first = execute_simple_swap(
         &mut deps.as_mut(),
         mock_env(),
         message_info(&Addr::unchecked("user1"), &[]),
@@ -2762,16 +2768,15 @@ fn test_pause_state_persistence() {
             info: TokenType::Bluechip {
                 denom: "ubluechip".to_string(),
             },
-
             amount: Uint128::new(100),
         },
         None,
         None,
         None,
     );
+    assert!(matches!(first, Err(ContractError::InsufficientReserves {})));
 
-    // Second user tries to swap - should fail due to pause
-    let result = execute_simple_swap(
+    let second = execute_simple_swap(
         &mut deps.as_mut(),
         mock_env(),
         message_info(&Addr::unchecked("user2"), &[]),
@@ -2780,18 +2785,21 @@ fn test_pause_state_persistence() {
             info: TokenType::Bluechip {
                 denom: "ubluechip".to_string(),
             },
-
             amount: Uint128::new(100),
         },
         None,
         None,
         None,
     );
-
-    assert!(matches!(
-        result,
-        Err(ContractError::PoolPausedLowLiquidity {})
-    ));
+    assert!(
+        matches!(second, Err(ContractError::InsufficientReserves {})),
+        "Second swap should still hit the reserve pre-check, not the pause branch. Got: {:?}",
+        second
+    );
+    assert!(
+        POOL_PAUSED.may_load(&deps.storage).unwrap().unwrap_or(false) == false,
+        "POOL_PAUSED must stay unset — the swap path never persists it"
+    );
 }
 
 #[test]

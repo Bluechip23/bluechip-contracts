@@ -606,16 +606,14 @@ fn process_threshold_crossing_with_excess(
             commission_amt = comm;
         }
 
-        if !capped_excess.is_zero() {
-            if let Some(max_spread) = max_spread {
-                assert_max_spread(
-                    belief_price,
-                    Some(max_spread),
-                    capped_excess,
-                    return_amt.checked_add(commission_amt)?,
-                    spread_amt,
-                )?;
-            }
+        if !capped_excess.is_zero() && max_spread.is_some() {
+            assert_max_spread(
+                belief_price,
+                max_spread,
+                capped_excess,
+                return_amt.checked_add(commission_amt)?,
+                spread_amt,
+            )?;
         }
 
         update_price_accumulator(&mut pool_state, env.block.time.seconds())?;
