@@ -3,7 +3,7 @@ use crate::pyth_types::{PriceFeedResponse, PythQueryMsg};
 
 use crate::state::{
     FACTORYINSTANTIATEINFO, ORACLE_BOUNTY_DENOM, ORACLE_UPDATE_BOUNTY, POOLS_BY_CONTRACT_ADDRESS,
-    POOLS_BY_ID,
+    POOLS_BY_ID, POOL_THRESHOLD_MINTED,
 };
 use crate::{asset::TokenType, error::ContractError};
 use cosmwasm_schema::cw_serde;
@@ -185,20 +185,34 @@ pub fn get_eligible_creator_pools(
     deps: Deps,
     atom_pool_contract_address: &str,
 ) -> StdResult<Vec<String>> {
-    // Build a set of pool addresses that have bluechip tokens (single pass over POOLS_BY_ID)
+    // Build the set of pool addresses eligible for oracle sampling.
+    // A pool is eligible only if:
+    //   1. It contains a bluechip token (so we can price it against ATOM)
+    //   2. It has crossed its commit threshold (POOL_THRESHOLD_MINTED == true)
+    //
+    // The threshold-crossed gate is the important one: pool creation is
+    // permissionless, so without this check a spammer could bloat the oracle
+    // sample set with pre-threshold pools. The MIN_POOL_LIQUIDITY check
+    // further down is defense-in-depth and catches pools that crossed
+    // threshold but later drained below the safety floor.
     let bluechip_pool_addrs: std::collections::HashSet<Addr> = POOLS_BY_ID
         .range(deps.storage, None, None, Order::Ascending)
         .filter_map(|result| {
-            if let Ok((_, pool_details)) = result {
-                let has_bluechip = pool_details
-                    .pool_token_info
-                    .iter()
-                    .any(|token| matches!(token, TokenType::Bluechip { .. }));
-                if has_bluechip {
-                    return Some(pool_details.creator_pool_addr);
-                }
+            let (pool_id, pool_details) = result.ok()?;
+            let has_bluechip = pool_details
+                .pool_token_info
+                .iter()
+                .any(|token| matches!(token, TokenType::Bluechip { .. }));
+            let threshold_crossed = POOL_THRESHOLD_MINTED
+                .may_load(deps.storage, pool_id)
+                .ok()
+                .flatten()
+                .unwrap_or(false);
+            if has_bluechip && threshold_crossed {
+                Some(pool_details.creator_pool_addr)
+            } else {
+                None
             }
-            None
         })
         .collect();
 

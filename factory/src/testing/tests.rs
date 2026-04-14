@@ -192,7 +192,8 @@ fn test_oracle_initialization_with_multiple_pools() {
 
     setup_atom_pool(&mut deps);
 
-    // Add 5 more creator pools with sufficient liquidity
+    // Add 5 more creator pools with sufficient liquidity.
+    // Mark each as threshold-crossed so they're eligible for oracle sampling.
     for i in 1..=5 {
         let pool_addr = make_addr(&format!("creator_pool_{}", i));
         let pool_details = PoolDetails {
@@ -209,6 +210,9 @@ fn test_oracle_initialization_with_multiple_pools() {
         };
         POOLS_BY_ID
             .save(deps.as_mut().storage, i, &pool_details)
+            .unwrap();
+        crate::state::POOL_THRESHOLD_MINTED
+            .save(deps.as_mut().storage, i, &true)
             .unwrap();
     }
 
@@ -1364,6 +1368,10 @@ fn test_oracle_aggregates_multiple_pool_prices() {
         POOLS_BY_ID
             .save(&mut deps.storage, pool_id, &pool_details)
             .unwrap();
+        // Mark as threshold-crossed so the oracle will include this test pool.
+        crate::state::POOL_THRESHOLD_MINTED
+            .save(&mut deps.storage, pool_id, &true)
+            .unwrap();
     };
 
     add_test_pool(
@@ -2333,6 +2341,102 @@ fn test_oracle_update_skips_bounty_when_underfunded() {
             .iter()
             .any(|a| a.key == "bounty_skipped" && a.value == "insufficient_factory_balance"),
         "expected bounty_skipped attribute"
+    );
+}
+
+#[test]
+fn test_oracle_ignores_pools_without_threshold_crossed() {
+    // A pool that has been created but has NOT crossed its commit threshold
+    // must not enter the oracle sample set, even if it somehow has liquidity.
+    // This defends against spam pools (permissionless creation) from
+    // influencing the bluechip/ATOM price.
+    let mut deps = mock_dependencies(&[]);
+    setup_atom_pool(&mut deps);
+
+    // Pool 1: threshold-crossed, should be eligible
+    {
+        let pool_addr = make_addr("good_pool");
+        let pool_details = PoolDetails {
+            pool_id: 1,
+            pool_token_info: [
+                TokenType::Bluechip {
+                    denom: "ubluechip".to_string(),
+                },
+                TokenType::CreatorToken {
+                    contract_addr: Addr::unchecked("creator_token_1"),
+                },
+            ],
+            creator_pool_addr: pool_addr.clone(),
+        };
+        POOLS_BY_ID
+            .save(&mut deps.storage, 1, &pool_details)
+            .unwrap();
+        crate::state::POOL_THRESHOLD_MINTED
+            .save(&mut deps.storage, 1, &true)
+            .unwrap();
+        let pool_state = PoolStateResponseForFactory {
+            pool_contract_address: pool_addr.clone(),
+            nft_ownership_accepted: true,
+            reserve0: Uint128::new(50_000_000_000),
+            reserve1: Uint128::new(10_000_000_000),
+            total_liquidity: Uint128::new(10_000_000),
+            block_time_last: 0,
+            price0_cumulative_last: Uint128::zero(),
+            price1_cumulative_last: Uint128::zero(),
+            assets: vec![],
+        };
+        POOLS_BY_CONTRACT_ADDRESS
+            .save(&mut deps.storage, pool_addr, &pool_state)
+            .unwrap();
+    }
+
+    // Pool 2: NOT threshold-crossed (spam/pre-threshold), must be ignored.
+    // Even with liquidity far above MIN_POOL_LIQUIDITY.
+    {
+        let pool_addr = make_addr("spam_pool");
+        let pool_details = PoolDetails {
+            pool_id: 2,
+            pool_token_info: [
+                TokenType::Bluechip {
+                    denom: "ubluechip".to_string(),
+                },
+                TokenType::CreatorToken {
+                    contract_addr: Addr::unchecked("creator_token_2"),
+                },
+            ],
+            creator_pool_addr: pool_addr.clone(),
+        };
+        POOLS_BY_ID
+            .save(&mut deps.storage, 2, &pool_details)
+            .unwrap();
+        // Deliberately NOT saving POOL_THRESHOLD_MINTED for pool 2.
+        let pool_state = PoolStateResponseForFactory {
+            pool_contract_address: pool_addr.clone(),
+            nft_ownership_accepted: true,
+            reserve0: Uint128::new(500_000_000_000),
+            reserve1: Uint128::new(100_000_000_000),
+            total_liquidity: Uint128::new(100_000_000),
+            block_time_last: 0,
+            price0_cumulative_last: Uint128::zero(),
+            price1_cumulative_last: Uint128::zero(),
+            assets: vec![],
+        };
+        POOLS_BY_CONTRACT_ADDRESS
+            .save(&mut deps.storage, pool_addr, &pool_state)
+            .unwrap();
+    }
+
+    let eligible = crate::internal_bluechip_price_oracle::get_eligible_creator_pools(
+        deps.as_ref(),
+        &atom_bluechip_pool_addr().to_string(),
+    )
+    .unwrap();
+
+    assert_eq!(eligible.len(), 1, "only the threshold-crossed pool should be eligible");
+    assert_eq!(eligible[0], make_addr("good_pool").to_string());
+    assert!(
+        !eligible.contains(&make_addr("spam_pool").to_string()),
+        "spam pool without threshold crossing must not appear"
     );
 }
 
