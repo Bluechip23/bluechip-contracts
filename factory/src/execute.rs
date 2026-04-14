@@ -367,6 +367,51 @@ pub fn execute_propose_pool_upgrade(
         .add_attribute("effective_after", effective_after.to_string()))
 }
 
+// Processes a single batch of pools from the pending upgrade. Runs paused
+// pools through a skip path (admin must unpause and re-run) so the upgrade
+// doesn't migrate a pool that is mid-emergency-withdraw or otherwise in a
+// sensitive state. Returns the built messages and records how many pools
+// were processed (skipped + migrated) so the next batch can resume.
+fn build_upgrade_batch(
+    deps: Deps,
+    pool_ids: &[u64],
+    new_code_id: u64,
+    migrate_msg: &Binary,
+) -> Result<(Vec<CosmosMsg>, Vec<u64>, u32), ContractError> {
+    let mut messages: Vec<CosmosMsg> = Vec::new();
+    let mut skipped: Vec<u64> = Vec::new();
+    let processed: u32 = pool_ids.len() as u32;
+
+    for pool_id in pool_ids.iter() {
+        let pool_addr = POOL_REGISTRY.load(deps.storage, *pool_id)?;
+
+        // Query pause state; if the pool is paused, skip it. A paused pool
+        // may be in the middle of a 24h emergency-withdraw timelock or other
+        // sensitive state, and migrating it would likely break the invariants
+        // the pool code relied on when pausing.
+        let is_paused: pool_factory_interfaces::IsPausedResponse = deps
+            .querier
+            .query_wasm_smart(
+                pool_addr.to_string(),
+                &pool_factory_interfaces::PoolQueryMsg::IsPaused {},
+            )
+            .unwrap_or(pool_factory_interfaces::IsPausedResponse { paused: false });
+
+        if is_paused.paused {
+            skipped.push(*pool_id);
+            continue;
+        }
+
+        messages.push(CosmosMsg::Wasm(WasmMsg::Migrate {
+            contract_addr: pool_addr.to_string(),
+            new_code_id,
+            msg: migrate_msg.clone(),
+        }));
+    }
+
+    Ok((messages, skipped, processed))
+}
+
 pub fn execute_apply_pool_upgrade(
     deps: DepsMut,
     env: Env,
@@ -390,37 +435,50 @@ pub fn execute_apply_pool_upgrade(
     }
 
     let batch_size = 10;
-    let mut messages = vec![];
+    let first_batch: Vec<u64> = upgrade
+        .pools_to_upgrade
+        .iter()
+        .take(batch_size)
+        .cloned()
+        .collect();
 
-    for pool_id in upgrade.pools_to_upgrade.iter().take(batch_size) {
-        let pool_addr = POOL_REGISTRY.load(deps.storage, *pool_id)?;
-        messages.push(CosmosMsg::Wasm(WasmMsg::Migrate {
-            contract_addr: pool_addr.to_string(),
-            new_code_id: upgrade.new_code_id,
-            msg: upgrade.migrate_msg.clone(),
-        }));
-    }
+    let (messages, skipped, processed) = build_upgrade_batch(
+        deps.as_ref(),
+        &first_batch,
+        upgrade.new_code_id,
+        &upgrade.migrate_msg,
+    )?;
 
     let mut upgrade = upgrade;
-    upgrade.upgraded_count = messages.len() as u32;
-    PENDING_POOL_UPGRADE.save(deps.storage, &upgrade)?;
+    upgrade.upgraded_count = processed;
 
-    if upgrade.pools_to_upgrade.len() > batch_size {
-        messages.push(CosmosMsg::Wasm(WasmMsg::Execute {
-            contract_addr: env.contract.address.to_string(),
-            msg: to_json_binary(&ExecuteMsg::ContinuePoolUpgrade {})?,
-            funds: vec![],
-        }));
+    // If all pools were handled in this single batch, remove the pending
+    // state. Otherwise persist progress and require the admin to call
+    // ContinuePoolUpgrade explicitly — we no longer self-dispatch, which
+    // previously risked blowing through the block gas limit for large pool
+    // counts by chaining recursive execute messages.
+    let total = upgrade.pools_to_upgrade.len() as u32;
+    let more_batches = upgrade.upgraded_count < total;
+    if more_batches {
+        PENDING_POOL_UPGRADE.save(deps.storage, &upgrade)?;
     } else {
-        // All pools fit in one batch, clean up
         PENDING_POOL_UPGRADE.remove(deps.storage);
     }
+
+    let skipped_str = skipped
+        .iter()
+        .map(|id| id.to_string())
+        .collect::<Vec<_>>()
+        .join(",");
 
     Ok(Response::new()
         .add_messages(messages)
         .add_attribute("action", "execute_pool_upgrade")
         .add_attribute("new_code_id", upgrade.new_code_id.to_string())
-        .add_attribute("pool_count", upgrade.pools_to_upgrade.len().to_string()))
+        .add_attribute("pool_count", total.to_string())
+        .add_attribute("processed_in_batch", processed.to_string())
+        .add_attribute("skipped_paused", skipped_str)
+        .add_attribute("more_batches", more_batches.to_string()))
 }
 
 pub fn execute_cancel_pool_upgrade(
@@ -652,16 +710,18 @@ pub fn execute_recover_pool_stuck_states(
 
 pub fn execute_continue_pool_upgrade(
     deps: DepsMut,
-    env: Env,
+    _env: Env,
     info: MessageInfo,
 ) -> Result<Response, ContractError> {
-    if info.sender != env.contract.address {
-        return Err(ContractError::Unauthorized {});
-    }
+    // Admin-only now. Previously this was self-called from
+    // execute_apply_pool_upgrade, which worked only until the pool list grew
+    // large enough that the chained execute messages exceeded block gas
+    // limits in a single tx. Making this admin-only forces batches to be
+    // submitted as separate transactions, each with its own gas budget.
+    assert_correct_factory_address(deps.as_ref(), info)?;
 
     let mut upgrade = PENDING_POOL_UPGRADE.load(deps.storage)?;
 
-    // Skip already upgraded pools (borrow the vector immutably to avoid moving `upgrade`)
     let remaining_pools: Vec<u64> = upgrade
         .pools_to_upgrade
         .iter()
@@ -670,7 +730,6 @@ pub fn execute_continue_pool_upgrade(
         .collect();
 
     if remaining_pools.is_empty() {
-        // All done
         PENDING_POOL_UPGRADE.remove(deps.storage);
         return Ok(Response::new()
             .add_attribute("action", "upgrade_complete")
@@ -678,37 +737,38 @@ pub fn execute_continue_pool_upgrade(
     }
 
     let batch_size = 10;
-    let mut messages = vec![];
+    let batch: Vec<u64> = remaining_pools.iter().take(batch_size).cloned().collect();
 
-    for pool_id in remaining_pools.iter().take(batch_size) {
-        let pool_addr = POOL_REGISTRY.load(deps.storage, *pool_id)?;
-        messages.push(CosmosMsg::Wasm(WasmMsg::Migrate {
-            contract_addr: pool_addr.to_string(),
-            new_code_id: upgrade.new_code_id,
-            msg: upgrade.migrate_msg.clone(),
-        }));
-        upgrade.upgraded_count += 1;
-    }
+    let (messages, skipped, processed) = build_upgrade_batch(
+        deps.as_ref(),
+        &batch,
+        upgrade.new_code_id,
+        &upgrade.migrate_msg,
+    )?;
 
-    // Save progress
-    PENDING_POOL_UPGRADE.save(deps.storage, &upgrade)?;
+    upgrade.upgraded_count += processed;
 
-    if remaining_pools.len() > batch_size {
-        messages.push(CosmosMsg::Wasm(WasmMsg::Execute {
-            contract_addr: env.contract.address.to_string(),
-            msg: to_json_binary(&ExecuteMsg::ContinuePoolUpgrade {})?,
-            funds: vec![],
-        }));
+    let total = upgrade.pools_to_upgrade.len() as u32;
+    let more_batches = upgrade.upgraded_count < total;
+    if more_batches {
+        PENDING_POOL_UPGRADE.save(deps.storage, &upgrade)?;
     } else {
         PENDING_POOL_UPGRADE.remove(deps.storage);
     }
 
-    let batch_count = messages.len();
+    let skipped_str = skipped
+        .iter()
+        .map(|id| id.to_string())
+        .collect::<Vec<_>>()
+        .join(",");
+
     Ok(Response::new()
         .add_messages(messages)
         .add_attribute("action", "continue_upgrade")
-        .add_attribute("upgraded_in_batch", batch_count.to_string())
-        .add_attribute("total_upgraded", upgrade.upgraded_count.to_string()))
+        .add_attribute("processed_in_batch", processed.to_string())
+        .add_attribute("total_processed", upgrade.upgraded_count.to_string())
+        .add_attribute("skipped_paused", skipped_str)
+        .add_attribute("more_batches", more_batches.to_string()))
 }
 
 // Called by a pool when its commit threshold has been crossed.

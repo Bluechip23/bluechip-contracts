@@ -94,7 +94,15 @@ pub fn query(deps: Deps, env: Env, msg: QueryMsg) -> StdResult<Binary> {
             },
         ),
         QueryMsg::GetAllPools {} => query_for_factory(deps, env, PoolQueryMsg::GetAllPools {}),
+        QueryMsg::IsPaused {} => query_for_factory(deps, env, PoolQueryMsg::IsPaused {}),
     }
+}
+
+pub fn query_is_paused(deps: Deps) -> StdResult<pool_factory_interfaces::IsPausedResponse> {
+    let paused = crate::state::POOL_PAUSED
+        .may_load(deps.storage)?
+        .unwrap_or(false);
+    Ok(pool_factory_interfaces::IsPausedResponse { paused })
 }
 
 pub fn query_pair_info(deps: Deps) -> StdResult<PoolDetails> {
@@ -491,5 +499,6 @@ pub fn query_for_factory(deps: Deps, _env: Env, msg: PoolQueryMsg) -> StdResult<
                 pools: vec![(response.pool_contract_address.to_string(), response)],
             })
         }
+        PoolQueryMsg::IsPaused {} => to_json_binary(&query_is_paused(deps)?),
     }
 }

@@ -5,7 +5,7 @@ use cosmwasm_std::{
     from_json, to_json_binary, Addr, Coin, Empty, OwnedDeps, Querier, QuerierResult, QueryRequest,
     SystemError, SystemResult, WasmQuery,
 };
-use pool_factory_interfaces::{PoolQueryMsg, PoolStateResponseForFactory};
+use pool_factory_interfaces::{IsPausedResponse, PoolQueryMsg, PoolStateResponseForFactory};
 
 use crate::query::QueryMsg;
 
@@ -25,6 +25,7 @@ pub fn mock_dependencies(
 
 pub struct WasmMockQuerier {
     base: MockQuerier<Empty>,
+    pub paused_pools: std::collections::HashSet<String>,
 }
 
 impl Querier for WasmMockQuerier {
@@ -45,7 +46,7 @@ impl Querier for WasmMockQuerier {
 impl WasmMockQuerier {
     pub fn handle_query(&self, request: &QueryRequest<Empty>) -> QuerierResult {
         match &request {
-            QueryRequest::Wasm(WasmQuery::Smart { contract_addr: _, msg }) => {
+            QueryRequest::Wasm(WasmQuery::Smart { contract_addr, msg }) => {
                 // Try parsing as PoolQueryMsg first (for pool contract queries)
                 if let Ok(pool_msg) = from_json::<PoolQueryMsg>(&msg) {
                     match pool_msg {
@@ -64,6 +65,14 @@ impl WasmMockQuerier {
                                 assets: vec![],
                             };
                             return SystemResult::Ok(to_json_binary(&pool_state).into());
+                        }
+                        PoolQueryMsg::IsPaused {} => {
+                            // Tests can mark specific pools as paused by
+                            // inserting their address into `paused_pools`.
+                            let paused = self.paused_pools.contains(contract_addr.as_str());
+                            return SystemResult::Ok(
+                                to_json_binary(&IsPausedResponse { paused }).into(),
+                            );
                         }
                         _ => {
                             return SystemResult::Err(SystemError::InvalidRequest {
@@ -91,6 +100,9 @@ impl WasmMockQuerier {
 
 impl WasmMockQuerier {
     pub fn new(base: MockQuerier<Empty>) -> Self {
-        WasmMockQuerier { base }
+        WasmMockQuerier {
+            base,
+            paused_pools: std::collections::HashSet::new(),
+        }
     }
 }

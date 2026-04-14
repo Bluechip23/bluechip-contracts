@@ -311,7 +311,102 @@ fn test_migration_with_large_pool_count() {
     assert_eq!(pending.pools_to_upgrade.len(), 25);
     assert_eq!(pending.upgraded_count, 0);
 
-    // Step 2: Execute after timelock — first batch of 10 + continuation
+    // Step 2: Execute after timelock — first batch of 10, NO self-continuation.
+    // Admin must call ContinuePoolUpgrade explicitly for the remaining 15.
+    let mut later_env = env.clone();
+    later_env.block.time = pending.effective_after.plus_seconds(1);
+
+    let res = execute(
+        deps.as_mut(),
+        later_env.clone(),
+        admin_info.clone(),
+        ExecuteMsg::ExecutePoolUpgrade {},
+    )
+    .unwrap();
+
+    // 10 migrate messages only — the self-dispatched ContinuePoolUpgrade
+    // has been removed to prevent gas-limit blowouts on large fleets.
+    assert_eq!(res.messages.len(), 10);
+    for m in &res.messages {
+        assert!(
+            matches!(m.msg, CosmosMsg::Wasm(WasmMsg::Migrate { .. })),
+            "expected only Migrate messages, got: {:?}",
+            m.msg
+        );
+    }
+
+    let pending = PENDING_POOL_UPGRADE.load(&deps.storage).unwrap();
+    assert_eq!(pending.pools_to_upgrade.len(), 25);
+    assert_eq!(pending.upgraded_count, 10);
+
+    // Admin calls ContinuePoolUpgrade explicitly — processes next 10.
+    let res = execute(
+        deps.as_mut(),
+        later_env.clone(),
+        admin_info.clone(),
+        ExecuteMsg::ContinuePoolUpgrade {},
+    )
+    .unwrap();
+    assert_eq!(res.messages.len(), 10);
+    let pending = PENDING_POOL_UPGRADE.load(&deps.storage).unwrap();
+    assert_eq!(pending.upgraded_count, 20);
+
+    // Final batch — processes the last 5 and clears pending state.
+    let res = execute(
+        deps.as_mut(),
+        later_env,
+        admin_info,
+        ExecuteMsg::ContinuePoolUpgrade {},
+    )
+    .unwrap();
+    assert_eq!(res.messages.len(), 5);
+    assert!(
+        PENDING_POOL_UPGRADE.may_load(&deps.storage).unwrap().is_none(),
+        "PENDING_POOL_UPGRADE should be cleared after final batch"
+    );
+}
+
+#[test]
+fn test_upgrade_skips_paused_pools() {
+    // Confirms that pools reporting paused=true are skipped during an
+    // upgrade batch. The batch still advances past them (counted as
+    // processed) so the upgrade can finish; skipped pool ids are exposed
+    // via the skipped_paused attribute for the admin to handle manually.
+    // Uses mock_dependencies_2 so we can mark specific pools as paused
+    // on the custom querier.
+    let mut deps = mock_dependencies_2(&[]);
+    setup_factory_custom(&mut deps);
+
+    for i in 1..=3 {
+        POOL_REGISTRY
+            .save(
+                &mut deps.storage,
+                i,
+                &Addr::unchecked(format!("pool_{}", i)),
+            )
+            .unwrap();
+    }
+
+    // Mark pool_2 as paused via the mock querier.
+    deps.querier.paused_pools.insert("pool_2".to_string());
+
+    let env = mock_env();
+    let admin_info = message_info(&admin_addr(), &[]);
+
+    execute(
+        deps.as_mut(),
+        env.clone(),
+        admin_info.clone(),
+        ExecuteMsg::UpgradePools {
+            new_code_id: 400,
+            pool_ids: None,
+            migrate_msg: to_json_binary(&Empty {}).unwrap(),
+        },
+    )
+    .unwrap();
+
+    let pending = PENDING_POOL_UPGRADE.load(&deps.storage).unwrap();
+
     let mut later_env = env.clone();
     later_env.block.time = pending.effective_after.plus_seconds(1);
 
@@ -323,26 +418,42 @@ fn test_migration_with_large_pool_count() {
     )
     .unwrap();
 
-    // 10 migrate messages + 1 ContinuePoolUpgrade self-call
-    assert_eq!(res.messages.len(), 11);
+    // Only pool_1 and pool_3 get migrate messages; pool_2 is skipped.
+    assert_eq!(res.messages.len(), 2);
+    let migrated_addrs: Vec<String> = res
+        .messages
+        .iter()
+        .filter_map(|sm| match &sm.msg {
+            CosmosMsg::Wasm(WasmMsg::Migrate { contract_addr, .. }) => Some(contract_addr.clone()),
+            _ => None,
+        })
+        .collect();
+    assert!(migrated_addrs.contains(&"pool_1".to_string()));
+    assert!(migrated_addrs.contains(&"pool_3".to_string()));
+    assert!(!migrated_addrs.contains(&"pool_2".to_string()));
 
-    match &res.messages[10].msg {
-        CosmosMsg::Wasm(WasmMsg::Execute { msg, .. }) => {
-            let exec_msg: ExecuteMsg = from_json(msg).unwrap();
-            assert!(matches!(exec_msg, ExecuteMsg::ContinuePoolUpgrade {}));
-        }
-        _ => panic!("Expected continuation message"),
-    }
+    // Skipped attribute must name pool_2.
+    let skipped = res
+        .attributes
+        .iter()
+        .find(|a| a.key == "skipped_paused")
+        .map(|a| a.value.clone())
+        .unwrap_or_default();
+    assert_eq!(skipped, "2");
 
-    let pending = PENDING_POOL_UPGRADE.load(&deps.storage).unwrap();
-    assert_eq!(pending.pools_to_upgrade.len(), 25);
-    assert_eq!(pending.upgraded_count, 10);
+    // Pending state is cleared since all three pools were processed in one batch.
+    assert!(
+        PENDING_POOL_UPGRADE.may_load(&deps.storage).unwrap().is_none()
+    );
 }
+
 #[test]
 fn test_continue_upgrade_unauthorized() {
     let mut deps = mock_dependencies();
     setup_factory(&mut deps);
 
+    // After removing self-dispatch, ContinuePoolUpgrade is admin-only.
+    // A random caller must be rejected.
     let info = message_info(&Addr::unchecked("hacker"), &[]);
     let err = execute(
         deps.as_mut(),
@@ -351,8 +462,12 @@ fn test_continue_upgrade_unauthorized() {
         ExecuteMsg::ContinuePoolUpgrade {},
     )
     .unwrap_err();
-
-    assert!(matches!(err, ContractError::Unauthorized {}));
+    // assert_correct_factory_address returns a Std error containing "admin"
+    assert!(
+        format!("{}", err).contains("admin") || matches!(err, ContractError::Unauthorized {}),
+        "expected admin rejection, got: {}",
+        err
+    );
 }
 
 #[test]
@@ -417,7 +532,29 @@ fn test_cancel_pool_upgrade() {
 }
 
 fn setup_factory(deps: &mut OwnedDeps<MockStorage, MockApi, MockQuerier>) {
-    let msg = FactoryInstantiate {
+    let msg = default_factory_instantiate_msg();
+    instantiate(
+        deps.as_mut(),
+        mock_env(),
+        message_info(&make_addr("deployer"), &[]),
+        msg,
+    )
+    .unwrap();
+}
+
+fn setup_factory_custom(deps: &mut OwnedDeps<MockStorage, MockApi, WasmMockQuerier>) {
+    let msg = default_factory_instantiate_msg();
+    instantiate(
+        deps.as_mut(),
+        mock_env(),
+        message_info(&make_addr("deployer"), &[]),
+        msg,
+    )
+    .unwrap();
+}
+
+fn default_factory_instantiate_msg() -> FactoryInstantiate {
+    FactoryInstantiate {
         factory_admin_address: admin_addr(),
         commit_amount_for_threshold_bluechip: Uint128::new(25_000_000_000),
         commit_threshold_limit_usd: Uint128::new(25_000_000_000),
@@ -433,13 +570,5 @@ fn setup_factory(deps: &mut OwnedDeps<MockStorage, MockApi, MockQuerier>) {
         creator_excess_liquidity_lock_days: 7,
         atom_bluechip_anchor_pool_address: atom_bluechip_pool_addr(),
         bluechip_mint_contract_address: None,
-    };
-
-    instantiate(
-        deps.as_mut(),
-        mock_env(),
-        message_info(&make_addr("deployer"), &[]),
-        msg,
-    )
-    .unwrap();
+    }
 }

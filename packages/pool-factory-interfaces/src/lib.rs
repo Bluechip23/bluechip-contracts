@@ -9,6 +9,12 @@ pub mod routing;
 pub enum PoolQueryMsg {
     GetPoolState { pool_contract_address: String },
     GetAllPools {},
+    IsPaused {},
+}
+
+#[cw_serde]
+pub struct IsPausedResponse {
+    pub paused: bool,
 }
 #[cw_serde]
 #[derive(QueryResponses)]
