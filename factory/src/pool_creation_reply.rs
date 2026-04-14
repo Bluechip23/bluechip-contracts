@@ -222,8 +222,13 @@ pub fn finalize_pool(
             let ownership_msgs =
                 give_pool_ownership_cw20_and_nft(&token_address, &nft_address, &pool_address)?;
 
+            // Creation succeeded end-to-end. Remove the per-pool creation
+            // state entry rather than leaving it in storage with
+            // status=Completed, which would otherwise accumulate indefinitely.
+            // Mutate local copy just so the attribute lookup below remains
+            // accurate; we don't persist it.
             creation_state.status = CreationStatus::Completed;
-            POOL_CREATION_STATES.save(deps.storage, pool_id, &creation_state)?;
+            POOL_CREATION_STATES.remove(deps.storage, pool_id);
 
             // Clean up temporary state
             cleanup_temp_state(deps.storage, pool_id)?;

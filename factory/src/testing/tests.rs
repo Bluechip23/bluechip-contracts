@@ -546,8 +546,12 @@ fn test_multiple_pool_creation() {
             "Pool should be stored by ID"
         );
 
-        let final_state = POOL_CREATION_STATES.load(&deps.storage, pool_id).unwrap();
-        assert_eq!(final_state.status, CreationStatus::Completed);
+        // Creation state should be removed on successful completion to
+        // avoid permanent storage bloat per pool.
+        assert!(
+            POOL_CREATION_STATES.load(&deps.storage, pool_id).is_err(),
+            "POOL_CREATION_STATES should be removed after successful creation"
+        );
 
         assert!(
             TEMP_POOL_CREATION.load(&deps.storage, pool_id).is_err(),
@@ -698,9 +702,11 @@ fn test_complete_pool_creation_flow() {
 
     assert!(TEMP_POOL_CREATION.load(&deps.storage, pool_id).is_err());
 
-    let final_state = POOL_CREATION_STATES.load(&deps.storage, pool_id).unwrap();
-    assert_eq!(final_state.status, CreationStatus::Completed);
-    assert_eq!(final_state.pool_address, Some(pool_addr));
+    // POOL_CREATION_STATES is cleared on success to avoid permanent bloat.
+    assert!(
+        POOL_CREATION_STATES.load(&deps.storage, pool_id).is_err(),
+        "POOL_CREATION_STATES should be removed after successful creation"
+    );
 
     assert_eq!(res.messages.len(), 2);
 }
