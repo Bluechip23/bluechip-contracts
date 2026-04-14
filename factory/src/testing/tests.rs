@@ -2097,3 +2097,302 @@ fn create_test_pool_msg() -> CreatePool {
         is_standard_pool: None,
     }
 }
+
+// ---------------------------------------------------------------------------
+// Oracle update bounty tests
+// ---------------------------------------------------------------------------
+
+#[test]
+fn test_oracle_bounty_defaults_to_zero_on_instantiate() {
+    let mut deps = mock_dependencies(&[]);
+    setup_atom_pool(&mut deps);
+
+    let msg = create_default_instantiate_msg();
+    let env = mock_env();
+    let info = message_info(&admin_addr(), &[]);
+    instantiate(deps.as_mut(), env, info, msg).unwrap();
+
+    let bounty = crate::state::ORACLE_UPDATE_BOUNTY
+        .load(&deps.storage)
+        .unwrap();
+    assert_eq!(bounty, Uint128::zero());
+}
+
+#[test]
+fn test_set_oracle_update_bounty_admin_only() {
+    let mut deps = mock_dependencies(&[]);
+    setup_atom_pool(&mut deps);
+
+    let env = mock_env();
+    let info = message_info(&admin_addr(), &[]);
+    instantiate(deps.as_mut(), env.clone(), info, create_default_instantiate_msg()).unwrap();
+
+    // Non-admin should be rejected
+    let non_admin = message_info(&addr0000(), &[]);
+    let err = execute(
+        deps.as_mut(),
+        env.clone(),
+        non_admin,
+        ExecuteMsg::SetOracleUpdateBounty {
+            new_bounty: Uint128::new(100_000),
+        },
+    )
+    .unwrap_err();
+    let err_msg = format!("{}", err);
+    assert!(
+        err_msg.contains("admin") || err_msg.contains("Admin"),
+        "expected admin error, got: {}",
+        err_msg
+    );
+
+    // Admin should succeed
+    let admin = message_info(&admin_addr(), &[]);
+    execute(
+        deps.as_mut(),
+        env,
+        admin,
+        ExecuteMsg::SetOracleUpdateBounty {
+            new_bounty: Uint128::new(100_000),
+        },
+    )
+    .unwrap();
+
+    let bounty = crate::state::ORACLE_UPDATE_BOUNTY
+        .load(&deps.storage)
+        .unwrap();
+    assert_eq!(bounty, Uint128::new(100_000));
+}
+
+#[test]
+fn test_set_oracle_update_bounty_rejects_above_cap() {
+    let mut deps = mock_dependencies(&[]);
+    setup_atom_pool(&mut deps);
+
+    let env = mock_env();
+    let info = message_info(&admin_addr(), &[]);
+    instantiate(deps.as_mut(), env.clone(), info, create_default_instantiate_msg()).unwrap();
+
+    let admin = message_info(&admin_addr(), &[]);
+    let over_cap = crate::state::MAX_ORACLE_UPDATE_BOUNTY + Uint128::one();
+    let err = execute(
+        deps.as_mut(),
+        env,
+        admin,
+        ExecuteMsg::SetOracleUpdateBounty {
+            new_bounty: over_cap,
+        },
+    )
+    .unwrap_err();
+    assert!(format!("{}", err).contains("exceeds max"));
+}
+
+#[test]
+fn test_oracle_update_pays_bounty_when_funded() {
+    let bounty = Uint128::new(500_000);
+    // Pre-fund the factory contract with enough ubluechip to cover the bounty
+    let mut deps = mock_dependencies(&[cosmwasm_std::Coin {
+        denom: "ubluechip".to_string(),
+        amount: Uint128::new(10_000_000),
+    }]);
+    setup_atom_pool(&mut deps);
+
+    for i in 1..=3 {
+        let pool_addr = make_addr(&format!("creator_pool_{}", i));
+        let pool_state = PoolStateResponseForFactory {
+            pool_contract_address: pool_addr.clone(),
+            nft_ownership_accepted: true,
+            reserve0: Uint128::new(50_000_000_000),
+            reserve1: Uint128::new(10_000_000_000),
+            total_liquidity: Uint128::new(10_000_000),
+            block_time_last: 0,
+            price0_cumulative_last: Uint128::zero(),
+            price1_cumulative_last: Uint128::zero(),
+            assets: vec![],
+        };
+        POOLS_BY_CONTRACT_ADDRESS
+            .save(deps.as_mut().storage, pool_addr, &pool_state)
+            .unwrap();
+    }
+
+    let env = mock_env();
+    instantiate(
+        deps.as_mut(),
+        env.clone(),
+        message_info(&admin_addr(), &[]),
+        create_default_instantiate_msg(),
+    )
+    .unwrap();
+
+    // Admin sets a bounty
+    execute(
+        deps.as_mut(),
+        env.clone(),
+        message_info(&admin_addr(), &[]),
+        ExecuteMsg::SetOracleUpdateBounty { new_bounty: bounty },
+    )
+    .unwrap();
+
+    // Fast-forward past update interval
+    let mut future_env = env.clone();
+    future_env.block.time = future_env.block.time.plus_seconds(360);
+
+    let keeper = message_info(&addr0000(), &[]);
+    let res = execute(
+        deps.as_mut(),
+        future_env,
+        keeper.clone(),
+        ExecuteMsg::UpdateOraclePrice {},
+    )
+    .unwrap();
+
+    // Response must include a BankMsg::Send paying the keeper
+    let paid = res.messages.iter().any(|sm| match &sm.msg {
+        CosmosMsg::Bank(BankMsg::Send { to_address, amount }) => {
+            to_address == keeper.sender.as_str()
+                && amount.len() == 1
+                && amount[0].denom == "ubluechip"
+                && amount[0].amount == bounty
+        }
+        _ => false,
+    });
+    assert!(paid, "expected bounty BankMsg::Send to keeper");
+    assert!(
+        res.attributes
+            .iter()
+            .any(|a| a.key == "bounty_paid" && a.value == bounty.to_string()),
+        "expected bounty_paid attribute"
+    );
+}
+
+#[test]
+fn test_oracle_update_skips_bounty_when_underfunded() {
+    // Factory has insufficient balance
+    let mut deps = mock_dependencies(&[cosmwasm_std::Coin {
+        denom: "ubluechip".to_string(),
+        amount: Uint128::new(100), // less than bounty
+    }]);
+    setup_atom_pool(&mut deps);
+
+    for i in 1..=3 {
+        let pool_addr = make_addr(&format!("creator_pool_{}", i));
+        let pool_state = PoolStateResponseForFactory {
+            pool_contract_address: pool_addr.clone(),
+            nft_ownership_accepted: true,
+            reserve0: Uint128::new(50_000_000_000),
+            reserve1: Uint128::new(10_000_000_000),
+            total_liquidity: Uint128::new(10_000_000),
+            block_time_last: 0,
+            price0_cumulative_last: Uint128::zero(),
+            price1_cumulative_last: Uint128::zero(),
+            assets: vec![],
+        };
+        POOLS_BY_CONTRACT_ADDRESS
+            .save(deps.as_mut().storage, pool_addr, &pool_state)
+            .unwrap();
+    }
+
+    let env = mock_env();
+    instantiate(
+        deps.as_mut(),
+        env.clone(),
+        message_info(&admin_addr(), &[]),
+        create_default_instantiate_msg(),
+    )
+    .unwrap();
+
+    execute(
+        deps.as_mut(),
+        env.clone(),
+        message_info(&admin_addr(), &[]),
+        ExecuteMsg::SetOracleUpdateBounty {
+            new_bounty: Uint128::new(500_000),
+        },
+    )
+    .unwrap();
+
+    let mut future_env = env.clone();
+    future_env.block.time = future_env.block.time.plus_seconds(360);
+
+    let res = execute(
+        deps.as_mut(),
+        future_env,
+        message_info(&addr0000(), &[]),
+        ExecuteMsg::UpdateOraclePrice {},
+    )
+    .unwrap();
+
+    // Oracle update must still succeed, just no BankMsg
+    assert!(
+        res.messages
+            .iter()
+            .all(|sm| !matches!(sm.msg, CosmosMsg::Bank(BankMsg::Send { .. }))),
+        "no BankMsg::Send expected when underfunded"
+    );
+    assert!(
+        res.attributes
+            .iter()
+            .any(|a| a.key == "bounty_skipped" && a.value == "insufficient_factory_balance"),
+        "expected bounty_skipped attribute"
+    );
+}
+
+#[test]
+fn test_oracle_update_no_bounty_when_disabled() {
+    // Bounty defaults to zero on instantiate; admin never calls SetOracleUpdateBounty
+    let mut deps = mock_dependencies(&[cosmwasm_std::Coin {
+        denom: "ubluechip".to_string(),
+        amount: Uint128::new(10_000_000),
+    }]);
+    setup_atom_pool(&mut deps);
+
+    for i in 1..=3 {
+        let pool_addr = make_addr(&format!("creator_pool_{}", i));
+        let pool_state = PoolStateResponseForFactory {
+            pool_contract_address: pool_addr.clone(),
+            nft_ownership_accepted: true,
+            reserve0: Uint128::new(50_000_000_000),
+            reserve1: Uint128::new(10_000_000_000),
+            total_liquidity: Uint128::new(10_000_000),
+            block_time_last: 0,
+            price0_cumulative_last: Uint128::zero(),
+            price1_cumulative_last: Uint128::zero(),
+            assets: vec![],
+        };
+        POOLS_BY_CONTRACT_ADDRESS
+            .save(deps.as_mut().storage, pool_addr, &pool_state)
+            .unwrap();
+    }
+
+    let env = mock_env();
+    instantiate(
+        deps.as_mut(),
+        env.clone(),
+        message_info(&admin_addr(), &[]),
+        create_default_instantiate_msg(),
+    )
+    .unwrap();
+
+    let mut future_env = env.clone();
+    future_env.block.time = future_env.block.time.plus_seconds(360);
+
+    let res = execute(
+        deps.as_mut(),
+        future_env,
+        message_info(&addr0000(), &[]),
+        ExecuteMsg::UpdateOraclePrice {},
+    )
+    .unwrap();
+
+    // No bank message, no bounty attributes at all
+    assert!(
+        res.messages
+            .iter()
+            .all(|sm| !matches!(sm.msg, CosmosMsg::Bank(BankMsg::Send { .. })))
+    );
+    assert!(
+        !res.attributes
+            .iter()
+            .any(|a| a.key == "bounty_paid" || a.key == "bounty_skipped"),
+        "no bounty attributes expected when disabled"
+    );
+}

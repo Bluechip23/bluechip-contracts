@@ -9,8 +9,9 @@ use crate::pool_creation_reply::{finalize_pool, mint_create_pool, set_tokens};
 use crate::pool_struct::{CreatePool, PoolConfigUpdate, TempPoolCreation};
 use crate::state::{
     CreationStatus, FactoryInstantiate, PendingConfig, PendingPoolConfig, PoolCreationState,
-    PoolUpgrade, FACTORYINSTANTIATEINFO, PENDING_CONFIG, PENDING_POOL_CONFIG, PENDING_POOL_UPGRADE,
-    POOL_COUNTER, POOL_CREATION_STATES, POOL_REGISTRY, POOL_THRESHOLD_MINTED, TEMP_POOL_CREATION,
+    PoolUpgrade, FACTORYINSTANTIATEINFO, MAX_ORACLE_UPDATE_BOUNTY, ORACLE_UPDATE_BOUNTY,
+    PENDING_CONFIG, PENDING_POOL_CONFIG, PENDING_POOL_UPGRADE, POOL_COUNTER, POOL_CREATION_STATES,
+    POOL_REGISTRY, POOL_THRESHOLD_MINTED, TEMP_POOL_CREATION,
 };
 #[cfg(not(feature = "library"))]
 use cosmwasm_std::entry_point;
@@ -59,6 +60,9 @@ pub fn instantiate(
     }
 
     FACTORYINSTANTIATEINFO.save(deps.storage, &msg)?;
+    // Start with no keeper bounty; admin enables it via SetOracleUpdateBounty
+    // once the factory has been pre-funded with ubluechip.
+    ORACLE_UPDATE_BOUNTY.save(deps.storage, &Uint128::zero())?;
     initialize_internal_bluechip_oracle(deps, env)?;
     Ok(Response::new().add_attribute("action", "init_contract"))
 }
@@ -80,7 +84,10 @@ pub fn execute(
             pool_msg,
             token_info,
         } => execute_create_creator_pool(deps, env, info, pool_msg, token_info),
-        ExecuteMsg::UpdateOraclePrice {} => update_internal_oracle_price(deps, env),
+        ExecuteMsg::UpdateOraclePrice {} => update_internal_oracle_price(deps, env, info),
+        ExecuteMsg::SetOracleUpdateBounty { new_bounty } => {
+            execute_set_oracle_update_bounty(deps, info, new_bounty)
+        }
         ExecuteMsg::ForceRotateOraclePools {} => execute_force_rotate_pools(deps, env, info),
         ExecuteMsg::UpgradePools {
             new_code_id,
@@ -744,4 +751,29 @@ pub fn execute_notify_threshold_crossed(
         .add_messages(mint_messages)
         .add_attribute("action", "threshold_crossed_mint")
         .add_attribute("pool_id", pool_id.to_string()))
+}
+
+// Admin-only. Sets the keeper bounty paid on each successful
+// UpdateOraclePrice call. Capped at MAX_ORACLE_UPDATE_BOUNTY so a
+// compromised admin can't drain an unbounded amount in one call.
+// The UPDATE_INTERVAL cooldown already caps total payout frequency.
+pub fn execute_set_oracle_update_bounty(
+    deps: DepsMut,
+    info: MessageInfo,
+    new_bounty: Uint128,
+) -> Result<Response, ContractError> {
+    assert_correct_factory_address(deps.as_ref(), info)?;
+
+    if new_bounty > MAX_ORACLE_UPDATE_BOUNTY {
+        return Err(ContractError::Std(StdError::generic_err(format!(
+            "Bounty exceeds max of {}",
+            MAX_ORACLE_UPDATE_BOUNTY
+        ))));
+    }
+
+    ORACLE_UPDATE_BOUNTY.save(deps.storage, &new_bounty)?;
+
+    Ok(Response::new()
+        .add_attribute("action", "set_oracle_update_bounty")
+        .add_attribute("new_bounty", new_bounty.to_string()))
 }

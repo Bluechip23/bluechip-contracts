@@ -89,6 +89,12 @@ pub enum ExecuteMsg {
         pool_id: u64,
         recovery_type: RecoveryType,
     },
+    // Admin sets the per-call bounty paid to anyone who successfully
+    // invokes UpdateOraclePrice. Capped by MAX_ORACLE_UPDATE_BOUNTY.
+    // Set to zero to disable the bounty entirely.
+    SetOracleUpdateBounty {
+        new_bounty: Uint128,
+    },
 }
 
 #[cw_serde]

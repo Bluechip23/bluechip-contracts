@@ -22,6 +22,22 @@ pub const FIRST_POOL_TIMESTAMP: Item<Timestamp> = Item::new("first_pool_timestam
 pub const POOL_THRESHOLD_MINTED: Map<u64, bool> = Map::new("pool_threshold_minted");
 pub const PENDING_POOL_CONFIG: Map<u64, PendingPoolConfig> = Map::new("pending_pool_config");
 
+// Keeper bounty paid out of the factory's native balance to whoever
+// successfully calls UpdateOraclePrice. The existing UPDATE_INTERVAL
+// cooldown in update_internal_oracle_price gates the frequency, so the
+// payout can happen at most once per window and cannot be spammed.
+// The admin can adjust this value up to MAX_ORACLE_UPDATE_BOUNTY via
+// SetOracleUpdateBounty; setting it to zero disables the bounty.
+pub const ORACLE_UPDATE_BOUNTY: Item<Uint128> = Item::new("oracle_update_bounty");
+
+// Hard cap to protect the factory's reserve if the admin key is
+// compromised. 1000 bluechip per successful update (6 decimals).
+pub const MAX_ORACLE_UPDATE_BOUNTY: Uint128 = Uint128::new(1_000_000_000);
+
+// Native denom the bounty is paid in. The factory must be pre-funded
+// with this denom by the bluechip main wallet.
+pub const ORACLE_BOUNTY_DENOM: &str = "ubluechip";
+
 #[cw_serde]
 pub struct PendingPoolConfig {
     pub pool_id: u64,

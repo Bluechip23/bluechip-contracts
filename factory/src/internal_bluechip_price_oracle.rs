@@ -1,11 +1,15 @@
 #[cfg(not(test))]
 use crate::pyth_types::{PriceFeedResponse, PythQueryMsg};
 
-use crate::state::{FACTORYINSTANTIATEINFO, POOLS_BY_CONTRACT_ADDRESS, POOLS_BY_ID};
+use crate::state::{
+    FACTORYINSTANTIATEINFO, ORACLE_BOUNTY_DENOM, ORACLE_UPDATE_BOUNTY, POOLS_BY_CONTRACT_ADDRESS,
+    POOLS_BY_ID,
+};
 use crate::{asset::TokenType, error::ContractError};
 use cosmwasm_schema::cw_serde;
 use cosmwasm_std::{
-    Addr, Deps, DepsMut, Env, MessageInfo, Order, Response, StdError, StdResult, Uint128, Uint256,
+    Addr, BankMsg, Coin, CosmosMsg, Deps, DepsMut, Env, MessageInfo, Order, Response, StdError,
+    StdResult, Uint128, Uint256,
 };
 use cw_storage_plus::Item;
 use pool_factory_interfaces::{ConversionResponse, PoolQueryMsg, PoolStateResponseForFactory};
@@ -226,7 +230,11 @@ pub fn get_eligible_creator_pools(
     Ok(eligible)
 }
 
-pub fn update_internal_oracle_price(deps: DepsMut, env: Env) -> Result<Response, ContractError> {
+pub fn update_internal_oracle_price(
+    deps: DepsMut,
+    env: Env,
+    info: MessageInfo,
+) -> Result<Response, ContractError> {
     let mut oracle = INTERNAL_ORACLE.load(deps.storage)?;
     let current_time = env.block.time.seconds();
     let next_update = oracle
@@ -277,17 +285,51 @@ pub fn update_internal_oracle_price(deps: DepsMut, env: Env) -> Result<Response,
     oracle.bluechip_price_cache.last_update = current_time;
 
     // Cache the Pyth ATOM/USD price alongside the TWAP update
-    if let Ok(pyth_price) = query_pyth_atom_usd_price(deps.as_ref(), env) {
+    if let Ok(pyth_price) = query_pyth_atom_usd_price(deps.as_ref(), env.clone()) {
         oracle.bluechip_price_cache.cached_pyth_price = pyth_price;
         oracle.bluechip_price_cache.cached_pyth_timestamp = current_time;
     }
 
     INTERNAL_ORACLE.save(deps.storage, &oracle)?;
 
-    Ok(Response::new()
+    // Keeper bounty: pay the caller out of the factory's native balance
+    // if a bounty is configured and the factory is funded. The UPDATE_INTERVAL
+    // cooldown above means this can fire at most once per window, so there's
+    // no spam vector here. If the factory is underfunded, we still succeed
+    // (the oracle update is more important than the payout) and emit an
+    // attribute so operators can alert on it.
+    let bounty = ORACLE_UPDATE_BOUNTY
+        .may_load(deps.storage)?
+        .unwrap_or_default();
+    let mut response = Response::new()
         .add_attribute("action", "update_oracle")
         .add_attribute("twap_price", twap_price.to_string())
-        .add_attribute("pools_used", pools_to_use.len().to_string()))
+        .add_attribute("pools_used", pools_to_use.len().to_string());
+
+    if !bounty.is_zero() {
+        let balance = deps
+            .querier
+            .query_balance(env.contract.address.as_str(), ORACLE_BOUNTY_DENOM)?;
+        if balance.amount >= bounty {
+            response = response
+                .add_message(CosmosMsg::Bank(BankMsg::Send {
+                    to_address: info.sender.to_string(),
+                    amount: vec![Coin {
+                        denom: ORACLE_BOUNTY_DENOM.to_string(),
+                        amount: bounty,
+                    }],
+                }))
+                .add_attribute("bounty_paid", bounty.to_string())
+                .add_attribute("bounty_recipient", info.sender.to_string());
+        } else {
+            response = response
+                .add_attribute("bounty_skipped", "insufficient_factory_balance")
+                .add_attribute("bounty_configured", bounty.to_string())
+                .add_attribute("factory_balance", balance.amount.to_string());
+        }
+    }
+
+    Ok(response)
 }
 
 // Calculates a liquidity-weighted price across sampled pools using cumulative
