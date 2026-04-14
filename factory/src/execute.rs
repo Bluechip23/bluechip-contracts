@@ -185,6 +185,52 @@ pub fn execute_cancel_factory_config_update(
     Ok(Response::new().add_attribute("action", "cancel_config_update"))
 }
 
+// Validates creator token metadata before any state is written.
+// - decimals must be 6 (threshold payout and mint cap are calibrated for 6-decimal tokens)
+// - name: 3-50 chars, printable ASCII only (no control chars, no extended unicode)
+// - symbol: 3-12 chars, uppercase ASCII letters and digits only (matches cw20-base spec)
+fn validate_creator_token_info(token_info: &CreatorTokenInfo) -> Result<(), ContractError> {
+    if token_info.decimal != 6 {
+        return Err(ContractError::Std(StdError::generic_err(
+            "Token decimals must be 6. Threshold payout amounts and mint caps are calibrated for 6-decimal tokens.",
+        )));
+    }
+
+    let name_len = token_info.name.chars().count();
+    if !(3..=50).contains(&name_len) {
+        return Err(ContractError::Std(StdError::generic_err(
+            "Token name must be between 3 and 50 characters",
+        )));
+    }
+    if !token_info
+        .name
+        .chars()
+        .all(|c| c.is_ascii() && !c.is_ascii_control())
+    {
+        return Err(ContractError::Std(StdError::generic_err(
+            "Token name must contain only printable ASCII characters",
+        )));
+    }
+
+    let symbol_len = token_info.symbol.chars().count();
+    if !(3..=12).contains(&symbol_len) {
+        return Err(ContractError::Std(StdError::generic_err(
+            "Token symbol must be between 3 and 12 characters",
+        )));
+    }
+    if !token_info
+        .symbol
+        .chars()
+        .all(|c| c.is_ascii_uppercase() || c.is_ascii_digit())
+    {
+        return Err(ContractError::Std(StdError::generic_err(
+            "Token symbol must contain only uppercase ASCII letters (A-Z) and digits (0-9)",
+        )));
+    }
+
+    Ok(())
+}
+
 fn execute_create_creator_pool(
     deps: DepsMut,
     env: Env,
@@ -192,6 +238,9 @@ fn execute_create_creator_pool(
     pool_msg: CreatePool,
     token_info: CreatorTokenInfo,
 ) -> Result<Response, ContractError> {
+    // Validate token metadata up front, before any state writes.
+    validate_creator_token_info(&token_info)?;
+
     let factory_cw20 = FACTORYINSTANTIATEINFO.load(deps.storage)?;
     let sender = info.sender.clone();
     let pool_counter = POOL_COUNTER.load(deps.storage).unwrap_or(0);
@@ -208,11 +257,6 @@ fn execute_create_creator_pool(
             nft_addr: None,
         },
     )?;
-    if token_info.decimal != 6 {
-        return Err(ContractError::Std(StdError::generic_err(
-            "Token decimals must be 6. Threshold payout amounts and mint caps are calibrated for 6-decimal tokens.",
-        )));
-    }
     let msg = WasmMsg::Instantiate {
         code_id: factory_cw20.cw20_token_contract_id,
         //creating the creator token only, no minting.

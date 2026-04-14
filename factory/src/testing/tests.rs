@@ -427,7 +427,8 @@ fn create_pool_msg(name: &str) -> ExecuteMsg {
         },
         token_info: CreatorTokenInfo {
             name: name.to_string(),
-            symbol: name.to_string(),
+            // Uppercase so the symbol passes factory validation (A-Z, 0-9 only).
+            symbol: name.to_uppercase(),
             decimal: 6,
         },
     }
