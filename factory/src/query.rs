@@ -3,9 +3,7 @@ use crate::internal_bluechip_price_oracle::{
     bluechip_to_usd, get_bluechip_usd_price, usd_to_bluechip,
 };
 use crate::msg::FactoryInstantiateResponse;
-#[allow(unused_imports)]
-use crate::pool_struct::PoolDetails;
-use crate::state::{FACTORYINSTANTIATEINFO, POOLS_BY_CONTRACT_ADDRESS, POOLS_BY_ID};
+use crate::state::{FACTORYINSTANTIATEINFO, POOLS_BY_ID};
 use cosmwasm_schema::{cw_serde, QueryResponses};
 #[cfg(not(feature = "library"))]
 use cosmwasm_std::entry_point;
@@ -13,7 +11,7 @@ use cosmwasm_std::{
     to_json_binary, Addr, Binary, Deps, Env, QueryRequest, StdResult, Uint128, WasmQuery,
 };
 use cw20::{Cw20QueryMsg, TokenInfoResponse};
-use pool_factory_interfaces::{FactoryQueryMsg, PoolStateResponseForFactory};
+use pool_factory_interfaces::FactoryQueryMsg;
 
 #[cw_serde]
 pub struct CreatorTokenInfoResponse {
@@ -29,8 +27,6 @@ pub struct CreatorTokenInfoResponse {
 pub enum QueryMsg {
     #[returns(FactoryInstantiateResponse)]
     Factory {},
-    #[returns(PoolDetails)]
-    Pool { pool_address: String },
     #[returns(CreatorTokenInfoResponse)]
     CreatorTokenInfo { pool_id: u64 },
     #[returns(cosmwasm_std::Binary)]
@@ -41,7 +37,6 @@ pub enum QueryMsg {
 pub fn query(deps: Deps, env: Env, msg: QueryMsg) -> StdResult<Binary> {
     match msg {
         QueryMsg::Factory {} => to_json_binary(&query_active_factory(deps)?),
-        QueryMsg::Pool { pool_address } => to_json_binary(&query_pool(deps, pool_address)?),
         QueryMsg::CreatorTokenInfo { pool_id } => {
             to_json_binary(&query_creator_token_info(deps, pool_id)?)
         }
@@ -49,13 +44,6 @@ pub fn query(deps: Deps, env: Env, msg: QueryMsg) -> StdResult<Binary> {
             handle_internal_bluechip_oracle_query(deps, env, oracle_msg)
         }
     }
-}
-
-pub fn query_pool(deps: Deps, pool_address: String) -> StdResult<PoolStateResponseForFactory> {
-    let pool_addr = deps.api.addr_validate(&pool_address)?;
-
-    let pool_details = POOLS_BY_CONTRACT_ADDRESS.load(deps.storage, pool_addr)?;
-    Ok(pool_details)
 }
 
 pub fn query_creator_token_info(deps: Deps, pool_id: u64) -> StdResult<CreatorTokenInfoResponse> {
