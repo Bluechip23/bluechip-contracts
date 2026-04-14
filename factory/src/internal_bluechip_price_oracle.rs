@@ -670,15 +670,19 @@ pub fn get_bluechip_usd_price(deps: Deps, env: Env) -> StdResult<Uint128> {
     let atom_usd_price = match query_pyth_atom_usd_price(deps, env.clone()) {
         Ok(price) => price,
         Err(_) => {
-            // Pyth query failed (likely stale). Use the cached price if it
-            // was captured within 2x the staleness window so we don't rely
-            // on an arbitrarily old value.
+            // Pyth query failed (likely stale). The cache only bridges very
+            // short Pyth outages — we use the same staleness threshold as the
+            // live query (MAX_PRICE_AGE_SECONDS_BEFORE_STALE, currently 300s).
+            // If Pyth has been unavailable longer than that, refuse to price
+            // rather than letting a volatile old value leak into commit USD
+            // valuations. This converts a prolonged Pyth outage into a
+            // temporary commit freeze, which is safer than mispricing.
             let oracle = INTERNAL_ORACLE
                 .load(deps.storage)
                 .map_err(|_| StdError::generic_err("Internal oracle not initialized"))?;
             let cache = &oracle.bluechip_price_cache;
             let current_time = env.block.time.seconds();
-            let max_cache_age = crate::state::MAX_PRICE_AGE_SECONDS_BEFORE_STALE * 2;
+            let max_cache_age = crate::state::MAX_PRICE_AGE_SECONDS_BEFORE_STALE;
             if cache.cached_pyth_price.is_zero()
                 || current_time.saturating_sub(cache.cached_pyth_timestamp) > max_cache_age
             {
