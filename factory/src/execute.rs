@@ -11,8 +11,8 @@ use crate::pool_creation_reply::{finalize_pool, mint_create_pool, set_tokens};
 use crate::pool_struct::{CreatePool, PoolConfigUpdate, TempPoolCreation};
 use crate::state::{
     CreationStatus, FactoryInstantiate, PendingConfig, PendingPoolConfig, PoolCreationState,
-    PoolUpgrade, DISTRIBUTION_BOUNTY_AMOUNT, FACTORYINSTANTIATEINFO, MAX_DISTRIBUTION_BOUNTY,
-    MAX_ORACLE_UPDATE_BOUNTY, ORACLE_BOUNTY_DENOM, ORACLE_UPDATE_BOUNTY, PENDING_CONFIG,
+    PoolUpgrade, DISTRIBUTION_BOUNTY_USD, FACTORYINSTANTIATEINFO, MAX_DISTRIBUTION_BOUNTY_USD,
+    MAX_ORACLE_UPDATE_BOUNTY_USD, ORACLE_BOUNTY_DENOM, ORACLE_UPDATE_BOUNTY_USD, PENDING_CONFIG,
     PENDING_POOL_CONFIG, PENDING_POOL_UPGRADE, POOL_COUNTER, POOL_CREATION_STATES,
     POOLS_BY_CONTRACT_ADDRESS, POOL_REGISTRY, POOL_THRESHOLD_MINTED, TEMP_POOL_CREATION,
 };
@@ -64,10 +64,11 @@ pub fn instantiate(
 
     FACTORYINSTANTIATEINFO.save(deps.storage, &msg)?;
     // Both keeper bounties default to zero. Admin enables them via
-    // SetOracleUpdateBounty / SetDistributionBounty once the factory has
-    // been pre-funded with ubluechip.
-    ORACLE_UPDATE_BOUNTY.save(deps.storage, &Uint128::zero())?;
-    DISTRIBUTION_BOUNTY_AMOUNT.save(deps.storage, &Uint128::zero())?;
+    // SetOracleUpdateBounty / SetDistributionBounty (each takes a USD
+    // value in 6 decimals) once the factory has been pre-funded with
+    // ubluechip from the bluechip main wallet.
+    ORACLE_UPDATE_BOUNTY_USD.save(deps.storage, &Uint128::zero())?;
+    DISTRIBUTION_BOUNTY_USD.save(deps.storage, &Uint128::zero())?;
     initialize_internal_bluechip_oracle(deps, env)?;
     Ok(Response::new().add_attribute("action", "init_contract"))
 }
@@ -836,6 +837,9 @@ pub fn execute_notify_threshold_crossed(
 // UpdateOraclePrice call. Capped at MAX_ORACLE_UPDATE_BOUNTY so a
 // compromised admin can't drain an unbounded amount in one call.
 // The UPDATE_INTERVAL cooldown already caps total payout frequency.
+// Admin-only. Sets the per-call USD bounty (6 decimals, e.g. 5_000 = $0.005)
+// paid to oracle keepers. Capped by MAX_ORACLE_UPDATE_BOUNTY_USD ($1).
+// At payout time the value is converted to bluechip via the internal oracle.
 pub fn execute_set_oracle_update_bounty(
     deps: DepsMut,
     info: MessageInfo,
@@ -843,22 +847,23 @@ pub fn execute_set_oracle_update_bounty(
 ) -> Result<Response, ContractError> {
     assert_correct_factory_address(deps.as_ref(), info)?;
 
-    if new_bounty > MAX_ORACLE_UPDATE_BOUNTY {
+    if new_bounty > MAX_ORACLE_UPDATE_BOUNTY_USD {
         return Err(ContractError::Std(StdError::generic_err(format!(
-            "Bounty exceeds max of {}",
-            MAX_ORACLE_UPDATE_BOUNTY
+            "Bounty exceeds max of {} (USD, 6 decimals)",
+            MAX_ORACLE_UPDATE_BOUNTY_USD
         ))));
     }
 
-    ORACLE_UPDATE_BOUNTY.save(deps.storage, &new_bounty)?;
+    ORACLE_UPDATE_BOUNTY_USD.save(deps.storage, &new_bounty)?;
 
     Ok(Response::new()
         .add_attribute("action", "set_oracle_update_bounty")
-        .add_attribute("new_bounty", new_bounty.to_string()))
+        .add_attribute("new_bounty_usd", new_bounty.to_string()))
 }
 
-// Admin-only. Sets the bounty paid to keepers per successful
-// pool.ContinueDistribution batch. Capped by MAX_DISTRIBUTION_BOUNTY.
+// Admin-only. Sets the per-batch USD bounty (6 decimals, e.g. 50_000 = $0.05)
+// paid to keepers calling pool.ContinueDistribution. Capped by
+// MAX_DISTRIBUTION_BOUNTY_USD ($1). Converted to bluechip at payout time.
 pub fn execute_set_distribution_bounty(
     deps: DepsMut,
     info: MessageInfo,
@@ -866,26 +871,31 @@ pub fn execute_set_distribution_bounty(
 ) -> Result<Response, ContractError> {
     assert_correct_factory_address(deps.as_ref(), info)?;
 
-    if new_bounty > MAX_DISTRIBUTION_BOUNTY {
+    if new_bounty > MAX_DISTRIBUTION_BOUNTY_USD {
         return Err(ContractError::Std(StdError::generic_err(format!(
-            "Bounty exceeds max of {}",
-            MAX_DISTRIBUTION_BOUNTY
+            "Bounty exceeds max of {} (USD, 6 decimals)",
+            MAX_DISTRIBUTION_BOUNTY_USD
         ))));
     }
 
-    DISTRIBUTION_BOUNTY_AMOUNT.save(deps.storage, &new_bounty)?;
+    DISTRIBUTION_BOUNTY_USD.save(deps.storage, &new_bounty)?;
 
     Ok(Response::new()
         .add_attribute("action", "set_distribution_bounty")
-        .add_attribute("new_bounty", new_bounty.to_string()))
+        .add_attribute("new_bounty_usd", new_bounty.to_string()))
 }
 
 // Pool-only. Called by a pool's ContinueDistribution handler to forward
 // the keeper bounty payment to the factory. The factory pays from its
 // own native reserve so pool LP funds are never used for keeper
-// infrastructure. If the bounty is disabled (zero) or the factory is
-// underfunded, this returns Ok with a skipped attribute so the pool
-// transaction does not revert.
+// infrastructure.
+//
+// Skips gracefully (returns Ok with an attribute) when:
+//   - the bounty is disabled (USD value is zero)
+//   - the oracle conversion fails (Pyth + cache both unavailable)
+//   - the factory's native balance is below the converted amount
+// Skipping rather than erroring means the pool's distribution tx never
+// reverts because of bounty payout state.
 pub fn execute_pay_distribution_bounty(
     deps: DepsMut,
     env: Env,
@@ -901,14 +911,39 @@ pub fn execute_pay_distribution_bounty(
         return Err(ContractError::Unauthorized {});
     }
 
-    let bounty = DISTRIBUTION_BOUNTY_AMOUNT
+    let bounty_usd = DISTRIBUTION_BOUNTY_USD
         .may_load(deps.storage)?
         .unwrap_or_default();
 
-    if bounty.is_zero() {
+    if bounty_usd.is_zero() {
         return Ok(Response::new()
             .add_attribute("action", "pay_distribution_bounty")
             .add_attribute("bounty_skipped", "disabled")
+            .add_attribute("pool", info.sender.to_string()));
+    }
+
+    // Convert USD -> bluechip via the internal oracle. If the oracle is
+    // unavailable, skip gracefully.
+    let bounty_bluechip = match crate::internal_bluechip_price_oracle::usd_to_bluechip(
+        deps.as_ref(),
+        bounty_usd,
+        env.clone(),
+    ) {
+        Ok(conv) => conv.amount,
+        Err(_) => {
+            return Ok(Response::new()
+                .add_attribute("action", "pay_distribution_bounty")
+                .add_attribute("bounty_skipped", "price_unavailable")
+                .add_attribute("bounty_configured_usd", bounty_usd.to_string())
+                .add_attribute("pool", info.sender.to_string()));
+        }
+    };
+
+    if bounty_bluechip.is_zero() {
+        return Ok(Response::new()
+            .add_attribute("action", "pay_distribution_bounty")
+            .add_attribute("bounty_skipped", "conversion_returned_zero")
+            .add_attribute("bounty_configured_usd", bounty_usd.to_string())
             .add_attribute("pool", info.sender.to_string()));
     }
 
@@ -917,11 +952,12 @@ pub fn execute_pay_distribution_bounty(
         .querier
         .query_balance(env.contract.address.as_str(), ORACLE_BOUNTY_DENOM)?;
 
-    if balance.amount < bounty {
+    if balance.amount < bounty_bluechip {
         return Ok(Response::new()
             .add_attribute("action", "pay_distribution_bounty")
             .add_attribute("bounty_skipped", "insufficient_factory_balance")
-            .add_attribute("bounty_configured", bounty.to_string())
+            .add_attribute("bounty_required_bluechip", bounty_bluechip.to_string())
+            .add_attribute("bounty_configured_usd", bounty_usd.to_string())
             .add_attribute("factory_balance", balance.amount.to_string())
             .add_attribute("pool", info.sender.to_string()));
     }
@@ -931,11 +967,12 @@ pub fn execute_pay_distribution_bounty(
             to_address: recipient_addr.to_string(),
             amount: vec![cosmwasm_std::Coin {
                 denom: ORACLE_BOUNTY_DENOM.to_string(),
-                amount: bounty,
+                amount: bounty_bluechip,
             }],
         }))
         .add_attribute("action", "pay_distribution_bounty")
-        .add_attribute("bounty_paid", bounty.to_string())
+        .add_attribute("bounty_paid_bluechip", bounty_bluechip.to_string())
+        .add_attribute("bounty_paid_usd", bounty_usd.to_string())
         .add_attribute("recipient", recipient_addr.to_string())
         .add_attribute("pool", info.sender.to_string()))
 }

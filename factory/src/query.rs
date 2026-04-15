@@ -3,7 +3,9 @@ use crate::internal_bluechip_price_oracle::{
     bluechip_to_usd, get_bluechip_usd_price, usd_to_bluechip,
 };
 use crate::msg::FactoryInstantiateResponse;
-use crate::state::{FACTORYINSTANTIATEINFO, ORACLE_UPDATE_BOUNTY, POOLS_BY_ID};
+use crate::state::{
+    DISTRIBUTION_BOUNTY_USD, FACTORYINSTANTIATEINFO, ORACLE_UPDATE_BOUNTY_USD, POOLS_BY_ID,
+};
 use cosmwasm_schema::{cw_serde, QueryResponses};
 #[cfg(not(feature = "library"))]
 use cosmwasm_std::entry_point;
@@ -23,8 +25,9 @@ pub struct CreatorTokenInfoResponse {
 }
 
 #[cw_serde]
-pub struct OracleUpdateBountyResponse {
-    pub bounty: Uint128,
+pub struct BountyResponse {
+    /// Configured bounty in USD (6 decimals: 1_000_000 = $1.00).
+    pub bounty_usd: Uint128,
 }
 
 #[cw_serde]
@@ -36,8 +39,10 @@ pub enum QueryMsg {
     CreatorTokenInfo { pool_id: u64 },
     #[returns(cosmwasm_std::Binary)]
     InternalBlueChipOracleQuery(FactoryQueryMsg),
-    #[returns(OracleUpdateBountyResponse)]
+    #[returns(BountyResponse)]
     OracleUpdateBounty {},
+    #[returns(BountyResponse)]
+    DistributionBounty {},
 }
 
 #[cfg_attr(not(feature = "library"), entry_point)]
@@ -51,14 +56,22 @@ pub fn query(deps: Deps, env: Env, msg: QueryMsg) -> StdResult<Binary> {
             handle_internal_bluechip_oracle_query(deps, env, oracle_msg)
         }
         QueryMsg::OracleUpdateBounty {} => to_json_binary(&query_oracle_update_bounty(deps)?),
+        QueryMsg::DistributionBounty {} => to_json_binary(&query_distribution_bounty(deps)?),
     }
 }
 
-pub fn query_oracle_update_bounty(deps: Deps) -> StdResult<OracleUpdateBountyResponse> {
-    let bounty = ORACLE_UPDATE_BOUNTY
+pub fn query_oracle_update_bounty(deps: Deps) -> StdResult<BountyResponse> {
+    let bounty_usd = ORACLE_UPDATE_BOUNTY_USD
         .may_load(deps.storage)?
         .unwrap_or_default();
-    Ok(OracleUpdateBountyResponse { bounty })
+    Ok(BountyResponse { bounty_usd })
+}
+
+pub fn query_distribution_bounty(deps: Deps) -> StdResult<BountyResponse> {
+    let bounty_usd = DISTRIBUTION_BOUNTY_USD
+        .may_load(deps.storage)?
+        .unwrap_or_default();
+    Ok(BountyResponse { bounty_usd })
 }
 
 pub fn query_creator_token_info(deps: Deps, pool_id: u64) -> StdResult<CreatorTokenInfoResponse> {

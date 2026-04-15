@@ -2,8 +2,8 @@
 use crate::pyth_types::{PriceFeedResponse, PythQueryMsg};
 
 use crate::state::{
-    FACTORYINSTANTIATEINFO, ORACLE_BOUNTY_DENOM, ORACLE_UPDATE_BOUNTY, POOLS_BY_CONTRACT_ADDRESS,
-    POOLS_BY_ID, POOL_THRESHOLD_MINTED,
+    FACTORYINSTANTIATEINFO, ORACLE_BOUNTY_DENOM, ORACLE_UPDATE_BOUNTY_USD,
+    POOLS_BY_CONTRACT_ADDRESS, POOLS_BY_ID, POOL_THRESHOLD_MINTED,
 };
 use crate::{asset::TokenType, error::ContractError};
 use cosmwasm_schema::cw_serde;
@@ -313,10 +313,16 @@ pub fn update_internal_oracle_price(
     // Keeper bounty: pay the caller out of the factory's native balance
     // if a bounty is configured and the factory is funded. The UPDATE_INTERVAL
     // cooldown above means this can fire at most once per window, so there's
-    // no spam vector here. If the factory is underfunded, we still succeed
-    // (the oracle update is more important than the payout) and emit an
-    // attribute so operators can alert on it.
-    let bounty = ORACLE_UPDATE_BOUNTY
+    // no spam vector here.
+    //
+    // The bounty is stored in USD (6 decimals) and converted to bluechip at
+    // payout time using the just-updated oracle price. This keeps keeper
+    // compensation roughly stable in USD as bluechip price fluctuates.
+    //
+    // Skip-reasons emit attributes instead of erroring so the oracle update
+    // is never gated on bounty payout: a Pyth outage shouldn't also halt
+    // the keepers that fix it.
+    let bounty_usd = ORACLE_UPDATE_BOUNTY_USD
         .may_load(deps.storage)?
         .unwrap_or_default();
     let mut response = Response::new()
@@ -324,26 +330,45 @@ pub fn update_internal_oracle_price(
         .add_attribute("twap_price", twap_price.to_string())
         .add_attribute("pools_used", pools_to_use.len().to_string());
 
-    if !bounty.is_zero() {
-        let balance = deps
-            .querier
-            .query_balance(env.contract.address.as_str(), ORACLE_BOUNTY_DENOM)?;
-        if balance.amount >= bounty {
-            response = response
-                .add_message(CosmosMsg::Bank(BankMsg::Send {
-                    to_address: info.sender.to_string(),
-                    amount: vec![Coin {
-                        denom: ORACLE_BOUNTY_DENOM.to_string(),
-                        amount: bounty,
-                    }],
-                }))
-                .add_attribute("bounty_paid", bounty.to_string())
-                .add_attribute("bounty_recipient", info.sender.to_string());
-        } else {
-            response = response
-                .add_attribute("bounty_skipped", "insufficient_factory_balance")
-                .add_attribute("bounty_configured", bounty.to_string())
-                .add_attribute("factory_balance", balance.amount.to_string());
+    if !bounty_usd.is_zero() {
+        // Convert USD -> bluechip via the just-updated TWAP. If the
+        // conversion errors (Pyth + cache both unavailable), skip the
+        // bounty rather than reverting the whole oracle update.
+        match usd_to_bluechip(deps.as_ref(), bounty_usd, env.clone()) {
+            Ok(conv) => {
+                let bounty_bluechip = conv.amount;
+                let balance = deps
+                    .querier
+                    .query_balance(env.contract.address.as_str(), ORACLE_BOUNTY_DENOM)?;
+                if !bounty_bluechip.is_zero() && balance.amount >= bounty_bluechip {
+                    response = response
+                        .add_message(CosmosMsg::Bank(BankMsg::Send {
+                            to_address: info.sender.to_string(),
+                            amount: vec![Coin {
+                                denom: ORACLE_BOUNTY_DENOM.to_string(),
+                                amount: bounty_bluechip,
+                            }],
+                        }))
+                        .add_attribute("bounty_paid_bluechip", bounty_bluechip.to_string())
+                        .add_attribute("bounty_paid_usd", bounty_usd.to_string())
+                        .add_attribute("bounty_recipient", info.sender.to_string());
+                } else if bounty_bluechip.is_zero() {
+                    response = response
+                        .add_attribute("bounty_skipped", "conversion_returned_zero")
+                        .add_attribute("bounty_configured_usd", bounty_usd.to_string());
+                } else {
+                    response = response
+                        .add_attribute("bounty_skipped", "insufficient_factory_balance")
+                        .add_attribute("bounty_required_bluechip", bounty_bluechip.to_string())
+                        .add_attribute("bounty_configured_usd", bounty_usd.to_string())
+                        .add_attribute("factory_balance", balance.amount.to_string());
+                }
+            }
+            Err(_) => {
+                response = response
+                    .add_attribute("bounty_skipped", "price_unavailable")
+                    .add_attribute("bounty_configured_usd", bounty_usd.to_string());
+            }
         }
     }
 

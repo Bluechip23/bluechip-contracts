@@ -2166,7 +2166,7 @@ fn test_oracle_bounty_defaults_to_zero_on_instantiate() {
     let info = message_info(&admin_addr(), &[]);
     instantiate(deps.as_mut(), env, info, msg).unwrap();
 
-    let bounty = crate::state::ORACLE_UPDATE_BOUNTY
+    let bounty = crate::state::ORACLE_UPDATE_BOUNTY_USD
         .load(&deps.storage)
         .unwrap();
     assert_eq!(bounty, Uint128::zero());
@@ -2211,7 +2211,7 @@ fn test_set_oracle_update_bounty_admin_only() {
     )
     .unwrap();
 
-    let bounty = crate::state::ORACLE_UPDATE_BOUNTY
+    let bounty = crate::state::ORACLE_UPDATE_BOUNTY_USD
         .load(&deps.storage)
         .unwrap();
     assert_eq!(bounty, Uint128::new(100_000));
@@ -2227,7 +2227,7 @@ fn test_set_oracle_update_bounty_rejects_above_cap() {
     instantiate(deps.as_mut(), env.clone(), info, create_default_instantiate_msg()).unwrap();
 
     let admin = message_info(&admin_addr(), &[]);
-    let over_cap = crate::state::MAX_ORACLE_UPDATE_BOUNTY + Uint128::one();
+    let over_cap = crate::state::MAX_ORACLE_UPDATE_BOUNTY_USD + Uint128::one();
     let err = execute(
         deps.as_mut(),
         env,
@@ -2310,11 +2310,13 @@ fn test_oracle_update_pays_bounty_when_funded() {
         _ => false,
     });
     assert!(paid, "expected bounty BankMsg::Send to keeper");
+    // The configured bounty is in USD; the attribute records both
+    // the USD value and the converted bluechip amount.
     assert!(
         res.attributes
             .iter()
-            .any(|a| a.key == "bounty_paid" && a.value == bounty.to_string()),
-        "expected bounty_paid attribute"
+            .any(|a| a.key == "bounty_paid_usd" && a.value == bounty.to_string()),
+        "expected bounty_paid_usd attribute"
     );
 }
 
@@ -3082,9 +3084,7 @@ fn test_oracle_update_no_bounty_when_disabled() {
             .all(|sm| !matches!(sm.msg, CosmosMsg::Bank(BankMsg::Send { .. })))
     );
     assert!(
-        !res.attributes
-            .iter()
-            .any(|a| a.key == "bounty_paid" || a.key == "bounty_skipped"),
+        !res.attributes.iter().any(|a| a.key.starts_with("bounty_")),
         "no bounty attributes expected when disabled"
     );
 }
@@ -3528,6 +3528,19 @@ fn register_test_pool(deps: &mut OwnedDeps<MockStorage, MockApi, WasmMockQuerier
         .unwrap();
 }
 
+// Forces a non-zero oracle price so usd_to_bluechip succeeds in tests
+// that don't go through the full UpdateOraclePrice flow. Pins the
+// conversion at exactly 1 ubluechip = $1.00 USD (matching MOCK_PYTH_PRICE
+// of $10 ATOM with bluechip_per_atom_twap of 10_000_000).
+fn seed_oracle_price_for_bounty_tests(
+    deps: &mut OwnedDeps<MockStorage, MockApi, WasmMockQuerier>,
+) {
+    let mut oracle = INTERNAL_ORACLE.load(&deps.storage).unwrap();
+    oracle.bluechip_price_cache.last_price = Uint128::new(10_000_000);
+    oracle.bluechip_price_cache.last_update = mock_env().block.time.seconds();
+    INTERNAL_ORACLE.save(&mut deps.storage, &oracle).unwrap();
+}
+
 #[test]
 fn test_distribution_bounty_defaults_to_zero() {
     let mut deps = mock_dependencies(&[]);
@@ -3540,7 +3553,7 @@ fn test_distribution_bounty_defaults_to_zero() {
     )
     .unwrap();
 
-    let bounty = crate::state::DISTRIBUTION_BOUNTY_AMOUNT
+    let bounty = crate::state::DISTRIBUTION_BOUNTY_USD
         .load(&deps.storage)
         .unwrap();
     assert_eq!(bounty, Uint128::zero());
@@ -3585,7 +3598,7 @@ fn test_set_distribution_bounty_admin_only() {
         },
     )
     .unwrap();
-    let bounty = crate::state::DISTRIBUTION_BOUNTY_AMOUNT
+    let bounty = crate::state::DISTRIBUTION_BOUNTY_USD
         .load(&deps.storage)
         .unwrap();
     assert_eq!(bounty, Uint128::new(100_000));
@@ -3604,7 +3617,7 @@ fn test_set_distribution_bounty_rejects_above_cap() {
     )
     .unwrap();
 
-    let over = crate::state::MAX_DISTRIBUTION_BOUNTY + Uint128::one();
+    let over = crate::state::MAX_DISTRIBUTION_BOUNTY_USD + Uint128::one();
     let err = execute(
         deps.as_mut(),
         env,
@@ -3662,6 +3675,8 @@ fn test_pay_distribution_bounty_rejects_non_pool_caller() {
 
 #[test]
 fn test_pay_distribution_bounty_pays_registered_pool() {
+    // 1_000_000 = $1.00 USD bounty. With the seeded oracle price below
+    // (1 bluechip = $1.00) the converted payout is 1_000_000 ubluechip.
     let bounty = Uint128::new(1_000_000);
     let mut deps = mock_dependencies(&[cosmwasm_std::Coin {
         denom: "ubluechip".to_string(),
@@ -3676,6 +3691,7 @@ fn test_pay_distribution_bounty_pays_registered_pool() {
         create_default_instantiate_msg(),
     )
     .unwrap();
+    seed_oracle_price_for_bounty_tests(&mut deps);
 
     execute(
         deps.as_mut(),
@@ -3712,7 +3728,7 @@ fn test_pay_distribution_bounty_pays_registered_pool() {
     assert!(res
         .attributes
         .iter()
-        .any(|a| a.key == "bounty_paid" && a.value == bounty.to_string()));
+        .any(|a| a.key == "bounty_paid_usd" && a.value == bounty.to_string()));
 }
 
 #[test]
@@ -3762,7 +3778,7 @@ fn test_pay_distribution_bounty_skips_when_underfunded() {
     let bounty = Uint128::new(1_000_000);
     let mut deps = mock_dependencies(&[cosmwasm_std::Coin {
         denom: "ubluechip".to_string(),
-        amount: Uint128::new(100), // way below bounty
+        amount: Uint128::new(100), // way below the converted bounty
     }]);
     setup_atom_pool(&mut deps);
     let env = mock_env();
@@ -3773,6 +3789,7 @@ fn test_pay_distribution_bounty_skips_when_underfunded() {
         create_default_instantiate_msg(),
     )
     .unwrap();
+    seed_oracle_price_for_bounty_tests(&mut deps);
 
     execute(
         deps.as_mut(),
@@ -3806,4 +3823,242 @@ fn test_pay_distribution_bounty_skips_when_underfunded() {
         .attributes
         .iter()
         .any(|a| a.key == "bounty_skipped" && a.value == "insufficient_factory_balance"));
+}
+
+// ---------------------------------------------------------------------------
+// USD-denomination conversion behavior
+// ---------------------------------------------------------------------------
+// Bounties are stored in USD (6 decimals) and converted to bluechip at
+// payout time using the current oracle price. As bluechip appreciates
+// in USD terms, the bluechip amount paid SHRINKS so keeper compensation
+// stays roughly constant in real terms.
+
+#[test]
+fn test_distribution_bounty_converts_via_oracle_price() {
+    // With seeded oracle (1 bluechip = $1.00 USD), $0.50 USD bounty
+    // converts to 500_000 ubluechip.
+    let bounty_usd = Uint128::new(500_000); // $0.50
+    let mut deps = mock_dependencies(&[cosmwasm_std::Coin {
+        denom: "ubluechip".to_string(),
+        amount: Uint128::new(10_000_000),
+    }]);
+    setup_atom_pool(&mut deps);
+    let env = mock_env();
+    instantiate(
+        deps.as_mut(),
+        env.clone(),
+        message_info(&admin_addr(), &[]),
+        create_default_instantiate_msg(),
+    )
+    .unwrap();
+    seed_oracle_price_for_bounty_tests(&mut deps);
+
+    execute(
+        deps.as_mut(),
+        env.clone(),
+        message_info(&admin_addr(), &[]),
+        ExecuteMsg::SetDistributionBounty {
+            new_bounty: bounty_usd,
+        },
+    )
+    .unwrap();
+
+    let pool_addr = make_addr("registered_pool");
+    register_test_pool(&mut deps, &pool_addr);
+
+    let res = execute(
+        deps.as_mut(),
+        env,
+        message_info(&pool_addr, &[]),
+        ExecuteMsg::PayDistributionBounty {
+            recipient: addr0000().to_string(),
+        },
+    )
+    .unwrap();
+
+    // Find the BankMsg amount.
+    let paid_bluechip = res
+        .messages
+        .iter()
+        .find_map(|sm| match &sm.msg {
+            CosmosMsg::Bank(BankMsg::Send { amount, .. }) => amount.first().map(|c| c.amount),
+            _ => None,
+        })
+        .expect("expected a BankMsg::Send");
+    // At seeded mock price (1 bluechip = $1), $0.50 = 500_000 ubluechip.
+    assert_eq!(paid_bluechip, Uint128::new(500_000));
+
+    // Both attributes must be present so operators can audit conversion.
+    assert!(res
+        .attributes
+        .iter()
+        .any(|a| a.key == "bounty_paid_usd" && a.value == "500000"));
+    assert!(res
+        .attributes
+        .iter()
+        .any(|a| a.key == "bounty_paid_bluechip" && a.value == "500000"));
+}
+
+#[test]
+fn test_distribution_bounty_pays_less_bluechip_when_bluechip_appreciates() {
+    // Same $0.50 USD bounty, but bluechip is now worth $2 (twice as
+    // valuable). Expected bluechip payout: 250_000 ubluechip ($0.50 / $2).
+    let bounty_usd = Uint128::new(500_000); // $0.50
+    let mut deps = mock_dependencies(&[cosmwasm_std::Coin {
+        denom: "ubluechip".to_string(),
+        amount: Uint128::new(10_000_000),
+    }]);
+    setup_atom_pool(&mut deps);
+    let env = mock_env();
+    instantiate(
+        deps.as_mut(),
+        env.clone(),
+        message_info(&admin_addr(), &[]),
+        create_default_instantiate_msg(),
+    )
+    .unwrap();
+
+    // Seed oracle so 1 bluechip = $2.00.
+    // last_price = bluechip_per_atom_twap. With atom_usd_price = $10,
+    // bluechip_usd_price = atom_usd_price * 1e6 / last_price.
+    // We want bluechip_usd_price = 2_000_000 ($2).
+    // 10_000_000 * 1_000_000 / X = 2_000_000  =>  X = 5_000_000.
+    let mut oracle = INTERNAL_ORACLE.load(&deps.storage).unwrap();
+    oracle.bluechip_price_cache.last_price = Uint128::new(5_000_000);
+    oracle.bluechip_price_cache.last_update = env.block.time.seconds();
+    INTERNAL_ORACLE.save(&mut deps.storage, &oracle).unwrap();
+
+    execute(
+        deps.as_mut(),
+        env.clone(),
+        message_info(&admin_addr(), &[]),
+        ExecuteMsg::SetDistributionBounty {
+            new_bounty: bounty_usd,
+        },
+    )
+    .unwrap();
+
+    let pool_addr = make_addr("registered_pool");
+    register_test_pool(&mut deps, &pool_addr);
+
+    let res = execute(
+        deps.as_mut(),
+        env,
+        message_info(&pool_addr, &[]),
+        ExecuteMsg::PayDistributionBounty {
+            recipient: addr0000().to_string(),
+        },
+    )
+    .unwrap();
+
+    let paid_bluechip = res
+        .messages
+        .iter()
+        .find_map(|sm| match &sm.msg {
+            CosmosMsg::Bank(BankMsg::Send { amount, .. }) => amount.first().map(|c| c.amount),
+            _ => None,
+        })
+        .expect("expected a BankMsg::Send");
+    // $0.50 / $2.00 = 0.25 bluechip = 250_000 ubluechip.
+    assert_eq!(
+        paid_bluechip,
+        Uint128::new(250_000),
+        "appreciated bluechip should mean fewer ubluechip per USD bounty"
+    );
+}
+
+#[test]
+fn test_distribution_bounty_skips_when_oracle_unavailable() {
+    // If usd_to_bluechip errors (no oracle price), the pool's payout
+    // request must succeed with bounty_skipped=price_unavailable so the
+    // pool's distribution tx does not revert.
+    let mut deps = mock_dependencies(&[cosmwasm_std::Coin {
+        denom: "ubluechip".to_string(),
+        amount: Uint128::new(10_000_000),
+    }]);
+    setup_atom_pool(&mut deps);
+    let env = mock_env();
+    instantiate(
+        deps.as_mut(),
+        env.clone(),
+        message_info(&admin_addr(), &[]),
+        create_default_instantiate_msg(),
+    )
+    .unwrap();
+    // Deliberately do NOT seed oracle price — last_price stays zero so
+    // get_bluechip_usd_price errors with "TWAP price is zero".
+
+    execute(
+        deps.as_mut(),
+        env.clone(),
+        message_info(&admin_addr(), &[]),
+        ExecuteMsg::SetDistributionBounty {
+            new_bounty: Uint128::new(500_000),
+        },
+    )
+    .unwrap();
+
+    let pool_addr = make_addr("registered_pool");
+    register_test_pool(&mut deps, &pool_addr);
+
+    let res = execute(
+        deps.as_mut(),
+        env,
+        message_info(&pool_addr, &[]),
+        ExecuteMsg::PayDistributionBounty {
+            recipient: addr0000().to_string(),
+        },
+    )
+    .unwrap();
+
+    assert!(
+        res.messages
+            .iter()
+            .all(|sm| !matches!(sm.msg, CosmosMsg::Bank(BankMsg::Send { .. })))
+    );
+    assert!(
+        res.attributes
+            .iter()
+            .any(|a| a.key == "bounty_skipped" && a.value == "price_unavailable"),
+        "expected price_unavailable skip reason"
+    );
+}
+
+#[test]
+fn test_set_distribution_bounty_cap_is_one_dollar() {
+    // Confirms the USD cap is $1 (1_000_000 with 6 decimals). Anything
+    // above is rejected, including 1 unit above.
+    let mut deps = mock_dependencies(&[]);
+    setup_atom_pool(&mut deps);
+    let env = mock_env();
+    instantiate(
+        deps.as_mut(),
+        env.clone(),
+        message_info(&admin_addr(), &[]),
+        create_default_instantiate_msg(),
+    )
+    .unwrap();
+
+    // $1.00 exactly is accepted.
+    execute(
+        deps.as_mut(),
+        env.clone(),
+        message_info(&admin_addr(), &[]),
+        ExecuteMsg::SetDistributionBounty {
+            new_bounty: Uint128::new(1_000_000),
+        },
+    )
+    .unwrap();
+
+    // $1.000001 is rejected.
+    let err = execute(
+        deps.as_mut(),
+        env,
+        message_info(&admin_addr(), &[]),
+        ExecuteMsg::SetDistributionBounty {
+            new_bounty: Uint128::new(1_000_001),
+        },
+    )
+    .unwrap_err();
+    assert!(format!("{}", err).contains("exceeds max"));
 }
