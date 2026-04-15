@@ -22,7 +22,7 @@ use cosmwasm_std::{
     to_json_binary, Deps, DepsMut, Env, MessageInfo, Reply, Response, StdError, StdResult, SubMsg,
     Uint128, WasmMsg,
 };
-use cosmwasm_std::{Binary, CosmosMsg, Order};
+use cosmwasm_std::{Addr, Attribute, Binary, CosmosMsg, Order};
 use cw20::MinterResponse;
 const CONTRACT_NAME: &str = "crates.io:bluechip-factory";
 const CONTRACT_VERSION: &str = env!("CARGO_PKG_VERSION");
@@ -833,6 +833,25 @@ pub fn execute_notify_threshold_crossed(
         .add_attribute("pool_id", pool_id.to_string()))
 }
 
+// Builds a uniform "bounty skipped" Response for execute_pay_distribution_bounty.
+// Every skip path emits the same action+bounty_skipped+pool triple plus
+// a few path-specific extras; this keeps the call sites short and the
+// emitted attribute shape consistent.
+fn pay_distribution_bounty_skip(
+    reason: &'static str,
+    pool: &Addr,
+    extras: Vec<Attribute>,
+) -> Response {
+    let mut resp = Response::new()
+        .add_attribute("action", "pay_distribution_bounty")
+        .add_attribute("bounty_skipped", reason)
+        .add_attribute("pool", pool.to_string());
+    for attr in extras {
+        resp = resp.add_attribute(attr.key, attr.value);
+    }
+    resp
+}
+
 // Admin-only. Sets the per-call USD bounty (6 decimals, e.g. 5_000 = $0.005)
 // paid to oracle keepers. Capped by MAX_ORACLE_UPDATE_BOUNTY_USD ($1).
 // At payout time the value is converted to bluechip via the internal oracle.
@@ -912,11 +931,10 @@ pub fn execute_pay_distribution_bounty(
         .unwrap_or_default();
 
     if bounty_usd.is_zero() {
-        return Ok(Response::new()
-            .add_attribute("action", "pay_distribution_bounty")
-            .add_attribute("bounty_skipped", "disabled")
-            .add_attribute("pool", info.sender.to_string()));
+        return Ok(pay_distribution_bounty_skip("disabled", &info.sender, vec![]));
     }
+
+    let bounty_usd_attr = Attribute::new("bounty_configured_usd", bounty_usd.to_string());
 
     // Convert USD -> bluechip via the internal oracle. If the oracle is
     // unavailable, skip gracefully.
@@ -927,20 +945,20 @@ pub fn execute_pay_distribution_bounty(
     ) {
         Ok(conv) => conv.amount,
         Err(_) => {
-            return Ok(Response::new()
-                .add_attribute("action", "pay_distribution_bounty")
-                .add_attribute("bounty_skipped", "price_unavailable")
-                .add_attribute("bounty_configured_usd", bounty_usd.to_string())
-                .add_attribute("pool", info.sender.to_string()));
+            return Ok(pay_distribution_bounty_skip(
+                "price_unavailable",
+                &info.sender,
+                vec![bounty_usd_attr],
+            ));
         }
     };
 
     if bounty_bluechip.is_zero() {
-        return Ok(Response::new()
-            .add_attribute("action", "pay_distribution_bounty")
-            .add_attribute("bounty_skipped", "conversion_returned_zero")
-            .add_attribute("bounty_configured_usd", bounty_usd.to_string())
-            .add_attribute("pool", info.sender.to_string()));
+        return Ok(pay_distribution_bounty_skip(
+            "conversion_returned_zero",
+            &info.sender,
+            vec![bounty_usd_attr],
+        ));
     }
 
     let recipient_addr = deps.api.addr_validate(&recipient)?;
@@ -949,13 +967,15 @@ pub fn execute_pay_distribution_bounty(
         .query_balance(env.contract.address.as_str(), ORACLE_BOUNTY_DENOM)?;
 
     if balance.amount < bounty_bluechip {
-        return Ok(Response::new()
-            .add_attribute("action", "pay_distribution_bounty")
-            .add_attribute("bounty_skipped", "insufficient_factory_balance")
-            .add_attribute("bounty_required_bluechip", bounty_bluechip.to_string())
-            .add_attribute("bounty_configured_usd", bounty_usd.to_string())
-            .add_attribute("factory_balance", balance.amount.to_string())
-            .add_attribute("pool", info.sender.to_string()));
+        return Ok(pay_distribution_bounty_skip(
+            "insufficient_factory_balance",
+            &info.sender,
+            vec![
+                Attribute::new("bounty_required_bluechip", bounty_bluechip.to_string()),
+                bounty_usd_attr,
+                Attribute::new("factory_balance", balance.amount.to_string()),
+            ],
+        ));
     }
 
     Ok(Response::new()

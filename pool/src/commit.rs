@@ -741,13 +741,14 @@ pub fn execute_continue_distribution(
         funds: vec![],
     }));
 
-    let updated_dist = DISTRIBUTION_STATE.may_load(deps.storage)?;
-    let remaining_after = updated_dist
-        .as_ref()
-        .map(|d| d.distributions_remaining)
-        .unwrap_or(0);
-    let is_complete =
-        updated_dist.is_none() || !updated_dist.map(|d| d.is_distributing).unwrap_or(false);
+    // process_distribution_batch may have either removed the state
+    // entirely (genuine completion) or flipped is_distributing=false
+    // (recovery path after repeated failures). Treat both as "stop
+    // calling this pool" from the keeper's perspective.
+    let (remaining_after, is_complete) = match DISTRIBUTION_STATE.may_load(deps.storage)? {
+        None => (0u32, true),
+        Some(d) => (d.distributions_remaining, !d.is_distributing),
+    };
 
     Ok(Response::new()
         .add_messages(msgs)
