@@ -3,11 +3,8 @@ import { loadConfigFromEnv } from "./lib/config.js";
 import { buildKeeperClient } from "./lib/client.js";
 import { nextOracleSleepMs } from "./lib/decisions.js";
 import { checkKeeperBalance, runOracleIteration } from "./lib/oracle-loop.js";
+import { interruptibleSleep } from "./lib/sleep.js";
 import { log } from "./lib/logger.js";
-
-function sleep(ms: number): Promise<void> {
-  return new Promise((resolve) => setTimeout(resolve, ms));
-}
 
 async function main(): Promise<void> {
   const cfg = loadConfigFromEnv();
@@ -34,13 +31,7 @@ async function main(): Promise<void> {
 
     const ms = nextOracleSleepMs(cfg.ORACLE_POLL_INTERVAL_MS);
     log.info("sleeping", { ms });
-    const tick = 1_000;
-    let remaining = ms;
-    while (remaining > 0 && !stopped) {
-      const chunk = Math.min(tick, remaining);
-      await sleep(chunk);
-      remaining -= chunk;
-    }
+    await interruptibleSleep(ms, () => stopped);
   }
 
   log.info("oracle keeper shutting down");

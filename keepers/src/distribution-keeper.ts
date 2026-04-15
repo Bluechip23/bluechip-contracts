@@ -4,11 +4,8 @@ import { buildKeeperClient } from "./lib/client.js";
 import { nextDistributionSleepMs } from "./lib/decisions.js";
 import { runDistributionSweep } from "./lib/distribution-loop.js";
 import { checkKeeperBalance } from "./lib/oracle-loop.js";
+import { interruptibleSleep } from "./lib/sleep.js";
 import { log } from "./lib/logger.js";
-
-function sleep(ms: number): Promise<void> {
-  return new Promise((resolve) => setTimeout(resolve, ms));
-}
 
 async function main(): Promise<void> {
   const cfg = loadConfigFromEnv();
@@ -46,13 +43,7 @@ async function main(): Promise<void> {
 
     const ms = nextDistributionSleepMs(cfg.DISTRIBUTION_POLL_INTERVAL_MS, madeProgress);
     log.info("sleeping", { ms, made_progress: madeProgress });
-    const tick = 1_000;
-    let remaining = ms;
-    while (remaining > 0 && !stopped) {
-      const chunk = Math.min(tick, remaining);
-      await sleep(chunk);
-      remaining -= chunk;
-    }
+    await interruptibleSleep(ms, () => stopped);
   }
 
   log.info("distribution keeper shutting down");

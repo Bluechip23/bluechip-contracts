@@ -310,18 +310,12 @@ pub fn update_internal_oracle_price(
 
     INTERNAL_ORACLE.save(deps.storage, &oracle)?;
 
-    // Keeper bounty: pay the caller out of the factory's native balance
-    // if a bounty is configured and the factory is funded. The UPDATE_INTERVAL
-    // cooldown above means this can fire at most once per window, so there's
-    // no spam vector here.
-    //
-    // The bounty is stored in USD (6 decimals) and converted to bluechip at
-    // payout time using the just-updated oracle price. This keeps keeper
-    // compensation roughly stable in USD as bluechip price fluctuates.
-    //
-    // Skip-reasons emit attributes instead of erroring so the oracle update
-    // is never gated on bounty payout: a Pyth outage shouldn't also halt
-    // the keepers that fix it.
+    // Keeper bounty: pay the caller out of the factory's native balance.
+    // Stored in USD (6 decimals) and converted to bluechip at payout time
+    // using the just-updated oracle price, so keeper compensation stays
+    // roughly stable in USD as bluechip price fluctuates. Skip reasons
+    // emit attributes instead of erroring — a Pyth outage shouldn't also
+    // halt the keepers that fix it. UPDATE_INTERVAL above gates frequency.
     let bounty_usd = ORACLE_UPDATE_BOUNTY_USD
         .may_load(deps.storage)?
         .unwrap_or_default();

@@ -5,12 +5,9 @@ import {
   type TxOutcome,
 } from "./decisions.js";
 import type { Executor } from "./executor.js";
+import { sleep } from "./sleep.js";
 import { PoolExecContinueDistribution, isExpectedSkipError } from "./types.js";
 import { log } from "./logger.js";
-
-function sleep(ms: number): Promise<void> {
-  return new Promise((resolve) => setTimeout(resolve, ms));
-}
 
 /** Per-pool drain result, exposed for observability / testing. */
 export interface DrainResult {

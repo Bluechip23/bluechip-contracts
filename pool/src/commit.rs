@@ -728,12 +728,9 @@ pub fn execute_continue_distribution(
 
     let mut msgs = process_distribution_batch(deps.storage, &pool_info, &env)?;
 
-    // Bounty is paid by the factory from its own native reserve, not from
-    // pool LP funds. The factory verifies info.sender is a registered pool
-    // and either pays the bounty or returns gracefully (skip-on-empty,
-    // skip-on-disabled). If the factory rejects (caller not registered),
-    // this whole distribution tx reverts — which is the desired safety
-    // behavior since only legitimate pools should be triggering payouts.
+    // Bounty paid by the factory from its own reserve, not pool LP funds.
+    // Factory rejects unregistered pools, which would revert this whole
+    // tx — desired behavior since only legitimate pools should pay bounties.
     msgs.push(CosmosMsg::Wasm(WasmMsg::Execute {
         contract_addr: pool_info.factory_addr.to_string(),
         msg: to_json_binary(

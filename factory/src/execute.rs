@@ -833,10 +833,6 @@ pub fn execute_notify_threshold_crossed(
         .add_attribute("pool_id", pool_id.to_string()))
 }
 
-// Admin-only. Sets the keeper bounty paid on each successful
-// UpdateOraclePrice call. Capped at MAX_ORACLE_UPDATE_BOUNTY so a
-// compromised admin can't drain an unbounded amount in one call.
-// The UPDATE_INTERVAL cooldown already caps total payout frequency.
 // Admin-only. Sets the per-call USD bounty (6 decimals, e.g. 5_000 = $0.005)
 // paid to oracle keepers. Capped by MAX_ORACLE_UPDATE_BOUNTY_USD ($1).
 // At payout time the value is converted to bluechip via the internal oracle.
