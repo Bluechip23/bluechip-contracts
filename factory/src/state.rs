@@ -38,6 +38,13 @@ pub const MAX_ORACLE_UPDATE_BOUNTY: Uint128 = Uint128::new(1_000_000_000);
 // with this denom by the bluechip main wallet.
 pub const ORACLE_BOUNTY_DENOM: &str = "ubluechip";
 
+// ForceRotateOraclePools is a 2-step action: admin proposes a rotation,
+// the timelock elapses, then admin invokes ForceRotateOraclePools to
+// execute. Prevents a compromised admin from instantly rotating the
+// oracle's pool sample set without a 48h observability window for the
+// community to notice and respond.
+pub const PENDING_ORACLE_ROTATION: Item<Timestamp> = Item::new("pending_oracle_rotation");
+
 #[cw_serde]
 pub struct PendingPoolConfig {
     pub pool_id: u64,

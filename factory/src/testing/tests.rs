@@ -989,20 +989,51 @@ fn test_oracle_force_rotate_pools() {
     let oracle = INTERNAL_ORACLE.load(&deps.storage).unwrap();
     let initial_pools = oracle.selected_pools.clone();
 
-    // Try to force rotate as non-admin - fail
+    // Non-admin cannot propose a force-rotate.
     let unauthorized_info = message_info(&Addr::unchecked("unauthorized"), &[]);
-    let rotate_msg = ExecuteMsg::ForceRotateOraclePools {};
     let result = execute(
         deps.as_mut(),
         env.clone(),
         unauthorized_info,
-        rotate_msg.clone(),
+        ExecuteMsg::ProposeForceRotateOraclePools {},
     );
     assert!(result.is_err());
 
-    // Force rotate as admin - success
+    // Admin proposes rotation. This just records PENDING_ORACLE_ROTATION;
+    // ForceRotateOraclePools cannot execute until the 48h timelock elapses.
     let admin_info = message_info(&admin_addr(), &[]);
-    let result = execute(deps.as_mut(), env.clone(), admin_info, rotate_msg);
+    execute(
+        deps.as_mut(),
+        env.clone(),
+        admin_info.clone(),
+        ExecuteMsg::ProposeForceRotateOraclePools {},
+    )
+    .unwrap();
+
+    // Attempting to execute before the timelock must fail.
+    let err = execute(
+        deps.as_mut(),
+        env.clone(),
+        admin_info.clone(),
+        ExecuteMsg::ForceRotateOraclePools {},
+    )
+    .unwrap_err();
+    assert!(
+        matches!(err, crate::error::ContractError::TimelockNotExpired { .. }),
+        "pre-timelock force-rotate must be rejected, got: {:?}",
+        err
+    );
+
+    // Fast-forward past the 48h timelock and execute.
+    let mut future_env = env.clone();
+    future_env.block.time = future_env.block.time.plus_seconds(86400 * 2 + 1);
+
+    let result = execute(
+        deps.as_mut(),
+        future_env,
+        admin_info,
+        ExecuteMsg::ForceRotateOraclePools {},
+    );
     assert!(result.is_ok());
 
     let res = result.unwrap();
@@ -1020,6 +1051,15 @@ fn test_oracle_force_rotate_pools() {
 
     // With 10 creator pools, rotation should potentially select different pools
     assert_eq!(new_pools.len(), initial_pools.len());
+
+    // Pending entry must be consumed on successful execution.
+    assert!(
+        crate::state::PENDING_ORACLE_ROTATION
+            .may_load(&deps.storage)
+            .unwrap()
+            .is_none(),
+        "PENDING_ORACLE_ROTATION should be cleared after execution"
+    );
 }
 
 #[test]
@@ -2347,6 +2387,170 @@ fn test_oracle_update_skips_bounty_when_underfunded() {
             .iter()
             .any(|a| a.key == "bounty_skipped" && a.value == "insufficient_factory_balance"),
         "expected bounty_skipped attribute"
+    );
+}
+
+#[test]
+fn test_force_rotate_requires_propose_first() {
+    // Calling ForceRotateOraclePools without first proposing must fail —
+    // the 2-step timelock flow is not optional.
+    let mut deps = mock_dependencies(&[]);
+    setup_atom_pool(&mut deps);
+
+    let env = mock_env();
+    instantiate(
+        deps.as_mut(),
+        env.clone(),
+        message_info(&admin_addr(), &[]),
+        create_default_instantiate_msg(),
+    )
+    .unwrap();
+
+    let err = execute(
+        deps.as_mut(),
+        env,
+        message_info(&admin_addr(), &[]),
+        ExecuteMsg::ForceRotateOraclePools {},
+    )
+    .unwrap_err();
+
+    assert!(
+        format!("{}", err).contains("No pending force-rotate"),
+        "expected 'no pending' rejection, got: {}",
+        err
+    );
+}
+
+#[test]
+fn test_force_rotate_cancel_clears_pending() {
+    // Admin can cancel a pending force-rotate before execution.
+    let mut deps = mock_dependencies(&[]);
+    setup_atom_pool(&mut deps);
+
+    let env = mock_env();
+    let admin_info = message_info(&admin_addr(), &[]);
+    instantiate(
+        deps.as_mut(),
+        env.clone(),
+        admin_info.clone(),
+        create_default_instantiate_msg(),
+    )
+    .unwrap();
+
+    execute(
+        deps.as_mut(),
+        env.clone(),
+        admin_info.clone(),
+        ExecuteMsg::ProposeForceRotateOraclePools {},
+    )
+    .unwrap();
+
+    assert!(
+        crate::state::PENDING_ORACLE_ROTATION
+            .may_load(&deps.storage)
+            .unwrap()
+            .is_some()
+    );
+
+    execute(
+        deps.as_mut(),
+        env.clone(),
+        admin_info.clone(),
+        ExecuteMsg::CancelForceRotateOraclePools {},
+    )
+    .unwrap();
+
+    assert!(
+        crate::state::PENDING_ORACLE_ROTATION
+            .may_load(&deps.storage)
+            .unwrap()
+            .is_none()
+    );
+
+    // After cancellation, executing must fail with "no pending" again.
+    let mut future_env = env.clone();
+    future_env.block.time = future_env.block.time.plus_seconds(86400 * 3);
+    let err = execute(
+        deps.as_mut(),
+        future_env,
+        admin_info,
+        ExecuteMsg::ForceRotateOraclePools {},
+    )
+    .unwrap_err();
+    assert!(format!("{}", err).contains("No pending force-rotate"));
+}
+
+#[test]
+fn test_force_rotate_cancel_non_admin_rejected() {
+    let mut deps = mock_dependencies(&[]);
+    setup_atom_pool(&mut deps);
+
+    let env = mock_env();
+    instantiate(
+        deps.as_mut(),
+        env.clone(),
+        message_info(&admin_addr(), &[]),
+        create_default_instantiate_msg(),
+    )
+    .unwrap();
+
+    // Admin proposes so there's a pending entry.
+    execute(
+        deps.as_mut(),
+        env.clone(),
+        message_info(&admin_addr(), &[]),
+        ExecuteMsg::ProposeForceRotateOraclePools {},
+    )
+    .unwrap();
+
+    // Non-admin tries to cancel.
+    let err = execute(
+        deps.as_mut(),
+        env,
+        message_info(&Addr::unchecked("hacker"), &[]),
+        ExecuteMsg::CancelForceRotateOraclePools {},
+    )
+    .unwrap_err();
+    assert!(matches!(err, crate::error::ContractError::Unauthorized {}));
+}
+
+#[test]
+fn test_force_rotate_double_propose_rejected() {
+    // Proposing a force-rotate while one is already pending must be
+    // rejected so there is no ambiguity about which effective_after
+    // applies.
+    let mut deps = mock_dependencies(&[]);
+    setup_atom_pool(&mut deps);
+
+    let env = mock_env();
+    let admin_info = message_info(&admin_addr(), &[]);
+    instantiate(
+        deps.as_mut(),
+        env.clone(),
+        admin_info.clone(),
+        create_default_instantiate_msg(),
+    )
+    .unwrap();
+
+    execute(
+        deps.as_mut(),
+        env.clone(),
+        admin_info.clone(),
+        ExecuteMsg::ProposeForceRotateOraclePools {},
+    )
+    .unwrap();
+
+    let err = execute(
+        deps.as_mut(),
+        env,
+        admin_info,
+        ExecuteMsg::ProposeForceRotateOraclePools {},
+    )
+    .unwrap_err();
+    assert!(
+        format!("{}", err).contains("already pending"),
+        "expected 'already pending' error, got: {}",
+        err
     );
 }
 

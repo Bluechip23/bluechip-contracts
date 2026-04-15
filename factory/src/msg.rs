@@ -40,6 +40,11 @@ pub enum ExecuteMsg {
         token_info: CreatorTokenInfo,
     },
     UpdateOraclePrice {},
+    // 2-step rotation: admin proposes, waits 48h, then calls
+    // ForceRotateOraclePools to execute. Cancel with
+    // CancelForceRotateOraclePools before the timelock elapses.
+    ProposeForceRotateOraclePools {},
+    CancelForceRotateOraclePools {},
     ForceRotateOraclePools {},
     UpgradePools {
         new_code_id: u64,

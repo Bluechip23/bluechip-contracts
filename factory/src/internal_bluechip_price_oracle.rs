@@ -859,15 +859,84 @@ fn query_pool_safe(
     }
 }
 
+// 48-hour delay between proposing and executing a force-rotate, matching
+// the ProposeConfigUpdate / UpgradePools / ProposePoolConfigUpdate pattern.
+// This gives the community 48h of visibility before a rotation lands,
+// so a compromised admin can't instantly rotate the oracle sample set to
+// amplify a manipulation attempt.
+pub const FORCE_ROTATE_TIMELOCK_SECONDS: u64 = 86400 * 2;
+
+pub fn execute_propose_force_rotate_pools(
+    deps: DepsMut,
+    env: Env,
+    info: MessageInfo,
+) -> Result<Response, ContractError> {
+    let config = FACTORYINSTANTIATEINFO.load(deps.storage)?;
+    if info.sender != config.factory_admin_address {
+        return Err(ContractError::Unauthorized {});
+    }
+
+    if crate::state::PENDING_ORACLE_ROTATION
+        .may_load(deps.storage)?
+        .is_some()
+    {
+        return Err(ContractError::Std(StdError::generic_err(
+            "A force-rotate is already pending. Cancel it first.",
+        )));
+    }
+
+    let effective_after = env.block.time.plus_seconds(FORCE_ROTATE_TIMELOCK_SECONDS);
+    crate::state::PENDING_ORACLE_ROTATION.save(deps.storage, &effective_after)?;
+
+    Ok(Response::new()
+        .add_attribute("action", "propose_force_rotate_pools")
+        .add_attribute("effective_after", effective_after.to_string()))
+}
+
+pub fn execute_cancel_force_rotate_pools(
+    deps: DepsMut,
+    info: MessageInfo,
+) -> Result<Response, ContractError> {
+    let config = FACTORYINSTANTIATEINFO.load(deps.storage)?;
+    if info.sender != config.factory_admin_address {
+        return Err(ContractError::Unauthorized {});
+    }
+
+    if crate::state::PENDING_ORACLE_ROTATION
+        .may_load(deps.storage)?
+        .is_none()
+    {
+        return Err(ContractError::Std(StdError::generic_err(
+            "No pending force-rotate to cancel",
+        )));
+    }
+
+    crate::state::PENDING_ORACLE_ROTATION.remove(deps.storage);
+
+    Ok(Response::new().add_attribute("action", "cancel_force_rotate_pools"))
+}
+
 pub fn execute_force_rotate_pools(
     deps: DepsMut,
     env: Env,
     info: MessageInfo,
 ) -> Result<Response, ContractError> {
-    // Check admin permission
     let config = FACTORYINSTANTIATEINFO.load(deps.storage)?;
     if info.sender != config.factory_admin_address {
         return Err(ContractError::Unauthorized {});
+    }
+
+    // Must have gone through the 48h propose/wait flow.
+    let effective_after = crate::state::PENDING_ORACLE_ROTATION
+        .may_load(deps.storage)?
+        .ok_or_else(|| {
+            ContractError::Std(StdError::generic_err(
+                "No pending force-rotate; call ProposeForceRotateOraclePools first",
+            ))
+        })?;
+
+    if env.block.time < effective_after {
+        return Err(ContractError::TimelockNotExpired { effective_after });
     }
 
     let mut oracle = INTERNAL_ORACLE.load(deps.storage)?;
@@ -876,6 +945,7 @@ pub fn execute_force_rotate_pools(
     oracle.last_rotation = env.block.time.seconds();
 
     INTERNAL_ORACLE.save(deps.storage, &oracle)?;
+    crate::state::PENDING_ORACLE_ROTATION.remove(deps.storage);
 
     Ok(Response::new()
         .add_attribute("action", "force_rotate_pools")

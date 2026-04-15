@@ -1,6 +1,8 @@
 use crate::error::ContractError;
 use crate::internal_bluechip_price_oracle::{
-    execute_force_rotate_pools, initialize_internal_bluechip_oracle, update_internal_oracle_price,
+    execute_cancel_force_rotate_pools, execute_force_rotate_pools,
+    execute_propose_force_rotate_pools, initialize_internal_bluechip_oracle,
+    update_internal_oracle_price,
 };
 use crate::mint_bluechips_pool_creation::calculate_and_mint_bluechip;
 use crate::msg::{CreatorTokenInfo, ExecuteMsg, TokenInstantiateMsg};
@@ -87,6 +89,12 @@ pub fn execute(
         ExecuteMsg::UpdateOraclePrice {} => update_internal_oracle_price(deps, env, info),
         ExecuteMsg::SetOracleUpdateBounty { new_bounty } => {
             execute_set_oracle_update_bounty(deps, info, new_bounty)
+        }
+        ExecuteMsg::ProposeForceRotateOraclePools {} => {
+            execute_propose_force_rotate_pools(deps, env, info)
+        }
+        ExecuteMsg::CancelForceRotateOraclePools {} => {
+            execute_cancel_force_rotate_pools(deps, info)
         }
         ExecuteMsg::ForceRotateOraclePools {} => execute_force_rotate_pools(deps, env, info),
         ExecuteMsg::UpgradePools {
