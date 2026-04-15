@@ -10,10 +10,10 @@ use crate::generic_helpers::{
     update_pool_fee_growth,
 };
 use crate::state::{
-    PoolState, COMMITFEEINFO, COMMIT_LEDGER, COMMIT_LIMIT_INFO, DISTRIBUTION_BOUNTY,
-    DISTRIBUTION_STATE, IS_THRESHOLD_HIT, LAST_THRESHOLD_ATTEMPT, NATIVE_RAISED_FROM_COMMIT,
-    POOL_ANALYTICS, POOL_FEE_STATE, POOL_INFO, POOL_PAUSED, POOL_SPECS, POOL_STATE,
-    REENTRANCY_GUARD, THRESHOLD_PAYOUT_AMOUNTS, THRESHOLD_PROCESSING, USD_RAISED_FROM_COMMIT,
+    PoolState, COMMITFEEINFO, COMMIT_LEDGER, COMMIT_LIMIT_INFO, DISTRIBUTION_STATE,
+    IS_THRESHOLD_HIT, LAST_THRESHOLD_ATTEMPT, NATIVE_RAISED_FROM_COMMIT, POOL_ANALYTICS,
+    POOL_FEE_STATE, POOL_INFO, POOL_PAUSED, POOL_SPECS, POOL_STATE, REENTRANCY_GUARD,
+    THRESHOLD_PAYOUT_AMOUNTS, THRESHOLD_PROCESSING, USD_RAISED_FROM_COMMIT,
 };
 use crate::swap_helper::{
     assert_max_spread, compute_swap, get_bluechip_value, get_usd_value_with_staleness_check,
@@ -725,28 +725,24 @@ pub fn execute_continue_distribution(
     }
 
     let pool_info = POOL_INFO.load(deps.storage)?;
-    let pre_batch_bounty_reserve = dist_state.bounty_reserve;
 
     let mut msgs = process_distribution_batch(deps.storage, &pool_info, &env)?;
 
-    let bluechip_denom = get_bluechip_denom(&pool_info.pool_info.asset_infos)?;
-
-    let bounty_paid = if pre_batch_bounty_reserve >= DISTRIBUTION_BOUNTY {
-        if let Some(mut dist_state_for_bounty) = DISTRIBUTION_STATE.may_load(deps.storage)? {
-            dist_state_for_bounty.bounty_reserve = dist_state_for_bounty
-                .bounty_reserve
-                .checked_sub(DISTRIBUTION_BOUNTY)?;
-            DISTRIBUTION_STATE.save(deps.storage, &dist_state_for_bounty)?;
-        }
-        msgs.push(get_bank_transfer_to_msg(
-            &info.sender,
-            &bluechip_denom,
-            DISTRIBUTION_BOUNTY,
-        )?);
-        DISTRIBUTION_BOUNTY
-    } else {
-        Uint128::zero()
-    };
+    // Bounty is paid by the factory from its own native reserve, not from
+    // pool LP funds. The factory verifies info.sender is a registered pool
+    // and either pays the bounty or returns gracefully (skip-on-empty,
+    // skip-on-disabled). If the factory rejects (caller not registered),
+    // this whole distribution tx reverts — which is the desired safety
+    // behavior since only legitimate pools should be triggering payouts.
+    msgs.push(CosmosMsg::Wasm(WasmMsg::Execute {
+        contract_addr: pool_info.factory_addr.to_string(),
+        msg: to_json_binary(
+            &pool_factory_interfaces::FactoryExecuteMsg::PayDistributionBounty {
+                recipient: info.sender.to_string(),
+            },
+        )?,
+        funds: vec![],
+    }));
 
     let updated_dist = DISTRIBUTION_STATE.may_load(deps.storage)?;
     let remaining_after = updated_dist
@@ -766,7 +762,6 @@ pub fn execute_continue_distribution(
         )
         .add_attribute("remaining_after", remaining_after.to_string())
         .add_attribute("distribution_complete", is_complete.to_string())
-        .add_attribute("bounty_paid", bounty_paid.to_string())
         .add_attribute("pool_contract", env.contract.address.to_string())
         .add_attribute("block_height", env.block.height.to_string())
         .add_attribute("block_time", env.block.time.seconds().to_string()))

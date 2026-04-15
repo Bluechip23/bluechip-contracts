@@ -38,6 +38,16 @@ pub const MAX_ORACLE_UPDATE_BOUNTY: Uint128 = Uint128::new(1_000_000_000);
 // with this denom by the bluechip main wallet.
 pub const ORACLE_BOUNTY_DENOM: &str = "ubluechip";
 
+// Keeper bounty paid to whoever calls a pool's ContinueDistribution and
+// successfully processes a batch. Paid out of the factory's native
+// reserve (same pocket as the oracle bounty) so pool LP reserves are
+// never tapped for keeper infrastructure. Admin configurable via
+// SetDistributionBounty up to MAX_DISTRIBUTION_BOUNTY. Zero disables.
+pub const DISTRIBUTION_BOUNTY_AMOUNT: Item<Uint128> = Item::new("distribution_bounty_amount");
+
+// Hard cap for the distribution bounty. 10 bluechip per batch (6 decimals).
+pub const MAX_DISTRIBUTION_BOUNTY: Uint128 = Uint128::new(10_000_000);
+
 // ForceRotateOraclePools is a 2-step action: admin proposes a rotation,
 // the timelock elapses, then admin invokes ForceRotateOraclePools to
 // execute. Prevents a compromised admin from instantly rotating the

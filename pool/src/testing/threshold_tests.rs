@@ -704,7 +704,6 @@ fn test_distribution_timeout_triggers_error() {
         consecutive_failures: 0,
         started_at: old_time,
         last_updated: old_time, // Very old
-        bounty_reserve: Uint128::zero(),
     };
     DISTRIBUTION_STATE
         .save(&mut deps.storage, &dist_state)

@@ -1,6 +1,7 @@
 use cosmwasm_std::{
+    from_json,
     testing::{message_info, mock_dependencies, mock_env, MockApi, MockQuerier, MockStorage},
-    Addr, Coin, CosmosMsg, Decimal, OwnedDeps, Timestamp, Uint128,
+    Addr, Coin, CosmosMsg, Decimal, OwnedDeps, Timestamp, Uint128, WasmMsg,
 };
 use std::str::FromStr;
 
@@ -331,11 +332,18 @@ fn test_first_deposit_locks_minimum_liquidity() {
 }
 
 #[test]
-fn test_distribution_bounty_from_reserves() {
+fn test_distribution_bounty_does_not_touch_pool_funds() {
+    // Pre-refactor name: test_distribution_bounty_from_reserves.
+    //
+    // The bounty for distribution batches is now paid by the FACTORY, not
+    // skimmed from the pool's own reserve. This test pins the invariant
+    // that ContinueDistribution leaves reserve0 and fee_reserve_0
+    // completely untouched on the pool side, and that the pool emits a
+    // WasmMsg to the factory's PayDistributionBounty endpoint instead of
+    // a BankMsg out of its own balance.
     let mut deps = mock_dependencies();
     setup_pool_post_threshold(&mut deps);
 
-    // Set up factory address
     EXPECTED_FACTORY
         .save(
             &mut deps.storage,
@@ -345,14 +353,12 @@ fn test_distribution_bounty_from_reserves() {
         )
         .unwrap();
 
-    // Seed some fee reserves (bluechip side)
     let mut fee_state = POOL_FEE_STATE.load(&deps.storage).unwrap();
-    fee_state.fee_reserve_0 = Uint128::new(10_000_000); // 10 bluechip in fees
+    fee_state.fee_reserve_0 = Uint128::new(10_000_000);
     POOL_FEE_STATE.save(&mut deps.storage, &fee_state).unwrap();
 
     let initial_reserve0 = POOL_STATE.load(&deps.storage).unwrap().reserve0;
 
-    // Set up distribution state with committers and a funded bounty reserve
     let committer = Addr::unchecked("committer1");
     COMMIT_LEDGER
         .save(&mut deps.storage, &committer, &Uint128::new(5_000_000_000))
@@ -370,9 +376,6 @@ fn test_distribution_bounty_from_reserves() {
         consecutive_failures: 0,
         started_at: Timestamp::from_seconds(1_600_000_000),
         last_updated: Timestamp::from_seconds(1_600_000_000),
-        // Bounty reserve funded during threshold crossing — bounty is paid
-        // from here, NOT from pool trading reserves (reserve0).
-        bounty_reserve: Uint128::new(5_000_000),
     };
     DISTRIBUTION_STATE
         .save(&mut deps.storage, &dist_state)
@@ -384,28 +387,42 @@ fn test_distribution_bounty_from_reserves() {
     let msg = ExecuteMsg::ContinueDistribution {};
     let res = execute(deps.as_mut(), env, caller_info, msg).unwrap();
 
-    // Fee reserves must be untouched — bounty does not distort LP accounting
+    // Fee reserves untouched — pool no longer pays the bounty.
     let post_fee_state = POOL_FEE_STATE.load(&deps.storage).unwrap();
     assert_eq!(
         post_fee_state.fee_reserve_0, fee_state.fee_reserve_0,
-        "fee_reserve_0 should be untouched (bounty comes from bounty_reserve)"
+        "fee_reserve_0 must not change — bounty is now paid by the factory"
     );
 
-    // Pool trading reserves must be untouched — bounty comes from dedicated reserve
+    // Pool trading reserves untouched.
     let post_reserve0 = POOL_STATE.load(&deps.storage).unwrap().reserve0;
     assert_eq!(
         post_reserve0, initial_reserve0,
-        "reserve0 must NOT decrease — bounty is paid from bounty_reserve, not LP reserves"
+        "reserve0 must not decrease — bounty is now paid by the factory"
     );
 
-    // The bounty_paid attribute should confirm bounty was paid
-    let bounty_attr = res
-        .attributes
-        .iter()
-        .find(|a| a.key == "bounty_paid")
-        .expect("Should have bounty_paid attribute");
-    let bounty_amount: u128 = bounty_attr.value.parse().unwrap();
-    assert!(bounty_amount > 0, "Bounty should be non-zero");
+    // Confirm the pool emitted a WasmMsg::Execute to the factory's
+    // PayDistributionBounty endpoint with the keeper as recipient.
+    let factory_msg_present = res.messages.iter().any(|sm| match &sm.msg {
+        cosmwasm_std::CosmosMsg::Wasm(WasmMsg::Execute { contract_addr, msg, .. }) => {
+            if contract_addr != "factory_contract" {
+                return false;
+            }
+            // Decode the inner message to check the variant.
+            let parsed: Result<pool_factory_interfaces::FactoryExecuteMsg, _> = from_json(msg);
+            matches!(
+                parsed,
+                Ok(pool_factory_interfaces::FactoryExecuteMsg::PayDistributionBounty { recipient })
+                    if recipient == "bounty_hunter"
+            )
+        }
+        _ => false,
+    });
+    assert!(
+        factory_msg_present,
+        "expected WasmMsg::Execute to factory.PayDistributionBounty, got: {:?}",
+        res.messages
+    );
 }
 
 #[test]
@@ -607,6 +624,11 @@ fn test_migrate_accepts_minimum_fee() {
 /// Verify ContinueDistribution does not distort fee_growth_global_0 when paying bounty
 #[test]
 fn test_distribution_bounty_does_not_distort_fee_growth() {
+    // Pool's fee_growth_global_0 must not move when ContinueDistribution
+    // runs — the pool no longer pays the bounty itself, so there's no
+    // accounting path that could touch fee growth. This test guards
+    // against a future regression where someone reintroduces a pool-side
+    // fee deduction for keeper costs.
     let mut deps = mock_dependencies();
     setup_pool_post_threshold(&mut deps);
 
@@ -619,15 +641,13 @@ fn test_distribution_bounty_does_not_distort_fee_growth() {
         )
         .unwrap();
 
-    // Set up fee reserves and some fee growth
     let mut fee_state = POOL_FEE_STATE.load(&deps.storage).unwrap();
-    fee_state.fee_reserve_0 = Uint128::new(10_000_000); // 10 bluechip
+    fee_state.fee_reserve_0 = Uint128::new(10_000_000);
     fee_state.fee_growth_global_0 = Decimal::from_str("100").unwrap();
     POOL_FEE_STATE.save(&mut deps.storage, &fee_state).unwrap();
 
     let pre_growth = fee_state.fee_growth_global_0;
 
-    // Set up distribution state with funded bounty reserve
     let committer = Addr::unchecked("committer1");
     COMMIT_LEDGER
         .save(&mut deps.storage, &committer, &Uint128::new(5_000_000_000))
@@ -644,7 +664,6 @@ fn test_distribution_bounty_does_not_distort_fee_growth() {
         consecutive_failures: 0,
         started_at: Timestamp::from_seconds(1_600_000_000),
         last_updated: Timestamp::from_seconds(1_600_000_000),
-        bounty_reserve: Uint128::new(5_000_000),
     };
     DISTRIBUTION_STATE
         .save(&mut deps.storage, &dist_state)
@@ -656,13 +675,11 @@ fn test_distribution_bounty_does_not_distort_fee_growth() {
     execute(deps.as_mut(), env, caller_info, msg).unwrap();
 
     let post_fee_state = POOL_FEE_STATE.load(&deps.storage).unwrap();
-    // Bounty is paid from dedicated bounty_reserve, so fee_growth_global_0 must NOT change.
-    // This prevents LP fee accounting distortion.
     assert_eq!(
         post_fee_state.fee_growth_global_0, pre_growth,
-        "fee_growth_global_0 must not change when bounty is paid from bounty_reserve. Before: {}, After: {}",
-        pre_growth,
-        post_fee_state.fee_growth_global_0
+        "fee_growth_global_0 must not change during distribution. \
+         Before: {}, After: {}",
+        pre_growth, post_fee_state.fee_growth_global_0
     );
 }
 
@@ -694,7 +711,6 @@ fn test_emergency_withdraw_clears_distribution() {
         consecutive_failures: 0,
         started_at: Timestamp::from_seconds(1_600_000_000),
         last_updated: Timestamp::from_seconds(1_600_000_000),
-        bounty_reserve: Uint128::zero(),
     };
     DISTRIBUTION_STATE
         .save(&mut deps.storage, &dist_state)

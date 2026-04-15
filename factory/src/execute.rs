@@ -11,9 +11,10 @@ use crate::pool_creation_reply::{finalize_pool, mint_create_pool, set_tokens};
 use crate::pool_struct::{CreatePool, PoolConfigUpdate, TempPoolCreation};
 use crate::state::{
     CreationStatus, FactoryInstantiate, PendingConfig, PendingPoolConfig, PoolCreationState,
-    PoolUpgrade, FACTORYINSTANTIATEINFO, MAX_ORACLE_UPDATE_BOUNTY, ORACLE_UPDATE_BOUNTY,
-    PENDING_CONFIG, PENDING_POOL_CONFIG, PENDING_POOL_UPGRADE, POOL_COUNTER, POOL_CREATION_STATES,
-    POOL_REGISTRY, POOL_THRESHOLD_MINTED, TEMP_POOL_CREATION,
+    PoolUpgrade, DISTRIBUTION_BOUNTY_AMOUNT, FACTORYINSTANTIATEINFO, MAX_DISTRIBUTION_BOUNTY,
+    MAX_ORACLE_UPDATE_BOUNTY, ORACLE_BOUNTY_DENOM, ORACLE_UPDATE_BOUNTY, PENDING_CONFIG,
+    PENDING_POOL_CONFIG, PENDING_POOL_UPGRADE, POOL_COUNTER, POOL_CREATION_STATES,
+    POOLS_BY_CONTRACT_ADDRESS, POOL_REGISTRY, POOL_THRESHOLD_MINTED, TEMP_POOL_CREATION,
 };
 #[cfg(not(feature = "library"))]
 use cosmwasm_std::entry_point;
@@ -62,9 +63,11 @@ pub fn instantiate(
     }
 
     FACTORYINSTANTIATEINFO.save(deps.storage, &msg)?;
-    // Start with no keeper bounty; admin enables it via SetOracleUpdateBounty
-    // once the factory has been pre-funded with ubluechip.
+    // Both keeper bounties default to zero. Admin enables them via
+    // SetOracleUpdateBounty / SetDistributionBounty once the factory has
+    // been pre-funded with ubluechip.
     ORACLE_UPDATE_BOUNTY.save(deps.storage, &Uint128::zero())?;
+    DISTRIBUTION_BOUNTY_AMOUNT.save(deps.storage, &Uint128::zero())?;
     initialize_internal_bluechip_oracle(deps, env)?;
     Ok(Response::new().add_attribute("action", "init_contract"))
 }
@@ -89,6 +92,12 @@ pub fn execute(
         ExecuteMsg::UpdateOraclePrice {} => update_internal_oracle_price(deps, env, info),
         ExecuteMsg::SetOracleUpdateBounty { new_bounty } => {
             execute_set_oracle_update_bounty(deps, info, new_bounty)
+        }
+        ExecuteMsg::SetDistributionBounty { new_bounty } => {
+            execute_set_distribution_bounty(deps, info, new_bounty)
+        }
+        ExecuteMsg::PayDistributionBounty { recipient } => {
+            execute_pay_distribution_bounty(deps, env, info, recipient)
         }
         ExecuteMsg::ProposeForceRotateOraclePools {} => {
             execute_propose_force_rotate_pools(deps, env, info)
@@ -846,4 +855,87 @@ pub fn execute_set_oracle_update_bounty(
     Ok(Response::new()
         .add_attribute("action", "set_oracle_update_bounty")
         .add_attribute("new_bounty", new_bounty.to_string()))
+}
+
+// Admin-only. Sets the bounty paid to keepers per successful
+// pool.ContinueDistribution batch. Capped by MAX_DISTRIBUTION_BOUNTY.
+pub fn execute_set_distribution_bounty(
+    deps: DepsMut,
+    info: MessageInfo,
+    new_bounty: Uint128,
+) -> Result<Response, ContractError> {
+    assert_correct_factory_address(deps.as_ref(), info)?;
+
+    if new_bounty > MAX_DISTRIBUTION_BOUNTY {
+        return Err(ContractError::Std(StdError::generic_err(format!(
+            "Bounty exceeds max of {}",
+            MAX_DISTRIBUTION_BOUNTY
+        ))));
+    }
+
+    DISTRIBUTION_BOUNTY_AMOUNT.save(deps.storage, &new_bounty)?;
+
+    Ok(Response::new()
+        .add_attribute("action", "set_distribution_bounty")
+        .add_attribute("new_bounty", new_bounty.to_string()))
+}
+
+// Pool-only. Called by a pool's ContinueDistribution handler to forward
+// the keeper bounty payment to the factory. The factory pays from its
+// own native reserve so pool LP funds are never used for keeper
+// infrastructure. If the bounty is disabled (zero) or the factory is
+// underfunded, this returns Ok with a skipped attribute so the pool
+// transaction does not revert.
+pub fn execute_pay_distribution_bounty(
+    deps: DepsMut,
+    env: Env,
+    info: MessageInfo,
+    recipient: String,
+) -> Result<Response, ContractError> {
+    // Auth: caller must be a registered pool. POOLS_BY_CONTRACT_ADDRESS is
+    // populated at pool creation and keyed by the pool's contract address.
+    if POOLS_BY_CONTRACT_ADDRESS
+        .may_load(deps.storage, info.sender.clone())?
+        .is_none()
+    {
+        return Err(ContractError::Unauthorized {});
+    }
+
+    let bounty = DISTRIBUTION_BOUNTY_AMOUNT
+        .may_load(deps.storage)?
+        .unwrap_or_default();
+
+    if bounty.is_zero() {
+        return Ok(Response::new()
+            .add_attribute("action", "pay_distribution_bounty")
+            .add_attribute("bounty_skipped", "disabled")
+            .add_attribute("pool", info.sender.to_string()));
+    }
+
+    let recipient_addr = deps.api.addr_validate(&recipient)?;
+    let balance = deps
+        .querier
+        .query_balance(env.contract.address.as_str(), ORACLE_BOUNTY_DENOM)?;
+
+    if balance.amount < bounty {
+        return Ok(Response::new()
+            .add_attribute("action", "pay_distribution_bounty")
+            .add_attribute("bounty_skipped", "insufficient_factory_balance")
+            .add_attribute("bounty_configured", bounty.to_string())
+            .add_attribute("factory_balance", balance.amount.to_string())
+            .add_attribute("pool", info.sender.to_string()));
+    }
+
+    Ok(Response::new()
+        .add_message(CosmosMsg::Bank(cosmwasm_std::BankMsg::Send {
+            to_address: recipient_addr.to_string(),
+            amount: vec![cosmwasm_std::Coin {
+                denom: ORACLE_BOUNTY_DENOM.to_string(),
+                amount: bounty,
+            }],
+        }))
+        .add_attribute("action", "pay_distribution_bounty")
+        .add_attribute("bounty_paid", bounty.to_string())
+        .add_attribute("recipient", recipient_addr.to_string())
+        .add_attribute("pool", info.sender.to_string()))
 }

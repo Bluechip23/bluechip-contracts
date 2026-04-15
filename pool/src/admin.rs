@@ -134,9 +134,10 @@ pub fn execute_emergency_withdraw(
 
         EMERGENCY_DRAINED.save(deps.storage, &true)?;
 
+        // The pool no longer holds a bounty reserve; distribution bounties
+        // are paid by the factory. Halt any in-flight distribution so
+        // future ContinueDistribution calls reject cleanly.
         if let Ok(mut dist_state) = DISTRIBUTION_STATE.load(deps.storage) {
-            total0 = total0.checked_add(dist_state.bounty_reserve)?;
-            dist_state.bounty_reserve = Uint128::zero();
             dist_state.is_distributing = false;
             dist_state.distributions_remaining = 0;
             DISTRIBUTION_STATE.save(deps.storage, &dist_state)?;
@@ -401,7 +402,6 @@ fn recover_distribution(
                     consecutive_failures: 0,
                     started_at: env.block.time,
                     last_updated: env.block.time,
-                    bounty_reserve: dist_state.bounty_reserve,
                 };
                 DISTRIBUTION_STATE.save(storage, &restarted)?;
             }

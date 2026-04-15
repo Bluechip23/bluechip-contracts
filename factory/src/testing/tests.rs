@@ -3498,3 +3498,312 @@ fn test_validate_symbol_accepts_uppercase_and_digits() {
         );
     }
 }
+
+// ---------------------------------------------------------------------------
+// Distribution bounty (paid by factory on behalf of pools)
+// ---------------------------------------------------------------------------
+// Pools no longer hold or pay their own keeper bounty for distribution
+// batches — they forward a PayDistributionBounty message to the factory
+// and the factory pays from its own native reserve. These tests pin the
+// auth gate (only registered pools), the admin-tunable bounty amount,
+// and the graceful-skip behavior on underfund / disabled.
+
+fn register_test_pool(deps: &mut OwnedDeps<MockStorage, MockApi, WasmMockQuerier>, addr: &Addr) {
+    POOLS_BY_CONTRACT_ADDRESS
+        .save(
+            deps.as_mut().storage,
+            addr.clone(),
+            &PoolStateResponseForFactory {
+                pool_contract_address: addr.clone(),
+                nft_ownership_accepted: true,
+                reserve0: Uint128::zero(),
+                reserve1: Uint128::zero(),
+                total_liquidity: Uint128::zero(),
+                block_time_last: 0,
+                price0_cumulative_last: Uint128::zero(),
+                price1_cumulative_last: Uint128::zero(),
+                assets: vec![],
+            },
+        )
+        .unwrap();
+}
+
+#[test]
+fn test_distribution_bounty_defaults_to_zero() {
+    let mut deps = mock_dependencies(&[]);
+    setup_atom_pool(&mut deps);
+    instantiate(
+        deps.as_mut(),
+        mock_env(),
+        message_info(&admin_addr(), &[]),
+        create_default_instantiate_msg(),
+    )
+    .unwrap();
+
+    let bounty = crate::state::DISTRIBUTION_BOUNTY_AMOUNT
+        .load(&deps.storage)
+        .unwrap();
+    assert_eq!(bounty, Uint128::zero());
+}
+
+#[test]
+fn test_set_distribution_bounty_admin_only() {
+    let mut deps = mock_dependencies(&[]);
+    setup_atom_pool(&mut deps);
+    let env = mock_env();
+    instantiate(
+        deps.as_mut(),
+        env.clone(),
+        message_info(&admin_addr(), &[]),
+        create_default_instantiate_msg(),
+    )
+    .unwrap();
+
+    // Non-admin rejected.
+    let err = execute(
+        deps.as_mut(),
+        env.clone(),
+        message_info(&addr0000(), &[]),
+        ExecuteMsg::SetDistributionBounty {
+            new_bounty: Uint128::new(100_000),
+        },
+    )
+    .unwrap_err();
+    assert!(
+        format!("{}", err).contains("admin") || format!("{}", err).contains("Admin"),
+        "expected admin error, got: {}",
+        err
+    );
+
+    // Admin succeeds.
+    execute(
+        deps.as_mut(),
+        env,
+        message_info(&admin_addr(), &[]),
+        ExecuteMsg::SetDistributionBounty {
+            new_bounty: Uint128::new(100_000),
+        },
+    )
+    .unwrap();
+    let bounty = crate::state::DISTRIBUTION_BOUNTY_AMOUNT
+        .load(&deps.storage)
+        .unwrap();
+    assert_eq!(bounty, Uint128::new(100_000));
+}
+
+#[test]
+fn test_set_distribution_bounty_rejects_above_cap() {
+    let mut deps = mock_dependencies(&[]);
+    setup_atom_pool(&mut deps);
+    let env = mock_env();
+    instantiate(
+        deps.as_mut(),
+        env.clone(),
+        message_info(&admin_addr(), &[]),
+        create_default_instantiate_msg(),
+    )
+    .unwrap();
+
+    let over = crate::state::MAX_DISTRIBUTION_BOUNTY + Uint128::one();
+    let err = execute(
+        deps.as_mut(),
+        env,
+        message_info(&admin_addr(), &[]),
+        ExecuteMsg::SetDistributionBounty { new_bounty: over },
+    )
+    .unwrap_err();
+    assert!(format!("{}", err).contains("exceeds max"));
+}
+
+#[test]
+fn test_pay_distribution_bounty_rejects_non_pool_caller() {
+    let mut deps = mock_dependencies(&[cosmwasm_std::Coin {
+        denom: "ubluechip".to_string(),
+        amount: Uint128::new(10_000_000),
+    }]);
+    setup_atom_pool(&mut deps);
+    let env = mock_env();
+    instantiate(
+        deps.as_mut(),
+        env.clone(),
+        message_info(&admin_addr(), &[]),
+        create_default_instantiate_msg(),
+    )
+    .unwrap();
+
+    // Configure non-zero bounty so the auth check is the only gate.
+    execute(
+        deps.as_mut(),
+        env.clone(),
+        message_info(&admin_addr(), &[]),
+        ExecuteMsg::SetDistributionBounty {
+            new_bounty: Uint128::new(1_000_000),
+        },
+    )
+    .unwrap();
+
+    // A random address that is NOT in POOLS_BY_CONTRACT_ADDRESS tries to
+    // pay itself a bounty — must be rejected.
+    let err = execute(
+        deps.as_mut(),
+        env,
+        message_info(&Addr::unchecked("hacker"), &[]),
+        ExecuteMsg::PayDistributionBounty {
+            recipient: "hacker".to_string(),
+        },
+    )
+    .unwrap_err();
+    assert!(
+        matches!(err, crate::error::ContractError::Unauthorized {}),
+        "expected Unauthorized, got: {:?}",
+        err
+    );
+}
+
+#[test]
+fn test_pay_distribution_bounty_pays_registered_pool() {
+    let bounty = Uint128::new(1_000_000);
+    let mut deps = mock_dependencies(&[cosmwasm_std::Coin {
+        denom: "ubluechip".to_string(),
+        amount: Uint128::new(10_000_000),
+    }]);
+    setup_atom_pool(&mut deps);
+    let env = mock_env();
+    instantiate(
+        deps.as_mut(),
+        env.clone(),
+        message_info(&admin_addr(), &[]),
+        create_default_instantiate_msg(),
+    )
+    .unwrap();
+
+    execute(
+        deps.as_mut(),
+        env.clone(),
+        message_info(&admin_addr(), &[]),
+        ExecuteMsg::SetDistributionBounty { new_bounty: bounty },
+    )
+    .unwrap();
+
+    let pool_addr = make_addr("registered_pool");
+    register_test_pool(&mut deps, &pool_addr);
+    let keeper = make_addr("keeper");
+
+    let res = execute(
+        deps.as_mut(),
+        env,
+        message_info(&pool_addr, &[]),
+        ExecuteMsg::PayDistributionBounty {
+            recipient: keeper.to_string(),
+        },
+    )
+    .unwrap();
+
+    let paid = res.messages.iter().any(|sm| match &sm.msg {
+        CosmosMsg::Bank(BankMsg::Send { to_address, amount }) => {
+            to_address == keeper.as_str()
+                && amount.len() == 1
+                && amount[0].amount == bounty
+                && amount[0].denom == "ubluechip"
+        }
+        _ => false,
+    });
+    assert!(paid, "expected BankMsg::Send paying keeper, got: {:?}", res.messages);
+    assert!(res
+        .attributes
+        .iter()
+        .any(|a| a.key == "bounty_paid" && a.value == bounty.to_string()));
+}
+
+#[test]
+fn test_pay_distribution_bounty_skips_when_disabled() {
+    let mut deps = mock_dependencies(&[cosmwasm_std::Coin {
+        denom: "ubluechip".to_string(),
+        amount: Uint128::new(10_000_000),
+    }]);
+    setup_atom_pool(&mut deps);
+    let env = mock_env();
+    instantiate(
+        deps.as_mut(),
+        env.clone(),
+        message_info(&admin_addr(), &[]),
+        create_default_instantiate_msg(),
+    )
+    .unwrap();
+
+    // Bounty stays at zero (default). A registered pool calling
+    // PayDistributionBounty must succeed but emit no BankMsg.
+    let pool_addr = make_addr("registered_pool");
+    register_test_pool(&mut deps, &pool_addr);
+
+    let res = execute(
+        deps.as_mut(),
+        env,
+        message_info(&pool_addr, &[]),
+        ExecuteMsg::PayDistributionBounty {
+            recipient: addr0000().to_string(),
+        },
+    )
+    .unwrap();
+
+    assert!(
+        res.messages
+            .iter()
+            .all(|sm| !matches!(sm.msg, CosmosMsg::Bank(BankMsg::Send { .. })))
+    );
+    assert!(res
+        .attributes
+        .iter()
+        .any(|a| a.key == "bounty_skipped" && a.value == "disabled"));
+}
+
+#[test]
+fn test_pay_distribution_bounty_skips_when_underfunded() {
+    let bounty = Uint128::new(1_000_000);
+    let mut deps = mock_dependencies(&[cosmwasm_std::Coin {
+        denom: "ubluechip".to_string(),
+        amount: Uint128::new(100), // way below bounty
+    }]);
+    setup_atom_pool(&mut deps);
+    let env = mock_env();
+    instantiate(
+        deps.as_mut(),
+        env.clone(),
+        message_info(&admin_addr(), &[]),
+        create_default_instantiate_msg(),
+    )
+    .unwrap();
+
+    execute(
+        deps.as_mut(),
+        env.clone(),
+        message_info(&admin_addr(), &[]),
+        ExecuteMsg::SetDistributionBounty { new_bounty: bounty },
+    )
+    .unwrap();
+
+    let pool_addr = make_addr("registered_pool");
+    register_test_pool(&mut deps, &pool_addr);
+
+    let res = execute(
+        deps.as_mut(),
+        env,
+        message_info(&pool_addr, &[]),
+        ExecuteMsg::PayDistributionBounty {
+            recipient: addr0000().to_string(),
+        },
+    )
+    .unwrap();
+
+    // No BankMsg, but tx still succeeds so the pool's distribution can
+    // make progress.
+    assert!(
+        res.messages
+            .iter()
+            .all(|sm| !matches!(sm.msg, CosmosMsg::Bank(BankMsg::Send { .. })))
+    );
+    assert!(res
+        .attributes
+        .iter()
+        .any(|a| a.key == "bounty_skipped" && a.value == "insufficient_factory_balance"));
+}

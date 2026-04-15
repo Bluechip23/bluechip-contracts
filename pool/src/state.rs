@@ -92,8 +92,11 @@ pub const DEFAULT_ESTIMATED_GAS_PER_DISTRIBUTION: u64 = 50_000;
 pub const DEFAULT_MAX_GAS_PER_TX: u64 = 2_000_000;
 pub const MAX_DISTRIBUTIONS_PER_TX: u32 = 40;
 pub const MINIMUM_LIQUIDITY: Uint128 = Uint128::new(1000);
-pub const DISTRIBUTION_BOUNTY: Uint128 = Uint128::new(1_000_000);
-pub const MAX_DISTRIBUTION_BOUNTY_RESERVE: Uint128 = Uint128::new(50_000_000);
+
+// Distribution keeper bounty is paid by the factory, not the pool.
+// See factory::execute_pay_distribution_bounty. The pool just emits a
+// WasmMsg to the factory and the factory pays from its own native reserve.
+// This keeps LP funds isolated from keeper infrastructure costs.
 
 #[cw_serde]
 pub struct DistributionState {
@@ -108,10 +111,6 @@ pub struct DistributionState {
     pub consecutive_failures: u32,
     pub started_at: Timestamp,
     pub last_updated: Timestamp,
-    /// Funded once during threshold crossing. Bounties are paid from here
-    /// instead of pool trading reserves, preventing LP liquidity erosion.
-    #[serde(default)]
-    pub bounty_reserve: Uint128,
 }
 #[cw_serde]
 pub enum RecoveryType {
