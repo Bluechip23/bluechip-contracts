@@ -448,6 +448,86 @@ fn test_upgrade_skips_paused_pools() {
 }
 
 #[test]
+fn test_upgrade_treats_query_failure_as_not_paused() {
+    // The factory uses unwrap_or(IsPausedResponse { paused: false }) so a
+    // broken or unresponsive pool contract doesn't halt the upgrade. This
+    // test pins that behavior: if the IsPaused query errors, the pool is
+    // migrated anyway.
+    //
+    // Rationale: making a failed query block the migration would give any
+    // pool with a broken query handler veto power over upgrades. Erroring
+    // on the side of attempting migration is the safer default — if the
+    // migration itself fails, the whole tx reverts.
+    let mut deps = mock_dependencies_2(&[]);
+    setup_factory_custom(&mut deps);
+
+    for i in 1..=2 {
+        POOL_REGISTRY
+            .save(
+                &mut deps.storage,
+                i,
+                &Addr::unchecked(format!("pool_{}", i)),
+            )
+            .unwrap();
+    }
+
+    // Make pool_1's query error out; pool_2 is normal.
+    deps.querier
+        .query_error_pools
+        .insert("pool_1".to_string());
+
+    let env = mock_env();
+    let admin_info = message_info(&admin_addr(), &[]);
+
+    execute(
+        deps.as_mut(),
+        env.clone(),
+        admin_info.clone(),
+        ExecuteMsg::UpgradePools {
+            new_code_id: 500,
+            pool_ids: None,
+            migrate_msg: to_json_binary(&Empty {}).unwrap(),
+        },
+    )
+    .unwrap();
+    let pending = PENDING_POOL_UPGRADE.load(&deps.storage).unwrap();
+
+    let mut later_env = env;
+    later_env.block.time = pending.effective_after.plus_seconds(1);
+
+    let res = execute(
+        deps.as_mut(),
+        later_env,
+        admin_info,
+        ExecuteMsg::ExecutePoolUpgrade {},
+    )
+    .unwrap();
+
+    // Both pools should be migrated — broken pool_1 treated as not-paused.
+    assert_eq!(res.messages.len(), 2);
+    let migrated: Vec<String> = res
+        .messages
+        .iter()
+        .filter_map(|sm| match &sm.msg {
+            CosmosMsg::Wasm(WasmMsg::Migrate { contract_addr, .. }) => {
+                Some(contract_addr.clone())
+            }
+            _ => None,
+        })
+        .collect();
+    assert!(migrated.contains(&"pool_1".to_string()));
+    assert!(migrated.contains(&"pool_2".to_string()));
+
+    let skipped = res
+        .attributes
+        .iter()
+        .find(|a| a.key == "skipped_paused")
+        .map(|a| a.value.clone())
+        .unwrap_or_default();
+    assert_eq!(skipped, "", "no pools should be marked skipped_paused");
+}
+
+#[test]
 fn test_continue_upgrade_unauthorized() {
     let mut deps = mock_dependencies();
     setup_factory(&mut deps);

@@ -26,6 +26,10 @@ pub fn mock_dependencies(
 pub struct WasmMockQuerier {
     base: MockQuerier<Empty>,
     pub paused_pools: std::collections::HashSet<String>,
+    // Pool addresses whose queries should hard-error. Used to exercise the
+    // factory's graceful-fallback behavior when a pool contract is broken
+    // or has been migrated out from under the factory.
+    pub query_error_pools: std::collections::HashSet<String>,
 }
 
 impl Querier for WasmMockQuerier {
@@ -47,6 +51,12 @@ impl WasmMockQuerier {
     pub fn handle_query(&self, request: &QueryRequest<Empty>) -> QuerierResult {
         match &request {
             QueryRequest::Wasm(WasmQuery::Smart { contract_addr, msg }) => {
+                // Hard failure path — lets tests verify fallback behavior.
+                if self.query_error_pools.contains(contract_addr.as_str()) {
+                    return SystemResult::Err(SystemError::NoSuchContract {
+                        addr: contract_addr.clone(),
+                    });
+                }
                 // Try parsing as PoolQueryMsg first (for pool contract queries)
                 if let Ok(pool_msg) = from_json::<PoolQueryMsg>(&msg) {
                     match pool_msg {
@@ -103,6 +113,7 @@ impl WasmMockQuerier {
         WasmMockQuerier {
             base,
             paused_pools: std::collections::HashSet::new(),
+            query_error_pools: std::collections::HashSet::new(),
         }
     }
 }

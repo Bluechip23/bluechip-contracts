@@ -16,6 +16,10 @@ use pool_factory_interfaces::{ConversionResponse, PoolQueryMsg, PoolStateRespons
 use sha2::{Digest, Sha256};
 #[cfg(test)]
 pub const MOCK_PYTH_PRICE: Item<Uint128> = Item::new("mock_pyth_price");
+// When set to true in tests, query_pyth_atom_usd_price returns Err,
+// letting tests exercise the cache-fallback branch of get_bluechip_usd_price.
+#[cfg(test)]
+pub const MOCK_PYTH_SHOULD_FAIL: Item<bool> = Item::new("mock_pyth_should_fail");
 
 pub const ORACLE_POOL_COUNT: usize = 5;
 pub const MIN_POOL_LIQUIDITY: Uint128 = Uint128::new(10_000_000_000);
@@ -658,6 +662,14 @@ pub fn query_pyth_atom_usd_price(deps: Deps, env: Env) -> StdResult<Uint128> {
     #[cfg(test)]
     {
         let _ = env;
+        // Simulate a Pyth outage so tests can exercise the cache-fallback
+        // path of get_bluechip_usd_price. Tests set this flag then clear it.
+        if MOCK_PYTH_SHOULD_FAIL
+            .may_load(deps.storage)?
+            .unwrap_or(false)
+        {
+            return Err(StdError::generic_err("mock: pyth query failed"));
+        }
         let mock_price = MOCK_PYTH_PRICE
             .may_load(deps.storage)?
             .unwrap_or(Uint128::new(10_000_000)); // Default $10

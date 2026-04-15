@@ -204,7 +204,9 @@ pub fn execute_cancel_factory_config_update(
 // - decimals must be 6 (threshold payout and mint cap are calibrated for 6-decimal tokens)
 // - name: 3-50 chars, printable ASCII only (no control chars, no extended unicode)
 // - symbol: 3-12 chars, uppercase ASCII letters and digits only (matches cw20-base spec)
-fn validate_creator_token_info(token_info: &CreatorTokenInfo) -> Result<(), ContractError> {
+pub(crate) fn validate_creator_token_info(
+    token_info: &CreatorTokenInfo,
+) -> Result<(), ContractError> {
     if token_info.decimal != 6 {
         return Err(ContractError::Std(StdError::generic_err(
             "Token decimals must be 6. Threshold payout amounts and mint caps are calibrated for 6-decimal tokens.",
