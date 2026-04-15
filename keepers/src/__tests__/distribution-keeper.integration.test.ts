@@ -61,7 +61,7 @@ describe("distribution keeper integration", () => {
     expect(result.madeProgress).toBe(false);
     expect(result.batches).toBe(0);
     expect(result.complete).toBe(false);
-    expect(result.lastOutcome).toBe("not_running");
+    expect(result.lastOutcome).toEqual({ kind: "not_running" });
     expect(mock.getFactoryBalance()).toBe(factoryBefore);
   });
 
@@ -83,10 +83,10 @@ describe("distribution keeper integration", () => {
     const sweep = await runDistributionSweep(mock, pools, 0);
 
     expect(sweep.madeProgress).toBe(true);
-    expect(sweep.pools[POOL_A]?.lastOutcome).toBe("not_running");
+    expect(sweep.pools[POOL_A]?.lastOutcome).toEqual({ kind: "not_running" });
     expect(sweep.pools[POOL_B]?.batches).toBe(3);
     expect(sweep.pools[POOL_B]?.complete).toBe(true);
-    expect(sweep.pools[POOL_C]?.lastOutcome).toBe("not_running");
+    expect(sweep.pools[POOL_C]?.lastOutcome).toEqual({ kind: "not_running" });
   });
 
   it("sweep handles multiple distributing pools in one pass", async () => {
@@ -125,8 +125,8 @@ describe("distribution keeper integration", () => {
     // exactly one batch and exit.
     expect(result.batches).toBe(1);
     expect(result.lastOutcome).toEqual({
-      kind: "skipped",
-      reason: "insufficient_factory_balance",
+      kind: "tx",
+      outcome: { kind: "skipped", reason: "insufficient_factory_balance" },
     });
     // The batch still processed (distribution progressed) but no bounty.
     expect(result.madeProgress).toBe(true);
@@ -140,8 +140,8 @@ describe("distribution keeper integration", () => {
 
     expect(result.batches).toBe(1);
     expect(result.lastOutcome).toEqual({
-      kind: "skipped",
-      reason: "price_unavailable",
+      kind: "tx",
+      outcome: { kind: "skipped", reason: "price_unavailable" },
     });
   });
 
@@ -154,9 +154,12 @@ describe("distribution keeper integration", () => {
 
     expect(result.madeProgress).toBe(false);
     expect(result.batches).toBe(0);
-    // The error path classifies this as a non-skip error since
-    // "Unauthorized" doesn't match our expected-skip markers.
-    expect(result.lastOutcome).toBe("not_started");
+    // "Unauthorized" doesn't match our expected-skip markers, so it
+    // surfaces as an `errored` outcome (operator-attention path).
+    expect(result.lastOutcome.kind).toBe("errored");
+    if (result.lastOutcome.kind === "errored") {
+      expect(result.lastOutcome.detail).toContain("Unauthorized");
+    }
     // No balance movement.
     expect(mock.getFactoryBalance()).toBe(10_000_000_000n);
   });
@@ -172,7 +175,7 @@ describe("distribution keeper integration", () => {
     // Second sweep: pool is no longer distributing, no-op.
     const second = await runDistributionSweep(mock, [POOL_A], 0);
     expect(second.madeProgress).toBe(false);
-    expect(second.pools[POOL_A]?.lastOutcome).toBe("not_running");
+    expect(second.pools[POOL_A]?.lastOutcome).toEqual({ kind: "not_running" });
 
     // Exactly 5 bounties paid total.
     expect(mock.getFactoryBalance()).toBe(10_000_000_000n - 250_000n);

@@ -9,6 +9,22 @@ import { sleep } from "./sleep.js";
 import { PoolExecContinueDistribution, isExpectedSkipError } from "./types.js";
 import { log } from "./logger.js";
 
+/**
+ * Discriminated union of every possible final state for drainPool.
+ * Replaces the previous `TxOutcome | "not_running" | "not_started"`
+ * shape so consumers (tests + observability) see a uniform `kind`
+ * field across all variants.
+ */
+export type DrainOutcome =
+  /** Loop never executed a batch (initial value, should only appear in DrainResult.lastOutcome if maxBatches=0). */
+  | { kind: "not_started" }
+  /** Pool reported NothingToRecover / not-found — distribution is not running. */
+  | { kind: "not_running" }
+  /** An expected on-chain outcome from a successful batch tx. */
+  | { kind: "tx"; outcome: TxOutcome }
+  /** An unexpected error (RPC failure, deserialization, etc). */
+  | { kind: "errored"; detail: string };
+
 /** Per-pool drain result, exposed for observability / testing. */
 export interface DrainResult {
   /** True if at least one batch was successfully processed for this pool. */
@@ -17,8 +33,8 @@ export interface DrainResult {
   batches: number;
   /** True if we saw distribution_complete=true. */
   complete: boolean;
-  /** Last outcome observed — useful in tests. */
-  lastOutcome: TxOutcome | "not_running" | "not_started";
+  /** Final state of the inner loop. */
+  lastOutcome: DrainOutcome;
 }
 
 /**
@@ -37,7 +53,7 @@ export async function drainPool(
   let madeProgress = false;
   let complete = false;
   let batches = 0;
-  let lastOutcome: TxOutcome | "not_running" | "not_started" = "not_started";
+  let lastOutcome: DrainOutcome = { kind: "not_started" };
 
   for (let batch = 0; batch < maxBatches; batch++) {
     let outcome: TxOutcome;
@@ -47,7 +63,7 @@ export async function drainPool(
       outcome = classifyBountyTx(tx);
       complete = isDistributionComplete(tx);
       batches++;
-      lastOutcome = outcome;
+      lastOutcome = { kind: "tx", outcome };
 
       switch (outcome.kind) {
         case "paid":
@@ -71,10 +87,9 @@ export async function drainPool(
           });
           break;
         case "skipped":
-          // A skipped bounty with an otherwise-successful tx still
-          // means distribution progressed this batch — but we stop
-          // the inner loop because something needs operator attention
-          // (factory underfunded, price unavailable, etc).
+          // Bounty skipped but distribution still progressed this batch.
+          // We stop the inner loop because something needs operator
+          // attention (factory underfunded, price unavailable, etc).
           madeProgress = true;
           log.warn("distribution batch, bounty skipped", {
             pool: poolAddress,
@@ -93,14 +108,13 @@ export async function drainPool(
           break;
       }
     } catch (err) {
-      const msg = err instanceof Error ? err.message : String(err);
-      if (isExpectedSkipError(msg)) {
-        // Distribution not running for this pool. Normal case — many
-        // pools in the config list will not be distributing right now.
-        log.info("no distribution running", { pool: poolAddress, detail: msg });
-        lastOutcome = "not_running";
+      const detail = err instanceof Error ? err.message : String(err);
+      if (isExpectedSkipError(detail)) {
+        log.info("no distribution running", { pool: poolAddress, detail });
+        lastOutcome = { kind: "not_running" };
       } else {
-        log.error("distribution call errored", { pool: poolAddress, detail: msg });
+        log.error("distribution call errored", { pool: poolAddress, detail });
+        lastOutcome = { kind: "errored", detail };
       }
       return { madeProgress, batches, complete, lastOutcome };
     }
