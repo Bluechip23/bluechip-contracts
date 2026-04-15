@@ -22,6 +22,42 @@ pub const FIRST_POOL_TIMESTAMP: Item<Timestamp> = Item::new("first_pool_timestam
 pub const POOL_THRESHOLD_MINTED: Map<u64, bool> = Map::new("pool_threshold_minted");
 pub const PENDING_POOL_CONFIG: Map<u64, PendingPoolConfig> = Map::new("pending_pool_config");
 
+// Keeper bounty paid to whoever successfully calls UpdateOraclePrice.
+// Stored as a USD value (6 decimals: 1_000_000 = $1.00). At payout time
+// the factory converts USD to bluechip via the internal oracle so the
+// bounty stays approximately constant in USD as bluechip price moves.
+// The existing UPDATE_INTERVAL cooldown gates frequency, so the payout
+// can fire at most once per window and cannot be spammed.
+// Admin tunable up to MAX_ORACLE_UPDATE_BOUNTY_USD via
+// SetOracleUpdateBounty. Zero disables the bounty entirely.
+pub const ORACLE_UPDATE_BOUNTY_USD: Item<Uint128> = Item::new("oracle_update_bounty_usd");
+
+// Hard cap to protect the factory's reserve if the admin key is
+// compromised. $1 USD per successful update (6 decimals).
+pub const MAX_ORACLE_UPDATE_BOUNTY_USD: Uint128 = Uint128::new(1_000_000);
+
+// Native denom the bounty is paid in (after USD->bluechip conversion).
+// The factory must be pre-funded with this denom by the bluechip main
+// wallet.
+pub const ORACLE_BOUNTY_DENOM: &str = "ubluechip";
+
+// Keeper bounty paid per successful pool.ContinueDistribution batch.
+// USD-denominated (6 decimals). Same conversion-at-payout pattern as
+// the oracle bounty, so keeper economics stay stable as bluechip price
+// moves. Pool LP reserves are never tapped — the factory pays from its
+// own pre-funded native balance.
+pub const DISTRIBUTION_BOUNTY_USD: Item<Uint128> = Item::new("distribution_bounty_usd");
+
+// Hard cap. $1 USD per batch (6 decimals).
+pub const MAX_DISTRIBUTION_BOUNTY_USD: Uint128 = Uint128::new(1_000_000);
+
+// ForceRotateOraclePools is a 2-step action: admin proposes a rotation,
+// the timelock elapses, then admin invokes ForceRotateOraclePools to
+// execute. Prevents a compromised admin from instantly rotating the
+// oracle's pool sample set without a 48h observability window for the
+// community to notice and respond.
+pub const PENDING_ORACLE_ROTATION: Item<Timestamp> = Item::new("pending_oracle_rotation");
+
 #[cw_serde]
 pub struct PendingPoolConfig {
     pub pool_id: u64,

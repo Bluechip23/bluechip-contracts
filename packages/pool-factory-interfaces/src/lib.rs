@@ -9,6 +9,12 @@ pub mod routing;
 pub enum PoolQueryMsg {
     GetPoolState { pool_contract_address: String },
     GetAllPools {},
+    IsPaused {},
+}
+
+#[cw_serde]
+pub struct IsPausedResponse {
+    pub paused: bool,
 }
 #[cw_serde]
 #[derive(QueryResponses)]
@@ -60,6 +66,12 @@ pub struct AllPoolsResponse {
 pub enum FactoryExecuteMsg {
     // Called by a pool when its commit threshold has been crossed.
     NotifyThresholdCrossed { pool_id: u64 },
+    // Called by a pool's ContinueDistribution handler to ask the factory
+    // to pay the keeper bounty out of the factory's native reserve.
+    // The factory verifies the caller is a registered pool via
+    // POOLS_BY_CONTRACT_ADDRESS, so unregistered contracts cannot drain
+    // the reserve by pretending to be a pool.
+    PayDistributionBounty { recipient: String },
 }
 
 #[cw_serde]

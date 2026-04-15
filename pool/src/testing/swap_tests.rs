@@ -488,7 +488,6 @@ fn test_continue_distribution_is_permissionless() {
         consecutive_failures: 0,
         started_at: env.block.time,
         last_updated: env.block.time,
-        bounty_reserve: Uint128::zero(),
     };
     DISTRIBUTION_STATE
         .save(&mut deps.storage, &dist_state)
@@ -533,7 +532,6 @@ fn test_continue_distribution_processes_batch() {
         consecutive_failures: 0,
         started_at: env.block.time,
         last_updated: env.block.time,
-        bounty_reserve: Uint128::zero(),
     };
     DISTRIBUTION_STATE
         .save(&mut deps.storage, &dist_state)
@@ -586,7 +584,6 @@ fn test_continue_distribution_batches() {
         consecutive_failures: 0,
         started_at: env.block.time,
         last_updated: env.block.time,
-        bounty_reserve: Uint128::zero(),
     };
     DISTRIBUTION_STATE
         .save(&mut deps.storage, &dist_state)
@@ -640,12 +637,15 @@ fn test_continue_distribution_batches() {
                 "Should record the actual batch size that was processed"
             );
 
-            // No self-call ContinueDistribution in response — external callers
-            // must trigger subsequent batches in separate transactions
+            // Messages: `processed` mint messages plus one WasmMsg::Execute
+            // forwarding the bounty payment to the factory. No self-call
+            // ContinueDistribution — external callers trigger subsequent
+            // batches in separate transactions.
             assert_eq!(
                 res.messages.len(),
-                processed,
-                "Messages should only be mint messages, no self-call continuation"
+                processed + 1,
+                "Expected `processed` mints + 1 factory bounty msg, got: {:?}",
+                res.messages
             );
         }
         None => {
@@ -684,7 +684,6 @@ fn test_adaptive_batch_sizing_with_history() {
         consecutive_failures: 0,
         started_at: env.block.time,
         last_updated: env.block.time,
-        bounty_reserve: Uint128::zero(),
     };
     DISTRIBUTION_STATE
         .save(&mut deps.storage, &dist_state)
@@ -710,11 +709,11 @@ fn test_adaptive_batch_sizing_with_history() {
         .count();
     let actually_processed = total_before - total_after;
 
-    // All response messages should be mint messages only (no self-call continuation)
+    // Mints + 1 factory bounty WasmMsg (no self-call continuation).
     assert_eq!(
         res.messages.len(),
-        actually_processed,
-        "All messages should be mint messages, no self-call continuation"
+        actually_processed + 1,
+        "Expected `actually_processed` mints + 1 factory bounty msg"
     );
 
     let expected = 20;
@@ -739,7 +738,6 @@ fn test_calculate_effective_batch_size() {
         consecutive_failures: 0,
         started_at: Timestamp::from_seconds(0),
         last_updated: Timestamp::from_seconds(0),
-        bounty_reserve: Uint128::zero(),
     };
 
     let batch_size = calculate_effective_batch_size(&dist_state);
@@ -761,7 +759,6 @@ fn test_calculate_effective_batch_size() {
         consecutive_failures: 0,
         started_at: Timestamp::from_seconds(0),
         last_updated: Timestamp::from_seconds(0),
-        bounty_reserve: Uint128::zero(),
     };
 
     let batch_size = calculate_effective_batch_size(&dist_state_no_history);
@@ -799,7 +796,6 @@ fn test_batch_size_with_consecutive_failures() {
         consecutive_failures: 2,             // Had 2 failures
         started_at: env.block.time,          // Use current time
         last_updated: env.block.time,
-        bounty_reserve: Uint128::zero(),
     };
     DISTRIBUTION_STATE
         .save(&mut deps.storage, &dist_state)
@@ -815,9 +811,11 @@ fn test_batch_size_with_consecutive_failures() {
     )
     .unwrap();
 
+    // Up to 5 mints (gas estimate cap) + 1 factory bounty msg.
     assert!(
-        res.messages.len() <= 5,
-        "Should process at most 5 committers per batch based on gas estimate (1000/200=5)"
+        res.messages.len() <= 6,
+        "Should process at most 5 committers + 1 factory bounty msg, got {}",
+        res.messages.len()
     );
 }
 
@@ -849,7 +847,6 @@ fn test_final_batch_completes_distribution() {
         consecutive_failures: 0,
         started_at: env.block.time, // Use current time
         last_updated: env.block.time,
-        bounty_reserve: Uint128::zero(),
     };
     DISTRIBUTION_STATE
         .save(&mut deps.storage, &dist_state)
@@ -872,11 +869,11 @@ fn test_final_batch_completes_distribution() {
         "Distribution state should be removed after completion"
     );
 
-    // All messages should be mint messages only
+    // 3 mints + 1 factory bounty WasmMsg.
     assert_eq!(
         res.messages.len(),
-        3,
-        "Should have exactly 3 mint messages for 3 committers"
+        4,
+        "Expected 3 mint messages for committers + 1 factory bounty msg"
     );
 }
 

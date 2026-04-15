@@ -40,6 +40,11 @@ pub enum ExecuteMsg {
         token_info: CreatorTokenInfo,
     },
     UpdateOraclePrice {},
+    // 2-step rotation: admin proposes, waits 48h, then calls
+    // ForceRotateOraclePools to execute. Cancel with
+    // CancelForceRotateOraclePools before the timelock elapses.
+    ProposeForceRotateOraclePools {},
+    CancelForceRotateOraclePools {},
     ForceRotateOraclePools {},
     UpgradePools {
         new_code_id: u64,
@@ -88,6 +93,24 @@ pub enum ExecuteMsg {
     RecoverPoolStuckStates {
         pool_id: u64,
         recovery_type: RecoveryType,
+    },
+    // Admin sets the per-call bounty paid to anyone who successfully
+    // invokes UpdateOraclePrice. Capped by MAX_ORACLE_UPDATE_BOUNTY.
+    // Set to zero to disable the bounty entirely.
+    SetOracleUpdateBounty {
+        new_bounty: Uint128,
+    },
+    // Admin sets the per-batch bounty paid to keepers calling
+    // pool.ContinueDistribution. Capped by MAX_DISTRIBUTION_BOUNTY.
+    // Set to zero to disable the bounty entirely.
+    SetDistributionBounty {
+        new_bounty: Uint128,
+    },
+    // Pool-only. Forwarded by a pool's ContinueDistribution handler to
+    // pay the keeper bounty out of the factory's reserve. The factory
+    // verifies info.sender is a registered pool.
+    PayDistributionBounty {
+        recipient: String,
     },
 }
 

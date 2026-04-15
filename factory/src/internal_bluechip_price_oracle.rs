@@ -1,17 +1,25 @@
 #[cfg(not(test))]
 use crate::pyth_types::{PriceFeedResponse, PythQueryMsg};
 
-use crate::state::{FACTORYINSTANTIATEINFO, POOLS_BY_CONTRACT_ADDRESS, POOLS_BY_ID};
+use crate::state::{
+    FACTORYINSTANTIATEINFO, ORACLE_BOUNTY_DENOM, ORACLE_UPDATE_BOUNTY_USD,
+    POOLS_BY_CONTRACT_ADDRESS, POOLS_BY_ID, POOL_THRESHOLD_MINTED,
+};
 use crate::{asset::TokenType, error::ContractError};
 use cosmwasm_schema::cw_serde;
 use cosmwasm_std::{
-    Addr, Deps, DepsMut, Env, MessageInfo, Order, Response, StdError, StdResult, Uint128, Uint256,
+    Addr, BankMsg, Coin, CosmosMsg, Deps, DepsMut, Env, MessageInfo, Order, Response, StdError,
+    StdResult, Uint128, Uint256,
 };
 use cw_storage_plus::Item;
 use pool_factory_interfaces::{ConversionResponse, PoolQueryMsg, PoolStateResponseForFactory};
 use sha2::{Digest, Sha256};
 #[cfg(test)]
 pub const MOCK_PYTH_PRICE: Item<Uint128> = Item::new("mock_pyth_price");
+// When set to true in tests, query_pyth_atom_usd_price returns Err,
+// letting tests exercise the cache-fallback branch of get_bluechip_usd_price.
+#[cfg(test)]
+pub const MOCK_PYTH_SHOULD_FAIL: Item<bool> = Item::new("mock_pyth_should_fail");
 
 pub const ORACLE_POOL_COUNT: usize = 5;
 pub const MIN_POOL_LIQUIDITY: Uint128 = Uint128::new(10_000_000_000);
@@ -181,20 +189,34 @@ pub fn get_eligible_creator_pools(
     deps: Deps,
     atom_pool_contract_address: &str,
 ) -> StdResult<Vec<String>> {
-    // Build a set of pool addresses that have bluechip tokens (single pass over POOLS_BY_ID)
+    // Build the set of pool addresses eligible for oracle sampling.
+    // A pool is eligible only if:
+    //   1. It contains a bluechip token (so we can price it against ATOM)
+    //   2. It has crossed its commit threshold (POOL_THRESHOLD_MINTED == true)
+    //
+    // The threshold-crossed gate is the important one: pool creation is
+    // permissionless, so without this check a spammer could bloat the oracle
+    // sample set with pre-threshold pools. The MIN_POOL_LIQUIDITY check
+    // further down is defense-in-depth and catches pools that crossed
+    // threshold but later drained below the safety floor.
     let bluechip_pool_addrs: std::collections::HashSet<Addr> = POOLS_BY_ID
         .range(deps.storage, None, None, Order::Ascending)
         .filter_map(|result| {
-            if let Ok((_, pool_details)) = result {
-                let has_bluechip = pool_details
-                    .pool_token_info
-                    .iter()
-                    .any(|token| matches!(token, TokenType::Bluechip { .. }));
-                if has_bluechip {
-                    return Some(pool_details.creator_pool_addr);
-                }
+            let (pool_id, pool_details) = result.ok()?;
+            let has_bluechip = pool_details
+                .pool_token_info
+                .iter()
+                .any(|token| matches!(token, TokenType::Bluechip { .. }));
+            let threshold_crossed = POOL_THRESHOLD_MINTED
+                .may_load(deps.storage, pool_id)
+                .ok()
+                .flatten()
+                .unwrap_or(false);
+            if has_bluechip && threshold_crossed {
+                Some(pool_details.creator_pool_addr)
+            } else {
+                None
             }
-            None
         })
         .collect();
 
@@ -226,7 +248,11 @@ pub fn get_eligible_creator_pools(
     Ok(eligible)
 }
 
-pub fn update_internal_oracle_price(deps: DepsMut, env: Env) -> Result<Response, ContractError> {
+pub fn update_internal_oracle_price(
+    deps: DepsMut,
+    env: Env,
+    info: MessageInfo,
+) -> Result<Response, ContractError> {
     let mut oracle = INTERNAL_ORACLE.load(deps.storage)?;
     let current_time = env.block.time.seconds();
     let next_update = oracle
@@ -277,17 +303,70 @@ pub fn update_internal_oracle_price(deps: DepsMut, env: Env) -> Result<Response,
     oracle.bluechip_price_cache.last_update = current_time;
 
     // Cache the Pyth ATOM/USD price alongside the TWAP update
-    if let Ok(pyth_price) = query_pyth_atom_usd_price(deps.as_ref(), env) {
+    if let Ok(pyth_price) = query_pyth_atom_usd_price(deps.as_ref(), env.clone()) {
         oracle.bluechip_price_cache.cached_pyth_price = pyth_price;
         oracle.bluechip_price_cache.cached_pyth_timestamp = current_time;
     }
 
     INTERNAL_ORACLE.save(deps.storage, &oracle)?;
 
-    Ok(Response::new()
+    // Keeper bounty: pay the caller out of the factory's native balance.
+    // Stored in USD (6 decimals) and converted to bluechip at payout time
+    // using the just-updated oracle price, so keeper compensation stays
+    // roughly stable in USD as bluechip price fluctuates. Skip reasons
+    // emit attributes instead of erroring — a Pyth outage shouldn't also
+    // halt the keepers that fix it. UPDATE_INTERVAL above gates frequency.
+    let bounty_usd = ORACLE_UPDATE_BOUNTY_USD
+        .may_load(deps.storage)?
+        .unwrap_or_default();
+    let mut response = Response::new()
         .add_attribute("action", "update_oracle")
         .add_attribute("twap_price", twap_price.to_string())
-        .add_attribute("pools_used", pools_to_use.len().to_string()))
+        .add_attribute("pools_used", pools_to_use.len().to_string());
+
+    if !bounty_usd.is_zero() {
+        // Convert USD -> bluechip via the just-updated TWAP. If the
+        // conversion errors (Pyth + cache both unavailable), skip the
+        // bounty rather than reverting the whole oracle update.
+        match usd_to_bluechip(deps.as_ref(), bounty_usd, env.clone()) {
+            Ok(conv) => {
+                let bounty_bluechip = conv.amount;
+                let balance = deps
+                    .querier
+                    .query_balance(env.contract.address.as_str(), ORACLE_BOUNTY_DENOM)?;
+                if !bounty_bluechip.is_zero() && balance.amount >= bounty_bluechip {
+                    response = response
+                        .add_message(CosmosMsg::Bank(BankMsg::Send {
+                            to_address: info.sender.to_string(),
+                            amount: vec![Coin {
+                                denom: ORACLE_BOUNTY_DENOM.to_string(),
+                                amount: bounty_bluechip,
+                            }],
+                        }))
+                        .add_attribute("bounty_paid_bluechip", bounty_bluechip.to_string())
+                        .add_attribute("bounty_paid_usd", bounty_usd.to_string())
+                        .add_attribute("bounty_recipient", info.sender.to_string());
+                } else if bounty_bluechip.is_zero() {
+                    response = response
+                        .add_attribute("bounty_skipped", "conversion_returned_zero")
+                        .add_attribute("bounty_configured_usd", bounty_usd.to_string());
+                } else {
+                    response = response
+                        .add_attribute("bounty_skipped", "insufficient_factory_balance")
+                        .add_attribute("bounty_required_bluechip", bounty_bluechip.to_string())
+                        .add_attribute("bounty_configured_usd", bounty_usd.to_string())
+                        .add_attribute("factory_balance", balance.amount.to_string());
+                }
+            }
+            Err(_) => {
+                response = response
+                    .add_attribute("bounty_skipped", "price_unavailable")
+                    .add_attribute("bounty_configured_usd", bounty_usd.to_string());
+            }
+        }
+    }
+
+    Ok(response)
 }
 
 // Calculates a liquidity-weighted price across sampled pools using cumulative
@@ -602,6 +681,14 @@ pub fn query_pyth_atom_usd_price(deps: Deps, env: Env) -> StdResult<Uint128> {
     #[cfg(test)]
     {
         let _ = env;
+        // Simulate a Pyth outage so tests can exercise the cache-fallback
+        // path of get_bluechip_usd_price. Tests set this flag then clear it.
+        if MOCK_PYTH_SHOULD_FAIL
+            .may_load(deps.storage)?
+            .unwrap_or(false)
+        {
+            return Err(StdError::generic_err("mock: pyth query failed"));
+        }
         let mock_price = MOCK_PYTH_PRICE
             .may_load(deps.storage)?
             .unwrap_or(Uint128::new(10_000_000)); // Default $10
@@ -614,15 +701,19 @@ pub fn get_bluechip_usd_price(deps: Deps, env: Env) -> StdResult<Uint128> {
     let atom_usd_price = match query_pyth_atom_usd_price(deps, env.clone()) {
         Ok(price) => price,
         Err(_) => {
-            // Pyth query failed (likely stale). Use the cached price if it
-            // was captured within 2x the staleness window so we don't rely
-            // on an arbitrarily old value.
+            // Pyth query failed (likely stale). The cache only bridges very
+            // short Pyth outages — we use the same staleness threshold as the
+            // live query (MAX_PRICE_AGE_SECONDS_BEFORE_STALE, currently 300s).
+            // If Pyth has been unavailable longer than that, refuse to price
+            // rather than letting a volatile old value leak into commit USD
+            // valuations. This converts a prolonged Pyth outage into a
+            // temporary commit freeze, which is safer than mispricing.
             let oracle = INTERNAL_ORACLE
                 .load(deps.storage)
                 .map_err(|_| StdError::generic_err("Internal oracle not initialized"))?;
             let cache = &oracle.bluechip_price_cache;
             let current_time = env.block.time.seconds();
-            let max_cache_age = crate::state::MAX_PRICE_AGE_SECONDS_BEFORE_STALE * 2;
+            let max_cache_age = crate::state::MAX_PRICE_AGE_SECONDS_BEFORE_STALE;
             if cache.cached_pyth_price.is_zero()
                 || current_time.saturating_sub(cache.cached_pyth_timestamp) > max_cache_age
             {
@@ -799,15 +890,84 @@ fn query_pool_safe(
     }
 }
 
+// 48-hour delay between proposing and executing a force-rotate, matching
+// the ProposeConfigUpdate / UpgradePools / ProposePoolConfigUpdate pattern.
+// This gives the community 48h of visibility before a rotation lands,
+// so a compromised admin can't instantly rotate the oracle sample set to
+// amplify a manipulation attempt.
+pub const FORCE_ROTATE_TIMELOCK_SECONDS: u64 = 86400 * 2;
+
+pub fn execute_propose_force_rotate_pools(
+    deps: DepsMut,
+    env: Env,
+    info: MessageInfo,
+) -> Result<Response, ContractError> {
+    let config = FACTORYINSTANTIATEINFO.load(deps.storage)?;
+    if info.sender != config.factory_admin_address {
+        return Err(ContractError::Unauthorized {});
+    }
+
+    if crate::state::PENDING_ORACLE_ROTATION
+        .may_load(deps.storage)?
+        .is_some()
+    {
+        return Err(ContractError::Std(StdError::generic_err(
+            "A force-rotate is already pending. Cancel it first.",
+        )));
+    }
+
+    let effective_after = env.block.time.plus_seconds(FORCE_ROTATE_TIMELOCK_SECONDS);
+    crate::state::PENDING_ORACLE_ROTATION.save(deps.storage, &effective_after)?;
+
+    Ok(Response::new()
+        .add_attribute("action", "propose_force_rotate_pools")
+        .add_attribute("effective_after", effective_after.to_string()))
+}
+
+pub fn execute_cancel_force_rotate_pools(
+    deps: DepsMut,
+    info: MessageInfo,
+) -> Result<Response, ContractError> {
+    let config = FACTORYINSTANTIATEINFO.load(deps.storage)?;
+    if info.sender != config.factory_admin_address {
+        return Err(ContractError::Unauthorized {});
+    }
+
+    if crate::state::PENDING_ORACLE_ROTATION
+        .may_load(deps.storage)?
+        .is_none()
+    {
+        return Err(ContractError::Std(StdError::generic_err(
+            "No pending force-rotate to cancel",
+        )));
+    }
+
+    crate::state::PENDING_ORACLE_ROTATION.remove(deps.storage);
+
+    Ok(Response::new().add_attribute("action", "cancel_force_rotate_pools"))
+}
+
 pub fn execute_force_rotate_pools(
     deps: DepsMut,
     env: Env,
     info: MessageInfo,
 ) -> Result<Response, ContractError> {
-    // Check admin permission
     let config = FACTORYINSTANTIATEINFO.load(deps.storage)?;
     if info.sender != config.factory_admin_address {
         return Err(ContractError::Unauthorized {});
+    }
+
+    // Must have gone through the 48h propose/wait flow.
+    let effective_after = crate::state::PENDING_ORACLE_ROTATION
+        .may_load(deps.storage)?
+        .ok_or_else(|| {
+            ContractError::Std(StdError::generic_err(
+                "No pending force-rotate; call ProposeForceRotateOraclePools first",
+            ))
+        })?;
+
+    if env.block.time < effective_after {
+        return Err(ContractError::TimelockNotExpired { effective_after });
     }
 
     let mut oracle = INTERNAL_ORACLE.load(deps.storage)?;
@@ -816,6 +976,7 @@ pub fn execute_force_rotate_pools(
     oracle.last_rotation = env.block.time.seconds();
 
     INTERNAL_ORACLE.save(deps.storage, &oracle)?;
+    crate::state::PENDING_ORACLE_ROTATION.remove(deps.storage);
 
     Ok(Response::new()
         .add_attribute("action", "force_rotate_pools")

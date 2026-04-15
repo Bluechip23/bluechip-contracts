@@ -10,10 +10,10 @@ use crate::generic_helpers::{
     update_pool_fee_growth,
 };
 use crate::state::{
-    PoolState, COMMITFEEINFO, COMMIT_LEDGER, COMMIT_LIMIT_INFO, DISTRIBUTION_BOUNTY,
-    DISTRIBUTION_STATE, IS_THRESHOLD_HIT, LAST_THRESHOLD_ATTEMPT, NATIVE_RAISED_FROM_COMMIT,
-    POOL_ANALYTICS, POOL_FEE_STATE, POOL_INFO, POOL_PAUSED, POOL_SPECS, POOL_STATE,
-    REENTRANCY_GUARD, THRESHOLD_PAYOUT_AMOUNTS, THRESHOLD_PROCESSING, USD_RAISED_FROM_COMMIT,
+    PoolState, COMMITFEEINFO, COMMIT_LEDGER, COMMIT_LIMIT_INFO, DISTRIBUTION_STATE,
+    IS_THRESHOLD_HIT, LAST_THRESHOLD_ATTEMPT, NATIVE_RAISED_FROM_COMMIT, POOL_ANALYTICS,
+    POOL_FEE_STATE, POOL_INFO, POOL_PAUSED, POOL_SPECS, POOL_STATE, REENTRANCY_GUARD,
+    THRESHOLD_PAYOUT_AMOUNTS, THRESHOLD_PROCESSING, USD_RAISED_FROM_COMMIT,
 };
 use crate::swap_helper::{
     assert_max_spread, compute_swap, get_bluechip_value, get_usd_value_with_staleness_check,
@@ -725,36 +725,30 @@ pub fn execute_continue_distribution(
     }
 
     let pool_info = POOL_INFO.load(deps.storage)?;
-    let pre_batch_bounty_reserve = dist_state.bounty_reserve;
 
     let mut msgs = process_distribution_batch(deps.storage, &pool_info, &env)?;
 
-    let bluechip_denom = get_bluechip_denom(&pool_info.pool_info.asset_infos)?;
+    // Bounty paid by the factory from its own reserve, not pool LP funds.
+    // Factory rejects unregistered pools, which would revert this whole
+    // tx — desired behavior since only legitimate pools should pay bounties.
+    msgs.push(CosmosMsg::Wasm(WasmMsg::Execute {
+        contract_addr: pool_info.factory_addr.to_string(),
+        msg: to_json_binary(
+            &pool_factory_interfaces::FactoryExecuteMsg::PayDistributionBounty {
+                recipient: info.sender.to_string(),
+            },
+        )?,
+        funds: vec![],
+    }));
 
-    let bounty_paid = if pre_batch_bounty_reserve >= DISTRIBUTION_BOUNTY {
-        if let Some(mut dist_state_for_bounty) = DISTRIBUTION_STATE.may_load(deps.storage)? {
-            dist_state_for_bounty.bounty_reserve = dist_state_for_bounty
-                .bounty_reserve
-                .checked_sub(DISTRIBUTION_BOUNTY)?;
-            DISTRIBUTION_STATE.save(deps.storage, &dist_state_for_bounty)?;
-        }
-        msgs.push(get_bank_transfer_to_msg(
-            &info.sender,
-            &bluechip_denom,
-            DISTRIBUTION_BOUNTY,
-        )?);
-        DISTRIBUTION_BOUNTY
-    } else {
-        Uint128::zero()
+    // process_distribution_batch may have either removed the state
+    // entirely (genuine completion) or flipped is_distributing=false
+    // (recovery path after repeated failures). Treat both as "stop
+    // calling this pool" from the keeper's perspective.
+    let (remaining_after, is_complete) = match DISTRIBUTION_STATE.may_load(deps.storage)? {
+        None => (0u32, true),
+        Some(d) => (d.distributions_remaining, !d.is_distributing),
     };
-
-    let updated_dist = DISTRIBUTION_STATE.may_load(deps.storage)?;
-    let remaining_after = updated_dist
-        .as_ref()
-        .map(|d| d.distributions_remaining)
-        .unwrap_or(0);
-    let is_complete =
-        updated_dist.is_none() || !updated_dist.map(|d| d.is_distributing).unwrap_or(false);
 
     Ok(Response::new()
         .add_messages(msgs)
@@ -766,7 +760,6 @@ pub fn execute_continue_distribution(
         )
         .add_attribute("remaining_after", remaining_after.to_string())
         .add_attribute("distribution_complete", is_complete.to_string())
-        .add_attribute("bounty_paid", bounty_paid.to_string())
         .add_attribute("pool_contract", env.contract.address.to_string())
         .add_attribute("block_height", env.block.height.to_string())
         .add_attribute("block_time", env.block.time.seconds().to_string()))

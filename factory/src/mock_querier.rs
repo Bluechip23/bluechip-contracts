@@ -5,10 +5,8 @@ use cosmwasm_std::{
     from_json, to_json_binary, Addr, Coin, Empty, OwnedDeps, Querier, QuerierResult, QueryRequest,
     SystemError, SystemResult, WasmQuery,
 };
-use pool_factory_interfaces::{PoolQueryMsg, PoolStateResponseForFactory};
-use std::collections::HashMap;
+use pool_factory_interfaces::{IsPausedResponse, PoolQueryMsg, PoolStateResponseForFactory};
 
-use crate::pool_struct::PoolDetails;
 use crate::query::QueryMsg;
 
 pub fn mock_dependencies(
@@ -27,28 +25,11 @@ pub fn mock_dependencies(
 
 pub struct WasmMockQuerier {
     base: MockQuerier<Empty>,
-    betfi_pair_querier: BetfiPairQuerier,
-}
-
-#[derive(Clone, Default)]
-pub struct BetfiPairQuerier {
-    pairs: HashMap<String, PoolDetails>,
-}
-
-impl BetfiPairQuerier {
-    pub fn new(pairs: &[(&String, &PoolDetails)]) -> Self {
-        BetfiPairQuerier {
-            pairs: pairs_to_map(pairs),
-        }
-    }
-}
-
-pub(crate) fn pairs_to_map(pairs: &[(&String, &PoolDetails)]) -> HashMap<String, PoolDetails> {
-    let mut pairs_map: HashMap<String, PoolDetails> = HashMap::new();
-    for (key, pair) in pairs.iter() {
-        pairs_map.insert(key.to_string(), (*pair).clone());
-    }
-    pairs_map
+    pub paused_pools: std::collections::HashSet<String>,
+    // Pool addresses whose queries should hard-error. Used to exercise the
+    // factory's graceful-fallback behavior when a pool contract is broken
+    // or has been migrated out from under the factory.
+    pub query_error_pools: std::collections::HashSet<String>,
 }
 
 impl Querier for WasmMockQuerier {
@@ -70,6 +51,12 @@ impl WasmMockQuerier {
     pub fn handle_query(&self, request: &QueryRequest<Empty>) -> QuerierResult {
         match &request {
             QueryRequest::Wasm(WasmQuery::Smart { contract_addr, msg }) => {
+                // Hard failure path — lets tests verify fallback behavior.
+                if self.query_error_pools.contains(contract_addr.as_str()) {
+                    return SystemResult::Err(SystemError::NoSuchContract {
+                        addr: contract_addr.clone(),
+                    });
+                }
                 // Try parsing as PoolQueryMsg first (for pool contract queries)
                 if let Ok(pool_msg) = from_json::<PoolQueryMsg>(&msg) {
                     match pool_msg {
@@ -89,6 +76,14 @@ impl WasmMockQuerier {
                             };
                             return SystemResult::Ok(to_json_binary(&pool_state).into());
                         }
+                        PoolQueryMsg::IsPaused {} => {
+                            // Tests can mark specific pools as paused by
+                            // inserting their address into `paused_pools`.
+                            let paused = self.paused_pools.contains(contract_addr.as_str());
+                            return SystemResult::Ok(
+                                to_json_binary(&IsPausedResponse { paused }).into(),
+                            );
+                        }
                         _ => {
                             return SystemResult::Err(SystemError::InvalidRequest {
                                 error: "Unsupported pool query".to_string(),
@@ -98,22 +93,8 @@ impl WasmMockQuerier {
                     }
                 }
 
-                if let Ok(factory_msg) = from_json::<QueryMsg>(&msg) {
-                    match factory_msg {
-                        QueryMsg::Pool { pool_address: _ } => {
-                            let pair_info: PoolDetails =
-                                match self.betfi_pair_querier.pairs.get(contract_addr) {
-                                    Some(v) => v.clone(),
-                                    None => {
-                                        return SystemResult::Err(SystemError::NoSuchContract {
-                                            addr: contract_addr.clone(),
-                                        })
-                                    }
-                                };
-                            return SystemResult::Ok(to_json_binary(&pair_info).into());
-                        }
-                        _ => panic!("Unsupported factory query"),
-                    }
+                if let Ok(_factory_msg) = from_json::<QueryMsg>(&msg) {
+                    panic!("Unsupported factory query");
                 }
 
                 // If neither parse succeeded
@@ -131,7 +112,8 @@ impl WasmMockQuerier {
     pub fn new(base: MockQuerier<Empty>) -> Self {
         WasmMockQuerier {
             base,
-            betfi_pair_querier: BetfiPairQuerier::default(),
+            paused_pools: std::collections::HashSet::new(),
+            query_error_pools: std::collections::HashSet::new(),
         }
     }
 }

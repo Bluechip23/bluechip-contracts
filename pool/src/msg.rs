@@ -150,6 +150,8 @@ pub enum QueryMsg {
     GetPoolState { pool_contract_address: String },
     #[returns(AllPoolsResponse)]
     GetAllPools {},
+    #[returns(pool_factory_interfaces::IsPausedResponse)]
+    IsPaused {},
 }
 
 #[cw_serde]

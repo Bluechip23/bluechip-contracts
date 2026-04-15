@@ -210,16 +210,25 @@ pub fn execute(
             transaction_deadline,
             belief_price,
             max_spread,
-        } => commit(
-            deps,
-            env,
-            info,
-            asset,
-            amount,
-            transaction_deadline,
-            belief_price,
-            max_spread,
-        ),
+        } => {
+            // Block ALL commits while paused — pre-threshold AND post-threshold.
+            // Previously only process_post_threshold_commit checked POOL_PAUSED,
+            // so admin pauses failed to stop pre-threshold deposits, letting
+            // users trap funds in the COMMIT_LEDGER of a paused pool.
+            if POOL_PAUSED.may_load(deps.storage)?.unwrap_or(false) {
+                return Err(ContractError::PoolPausedLowLiquidity {});
+            }
+            commit(
+                deps,
+                env,
+                info,
+                asset,
+                amount,
+                transaction_deadline,
+                belief_price,
+                max_spread,
+            )
+        }
         ExecuteMsg::ContinueDistribution {} => execute_continue_distribution(deps, env, info),
 
         // --- Swap ---

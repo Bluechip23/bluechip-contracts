@@ -4,8 +4,8 @@ use crate::msg::{CommitFeeInfo, ExecuteMsg};
 use crate::state::{
     CommitLimitInfo, CreatorExcessLiquidity, DistributionState, ExpectedFactory, RecoveryType,
     COMMITFEEINFO, COMMIT_INFO, COMMIT_LEDGER, COMMIT_LIMIT_INFO, CREATOR_EXCESS_POSITION,
-    DISTRIBUTION_STATE, EXPECTED_FACTORY, IS_THRESHOLD_HIT, LAST_THRESHOLD_ATTEMPT, POOL_STATE,
-    THRESHOLD_PROCESSING, USD_RAISED_FROM_COMMIT,
+    DISTRIBUTION_STATE, EXPECTED_FACTORY, IS_THRESHOLD_HIT, LAST_THRESHOLD_ATTEMPT, POOL_PAUSED,
+    POOL_STATE, THRESHOLD_PROCESSING, USD_RAISED_FROM_COMMIT,
 };
 use crate::testing::swap_tests::with_factory_oracle;
 use crate::{
@@ -704,7 +704,6 @@ fn test_distribution_timeout_triggers_error() {
         consecutive_failures: 0,
         started_at: old_time,
         last_updated: old_time, // Very old
-        bounty_reserve: Uint128::zero(),
     };
     DISTRIBUTION_STATE
         .save(&mut deps.storage, &dist_state)
@@ -909,4 +908,150 @@ fn test_concurrent_threshold_crossing_race_condition() {
             println!("User 2 failed with: {:?}", e);
         }
     }
+}
+
+#[test]
+fn test_paused_pool_rejects_pre_threshold_commit() {
+    // With POOL_PAUSED set, a pre-threshold commit must be rejected at
+    // dispatch before any state is touched. Previously only
+    // process_post_threshold_commit checked POOL_PAUSED, so a paused pool
+    // could still accept funding-phase deposits that ended up stuck in the
+    // COMMIT_LEDGER.
+    let mut deps = mock_dependencies();
+    setup_pool_with_excess_config(&mut deps);
+
+    // Pool is in pre-threshold state by default (IS_THRESHOLD_HIT = false).
+    // Admin pauses via factory forward.
+    POOL_PAUSED.save(&mut deps.storage, &true).unwrap();
+
+    let env = mock_env();
+    let info = message_info(
+        &Addr::unchecked("committer"),
+        &[coin(100_000_000, "ubluechip")],
+    );
+
+    let msg = ExecuteMsg::Commit {
+        asset: TokenInfo {
+            info: TokenType::Bluechip {
+                denom: "ubluechip".to_string(),
+            },
+            amount: Uint128::new(100_000_000),
+        },
+        amount: Uint128::new(100_000_000),
+        transaction_deadline: None,
+        belief_price: None,
+        max_spread: None,
+    };
+
+    let err = execute(deps.as_mut(), env, info, msg).unwrap_err();
+    assert!(
+        matches!(err, ContractError::PoolPausedLowLiquidity {}),
+        "expected PoolPausedLowLiquidity, got: {:?}",
+        err
+    );
+
+    // Verify no side effects: commit ledger unchanged, no funds recorded.
+    let committer_entry = COMMIT_LEDGER
+        .may_load(&deps.storage, &Addr::unchecked("committer"))
+        .unwrap();
+    assert!(
+        committer_entry.is_none(),
+        "paused commit must not write to COMMIT_LEDGER"
+    );
+}
+
+#[test]
+fn test_paused_pool_rejects_post_threshold_commit() {
+    // Parallel test: post-threshold path was already guarded inside
+    // process_post_threshold_commit, but the new dispatch-level check
+    // should also reject here. This pins the behavior so future refactors
+    // can't remove one of the two checks without also removing the other.
+    let mut deps = mock_dependencies();
+    setup_pool_with_excess_config(&mut deps);
+
+    // Flip pool to post-threshold state.
+    IS_THRESHOLD_HIT.save(&mut deps.storage, &true).unwrap();
+    POOL_PAUSED.save(&mut deps.storage, &true).unwrap();
+
+    let env = mock_env();
+    let info = message_info(
+        &Addr::unchecked("committer"),
+        &[coin(100_000_000, "ubluechip")],
+    );
+
+    let msg = ExecuteMsg::Commit {
+        asset: TokenInfo {
+            info: TokenType::Bluechip {
+                denom: "ubluechip".to_string(),
+            },
+            amount: Uint128::new(100_000_000),
+        },
+        amount: Uint128::new(100_000_000),
+        transaction_deadline: None,
+        belief_price: None,
+        max_spread: None,
+    };
+
+    let err = execute(deps.as_mut(), env, info, msg).unwrap_err();
+    assert!(
+        matches!(err, ContractError::PoolPausedLowLiquidity {}),
+        "expected PoolPausedLowLiquidity, got: {:?}",
+        err
+    );
+}
+
+#[test]
+fn test_unpaused_pool_accepts_commit_after_previously_paused() {
+    // Confirms the pause check is stateful, not sticky: unpausing the pool
+    // restores the ability to commit. Guards against a future change that
+    // accidentally converts POOL_PAUSED into an emergency-drained-style
+    // permanent flag.
+    let mut deps = mock_dependencies();
+    setup_pool_with_excess_config(&mut deps);
+
+    // Pause.
+    POOL_PAUSED.save(&mut deps.storage, &true).unwrap();
+
+    let env = mock_env();
+    let info = message_info(
+        &Addr::unchecked("committer"),
+        &[coin(100_000_000, "ubluechip")],
+    );
+    let msg = ExecuteMsg::Commit {
+        asset: TokenInfo {
+            info: TokenType::Bluechip {
+                denom: "ubluechip".to_string(),
+            },
+            amount: Uint128::new(100_000_000),
+        },
+        amount: Uint128::new(100_000_000),
+        transaction_deadline: None,
+        belief_price: None,
+        max_spread: None,
+    };
+
+    // Confirm paused rejects.
+    assert!(execute(deps.as_mut(), env.clone(), info.clone(), msg.clone()).is_err());
+
+    // Unpause.
+    POOL_PAUSED.save(&mut deps.storage, &false).unwrap();
+
+    // Needs oracle query; wire the conversion mock.
+    deps.querier.update_wasm(move |query| match query {
+        WasmQuery::Smart { msg: _, .. } => {
+            let response = ConversionResponse {
+                amount: Uint128::new(1_000_000),
+                rate_used: Uint128::new(1_000_000),
+                timestamp: 1571797419u64, // matches mock_env block time
+            };
+            SystemResult::Ok(ContractResult::Ok(to_json_binary(&response).unwrap()))
+        }
+        _ => SystemResult::Err(SystemError::InvalidRequest {
+            error: "Unknown query".to_string(),
+            request: Binary::default(),
+        }),
+    });
+
+    // Now should succeed (pre-threshold commit path).
+    execute(deps.as_mut(), env, info, msg).unwrap();
 }

@@ -192,7 +192,8 @@ fn test_oracle_initialization_with_multiple_pools() {
 
     setup_atom_pool(&mut deps);
 
-    // Add 5 more creator pools with sufficient liquidity
+    // Add 5 more creator pools with sufficient liquidity.
+    // Mark each as threshold-crossed so they're eligible for oracle sampling.
     for i in 1..=5 {
         let pool_addr = make_addr(&format!("creator_pool_{}", i));
         let pool_details = PoolDetails {
@@ -209,6 +210,9 @@ fn test_oracle_initialization_with_multiple_pools() {
         };
         POOLS_BY_ID
             .save(deps.as_mut().storage, i, &pool_details)
+            .unwrap();
+        crate::state::POOL_THRESHOLD_MINTED
+            .save(deps.as_mut().storage, i, &true)
             .unwrap();
     }
 
@@ -427,7 +431,8 @@ fn create_pool_msg(name: &str) -> ExecuteMsg {
         },
         token_info: CreatorTokenInfo {
             name: name.to_string(),
-            symbol: name.to_string(),
+            // Uppercase so the symbol passes factory validation (A-Z, 0-9 only).
+            symbol: name.to_uppercase(),
             decimal: 6,
         },
     }
@@ -541,8 +546,12 @@ fn test_multiple_pool_creation() {
             "Pool should be stored by ID"
         );
 
-        let final_state = POOL_CREATION_STATES.load(&deps.storage, pool_id).unwrap();
-        assert_eq!(final_state.status, CreationStatus::Completed);
+        // Creation state should be removed on successful completion to
+        // avoid permanent storage bloat per pool.
+        assert!(
+            POOL_CREATION_STATES.load(&deps.storage, pool_id).is_err(),
+            "POOL_CREATION_STATES should be removed after successful creation"
+        );
 
         assert!(
             TEMP_POOL_CREATION.load(&deps.storage, pool_id).is_err(),
@@ -693,9 +702,11 @@ fn test_complete_pool_creation_flow() {
 
     assert!(TEMP_POOL_CREATION.load(&deps.storage, pool_id).is_err());
 
-    let final_state = POOL_CREATION_STATES.load(&deps.storage, pool_id).unwrap();
-    assert_eq!(final_state.status, CreationStatus::Completed);
-    assert_eq!(final_state.pool_address, Some(pool_addr));
+    // POOL_CREATION_STATES is cleared on success to avoid permanent bloat.
+    assert!(
+        POOL_CREATION_STATES.load(&deps.storage, pool_id).is_err(),
+        "POOL_CREATION_STATES should be removed after successful creation"
+    );
 
     assert_eq!(res.messages.len(), 2);
 }
@@ -978,20 +989,51 @@ fn test_oracle_force_rotate_pools() {
     let oracle = INTERNAL_ORACLE.load(&deps.storage).unwrap();
     let initial_pools = oracle.selected_pools.clone();
 
-    // Try to force rotate as non-admin - fail
+    // Non-admin cannot propose a force-rotate.
     let unauthorized_info = message_info(&Addr::unchecked("unauthorized"), &[]);
-    let rotate_msg = ExecuteMsg::ForceRotateOraclePools {};
     let result = execute(
         deps.as_mut(),
         env.clone(),
         unauthorized_info,
-        rotate_msg.clone(),
+        ExecuteMsg::ProposeForceRotateOraclePools {},
     );
     assert!(result.is_err());
 
-    // Force rotate as admin - success
+    // Admin proposes rotation. This just records PENDING_ORACLE_ROTATION;
+    // ForceRotateOraclePools cannot execute until the 48h timelock elapses.
     let admin_info = message_info(&admin_addr(), &[]);
-    let result = execute(deps.as_mut(), env.clone(), admin_info, rotate_msg);
+    execute(
+        deps.as_mut(),
+        env.clone(),
+        admin_info.clone(),
+        ExecuteMsg::ProposeForceRotateOraclePools {},
+    )
+    .unwrap();
+
+    // Attempting to execute before the timelock must fail.
+    let err = execute(
+        deps.as_mut(),
+        env.clone(),
+        admin_info.clone(),
+        ExecuteMsg::ForceRotateOraclePools {},
+    )
+    .unwrap_err();
+    assert!(
+        matches!(err, crate::error::ContractError::TimelockNotExpired { .. }),
+        "pre-timelock force-rotate must be rejected, got: {:?}",
+        err
+    );
+
+    // Fast-forward past the 48h timelock and execute.
+    let mut future_env = env.clone();
+    future_env.block.time = future_env.block.time.plus_seconds(86400 * 2 + 1);
+
+    let result = execute(
+        deps.as_mut(),
+        future_env,
+        admin_info,
+        ExecuteMsg::ForceRotateOraclePools {},
+    );
     assert!(result.is_ok());
 
     let res = result.unwrap();
@@ -1009,6 +1051,15 @@ fn test_oracle_force_rotate_pools() {
 
     // With 10 creator pools, rotation should potentially select different pools
     assert_eq!(new_pools.len(), initial_pools.len());
+
+    // Pending entry must be consumed on successful execution.
+    assert!(
+        crate::state::PENDING_ORACLE_ROTATION
+            .may_load(&deps.storage)
+            .unwrap()
+            .is_none(),
+        "PENDING_ORACLE_ROTATION should be cleared after execution"
+    );
 }
 
 #[test]
@@ -1362,6 +1413,10 @@ fn test_oracle_aggregates_multiple_pool_prices() {
         };
         POOLS_BY_ID
             .save(&mut deps.storage, pool_id, &pool_details)
+            .unwrap();
+        // Mark as threshold-crossed so the oracle will include this test pool.
+        crate::state::POOL_THRESHOLD_MINTED
+            .save(&mut deps.storage, pool_id, &true)
             .unwrap();
     };
 
@@ -2095,4 +2150,1915 @@ fn create_test_pool_msg() -> CreatePool {
         creator_excess_liquidity_lock_days: 7,
         is_standard_pool: None,
     }
+}
+
+// ---------------------------------------------------------------------------
+// Oracle update bounty tests
+// ---------------------------------------------------------------------------
+
+#[test]
+fn test_oracle_bounty_defaults_to_zero_on_instantiate() {
+    let mut deps = mock_dependencies(&[]);
+    setup_atom_pool(&mut deps);
+
+    let msg = create_default_instantiate_msg();
+    let env = mock_env();
+    let info = message_info(&admin_addr(), &[]);
+    instantiate(deps.as_mut(), env, info, msg).unwrap();
+
+    let bounty = crate::state::ORACLE_UPDATE_BOUNTY_USD
+        .load(&deps.storage)
+        .unwrap();
+    assert_eq!(bounty, Uint128::zero());
+}
+
+#[test]
+fn test_set_oracle_update_bounty_admin_only() {
+    let mut deps = mock_dependencies(&[]);
+    setup_atom_pool(&mut deps);
+
+    let env = mock_env();
+    let info = message_info(&admin_addr(), &[]);
+    instantiate(deps.as_mut(), env.clone(), info, create_default_instantiate_msg()).unwrap();
+
+    // Non-admin should be rejected
+    let non_admin = message_info(&addr0000(), &[]);
+    let err = execute(
+        deps.as_mut(),
+        env.clone(),
+        non_admin,
+        ExecuteMsg::SetOracleUpdateBounty {
+            new_bounty: Uint128::new(100_000),
+        },
+    )
+    .unwrap_err();
+    let err_msg = format!("{}", err);
+    assert!(
+        err_msg.contains("admin") || err_msg.contains("Admin"),
+        "expected admin error, got: {}",
+        err_msg
+    );
+
+    // Admin should succeed
+    let admin = message_info(&admin_addr(), &[]);
+    execute(
+        deps.as_mut(),
+        env,
+        admin,
+        ExecuteMsg::SetOracleUpdateBounty {
+            new_bounty: Uint128::new(100_000),
+        },
+    )
+    .unwrap();
+
+    let bounty = crate::state::ORACLE_UPDATE_BOUNTY_USD
+        .load(&deps.storage)
+        .unwrap();
+    assert_eq!(bounty, Uint128::new(100_000));
+}
+
+#[test]
+fn test_set_oracle_update_bounty_rejects_above_cap() {
+    let mut deps = mock_dependencies(&[]);
+    setup_atom_pool(&mut deps);
+
+    let env = mock_env();
+    let info = message_info(&admin_addr(), &[]);
+    instantiate(deps.as_mut(), env.clone(), info, create_default_instantiate_msg()).unwrap();
+
+    let admin = message_info(&admin_addr(), &[]);
+    let over_cap = crate::state::MAX_ORACLE_UPDATE_BOUNTY_USD + Uint128::one();
+    let err = execute(
+        deps.as_mut(),
+        env,
+        admin,
+        ExecuteMsg::SetOracleUpdateBounty {
+            new_bounty: over_cap,
+        },
+    )
+    .unwrap_err();
+    assert!(format!("{}", err).contains("exceeds max"));
+}
+
+#[test]
+fn test_oracle_update_pays_bounty_when_funded() {
+    let bounty = Uint128::new(500_000);
+    // Pre-fund the factory contract with enough ubluechip to cover the bounty
+    let mut deps = mock_dependencies(&[cosmwasm_std::Coin {
+        denom: "ubluechip".to_string(),
+        amount: Uint128::new(10_000_000),
+    }]);
+    setup_atom_pool(&mut deps);
+
+    for i in 1..=3 {
+        let pool_addr = make_addr(&format!("creator_pool_{}", i));
+        let pool_state = PoolStateResponseForFactory {
+            pool_contract_address: pool_addr.clone(),
+            nft_ownership_accepted: true,
+            reserve0: Uint128::new(50_000_000_000),
+            reserve1: Uint128::new(10_000_000_000),
+            total_liquidity: Uint128::new(10_000_000),
+            block_time_last: 0,
+            price0_cumulative_last: Uint128::zero(),
+            price1_cumulative_last: Uint128::zero(),
+            assets: vec![],
+        };
+        POOLS_BY_CONTRACT_ADDRESS
+            .save(deps.as_mut().storage, pool_addr, &pool_state)
+            .unwrap();
+    }
+
+    let env = mock_env();
+    instantiate(
+        deps.as_mut(),
+        env.clone(),
+        message_info(&admin_addr(), &[]),
+        create_default_instantiate_msg(),
+    )
+    .unwrap();
+
+    // Admin sets a bounty
+    execute(
+        deps.as_mut(),
+        env.clone(),
+        message_info(&admin_addr(), &[]),
+        ExecuteMsg::SetOracleUpdateBounty { new_bounty: bounty },
+    )
+    .unwrap();
+
+    // Fast-forward past update interval
+    let mut future_env = env.clone();
+    future_env.block.time = future_env.block.time.plus_seconds(360);
+
+    let keeper = message_info(&addr0000(), &[]);
+    let res = execute(
+        deps.as_mut(),
+        future_env,
+        keeper.clone(),
+        ExecuteMsg::UpdateOraclePrice {},
+    )
+    .unwrap();
+
+    // Response must include a BankMsg::Send paying the keeper
+    let paid = res.messages.iter().any(|sm| match &sm.msg {
+        CosmosMsg::Bank(BankMsg::Send { to_address, amount }) => {
+            to_address == keeper.sender.as_str()
+                && amount.len() == 1
+                && amount[0].denom == "ubluechip"
+                && amount[0].amount == bounty
+        }
+        _ => false,
+    });
+    assert!(paid, "expected bounty BankMsg::Send to keeper");
+    // The configured bounty is in USD; the attribute records both
+    // the USD value and the converted bluechip amount.
+    assert!(
+        res.attributes
+            .iter()
+            .any(|a| a.key == "bounty_paid_usd" && a.value == bounty.to_string()),
+        "expected bounty_paid_usd attribute"
+    );
+}
+
+#[test]
+fn test_oracle_update_skips_bounty_when_underfunded() {
+    // Factory has insufficient balance
+    let mut deps = mock_dependencies(&[cosmwasm_std::Coin {
+        denom: "ubluechip".to_string(),
+        amount: Uint128::new(100), // less than bounty
+    }]);
+    setup_atom_pool(&mut deps);
+
+    for i in 1..=3 {
+        let pool_addr = make_addr(&format!("creator_pool_{}", i));
+        let pool_state = PoolStateResponseForFactory {
+            pool_contract_address: pool_addr.clone(),
+            nft_ownership_accepted: true,
+            reserve0: Uint128::new(50_000_000_000),
+            reserve1: Uint128::new(10_000_000_000),
+            total_liquidity: Uint128::new(10_000_000),
+            block_time_last: 0,
+            price0_cumulative_last: Uint128::zero(),
+            price1_cumulative_last: Uint128::zero(),
+            assets: vec![],
+        };
+        POOLS_BY_CONTRACT_ADDRESS
+            .save(deps.as_mut().storage, pool_addr, &pool_state)
+            .unwrap();
+    }
+
+    let env = mock_env();
+    instantiate(
+        deps.as_mut(),
+        env.clone(),
+        message_info(&admin_addr(), &[]),
+        create_default_instantiate_msg(),
+    )
+    .unwrap();
+
+    execute(
+        deps.as_mut(),
+        env.clone(),
+        message_info(&admin_addr(), &[]),
+        ExecuteMsg::SetOracleUpdateBounty {
+            new_bounty: Uint128::new(500_000),
+        },
+    )
+    .unwrap();
+
+    let mut future_env = env.clone();
+    future_env.block.time = future_env.block.time.plus_seconds(360);
+
+    let res = execute(
+        deps.as_mut(),
+        future_env,
+        message_info(&addr0000(), &[]),
+        ExecuteMsg::UpdateOraclePrice {},
+    )
+    .unwrap();
+
+    // Oracle update must still succeed, just no BankMsg
+    assert!(
+        res.messages
+            .iter()
+            .all(|sm| !matches!(sm.msg, CosmosMsg::Bank(BankMsg::Send { .. }))),
+        "no BankMsg::Send expected when underfunded"
+    );
+    assert!(
+        res.attributes
+            .iter()
+            .any(|a| a.key == "bounty_skipped" && a.value == "insufficient_factory_balance"),
+        "expected bounty_skipped attribute"
+    );
+}
+
+#[test]
+fn test_force_rotate_requires_propose_first() {
+    // Calling ForceRotateOraclePools without first proposing must fail —
+    // the 2-step timelock flow is not optional.
+    let mut deps = mock_dependencies(&[]);
+    setup_atom_pool(&mut deps);
+
+    let env = mock_env();
+    instantiate(
+        deps.as_mut(),
+        env.clone(),
+        message_info(&admin_addr(), &[]),
+        create_default_instantiate_msg(),
+    )
+    .unwrap();
+
+    let err = execute(
+        deps.as_mut(),
+        env,
+        message_info(&admin_addr(), &[]),
+        ExecuteMsg::ForceRotateOraclePools {},
+    )
+    .unwrap_err();
+
+    assert!(
+        format!("{}", err).contains("No pending force-rotate"),
+        "expected 'no pending' rejection, got: {}",
+        err
+    );
+}
+
+#[test]
+fn test_force_rotate_cancel_clears_pending() {
+    // Admin can cancel a pending force-rotate before execution.
+    let mut deps = mock_dependencies(&[]);
+    setup_atom_pool(&mut deps);
+
+    let env = mock_env();
+    let admin_info = message_info(&admin_addr(), &[]);
+    instantiate(
+        deps.as_mut(),
+        env.clone(),
+        admin_info.clone(),
+        create_default_instantiate_msg(),
+    )
+    .unwrap();
+
+    execute(
+        deps.as_mut(),
+        env.clone(),
+        admin_info.clone(),
+        ExecuteMsg::ProposeForceRotateOraclePools {},
+    )
+    .unwrap();
+
+    assert!(
+        crate::state::PENDING_ORACLE_ROTATION
+            .may_load(&deps.storage)
+            .unwrap()
+            .is_some()
+    );
+
+    execute(
+        deps.as_mut(),
+        env.clone(),
+        admin_info.clone(),
+        ExecuteMsg::CancelForceRotateOraclePools {},
+    )
+    .unwrap();
+
+    assert!(
+        crate::state::PENDING_ORACLE_ROTATION
+            .may_load(&deps.storage)
+            .unwrap()
+            .is_none()
+    );
+
+    // After cancellation, executing must fail with "no pending" again.
+    let mut future_env = env.clone();
+    future_env.block.time = future_env.block.time.plus_seconds(86400 * 3);
+    let err = execute(
+        deps.as_mut(),
+        future_env,
+        admin_info,
+        ExecuteMsg::ForceRotateOraclePools {},
+    )
+    .unwrap_err();
+    assert!(format!("{}", err).contains("No pending force-rotate"));
+}
+
+#[test]
+fn test_force_rotate_cancel_non_admin_rejected() {
+    let mut deps = mock_dependencies(&[]);
+    setup_atom_pool(&mut deps);
+
+    let env = mock_env();
+    instantiate(
+        deps.as_mut(),
+        env.clone(),
+        message_info(&admin_addr(), &[]),
+        create_default_instantiate_msg(),
+    )
+    .unwrap();
+
+    // Admin proposes so there's a pending entry.
+    execute(
+        deps.as_mut(),
+        env.clone(),
+        message_info(&admin_addr(), &[]),
+        ExecuteMsg::ProposeForceRotateOraclePools {},
+    )
+    .unwrap();
+
+    // Non-admin tries to cancel.
+    let err = execute(
+        deps.as_mut(),
+        env,
+        message_info(&Addr::unchecked("hacker"), &[]),
+        ExecuteMsg::CancelForceRotateOraclePools {},
+    )
+    .unwrap_err();
+    assert!(matches!(err, crate::error::ContractError::Unauthorized {}));
+}
+
+#[test]
+fn test_force_rotate_double_propose_rejected() {
+    // Proposing a force-rotate while one is already pending must be
+    // rejected so there is no ambiguity about which effective_after
+    // applies.
+    let mut deps = mock_dependencies(&[]);
+    setup_atom_pool(&mut deps);
+
+    let env = mock_env();
+    let admin_info = message_info(&admin_addr(), &[]);
+    instantiate(
+        deps.as_mut(),
+        env.clone(),
+        admin_info.clone(),
+        create_default_instantiate_msg(),
+    )
+    .unwrap();
+
+    execute(
+        deps.as_mut(),
+        env.clone(),
+        admin_info.clone(),
+        ExecuteMsg::ProposeForceRotateOraclePools {},
+    )
+    .unwrap();
+
+    let err = execute(
+        deps.as_mut(),
+        env,
+        admin_info,
+        ExecuteMsg::ProposeForceRotateOraclePools {},
+    )
+    .unwrap_err();
+    assert!(
+        format!("{}", err).contains("already pending"),
+        "expected 'already pending' error, got: {}",
+        err
+    );
+}
+
+#[test]
+fn test_force_rotate_executes_at_exact_timelock_boundary() {
+    // Code uses `env.block.time < effective_after` so execution should
+    // succeed at exactly effective_after (one-second-earlier should fail).
+    let mut deps = mock_dependencies(&[]);
+    setup_atom_pool(&mut deps);
+
+    let env = mock_env();
+    let admin_info = message_info(&admin_addr(), &[]);
+    instantiate(
+        deps.as_mut(),
+        env.clone(),
+        admin_info.clone(),
+        create_default_instantiate_msg(),
+    )
+    .unwrap();
+
+    execute(
+        deps.as_mut(),
+        env.clone(),
+        admin_info.clone(),
+        ExecuteMsg::ProposeForceRotateOraclePools {},
+    )
+    .unwrap();
+
+    let effective_after = crate::state::PENDING_ORACLE_ROTATION
+        .load(&deps.storage)
+        .unwrap();
+
+    // One second before effective_after: must fail.
+    let mut early_env = env.clone();
+    early_env.block.time = effective_after.minus_seconds(1);
+    let err = execute(
+        deps.as_mut(),
+        early_env,
+        admin_info.clone(),
+        ExecuteMsg::ForceRotateOraclePools {},
+    )
+    .unwrap_err();
+    assert!(matches!(
+        err,
+        crate::error::ContractError::TimelockNotExpired { .. }
+    ));
+
+    // Exactly at effective_after: must succeed.
+    let mut exact_env = env;
+    exact_env.block.time = effective_after;
+    let res = execute(
+        deps.as_mut(),
+        exact_env,
+        admin_info,
+        ExecuteMsg::ForceRotateOraclePools {},
+    );
+    assert!(
+        res.is_ok(),
+        "force-rotate at exactly effective_after must succeed, got: {:?}",
+        res
+    );
+}
+
+#[test]
+fn test_force_rotate_stale_pending_still_executes() {
+    // Documents current behavior: there is no expiry on PENDING_ORACLE_ROTATION.
+    // If the admin proposes and then forgets for a year, the rotation still
+    // executes. This test pins that behavior so any future change (adding
+    // a max-age to pending rotations) is a deliberate decision with a
+    // visibly-failing test to update.
+    let mut deps = mock_dependencies(&[]);
+    setup_atom_pool(&mut deps);
+
+    let env = mock_env();
+    let admin_info = message_info(&admin_addr(), &[]);
+    instantiate(
+        deps.as_mut(),
+        env.clone(),
+        admin_info.clone(),
+        create_default_instantiate_msg(),
+    )
+    .unwrap();
+
+    execute(
+        deps.as_mut(),
+        env.clone(),
+        admin_info.clone(),
+        ExecuteMsg::ProposeForceRotateOraclePools {},
+    )
+    .unwrap();
+
+    // Jump forward one year. Pending entry must still be honored.
+    let mut future_env = env;
+    future_env.block.time = future_env.block.time.plus_seconds(86400 * 365);
+
+    let res = execute(
+        deps.as_mut(),
+        future_env,
+        admin_info,
+        ExecuteMsg::ForceRotateOraclePools {},
+    );
+    assert!(
+        res.is_ok(),
+        "stale pending rotation currently still executes; update this test \
+         if/when a max-age is added"
+    );
+}
+
+#[test]
+fn test_force_rotate_propose_non_admin_rejected() {
+    // Companion to the cancel-non-admin test: proposing must also be
+    // admin-gated or a compromised low-privilege key could spam
+    // PENDING_ORACLE_ROTATION entries.
+    let mut deps = mock_dependencies(&[]);
+    setup_atom_pool(&mut deps);
+
+    let env = mock_env();
+    instantiate(
+        deps.as_mut(),
+        env.clone(),
+        message_info(&admin_addr(), &[]),
+        create_default_instantiate_msg(),
+    )
+    .unwrap();
+
+    let err = execute(
+        deps.as_mut(),
+        env,
+        message_info(&Addr::unchecked("hacker"), &[]),
+        ExecuteMsg::ProposeForceRotateOraclePools {},
+    )
+    .unwrap_err();
+    assert!(matches!(err, crate::error::ContractError::Unauthorized {}));
+}
+
+#[test]
+fn test_force_rotate_cancel_with_no_pending_rejected() {
+    // Cancelling when nothing is pending should be a distinct error —
+    // catches accidental double-cancels or stale CLI scripts.
+    let mut deps = mock_dependencies(&[]);
+    setup_atom_pool(&mut deps);
+
+    let env = mock_env();
+    let admin_info = message_info(&admin_addr(), &[]);
+    instantiate(
+        deps.as_mut(),
+        env.clone(),
+        admin_info.clone(),
+        create_default_instantiate_msg(),
+    )
+    .unwrap();
+
+    let err = execute(
+        deps.as_mut(),
+        env,
+        admin_info,
+        ExecuteMsg::CancelForceRotateOraclePools {},
+    )
+    .unwrap_err();
+    assert!(
+        format!("{}", err).contains("No pending force-rotate"),
+        "expected 'no pending' rejection, got: {}",
+        err
+    );
+}
+
+#[test]
+fn test_oracle_ignores_pools_without_threshold_crossed() {
+    // A pool that has been created but has NOT crossed its commit threshold
+    // must not enter the oracle sample set, even if it somehow has liquidity.
+    // This defends against spam pools (permissionless creation) from
+    // influencing the bluechip/ATOM price.
+    let mut deps = mock_dependencies(&[]);
+    setup_atom_pool(&mut deps);
+
+    // Pool 1: threshold-crossed, should be eligible
+    {
+        let pool_addr = make_addr("good_pool");
+        let pool_details = PoolDetails {
+            pool_id: 1,
+            pool_token_info: [
+                TokenType::Bluechip {
+                    denom: "ubluechip".to_string(),
+                },
+                TokenType::CreatorToken {
+                    contract_addr: Addr::unchecked("creator_token_1"),
+                },
+            ],
+            creator_pool_addr: pool_addr.clone(),
+        };
+        POOLS_BY_ID
+            .save(&mut deps.storage, 1, &pool_details)
+            .unwrap();
+        crate::state::POOL_THRESHOLD_MINTED
+            .save(&mut deps.storage, 1, &true)
+            .unwrap();
+        let pool_state = PoolStateResponseForFactory {
+            pool_contract_address: pool_addr.clone(),
+            nft_ownership_accepted: true,
+            reserve0: Uint128::new(50_000_000_000),
+            reserve1: Uint128::new(10_000_000_000),
+            total_liquidity: Uint128::new(10_000_000),
+            block_time_last: 0,
+            price0_cumulative_last: Uint128::zero(),
+            price1_cumulative_last: Uint128::zero(),
+            assets: vec![],
+        };
+        POOLS_BY_CONTRACT_ADDRESS
+            .save(&mut deps.storage, pool_addr, &pool_state)
+            .unwrap();
+    }
+
+    // Pool 2: NOT threshold-crossed (spam/pre-threshold), must be ignored.
+    // Even with liquidity far above MIN_POOL_LIQUIDITY.
+    {
+        let pool_addr = make_addr("spam_pool");
+        let pool_details = PoolDetails {
+            pool_id: 2,
+            pool_token_info: [
+                TokenType::Bluechip {
+                    denom: "ubluechip".to_string(),
+                },
+                TokenType::CreatorToken {
+                    contract_addr: Addr::unchecked("creator_token_2"),
+                },
+            ],
+            creator_pool_addr: pool_addr.clone(),
+        };
+        POOLS_BY_ID
+            .save(&mut deps.storage, 2, &pool_details)
+            .unwrap();
+        // Deliberately NOT saving POOL_THRESHOLD_MINTED for pool 2.
+        let pool_state = PoolStateResponseForFactory {
+            pool_contract_address: pool_addr.clone(),
+            nft_ownership_accepted: true,
+            reserve0: Uint128::new(500_000_000_000),
+            reserve1: Uint128::new(100_000_000_000),
+            total_liquidity: Uint128::new(100_000_000),
+            block_time_last: 0,
+            price0_cumulative_last: Uint128::zero(),
+            price1_cumulative_last: Uint128::zero(),
+            assets: vec![],
+        };
+        POOLS_BY_CONTRACT_ADDRESS
+            .save(&mut deps.storage, pool_addr, &pool_state)
+            .unwrap();
+    }
+
+    let eligible = crate::internal_bluechip_price_oracle::get_eligible_creator_pools(
+        deps.as_ref(),
+        &atom_bluechip_pool_addr().to_string(),
+    )
+    .unwrap();
+
+    assert_eq!(eligible.len(), 1, "only the threshold-crossed pool should be eligible");
+    assert_eq!(eligible[0], make_addr("good_pool").to_string());
+    assert!(
+        !eligible.contains(&make_addr("spam_pool").to_string()),
+        "spam pool without threshold crossing must not appear"
+    );
+}
+
+#[test]
+fn test_oracle_update_bounty_equals_balance_boundary() {
+    // The check is `balance.amount >= bounty`, so balance == bounty must
+    // still pay out. Pins the `>=` semantic — a regression to `>` would
+    // silently break keeper payouts when the factory reserve is down to
+    // exactly one bounty's worth.
+    let bounty = Uint128::new(500_000);
+    let mut deps = mock_dependencies(&[cosmwasm_std::Coin {
+        denom: "ubluechip".to_string(),
+        amount: bounty, // exactly equal
+    }]);
+    setup_atom_pool(&mut deps);
+
+    for i in 1..=3 {
+        let pool_addr = make_addr(&format!("creator_pool_{}", i));
+        let pool_state = PoolStateResponseForFactory {
+            pool_contract_address: pool_addr.clone(),
+            nft_ownership_accepted: true,
+            reserve0: Uint128::new(50_000_000_000),
+            reserve1: Uint128::new(10_000_000_000),
+            total_liquidity: Uint128::new(10_000_000),
+            block_time_last: 0,
+            price0_cumulative_last: Uint128::zero(),
+            price1_cumulative_last: Uint128::zero(),
+            assets: vec![],
+        };
+        POOLS_BY_CONTRACT_ADDRESS
+            .save(deps.as_mut().storage, pool_addr, &pool_state)
+            .unwrap();
+    }
+
+    let env = mock_env();
+    instantiate(
+        deps.as_mut(),
+        env.clone(),
+        message_info(&admin_addr(), &[]),
+        create_default_instantiate_msg(),
+    )
+    .unwrap();
+
+    execute(
+        deps.as_mut(),
+        env.clone(),
+        message_info(&admin_addr(), &[]),
+        ExecuteMsg::SetOracleUpdateBounty { new_bounty: bounty },
+    )
+    .unwrap();
+
+    let mut future_env = env;
+    future_env.block.time = future_env.block.time.plus_seconds(360);
+
+    let res = execute(
+        deps.as_mut(),
+        future_env,
+        message_info(&addr0000(), &[]),
+        ExecuteMsg::UpdateOraclePrice {},
+    )
+    .unwrap();
+
+    let paid = res.messages.iter().any(|sm| match &sm.msg {
+        CosmosMsg::Bank(BankMsg::Send { amount, .. }) => {
+            amount.len() == 1 && amount[0].amount == bounty
+        }
+        _ => false,
+    });
+    assert!(paid, "bounty must pay when balance equals bounty exactly");
+}
+
+#[test]
+fn test_oracle_update_bounty_one_less_than_amount_skipped() {
+    // Mirror of the above: one ubluechip below the bounty must skip.
+    let bounty = Uint128::new(500_000);
+    let mut deps = mock_dependencies(&[cosmwasm_std::Coin {
+        denom: "ubluechip".to_string(),
+        amount: bounty - Uint128::one(), // one short
+    }]);
+    setup_atom_pool(&mut deps);
+
+    for i in 1..=3 {
+        let pool_addr = make_addr(&format!("creator_pool_{}", i));
+        let pool_state = PoolStateResponseForFactory {
+            pool_contract_address: pool_addr.clone(),
+            nft_ownership_accepted: true,
+            reserve0: Uint128::new(50_000_000_000),
+            reserve1: Uint128::new(10_000_000_000),
+            total_liquidity: Uint128::new(10_000_000),
+            block_time_last: 0,
+            price0_cumulative_last: Uint128::zero(),
+            price1_cumulative_last: Uint128::zero(),
+            assets: vec![],
+        };
+        POOLS_BY_CONTRACT_ADDRESS
+            .save(deps.as_mut().storage, pool_addr, &pool_state)
+            .unwrap();
+    }
+
+    let env = mock_env();
+    instantiate(
+        deps.as_mut(),
+        env.clone(),
+        message_info(&admin_addr(), &[]),
+        create_default_instantiate_msg(),
+    )
+    .unwrap();
+
+    execute(
+        deps.as_mut(),
+        env.clone(),
+        message_info(&admin_addr(), &[]),
+        ExecuteMsg::SetOracleUpdateBounty { new_bounty: bounty },
+    )
+    .unwrap();
+
+    let mut future_env = env;
+    future_env.block.time = future_env.block.time.plus_seconds(360);
+
+    let res = execute(
+        deps.as_mut(),
+        future_env,
+        message_info(&addr0000(), &[]),
+        ExecuteMsg::UpdateOraclePrice {},
+    )
+    .unwrap();
+
+    // No BankMsg; bounty_skipped attribute present.
+    assert!(
+        res.messages
+            .iter()
+            .all(|sm| !matches!(sm.msg, CosmosMsg::Bank(BankMsg::Send { .. })))
+    );
+    assert!(
+        res.attributes
+            .iter()
+            .any(|a| a.key == "bounty_skipped"
+                && a.value == "insufficient_factory_balance"),
+        "expected bounty_skipped=insufficient_factory_balance"
+    );
+}
+
+#[test]
+fn test_oracle_update_cooldown_blocks_second_call_even_with_bounty() {
+    // The bounty must not bypass the UPDATE_INTERVAL cooldown — this is
+    // the whole anti-spam property of the design. A second call in the
+    // same 5-minute window must be rejected regardless of bounty state.
+    let bounty = Uint128::new(500_000);
+    let mut deps = mock_dependencies(&[cosmwasm_std::Coin {
+        denom: "ubluechip".to_string(),
+        amount: Uint128::new(100_000_000), // plenty
+    }]);
+    setup_atom_pool(&mut deps);
+
+    for i in 1..=3 {
+        let pool_addr = make_addr(&format!("creator_pool_{}", i));
+        let pool_state = PoolStateResponseForFactory {
+            pool_contract_address: pool_addr.clone(),
+            nft_ownership_accepted: true,
+            reserve0: Uint128::new(50_000_000_000),
+            reserve1: Uint128::new(10_000_000_000),
+            total_liquidity: Uint128::new(10_000_000),
+            block_time_last: 0,
+            price0_cumulative_last: Uint128::zero(),
+            price1_cumulative_last: Uint128::zero(),
+            assets: vec![],
+        };
+        POOLS_BY_CONTRACT_ADDRESS
+            .save(deps.as_mut().storage, pool_addr, &pool_state)
+            .unwrap();
+    }
+
+    let env = mock_env();
+    instantiate(
+        deps.as_mut(),
+        env.clone(),
+        message_info(&admin_addr(), &[]),
+        create_default_instantiate_msg(),
+    )
+    .unwrap();
+
+    execute(
+        deps.as_mut(),
+        env.clone(),
+        message_info(&admin_addr(), &[]),
+        ExecuteMsg::SetOracleUpdateBounty { new_bounty: bounty },
+    )
+    .unwrap();
+
+    // First call after 360s — succeeds and pays bounty.
+    let mut t1 = env.clone();
+    t1.block.time = t1.block.time.plus_seconds(360);
+    execute(
+        deps.as_mut(),
+        t1.clone(),
+        message_info(&addr0000(), &[]),
+        ExecuteMsg::UpdateOraclePrice {},
+    )
+    .unwrap();
+
+    // Second call 60s later — inside the cooldown window. Must fail and
+    // must NOT pay out a second bounty.
+    let mut t2 = t1;
+    t2.block.time = t2.block.time.plus_seconds(60);
+    let err = execute(
+        deps.as_mut(),
+        t2,
+        message_info(&addr0000(), &[]),
+        ExecuteMsg::UpdateOraclePrice {},
+    )
+    .unwrap_err();
+    assert!(
+        matches!(err, crate::error::ContractError::UpdateTooSoon { .. }),
+        "second call within 5min must be rejected, got: {:?}",
+        err
+    );
+}
+
+#[test]
+fn test_oracle_update_no_bounty_when_disabled() {
+    // Bounty defaults to zero on instantiate; admin never calls SetOracleUpdateBounty
+    let mut deps = mock_dependencies(&[cosmwasm_std::Coin {
+        denom: "ubluechip".to_string(),
+        amount: Uint128::new(10_000_000),
+    }]);
+    setup_atom_pool(&mut deps);
+
+    for i in 1..=3 {
+        let pool_addr = make_addr(&format!("creator_pool_{}", i));
+        let pool_state = PoolStateResponseForFactory {
+            pool_contract_address: pool_addr.clone(),
+            nft_ownership_accepted: true,
+            reserve0: Uint128::new(50_000_000_000),
+            reserve1: Uint128::new(10_000_000_000),
+            total_liquidity: Uint128::new(10_000_000),
+            block_time_last: 0,
+            price0_cumulative_last: Uint128::zero(),
+            price1_cumulative_last: Uint128::zero(),
+            assets: vec![],
+        };
+        POOLS_BY_CONTRACT_ADDRESS
+            .save(deps.as_mut().storage, pool_addr, &pool_state)
+            .unwrap();
+    }
+
+    let env = mock_env();
+    instantiate(
+        deps.as_mut(),
+        env.clone(),
+        message_info(&admin_addr(), &[]),
+        create_default_instantiate_msg(),
+    )
+    .unwrap();
+
+    let mut future_env = env.clone();
+    future_env.block.time = future_env.block.time.plus_seconds(360);
+
+    let res = execute(
+        deps.as_mut(),
+        future_env,
+        message_info(&addr0000(), &[]),
+        ExecuteMsg::UpdateOraclePrice {},
+    )
+    .unwrap();
+
+    // No bank message, no bounty attributes at all
+    assert!(
+        res.messages
+            .iter()
+            .all(|sm| !matches!(sm.msg, CosmosMsg::Bank(BankMsg::Send { .. })))
+    );
+    assert!(
+        !res.attributes.iter().any(|a| a.key.starts_with("bounty_")),
+        "no bounty attributes expected when disabled"
+    );
+}
+
+// ---------------------------------------------------------------------------
+// M-06 · Creator token name/symbol validation
+// ---------------------------------------------------------------------------
+// These tests exercise validate_creator_token_info directly against every
+// rule and both boundaries. They exist to pin the spec: accidental weakening
+// of any rule (e.g. allowing lowercase symbols) would break a test here.
+
+use crate::execute::validate_creator_token_info;
+
+fn valid_token_info() -> CreatorTokenInfo {
+    CreatorTokenInfo {
+        name: "Valid Name".to_string(),
+        symbol: "VLD".to_string(),
+        decimal: 6,
+    }
+}
+
+#[test]
+fn test_validate_accepts_known_good() {
+    // Sanity check: the baseline fixture must pass so negative tests
+    // below only fail on the specific field they mutate.
+    assert!(validate_creator_token_info(&valid_token_info()).is_ok());
+}
+
+#[test]
+fn test_validate_rejects_wrong_decimals() {
+    for bad_decimal in [0u8, 1, 5, 7, 18, 255] {
+        let mut info = valid_token_info();
+        info.decimal = bad_decimal;
+        let err = validate_creator_token_info(&info).unwrap_err();
+        assert!(
+            format!("{}", err).contains("decimals must be 6"),
+            "decimal={} should be rejected, got: {}",
+            bad_decimal,
+            err
+        );
+    }
+}
+
+#[test]
+fn test_validate_name_length_boundaries() {
+    // Name must be 3..=50 inclusive.
+    let cases: &[(usize, bool)] = &[
+        (0, false),  // empty
+        (1, false),
+        (2, false),  // just below min
+        (3, true),   // exactly min
+        (4, true),
+        (25, true),
+        (49, true),
+        (50, true),  // exactly max
+        (51, false), // just above max
+        (100, false),
+    ];
+    for (len, should_pass) in cases {
+        let mut info = valid_token_info();
+        info.name = "A".repeat(*len);
+        let result = validate_creator_token_info(&info);
+        assert_eq!(
+            result.is_ok(),
+            *should_pass,
+            "name len={} should be {}",
+            len,
+            if *should_pass { "accepted" } else { "rejected" }
+        );
+    }
+}
+
+#[test]
+fn test_validate_name_rejects_non_ascii() {
+    // Non-ASCII should be rejected — common spoofing vector (Cyrillic
+    // lookalikes, fullwidth chars, etc.).
+    let bad_names = [
+        "Nameе",     // trailing Cyrillic 'e'
+        "名前テスト",    // CJK
+        "Pool🚀",    // emoji
+        "Café",      // accented Latin
+        "Ｔｅｓｔ",    // fullwidth ASCII
+    ];
+    for name in bad_names {
+        let mut info = valid_token_info();
+        info.name = name.to_string();
+        let err = validate_creator_token_info(&info).unwrap_err();
+        assert!(
+            format!("{}", err).contains("printable ASCII"),
+            "name '{}' should be rejected, got: {}",
+            name,
+            err
+        );
+    }
+}
+
+#[test]
+fn test_validate_name_rejects_control_chars() {
+    for control in ['\n', '\t', '\r', '\0', '\x7f'] {
+        let mut info = valid_token_info();
+        info.name = format!("Bad{}Name", control);
+        let err = validate_creator_token_info(&info).unwrap_err();
+        assert!(
+            format!("{}", err).contains("printable ASCII"),
+            "control char {:?} should be rejected, got: {}",
+            control,
+            err
+        );
+    }
+}
+
+#[test]
+fn test_validate_name_accepts_printable_ascii() {
+    // Spaces, punctuation, digits — all printable ASCII must pass.
+    let good_names = [
+        "ABC",
+        "My Token v2",
+        "Pool #42",
+        "100% Fair",
+        "Token (beta)",
+        "A.B.C",
+        "a-b-c",
+    ];
+    for name in good_names {
+        let mut info = valid_token_info();
+        info.name = name.to_string();
+        assert!(
+            validate_creator_token_info(&info).is_ok(),
+            "name '{}' should be accepted",
+            name
+        );
+    }
+}
+
+#[test]
+fn test_validate_symbol_length_boundaries() {
+    // Symbol must be 3..=12 inclusive.
+    let cases: &[(usize, bool)] = &[
+        (0, false),
+        (1, false),
+        (2, false),
+        (3, true),
+        (6, true),
+        (11, true),
+        (12, true),
+        (13, false),
+        (50, false),
+    ];
+    for (len, should_pass) in cases {
+        let mut info = valid_token_info();
+        info.symbol = "A".repeat(*len);
+        let result = validate_creator_token_info(&info);
+        assert_eq!(
+            result.is_ok(),
+            *should_pass,
+            "symbol len={} should be {}",
+            len,
+            if *should_pass { "accepted" } else { "rejected" }
+        );
+    }
+}
+
+#[test]
+fn test_validate_symbol_rejects_lowercase() {
+    let bad_symbols = ["abc", "Abc", "ABc", "ABCd", "vld"];
+    for symbol in bad_symbols {
+        let mut info = valid_token_info();
+        info.symbol = symbol.to_string();
+        let err = validate_creator_token_info(&info).unwrap_err();
+        assert!(
+            format!("{}", err).contains("uppercase"),
+            "symbol '{}' should be rejected, got: {}",
+            symbol,
+            err
+        );
+    }
+}
+
+#[test]
+fn test_validate_symbol_rejects_special_chars() {
+    // Symbol allows only A-Z and 0-9. Everything else must fail.
+    // All strings here are length 3-12 so we only test charset rejection,
+    // not length rejection.
+    let bad_symbols = ["A.B", "A-B", "A B", "A$B", "A_B", "A@B", "AB!", "AB#"];
+    for symbol in bad_symbols {
+        let mut info = valid_token_info();
+        info.symbol = symbol.to_string();
+        let err = validate_creator_token_info(&info).unwrap_err();
+        assert!(
+            format!("{}", err).contains("uppercase"),
+            "symbol '{}' should be rejected, got: {}",
+            symbol,
+            err
+        );
+    }
+}
+
+#[test]
+fn test_validate_symbol_rejects_non_ascii() {
+    let bad_symbols = ["ABCЕ", "ТЕСТ", "A🚀B"];
+    for symbol in bad_symbols {
+        let mut info = valid_token_info();
+        info.symbol = symbol.to_string();
+        let err = validate_creator_token_info(&info).unwrap_err();
+        assert!(
+            format!("{}", err).contains("uppercase"),
+            "symbol '{}' should be rejected, got: {}",
+            symbol,
+            err
+        );
+    }
+}
+
+// ---------------------------------------------------------------------------
+// M-03 · Pyth cached-price fallback age boundaries
+// ---------------------------------------------------------------------------
+// Cache is valid up to MAX_PRICE_AGE_SECONDS_BEFORE_STALE seconds old
+// (300s). Beyond that, get_bluechip_usd_price must refuse to price rather
+// than leak a stale value into commit valuations. These tests pin the
+// exact boundary so a future widening of the window would be caught.
+
+use crate::internal_bluechip_price_oracle::MOCK_PYTH_SHOULD_FAIL;
+use crate::state::MAX_PRICE_AGE_SECONDS_BEFORE_STALE;
+
+fn setup_oracle_with_cached_pyth(
+    deps: &mut OwnedDeps<MockStorage, MockApi, WasmMockQuerier>,
+    env: &Env,
+    cached_age_seconds: u64,
+    cached_pyth_price: Uint128,
+    bluechip_per_atom: Uint128,
+) {
+    setup_atom_pool(deps);
+    instantiate(
+        deps.as_mut(),
+        env.clone(),
+        message_info(&admin_addr(), &[]),
+        create_default_instantiate_msg(),
+    )
+    .unwrap();
+
+    let cached_ts = env.block.time.seconds().saturating_sub(cached_age_seconds);
+    let mut oracle = INTERNAL_ORACLE.load(&deps.storage).unwrap();
+    oracle.bluechip_price_cache.last_price = bluechip_per_atom;
+    oracle.bluechip_price_cache.last_update = env.block.time.seconds();
+    oracle.bluechip_price_cache.cached_pyth_price = cached_pyth_price;
+    oracle.bluechip_price_cache.cached_pyth_timestamp = cached_ts;
+    INTERNAL_ORACLE.save(&mut deps.storage, &oracle).unwrap();
+}
+
+#[test]
+fn test_pyth_cache_accepts_fresh_cached_price_when_live_fails() {
+    // Live Pyth fails, cache is 100s old (well within 300s). Must succeed.
+    let mut deps = mock_dependencies(&[]);
+    let env = mock_env();
+    setup_oracle_with_cached_pyth(
+        &mut deps,
+        &env,
+        100, // 100 seconds old
+        Uint128::new(12_000_000),
+        Uint128::new(1_000_000),
+    );
+    MOCK_PYTH_SHOULD_FAIL
+        .save(&mut deps.storage, &true)
+        .unwrap();
+
+    let result = get_bluechip_usd_price(deps.as_ref(), env);
+    assert!(
+        result.is_ok(),
+        "fresh cache (100s old) must be accepted, got: {:?}",
+        result
+    );
+}
+
+#[test]
+fn test_pyth_cache_accepts_at_exact_max_age() {
+    // Cache is exactly MAX_PRICE_AGE_SECONDS_BEFORE_STALE seconds old.
+    // Code uses `> max` so equality must still be accepted.
+    let mut deps = mock_dependencies(&[]);
+    let env = mock_env();
+    setup_oracle_with_cached_pyth(
+        &mut deps,
+        &env,
+        MAX_PRICE_AGE_SECONDS_BEFORE_STALE,
+        Uint128::new(12_000_000),
+        Uint128::new(1_000_000),
+    );
+    MOCK_PYTH_SHOULD_FAIL
+        .save(&mut deps.storage, &true)
+        .unwrap();
+
+    let result = get_bluechip_usd_price(deps.as_ref(), env);
+    assert!(
+        result.is_ok(),
+        "cache at exactly {}s old must be accepted, got: {:?}",
+        MAX_PRICE_AGE_SECONDS_BEFORE_STALE,
+        result
+    );
+}
+
+#[test]
+fn test_pyth_cache_rejects_one_second_past_max() {
+    // One second beyond the staleness boundary must be rejected.
+    let mut deps = mock_dependencies(&[]);
+    let env = mock_env();
+    setup_oracle_with_cached_pyth(
+        &mut deps,
+        &env,
+        MAX_PRICE_AGE_SECONDS_BEFORE_STALE + 1,
+        Uint128::new(12_000_000),
+        Uint128::new(1_000_000),
+    );
+    MOCK_PYTH_SHOULD_FAIL
+        .save(&mut deps.storage, &true)
+        .unwrap();
+
+    let err = get_bluechip_usd_price(deps.as_ref(), env).unwrap_err();
+    assert!(
+        format!("{}", err).contains("stale")
+            || format!("{}", err).contains("no valid cached"),
+        "expected stale/cache rejection, got: {}",
+        err
+    );
+}
+
+#[test]
+fn test_pyth_cache_rejects_far_past_max() {
+    // Catches anyone who later widens the acceptance window by mistake
+    // (e.g. reverting to the old 2x multiplier). 10 minutes old and
+    // Pyth-failing must reject.
+    let mut deps = mock_dependencies(&[]);
+    let env = mock_env();
+    setup_oracle_with_cached_pyth(
+        &mut deps,
+        &env,
+        600, // 10 minutes, well past 300
+        Uint128::new(12_000_000),
+        Uint128::new(1_000_000),
+    );
+    MOCK_PYTH_SHOULD_FAIL
+        .save(&mut deps.storage, &true)
+        .unwrap();
+
+    let err = get_bluechip_usd_price(deps.as_ref(), env).unwrap_err();
+    assert!(
+        format!("{}", err).contains("stale")
+            || format!("{}", err).contains("no valid cached"),
+        "expected rejection at 600s, got: {}",
+        err
+    );
+}
+
+#[test]
+fn test_pyth_cache_rejects_zero_cached_price() {
+    // If cached_pyth_price was never populated (still zero), fallback
+    // must reject regardless of age — zero is the bootstrap sentinel.
+    let mut deps = mock_dependencies(&[]);
+    let env = mock_env();
+    setup_oracle_with_cached_pyth(
+        &mut deps,
+        &env,
+        10, // fresh by age
+        Uint128::zero(),
+        Uint128::new(1_000_000),
+    );
+    MOCK_PYTH_SHOULD_FAIL
+        .save(&mut deps.storage, &true)
+        .unwrap();
+
+    let err = get_bluechip_usd_price(deps.as_ref(), env).unwrap_err();
+    assert!(
+        format!("{}", err).contains("stale")
+            || format!("{}", err).contains("no valid cached"),
+        "expected rejection for zero cached price, got: {}",
+        err
+    );
+}
+
+#[test]
+fn test_pyth_live_price_bypasses_cache_entirely() {
+    // Cache is way past max age, but live Pyth works. Must succeed
+    // because the cache path is only consulted on live failure.
+    let mut deps = mock_dependencies(&[]);
+    let env = mock_env();
+    setup_oracle_with_cached_pyth(
+        &mut deps,
+        &env,
+        99999,
+        Uint128::zero(),
+        Uint128::new(1_000_000),
+    );
+    // Leave MOCK_PYTH_SHOULD_FAIL unset so live path succeeds.
+
+    let result = get_bluechip_usd_price(deps.as_ref(), env);
+    assert!(
+        result.is_ok(),
+        "live pyth should bypass the cache age check, got: {:?}",
+        result
+    );
+}
+
+#[test]
+fn test_validate_symbol_accepts_uppercase_and_digits() {
+    let good_symbols = ["ABC", "USDC", "BTC", "ETH2", "USD1", "AAA123", "AAAAAAAAAAAA"];
+    for symbol in good_symbols {
+        let mut info = valid_token_info();
+        info.symbol = symbol.to_string();
+        assert!(
+            validate_creator_token_info(&info).is_ok(),
+            "symbol '{}' should be accepted",
+            symbol
+        );
+    }
+}
+
+// ---------------------------------------------------------------------------
+// Distribution bounty (paid by factory on behalf of pools)
+// ---------------------------------------------------------------------------
+// Pools no longer hold or pay their own keeper bounty for distribution
+// batches — they forward a PayDistributionBounty message to the factory
+// and the factory pays from its own native reserve. These tests pin the
+// auth gate (only registered pools), the admin-tunable bounty amount,
+// and the graceful-skip behavior on underfund / disabled.
+
+fn register_test_pool(deps: &mut OwnedDeps<MockStorage, MockApi, WasmMockQuerier>, addr: &Addr) {
+    POOLS_BY_CONTRACT_ADDRESS
+        .save(
+            deps.as_mut().storage,
+            addr.clone(),
+            &PoolStateResponseForFactory {
+                pool_contract_address: addr.clone(),
+                nft_ownership_accepted: true,
+                reserve0: Uint128::zero(),
+                reserve1: Uint128::zero(),
+                total_liquidity: Uint128::zero(),
+                block_time_last: 0,
+                price0_cumulative_last: Uint128::zero(),
+                price1_cumulative_last: Uint128::zero(),
+                assets: vec![],
+            },
+        )
+        .unwrap();
+}
+
+// Forces a non-zero oracle price so usd_to_bluechip succeeds in tests
+// that don't go through the full UpdateOraclePrice flow. Pins the
+// conversion at exactly 1 ubluechip = $1.00 USD (matching MOCK_PYTH_PRICE
+// of $10 ATOM with bluechip_per_atom_twap of 10_000_000).
+fn seed_oracle_price_for_bounty_tests(
+    deps: &mut OwnedDeps<MockStorage, MockApi, WasmMockQuerier>,
+) {
+    let mut oracle = INTERNAL_ORACLE.load(&deps.storage).unwrap();
+    oracle.bluechip_price_cache.last_price = Uint128::new(10_000_000);
+    oracle.bluechip_price_cache.last_update = mock_env().block.time.seconds();
+    INTERNAL_ORACLE.save(&mut deps.storage, &oracle).unwrap();
+}
+
+#[test]
+fn test_distribution_bounty_defaults_to_zero() {
+    let mut deps = mock_dependencies(&[]);
+    setup_atom_pool(&mut deps);
+    instantiate(
+        deps.as_mut(),
+        mock_env(),
+        message_info(&admin_addr(), &[]),
+        create_default_instantiate_msg(),
+    )
+    .unwrap();
+
+    let bounty = crate::state::DISTRIBUTION_BOUNTY_USD
+        .load(&deps.storage)
+        .unwrap();
+    assert_eq!(bounty, Uint128::zero());
+}
+
+#[test]
+fn test_set_distribution_bounty_admin_only() {
+    let mut deps = mock_dependencies(&[]);
+    setup_atom_pool(&mut deps);
+    let env = mock_env();
+    instantiate(
+        deps.as_mut(),
+        env.clone(),
+        message_info(&admin_addr(), &[]),
+        create_default_instantiate_msg(),
+    )
+    .unwrap();
+
+    // Non-admin rejected.
+    let err = execute(
+        deps.as_mut(),
+        env.clone(),
+        message_info(&addr0000(), &[]),
+        ExecuteMsg::SetDistributionBounty {
+            new_bounty: Uint128::new(100_000),
+        },
+    )
+    .unwrap_err();
+    assert!(
+        format!("{}", err).contains("admin") || format!("{}", err).contains("Admin"),
+        "expected admin error, got: {}",
+        err
+    );
+
+    // Admin succeeds.
+    execute(
+        deps.as_mut(),
+        env,
+        message_info(&admin_addr(), &[]),
+        ExecuteMsg::SetDistributionBounty {
+            new_bounty: Uint128::new(100_000),
+        },
+    )
+    .unwrap();
+    let bounty = crate::state::DISTRIBUTION_BOUNTY_USD
+        .load(&deps.storage)
+        .unwrap();
+    assert_eq!(bounty, Uint128::new(100_000));
+}
+
+#[test]
+fn test_set_distribution_bounty_rejects_above_cap() {
+    let mut deps = mock_dependencies(&[]);
+    setup_atom_pool(&mut deps);
+    let env = mock_env();
+    instantiate(
+        deps.as_mut(),
+        env.clone(),
+        message_info(&admin_addr(), &[]),
+        create_default_instantiate_msg(),
+    )
+    .unwrap();
+
+    let over = crate::state::MAX_DISTRIBUTION_BOUNTY_USD + Uint128::one();
+    let err = execute(
+        deps.as_mut(),
+        env,
+        message_info(&admin_addr(), &[]),
+        ExecuteMsg::SetDistributionBounty { new_bounty: over },
+    )
+    .unwrap_err();
+    assert!(format!("{}", err).contains("exceeds max"));
+}
+
+#[test]
+fn test_pay_distribution_bounty_rejects_non_pool_caller() {
+    let mut deps = mock_dependencies(&[cosmwasm_std::Coin {
+        denom: "ubluechip".to_string(),
+        amount: Uint128::new(10_000_000),
+    }]);
+    setup_atom_pool(&mut deps);
+    let env = mock_env();
+    instantiate(
+        deps.as_mut(),
+        env.clone(),
+        message_info(&admin_addr(), &[]),
+        create_default_instantiate_msg(),
+    )
+    .unwrap();
+
+    // Configure non-zero bounty so the auth check is the only gate.
+    execute(
+        deps.as_mut(),
+        env.clone(),
+        message_info(&admin_addr(), &[]),
+        ExecuteMsg::SetDistributionBounty {
+            new_bounty: Uint128::new(1_000_000),
+        },
+    )
+    .unwrap();
+
+    // A random address that is NOT in POOLS_BY_CONTRACT_ADDRESS tries to
+    // pay itself a bounty — must be rejected.
+    let err = execute(
+        deps.as_mut(),
+        env,
+        message_info(&Addr::unchecked("hacker"), &[]),
+        ExecuteMsg::PayDistributionBounty {
+            recipient: "hacker".to_string(),
+        },
+    )
+    .unwrap_err();
+    assert!(
+        matches!(err, crate::error::ContractError::Unauthorized {}),
+        "expected Unauthorized, got: {:?}",
+        err
+    );
+}
+
+#[test]
+fn test_pay_distribution_bounty_pays_registered_pool() {
+    // 1_000_000 = $1.00 USD bounty. With the seeded oracle price below
+    // (1 bluechip = $1.00) the converted payout is 1_000_000 ubluechip.
+    let bounty = Uint128::new(1_000_000);
+    let mut deps = mock_dependencies(&[cosmwasm_std::Coin {
+        denom: "ubluechip".to_string(),
+        amount: Uint128::new(10_000_000),
+    }]);
+    setup_atom_pool(&mut deps);
+    let env = mock_env();
+    instantiate(
+        deps.as_mut(),
+        env.clone(),
+        message_info(&admin_addr(), &[]),
+        create_default_instantiate_msg(),
+    )
+    .unwrap();
+    seed_oracle_price_for_bounty_tests(&mut deps);
+
+    execute(
+        deps.as_mut(),
+        env.clone(),
+        message_info(&admin_addr(), &[]),
+        ExecuteMsg::SetDistributionBounty { new_bounty: bounty },
+    )
+    .unwrap();
+
+    let pool_addr = make_addr("registered_pool");
+    register_test_pool(&mut deps, &pool_addr);
+    let keeper = make_addr("keeper");
+
+    let res = execute(
+        deps.as_mut(),
+        env,
+        message_info(&pool_addr, &[]),
+        ExecuteMsg::PayDistributionBounty {
+            recipient: keeper.to_string(),
+        },
+    )
+    .unwrap();
+
+    let paid = res.messages.iter().any(|sm| match &sm.msg {
+        CosmosMsg::Bank(BankMsg::Send { to_address, amount }) => {
+            to_address == keeper.as_str()
+                && amount.len() == 1
+                && amount[0].amount == bounty
+                && amount[0].denom == "ubluechip"
+        }
+        _ => false,
+    });
+    assert!(paid, "expected BankMsg::Send paying keeper, got: {:?}", res.messages);
+    assert!(res
+        .attributes
+        .iter()
+        .any(|a| a.key == "bounty_paid_usd" && a.value == bounty.to_string()));
+}
+
+#[test]
+fn test_pay_distribution_bounty_skips_when_disabled() {
+    let mut deps = mock_dependencies(&[cosmwasm_std::Coin {
+        denom: "ubluechip".to_string(),
+        amount: Uint128::new(10_000_000),
+    }]);
+    setup_atom_pool(&mut deps);
+    let env = mock_env();
+    instantiate(
+        deps.as_mut(),
+        env.clone(),
+        message_info(&admin_addr(), &[]),
+        create_default_instantiate_msg(),
+    )
+    .unwrap();
+
+    // Bounty stays at zero (default). A registered pool calling
+    // PayDistributionBounty must succeed but emit no BankMsg.
+    let pool_addr = make_addr("registered_pool");
+    register_test_pool(&mut deps, &pool_addr);
+
+    let res = execute(
+        deps.as_mut(),
+        env,
+        message_info(&pool_addr, &[]),
+        ExecuteMsg::PayDistributionBounty {
+            recipient: addr0000().to_string(),
+        },
+    )
+    .unwrap();
+
+    assert!(
+        res.messages
+            .iter()
+            .all(|sm| !matches!(sm.msg, CosmosMsg::Bank(BankMsg::Send { .. })))
+    );
+    assert!(res
+        .attributes
+        .iter()
+        .any(|a| a.key == "bounty_skipped" && a.value == "disabled"));
+}
+
+#[test]
+fn test_pay_distribution_bounty_skips_when_underfunded() {
+    let bounty = Uint128::new(1_000_000);
+    let mut deps = mock_dependencies(&[cosmwasm_std::Coin {
+        denom: "ubluechip".to_string(),
+        amount: Uint128::new(100), // way below the converted bounty
+    }]);
+    setup_atom_pool(&mut deps);
+    let env = mock_env();
+    instantiate(
+        deps.as_mut(),
+        env.clone(),
+        message_info(&admin_addr(), &[]),
+        create_default_instantiate_msg(),
+    )
+    .unwrap();
+    seed_oracle_price_for_bounty_tests(&mut deps);
+
+    execute(
+        deps.as_mut(),
+        env.clone(),
+        message_info(&admin_addr(), &[]),
+        ExecuteMsg::SetDistributionBounty { new_bounty: bounty },
+    )
+    .unwrap();
+
+    let pool_addr = make_addr("registered_pool");
+    register_test_pool(&mut deps, &pool_addr);
+
+    let res = execute(
+        deps.as_mut(),
+        env,
+        message_info(&pool_addr, &[]),
+        ExecuteMsg::PayDistributionBounty {
+            recipient: addr0000().to_string(),
+        },
+    )
+    .unwrap();
+
+    // No BankMsg, but tx still succeeds so the pool's distribution can
+    // make progress.
+    assert!(
+        res.messages
+            .iter()
+            .all(|sm| !matches!(sm.msg, CosmosMsg::Bank(BankMsg::Send { .. })))
+    );
+    assert!(res
+        .attributes
+        .iter()
+        .any(|a| a.key == "bounty_skipped" && a.value == "insufficient_factory_balance"));
+}
+
+// ---------------------------------------------------------------------------
+// USD-denomination conversion behavior
+// ---------------------------------------------------------------------------
+// Bounties are stored in USD (6 decimals) and converted to bluechip at
+// payout time using the current oracle price. As bluechip appreciates
+// in USD terms, the bluechip amount paid SHRINKS so keeper compensation
+// stays roughly constant in real terms.
+
+#[test]
+fn test_distribution_bounty_converts_via_oracle_price() {
+    // With seeded oracle (1 bluechip = $1.00 USD), $0.50 USD bounty
+    // converts to 500_000 ubluechip.
+    let bounty_usd = Uint128::new(500_000); // $0.50
+    let mut deps = mock_dependencies(&[cosmwasm_std::Coin {
+        denom: "ubluechip".to_string(),
+        amount: Uint128::new(10_000_000),
+    }]);
+    setup_atom_pool(&mut deps);
+    let env = mock_env();
+    instantiate(
+        deps.as_mut(),
+        env.clone(),
+        message_info(&admin_addr(), &[]),
+        create_default_instantiate_msg(),
+    )
+    .unwrap();
+    seed_oracle_price_for_bounty_tests(&mut deps);
+
+    execute(
+        deps.as_mut(),
+        env.clone(),
+        message_info(&admin_addr(), &[]),
+        ExecuteMsg::SetDistributionBounty {
+            new_bounty: bounty_usd,
+        },
+    )
+    .unwrap();
+
+    let pool_addr = make_addr("registered_pool");
+    register_test_pool(&mut deps, &pool_addr);
+
+    let res = execute(
+        deps.as_mut(),
+        env,
+        message_info(&pool_addr, &[]),
+        ExecuteMsg::PayDistributionBounty {
+            recipient: addr0000().to_string(),
+        },
+    )
+    .unwrap();
+
+    // Find the BankMsg amount.
+    let paid_bluechip = res
+        .messages
+        .iter()
+        .find_map(|sm| match &sm.msg {
+            CosmosMsg::Bank(BankMsg::Send { amount, .. }) => amount.first().map(|c| c.amount),
+            _ => None,
+        })
+        .expect("expected a BankMsg::Send");
+    // At seeded mock price (1 bluechip = $1), $0.50 = 500_000 ubluechip.
+    assert_eq!(paid_bluechip, Uint128::new(500_000));
+
+    // Both attributes must be present so operators can audit conversion.
+    assert!(res
+        .attributes
+        .iter()
+        .any(|a| a.key == "bounty_paid_usd" && a.value == "500000"));
+    assert!(res
+        .attributes
+        .iter()
+        .any(|a| a.key == "bounty_paid_bluechip" && a.value == "500000"));
+}
+
+#[test]
+fn test_distribution_bounty_pays_less_bluechip_when_bluechip_appreciates() {
+    // Same $0.50 USD bounty, but bluechip is now worth $2 (twice as
+    // valuable). Expected bluechip payout: 250_000 ubluechip ($0.50 / $2).
+    let bounty_usd = Uint128::new(500_000); // $0.50
+    let mut deps = mock_dependencies(&[cosmwasm_std::Coin {
+        denom: "ubluechip".to_string(),
+        amount: Uint128::new(10_000_000),
+    }]);
+    setup_atom_pool(&mut deps);
+    let env = mock_env();
+    instantiate(
+        deps.as_mut(),
+        env.clone(),
+        message_info(&admin_addr(), &[]),
+        create_default_instantiate_msg(),
+    )
+    .unwrap();
+
+    // Seed oracle so 1 bluechip = $2.00.
+    // last_price = bluechip_per_atom_twap. With atom_usd_price = $10,
+    // bluechip_usd_price = atom_usd_price * 1e6 / last_price.
+    // We want bluechip_usd_price = 2_000_000 ($2).
+    // 10_000_000 * 1_000_000 / X = 2_000_000  =>  X = 5_000_000.
+    let mut oracle = INTERNAL_ORACLE.load(&deps.storage).unwrap();
+    oracle.bluechip_price_cache.last_price = Uint128::new(5_000_000);
+    oracle.bluechip_price_cache.last_update = env.block.time.seconds();
+    INTERNAL_ORACLE.save(&mut deps.storage, &oracle).unwrap();
+
+    execute(
+        deps.as_mut(),
+        env.clone(),
+        message_info(&admin_addr(), &[]),
+        ExecuteMsg::SetDistributionBounty {
+            new_bounty: bounty_usd,
+        },
+    )
+    .unwrap();
+
+    let pool_addr = make_addr("registered_pool");
+    register_test_pool(&mut deps, &pool_addr);
+
+    let res = execute(
+        deps.as_mut(),
+        env,
+        message_info(&pool_addr, &[]),
+        ExecuteMsg::PayDistributionBounty {
+            recipient: addr0000().to_string(),
+        },
+    )
+    .unwrap();
+
+    let paid_bluechip = res
+        .messages
+        .iter()
+        .find_map(|sm| match &sm.msg {
+            CosmosMsg::Bank(BankMsg::Send { amount, .. }) => amount.first().map(|c| c.amount),
+            _ => None,
+        })
+        .expect("expected a BankMsg::Send");
+    // $0.50 / $2.00 = 0.25 bluechip = 250_000 ubluechip.
+    assert_eq!(
+        paid_bluechip,
+        Uint128::new(250_000),
+        "appreciated bluechip should mean fewer ubluechip per USD bounty"
+    );
+}
+
+#[test]
+fn test_distribution_bounty_skips_when_oracle_unavailable() {
+    // If usd_to_bluechip errors (no oracle price), the pool's payout
+    // request must succeed with bounty_skipped=price_unavailable so the
+    // pool's distribution tx does not revert.
+    let mut deps = mock_dependencies(&[cosmwasm_std::Coin {
+        denom: "ubluechip".to_string(),
+        amount: Uint128::new(10_000_000),
+    }]);
+    setup_atom_pool(&mut deps);
+    let env = mock_env();
+    instantiate(
+        deps.as_mut(),
+        env.clone(),
+        message_info(&admin_addr(), &[]),
+        create_default_instantiate_msg(),
+    )
+    .unwrap();
+    // Deliberately do NOT seed oracle price — last_price stays zero so
+    // get_bluechip_usd_price errors with "TWAP price is zero".
+
+    execute(
+        deps.as_mut(),
+        env.clone(),
+        message_info(&admin_addr(), &[]),
+        ExecuteMsg::SetDistributionBounty {
+            new_bounty: Uint128::new(500_000),
+        },
+    )
+    .unwrap();
+
+    let pool_addr = make_addr("registered_pool");
+    register_test_pool(&mut deps, &pool_addr);
+
+    let res = execute(
+        deps.as_mut(),
+        env,
+        message_info(&pool_addr, &[]),
+        ExecuteMsg::PayDistributionBounty {
+            recipient: addr0000().to_string(),
+        },
+    )
+    .unwrap();
+
+    assert!(
+        res.messages
+            .iter()
+            .all(|sm| !matches!(sm.msg, CosmosMsg::Bank(BankMsg::Send { .. })))
+    );
+    assert!(
+        res.attributes
+            .iter()
+            .any(|a| a.key == "bounty_skipped" && a.value == "price_unavailable"),
+        "expected price_unavailable skip reason"
+    );
+}
+
+#[test]
+fn test_set_distribution_bounty_cap_is_one_dollar() {
+    // Confirms the USD cap is $1 (1_000_000 with 6 decimals). Anything
+    // above is rejected, including 1 unit above.
+    let mut deps = mock_dependencies(&[]);
+    setup_atom_pool(&mut deps);
+    let env = mock_env();
+    instantiate(
+        deps.as_mut(),
+        env.clone(),
+        message_info(&admin_addr(), &[]),
+        create_default_instantiate_msg(),
+    )
+    .unwrap();
+
+    // $1.00 exactly is accepted.
+    execute(
+        deps.as_mut(),
+        env.clone(),
+        message_info(&admin_addr(), &[]),
+        ExecuteMsg::SetDistributionBounty {
+            new_bounty: Uint128::new(1_000_000),
+        },
+    )
+    .unwrap();
+
+    // $1.000001 is rejected.
+    let err = execute(
+        deps.as_mut(),
+        env,
+        message_info(&admin_addr(), &[]),
+        ExecuteMsg::SetDistributionBounty {
+            new_bounty: Uint128::new(1_000_001),
+        },
+    )
+    .unwrap_err();
+    assert!(format!("{}", err).contains("exceeds max"));
 }
