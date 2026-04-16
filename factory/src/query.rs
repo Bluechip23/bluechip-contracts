@@ -4,13 +4,15 @@ use crate::internal_bluechip_price_oracle::{
 };
 use crate::msg::FactoryInstantiateResponse;
 use crate::state::{
-    DISTRIBUTION_BOUNTY_USD, FACTORYINSTANTIATEINFO, ORACLE_UPDATE_BOUNTY_USD, POOLS_BY_ID,
+    CreationStatus, DISTRIBUTION_BOUNTY_USD, FACTORYINSTANTIATEINFO, ORACLE_UPDATE_BOUNTY_USD,
+    POOLS_BY_ID, POOL_CREATION_STATES,
 };
 use cosmwasm_schema::{cw_serde, QueryResponses};
 #[cfg(not(feature = "library"))]
 use cosmwasm_std::entry_point;
 use cosmwasm_std::{
-    to_json_binary, Addr, Binary, Deps, Env, QueryRequest, StdResult, Uint128, WasmQuery,
+    to_json_binary, Addr, Binary, Deps, Env, QueryRequest, StdResult, Timestamp, Uint128,
+    WasmQuery,
 };
 use cw20::{Cw20QueryMsg, TokenInfoResponse};
 use pool_factory_interfaces::FactoryQueryMsg;
@@ -30,6 +32,25 @@ pub struct BountyResponse {
     pub bounty_usd: Uint128,
 }
 
+/// Per-pool creation diagnostics. Useful for off-chain tooling that watches
+/// for stuck or repeatedly-failing pool creations and surfaces them to
+/// operators. Returns `None` when the pool's creation state was already
+/// cleaned up (i.e. creation succeeded end-to-end).
+#[cw_serde]
+pub struct PoolCreationStatusResponse {
+    pub pool_id: u64,
+    pub creator: Addr,
+    pub creator_token_address: Option<Addr>,
+    pub mint_new_position_nft_address: Option<Addr>,
+    pub pool_address: Option<Addr>,
+    pub creation_time: Timestamp,
+    pub status: CreationStatus,
+    /// Number of cleanup retries observed for this pool's creation flow.
+    /// 0 on the happy path; non-zero values indicate operator attention may
+    /// be required. Increments only when handle_cleanup_reply gets an Err.
+    pub retry_count: u8,
+}
+
 #[cw_serde]
 #[derive(QueryResponses)]
 pub enum QueryMsg {
@@ -43,6 +64,10 @@ pub enum QueryMsg {
     OracleUpdateBounty {},
     #[returns(BountyResponse)]
     DistributionBounty {},
+    /// Returns the in-flight creation status for a given pool_id, or None
+    /// when creation completed cleanly and the entry was reaped.
+    #[returns(Option<PoolCreationStatusResponse>)]
+    PoolCreationStatus { pool_id: u64 },
 }
 
 #[cfg_attr(not(feature = "library"), entry_point)]
@@ -57,7 +82,30 @@ pub fn query(deps: Deps, env: Env, msg: QueryMsg) -> StdResult<Binary> {
         }
         QueryMsg::OracleUpdateBounty {} => to_json_binary(&query_oracle_update_bounty(deps)?),
         QueryMsg::DistributionBounty {} => to_json_binary(&query_distribution_bounty(deps)?),
+        QueryMsg::PoolCreationStatus { pool_id } => {
+            to_json_binary(&query_pool_creation_status(deps, pool_id)?)
+        }
     }
+}
+
+pub fn query_pool_creation_status(
+    deps: Deps,
+    pool_id: u64,
+) -> StdResult<Option<PoolCreationStatusResponse>> {
+    let state = match POOL_CREATION_STATES.may_load(deps.storage, pool_id)? {
+        Some(s) => s,
+        None => return Ok(None),
+    };
+    Ok(Some(PoolCreationStatusResponse {
+        pool_id: state.pool_id,
+        creator: state.creator,
+        creator_token_address: state.creator_token_address,
+        mint_new_position_nft_address: state.mint_new_position_nft_address,
+        pool_address: state.pool_address,
+        creation_time: state.creation_time,
+        status: state.status,
+        retry_count: state.retry_count,
+    }))
 }
 
 pub fn query_oracle_update_bounty(deps: Deps) -> StdResult<BountyResponse> {

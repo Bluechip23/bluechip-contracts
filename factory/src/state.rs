@@ -1,6 +1,7 @@
+use crate::asset::TokenType;
 use crate::pool_struct::{PoolDetails, TempPoolCreation};
 use cosmwasm_schema::cw_serde;
-use cosmwasm_std::{Addr, Binary, Decimal, Timestamp, Uint128};
+use cosmwasm_std::{Addr, Binary, Decimal, StdResult, Storage, Timestamp, Uint128};
 use cw_storage_plus::{Item, Map};
 use pool_factory_interfaces::PoolStateResponseForFactory;
 
@@ -11,12 +12,28 @@ pub const POOL_COUNTER: Item<u64> = Item::new("pool_counter");
 // Keyed by pool_id (not creator address) to avoid collisions when the
 // same creator makes multiple pools.
 pub const SETCOMMIT: Map<u64, CommitInfo> = Map::new("commit_info");
+
+// Three coupled pool-registry maps. They MUST stay in sync — every pool
+// that exists must appear in all three, every removal must remove from all
+// three. Always go through `register_pool` / `unregister_pool` rather than
+// touching them individually.
+//   - POOLS_BY_ID:               pool_id  -> PoolDetails (token info, addresses)
+//   - POOL_REGISTRY:             pool_id  -> pool contract Addr (lookup shortcut)
+//   - POOLS_BY_CONTRACT_ADDRESS: pool addr -> snapshot used by oracle / queries
 pub const POOLS_BY_ID: Map<u64, PoolDetails> = Map::new("pools_by_id");
 pub const POOLS_BY_CONTRACT_ADDRESS: Map<Addr, PoolStateResponseForFactory> =
     Map::new("pools_by_contract_address");
+pub const POOL_REGISTRY: Map<u64, Addr> = Map::new("pool_registry");
+
 pub const POOL_CREATION_STATES: Map<u64, PoolCreationState> = Map::new("creation_states");
 pub const MAX_PRICE_AGE_SECONDS_BEFORE_STALE: u64 = 300;
-pub const POOL_REGISTRY: Map<u64, Addr> = Map::new("pool_registry");
+
+// Standard timelock applied to admin-initiated mutations of factory state
+// (config, pool config, pool upgrades, force-rotate). 48h gives the
+// community a full two days to observe a pending change and respond.
+// Single source of truth — every propose/execute pair below MUST use this
+// constant rather than spelling out `86400 * 2`.
+pub const ADMIN_TIMELOCK_SECONDS: u64 = 86_400 * 2;
 pub const PENDING_POOL_UPGRADE: Item<PoolUpgrade> = Item::new("pending_upgrade");
 pub const FIRST_POOL_TIMESTAMP: Item<Timestamp> = Item::new("first_pool_timestamp");
 pub const POOL_THRESHOLD_MINTED: Map<u64, bool> = Map::new("pool_threshold_minted");
@@ -128,4 +145,68 @@ pub struct PoolUpgrade {
     pub pools_to_upgrade: Vec<u64>,
     pub upgraded_count: u32,
     pub effective_after: Timestamp,
+}
+
+// ---------------------------------------------------------------------------
+// Pool registry helpers
+// ---------------------------------------------------------------------------
+// Centralized so the three pool-registry maps cannot drift. Direct writes
+// to POOLS_BY_ID / POOL_REGISTRY / POOLS_BY_CONTRACT_ADDRESS outside this
+// module risk leaving the factory's view of pools internally inconsistent.
+
+/// Atomically register a freshly created pool across all three maps.
+///
+/// Initial `PoolStateResponseForFactory` is materialized from `pool_details`
+/// — caller doesn't need to construct it. Reserves and TWAP accumulators
+/// start at zero; the pool itself updates them as activity flows through.
+pub fn register_pool(
+    storage: &mut dyn Storage,
+    pool_id: u64,
+    pool_address: &Addr,
+    pool_details: &PoolDetails,
+) -> StdResult<()> {
+    POOLS_BY_ID.save(storage, pool_id, pool_details)?;
+    POOL_REGISTRY.save(storage, pool_id, pool_address)?;
+
+    let asset_strings: Vec<String> = pool_details
+        .pool_token_info
+        .iter()
+        .map(|t| match t {
+            TokenType::Bluechip { denom } => denom.clone(),
+            TokenType::CreatorToken { contract_addr } => contract_addr.to_string(),
+        })
+        .collect();
+
+    POOLS_BY_CONTRACT_ADDRESS.save(
+        storage,
+        pool_address.clone(),
+        &PoolStateResponseForFactory {
+            pool_contract_address: pool_address.clone(),
+            nft_ownership_accepted: false,
+            reserve0: Uint128::zero(),
+            reserve1: Uint128::zero(),
+            total_liquidity: Uint128::zero(),
+            block_time_last: 0,
+            price0_cumulative_last: Uint128::zero(),
+            price1_cumulative_last: Uint128::zero(),
+            assets: asset_strings,
+        },
+    )?;
+
+    Ok(())
+}
+
+/// Atomically remove a pool from all three registry maps. Currently no
+/// caller — pool removal isn't part of the lifecycle today — but provided
+/// so future cleanup paths (e.g. a "fully drained / opt-out" feature)
+/// can't accidentally leave one of the three maps populated.
+#[allow(dead_code)]
+pub fn unregister_pool(
+    storage: &mut dyn Storage,
+    pool_id: u64,
+    pool_address: &Addr,
+) {
+    POOLS_BY_ID.remove(storage, pool_id);
+    POOL_REGISTRY.remove(storage, pool_id);
+    POOLS_BY_CONTRACT_ADDRESS.remove(storage, pool_address.clone());
 }

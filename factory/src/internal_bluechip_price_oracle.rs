@@ -992,12 +992,11 @@ fn query_pool_safe(
     }
 }
 
-// 48-hour delay between proposing and executing a force-rotate, matching
-// the ProposeConfigUpdate / UpgradePools / ProposePoolConfigUpdate pattern.
-// This gives the community 48h of visibility before a rotation lands,
-// so a compromised admin can't instantly rotate the oracle sample set to
-// amplify a manipulation attempt.
-pub const FORCE_ROTATE_TIMELOCK_SECONDS: u64 = 86400 * 2;
+// Force-rotate uses the same 48h timelock as every other admin-initiated
+// state change. Re-exported here for backward compatibility with callers
+// that referenced the old name; new code should use
+// `crate::state::ADMIN_TIMELOCK_SECONDS` directly.
+pub use crate::state::ADMIN_TIMELOCK_SECONDS as FORCE_ROTATE_TIMELOCK_SECONDS;
 
 pub fn execute_propose_force_rotate_pools(
     deps: DepsMut,

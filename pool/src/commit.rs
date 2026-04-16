@@ -12,7 +12,7 @@ use crate::generic_helpers::{
 use crate::state::{
     PoolState, COMMITFEEINFO, COMMIT_LEDGER, COMMIT_LIMIT_INFO, DISTRIBUTION_STATE,
     IS_THRESHOLD_HIT, LAST_THRESHOLD_ATTEMPT, NATIVE_RAISED_FROM_COMMIT, POOL_ANALYTICS,
-    POOL_FEE_STATE, POOL_INFO, POOL_PAUSED, POOL_SPECS, POOL_STATE, REENTRANCY_GUARD,
+    POOL_FEE_STATE, POOL_INFO, POOL_PAUSED, POOL_SPECS, POOL_STATE, REENTRANCY_LOCK,
     THRESHOLD_PAYOUT_AMOUNTS, THRESHOLD_PROCESSING, USD_RAISED_FROM_COMMIT,
 };
 use crate::swap_helper::{
@@ -46,17 +46,17 @@ pub fn commit(
     enforce_transaction_deadline(env.block.time, transaction_deadline)?;
 
     // Reentrancy protection
-    let reentrancy_guard = REENTRANCY_GUARD.may_load(deps.storage)?.unwrap_or(false);
+    let reentrancy_guard = REENTRANCY_LOCK.may_load(deps.storage)?.unwrap_or(false);
     if reentrancy_guard {
         return Err(ContractError::ReentrancyGuard {});
     }
-    REENTRANCY_GUARD.save(deps.storage, &true)?;
+    REENTRANCY_LOCK.save(deps.storage, &true)?;
 
     let pool_specs = POOL_SPECS.load(deps.storage)?;
     let sender = info.sender.clone();
 
     if let Err(e) = check_rate_limit(&mut deps, &env, &pool_specs, &sender) {
-        REENTRANCY_GUARD.save(deps.storage, &false)?;
+        REENTRANCY_LOCK.save(deps.storage, &false)?;
         return Err(e);
     }
 
@@ -69,7 +69,7 @@ pub fn commit(
         belief_price,
         max_spread,
     );
-    REENTRANCY_GUARD.save(deps.storage, &false)?;
+    REENTRANCY_LOCK.save(deps.storage, &false)?;
     result
 }
 
@@ -719,6 +719,13 @@ pub fn execute_continue_distribution(
     env: Env,
     info: MessageInfo,
 ) -> Result<Response, ContractError> {
+    // Defense in depth: emergency_withdraw flips is_distributing=false on
+    // drain (admin.rs::execute_emergency_withdraw), so the load+check below
+    // already rejects calls on drained pools — but reading EMERGENCY_DRAINED
+    // up front fails early with the canonical error and avoids the keeper
+    // ever issuing a tx against a drained pool.
+    ensure_not_drained(deps.storage)?;
+
     let dist_state = DISTRIBUTION_STATE.load(deps.storage)?;
     if !dist_state.is_distributing {
         return Err(ContractError::NothingToRecover {});

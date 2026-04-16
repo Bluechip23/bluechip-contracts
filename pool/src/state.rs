@@ -17,7 +17,15 @@ pub const USD_RAISED_FROM_COMMIT: Item<Uint128> = Item::new("usd_raised");
 pub const COMMIT_INFO: Map<&Addr, Committing> = Map::new("sub_info");
 pub const COMMITFEEINFO: Item<CommitFeeInfo> = Item::new("fee_info");
 pub const NATIVE_RAISED_FROM_COMMIT: Item<Uint128> = Item::new("bluechip_raised");
-pub const REENTRANCY_GUARD: Item<bool> = Item::new("rate_limit_guard");
+// Reentrancy lock acquired by `commit` and `simple_swap` to reject
+// re-entry within the same tx (e.g. via a malicious cw20 hook). Storage
+// key is `"rate_limit_guard"` for backward compatibility with already-
+// deployed pools — the Rust binding was renamed from `REENTRANCY_GUARD`
+// because its previous name had nothing to do with rate limiting (which
+// is handled separately by USER_LAST_COMMIT) and confused liquidity-op
+// authors into adding spurious "reset on error" calls that paired with
+// no acquisition.
+pub const REENTRANCY_LOCK: Item<bool> = Item::new("rate_limit_guard");
 pub const IS_THRESHOLD_HIT: Item<bool> = Item::new("threshold_hit");
 pub const COMMIT_LEDGER: cw_storage_plus::Map<&Addr, Uint128> =
     cw_storage_plus::Map::new("commit_usd");

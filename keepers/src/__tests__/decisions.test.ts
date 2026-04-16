@@ -134,20 +134,33 @@ describe("classifyBountyTx", () => {
 // ---------------------------------------------------------------------------
 
 describe("nextOracleSleepMs", () => {
-  it("adds jitter on top of the base interval", () => {
-    // random() => 0.5 → jitter = 2500 (for default jitterMs = 5000)
+  it("centered jitter: random=0.5 yields exactly the base interval", () => {
+    // centered: (0.5 - 0.5) * jitter = 0
     const sleep = nextOracleSleepMs(300_000, 5_000, () => 0.5);
-    expect(sleep).toBe(300_000 + 2_500);
+    expect(sleep).toBe(300_000);
   });
 
-  it("adds zero jitter when random is 0", () => {
+  it("centered jitter: random=0 subtracts up to half the jitter window", () => {
+    // (0 - 0.5) * 5000 = -2500
     const sleep = nextOracleSleepMs(300_000, 5_000, () => 0);
-    expect(sleep).toBe(300_000);
+    expect(sleep).toBe(300_000 - 2_500);
+  });
+
+  it("centered jitter: random close to 1 adds up to half the jitter window", () => {
+    // (0.999... - 0.5) * 5000 ≈ +2499 (floored)
+    const sleep = nextOracleSleepMs(300_000, 5_000, () => 0.9999);
+    expect(sleep).toBeGreaterThanOrEqual(300_000 + 2_499);
+    expect(sleep).toBeLessThan(300_000 + 2_500);
   });
 
   it("returns 0 for non-positive base interval", () => {
     expect(nextOracleSleepMs(0)).toBe(0);
     expect(nextOracleSleepMs(-1)).toBe(0);
+  });
+
+  it("clamps to >= 1ms even if jitter overshoots base downward", () => {
+    // Tiny base, big jitter, low random → would otherwise go negative.
+    expect(nextOracleSleepMs(10, 1_000_000, () => 0)).toBe(1);
   });
 });
 

@@ -40,6 +40,12 @@ pub enum Action {
         expiry: Option<Expiration>,
     },
     AcceptOwnership,
+    // Permanently relinquishes ownership. Used by the factory's
+    // pool-creation cleanup path when an instantiated NFT contract becomes
+    // orphaned: instead of transferring to a sentinel "burn" address (which
+    // requires a chain-prefix-correct bech32 string), we just renounce so
+    // no one can ever call admin-gated entry points on the orphan again.
+    RenounceOwnership,
 }
 
 // Minimal CW721 query message — only the variant we use

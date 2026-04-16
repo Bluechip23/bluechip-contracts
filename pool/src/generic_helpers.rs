@@ -90,17 +90,6 @@ pub fn enforce_transaction_deadline(
     Ok(())
 }
 
-// Helper function to calculate liquidity for deposits
-pub fn validate_factory_address(
-    stored_factory_addr: &Addr,
-    candidate_factory_addr: &Addr,
-) -> Result<(), ContractError> {
-    if stored_factory_addr != candidate_factory_addr {
-        return Err(ContractError::InvalidFactory {});
-    }
-    Ok(())
-}
-
 pub fn validate_pool_threshold_payments(
     params: &ThresholdPayoutAmounts,
 ) -> Result<(), ContractError> {

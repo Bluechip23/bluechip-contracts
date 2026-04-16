@@ -9,8 +9,8 @@ use crate::{
     },
     pool_struct::{CommitFeeInfo, PoolDetails, ThresholdPayoutAmounts},
     state::{
-        CommitInfo, CreationStatus, FACTORYINSTANTIATEINFO, POOLS_BY_CONTRACT_ADDRESS, POOLS_BY_ID,
-        POOL_CREATION_STATES, POOL_REGISTRY, SETCOMMIT, TEMP_POOL_CREATION,
+        CommitInfo, CreationStatus, FACTORYINSTANTIATEINFO, POOL_CREATION_STATES, SETCOMMIT,
+        TEMP_POOL_CREATION,
     },
 };
 use cosmwasm_std::{
@@ -216,7 +216,6 @@ pub fn finalize_pool(
             };
 
             SETCOMMIT.save(deps.storage, pool_id, &commit_info)?;
-            POOLS_BY_ID.save(deps.storage, pool_id, &pool_details)?;
 
             // Transfer ownership to pool
             let ownership_msgs =
@@ -232,32 +231,10 @@ pub fn finalize_pool(
 
             // Clean up temporary state
             cleanup_temp_state(deps.storage, pool_id)?;
-            POOL_REGISTRY.save(deps.storage, pool_id, &pool_address)?;
 
-            // Register pool for oracle eligibility and factory queries
-            let asset_strings: Vec<String> = pool_details
-                .pool_token_info
-                .iter()
-                .map(|t| match t {
-                    TokenType::Bluechip { denom } => denom.clone(),
-                    TokenType::CreatorToken { contract_addr } => contract_addr.to_string(),
-                })
-                .collect();
-            POOLS_BY_CONTRACT_ADDRESS.save(
-                deps.storage,
-                pool_address.clone(),
-                &pool_factory_interfaces::PoolStateResponseForFactory {
-                    pool_contract_address: pool_address.clone(),
-                    nft_ownership_accepted: false,
-                    reserve0: Uint128::zero(),
-                    reserve1: Uint128::zero(),
-                    total_liquidity: Uint128::zero(),
-                    block_time_last: 0,
-                    price0_cumulative_last: Uint128::zero(),
-                    price1_cumulative_last: Uint128::zero(),
-                    assets: asset_strings,
-                },
-            )?;
+            // Single atomic write across the three pool-registry maps so
+            // they cannot drift. See state::register_pool.
+            crate::state::register_pool(deps.storage, pool_id, &pool_address, &pool_details)?;
 
             Ok(Response::new()
                 .add_messages(ownership_msgs)

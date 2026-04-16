@@ -12,7 +12,7 @@ use crate::state::{
     CREATOR_EXCESS_POSITION, DEFAULT_ESTIMATED_GAS_PER_DISTRIBUTION, DEFAULT_MAX_GAS_PER_TX,
     DISTRIBUTION_STATE, EMERGENCY_DRAINED, EMERGENCY_WITHDRAWAL, EMERGENCY_WITHDRAW_DELAY_SECONDS,
     EXPECTED_FACTORY, LAST_THRESHOLD_ATTEMPT, ORACLE_INFO, PENDING_EMERGENCY_WITHDRAW,
-    POOL_FEE_STATE, POOL_INFO, POOL_PAUSED, POOL_SPECS, POOL_STATE, REENTRANCY_GUARD,
+    POOL_FEE_STATE, POOL_INFO, POOL_PAUSED, POOL_SPECS, POOL_STATE, REENTRANCY_LOCK,
     THRESHOLD_PROCESSING,
 };
 use cosmwasm_std::{
@@ -84,6 +84,12 @@ pub fn execute_emergency_withdraw(
     if info.sender != pool_info.factory_addr {
         return Err(ContractError::Unauthorized {});
     }
+
+    // Once a pool has been drained the EMERGENCY_WITHDRAWAL audit record
+    // is final. Re-entering the phase-1/phase-2 flow would let an admin
+    // overwrite it with all-zero amounts (since reserves are already zero)
+    // and silently rewrite the recorded recipient. Reject re-entries.
+    ensure_not_drained(deps.storage)?;
 
     let now = env.block.time;
 
@@ -419,9 +425,9 @@ fn recover_reentrancy_guard(
     storage: &mut dyn Storage,
     recovered: &mut Vec<String>,
 ) -> StdResult<()> {
-    let guard = REENTRANCY_GUARD.may_load(storage)?.unwrap_or(false);
+    let guard = REENTRANCY_LOCK.may_load(storage)?.unwrap_or(false);
     if guard {
-        REENTRANCY_GUARD.save(storage, &false)?;
+        REENTRANCY_LOCK.save(storage, &false)?;
         recovered.push("reentrancy_guard".to_string());
     }
     Ok(())
