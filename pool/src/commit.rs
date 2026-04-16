@@ -585,9 +585,10 @@ fn process_threshold_crossing_with_excess(
     let mut capped_excess = Uint128::zero();
 
     if effective_bluechip_excess > Uint128::zero() {
-        let mut pool_state = POOL_STATE.load(deps.storage)?;
-        let mut pool_fee_state = POOL_FEE_STATE.load(deps.storage)?;
-
+        // `trigger_threshold_payout` above mutated pool_state/pool_fee_state
+        // in place AND saved them to storage, so the caller-provided refs
+        // already reflect the post-seed pool. No reload needed; we modify
+        // the refs directly through the swap and save once at the end.
         let offer_pool = pool_state.reserve0;
         let ask_pool = pool_state.reserve1;
 
@@ -616,14 +617,14 @@ fn process_threshold_crossing_with_excess(
             )?;
         }
 
-        update_price_accumulator(&mut pool_state, env.block.time.seconds())?;
+        update_price_accumulator(pool_state, env.block.time.seconds())?;
 
         pool_state.reserve0 = offer_pool.checked_add(capped_excess)?;
         pool_state.reserve1 = ask_pool.checked_sub(return_amt.checked_add(commission_amt)?)?;
 
-        update_pool_fee_growth(&mut pool_fee_state, &pool_state, 0, commission_amt)?;
-        POOL_FEE_STATE.save(deps.storage, &pool_fee_state)?;
-        POOL_STATE.save(deps.storage, &pool_state)?;
+        update_pool_fee_growth(pool_fee_state, pool_state, 0, commission_amt)?;
+        POOL_FEE_STATE.save(deps.storage, pool_fee_state)?;
+        POOL_STATE.save(deps.storage, pool_state)?;
 
         if !return_amt.is_zero() {
             messages.push(
@@ -673,8 +674,10 @@ fn process_threshold_crossing_with_excess(
     }
     POOL_ANALYTICS.save(deps.storage, &analytics)?;
 
-    let pool_state_final = POOL_STATE.load(deps.storage)?;
-
+    // `pool_state` (outer &mut ref) already reflects the committed on-chain
+    // state after trigger_threshold_payout + the optional excess-swap block
+    // above. Previous code reloaded here; the reload was redundant and
+    // cost an extra storage read per threshold-crossing tx.
     Ok(Response::new()
         .add_messages(messages)
         .add_attribute("action", "commit")
@@ -696,15 +699,15 @@ fn process_threshold_crossing_with_excess(
         .add_attribute("bluechip_excess_returned", return_amt.to_string())
         .add_attribute("bluechip_excess_commission", commission_amt.to_string())
         .add_attribute("bluechip_excess_refunded", refunded_excess.to_string())
-        .add_attribute("reserve0_after", pool_state_final.reserve0.to_string())
-        .add_attribute("reserve1_after", pool_state_final.reserve1.to_string())
+        .add_attribute("reserve0_after", pool_state.reserve0.to_string())
+        .add_attribute("reserve1_after", pool_state.reserve1.to_string())
         .add_attribute(
             "total_commit_count",
             analytics.total_commit_count.to_string(),
         )
         .add_attribute(
             "pool_contract",
-            pool_state_final.pool_contract_address.to_string(),
+            pool_state.pool_contract_address.to_string(),
         )
         .add_attribute("block_height", env.block.height.to_string())
         .add_attribute("block_time", env.block.time.seconds().to_string()))

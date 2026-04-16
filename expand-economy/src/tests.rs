@@ -16,6 +16,7 @@ mod expand_economy_tests {
         let msg = InstantiateMsg {
             factory_address: factory_addr.to_string(),
             owner: Some(owner_addr.to_string()),
+            bluechip_denom: None,
         };
         let info = message_info(&creator_addr, &[]);
 
@@ -27,6 +28,70 @@ mod expand_economy_tests {
         let value: ConfigResponse = from_json(res).unwrap();
         assert_eq!(factory_addr.as_str(), value.factory_address.as_str());
         assert_eq!(owner_addr.as_str(), value.owner.as_str());
+        // Default denom is applied when the instantiate field is None.
+        assert_eq!("ubluechip", value.bluechip_denom);
+    }
+
+    #[test]
+    fn custom_bluechip_denom_is_honored() {
+        // A non-None bluechip_denom in InstantiateMsg must be stored and
+        // used by subsequent RequestExpansion calls.
+        let mut deps = mock_dependencies();
+        let factory_addr = MockApi::default().addr_make("factory");
+        let creator_addr = MockApi::default().addr_make("creator");
+        let user_addr = MockApi::default().addr_make("user");
+
+        let msg = InstantiateMsg {
+            factory_address: factory_addr.to_string(),
+            owner: None,
+            bluechip_denom: Some("ucustom".to_string()),
+        };
+        instantiate(
+            deps.as_mut(),
+            mock_env(),
+            message_info(&creator_addr, &[]),
+            msg,
+        )
+        .unwrap();
+
+        let res = execute(
+            deps.as_mut(),
+            mock_env(),
+            message_info(&factory_addr, &[]),
+            ExecuteMsg::ExpandEconomy(ExpandEconomyMsg::RequestExpansion {
+                recipient: user_addr.to_string(),
+                amount: Uint128::new(250),
+            }),
+        )
+        .unwrap();
+        assert_eq!(
+            res.messages[0].msg,
+            CosmosMsg::Bank(BankMsg::Send {
+                to_address: user_addr.to_string(),
+                amount: coins(250, "ucustom"),
+            })
+        );
+    }
+
+    #[test]
+    fn instantiate_rejects_empty_denom() {
+        let mut deps = mock_dependencies();
+        let factory_addr = MockApi::default().addr_make("factory");
+        let creator_addr = MockApi::default().addr_make("creator");
+
+        let msg = InstantiateMsg {
+            factory_address: factory_addr.to_string(),
+            owner: None,
+            bluechip_denom: Some("   ".to_string()),
+        };
+        let err = instantiate(
+            deps.as_mut(),
+            mock_env(),
+            message_info(&creator_addr, &[]),
+            msg,
+        )
+        .unwrap_err();
+        assert!(err.to_string().contains("non-empty"));
     }
 
     #[test]
@@ -40,6 +105,7 @@ mod expand_economy_tests {
         let msg = InstantiateMsg {
             factory_address: factory_addr.to_string(),
             owner: None,
+            bluechip_denom: None,
         };
         let info = message_info(&creator_addr, &[]);
         instantiate(deps.as_mut(), mock_env(), info, msg).unwrap();
@@ -83,6 +149,7 @@ mod expand_economy_tests {
         let msg = InstantiateMsg {
             factory_address: factory_addr.to_string(),
             owner: Some(owner_addr.to_string()),
+            bluechip_denom: None,
         };
         instantiate(
             deps.as_mut(),
@@ -97,6 +164,7 @@ mod expand_economy_tests {
         let msg = ExecuteMsg::ProposeConfigUpdate {
             factory_address: Some(new_factory_addr.to_string()),
             owner: Some(new_owner_addr.to_string()),
+            bluechip_denom: Some("ucustom2".to_string()),
         };
         execute(deps.as_mut(), mock_env(), info.clone(), msg).unwrap();
 
@@ -129,5 +197,7 @@ mod expand_economy_tests {
         let value: ConfigResponse = from_json(res).unwrap();
         assert_eq!(new_factory_addr.as_str(), value.factory_address.as_str());
         assert_eq!(new_owner_addr.as_str(), value.owner.as_str());
+        // bluechip_denom was also updated via the same timelocked flow.
+        assert_eq!("ucustom2", value.bluechip_denom);
     }
 }

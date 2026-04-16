@@ -6,6 +6,11 @@ pub use pool_factory_interfaces::ExpandEconomyMsg;
 pub struct InstantiateMsg {
     pub factory_address: String,
     pub owner: Option<String>,
+    /// Native bank denom to mint in `RequestExpansion`. When `None`, falls
+    /// back to `DEFAULT_BLUECHIP_DENOM` ("ubluechip") — matching prior
+    /// hardcoded behavior for existing deployments.
+    #[serde(default)]
+    pub bluechip_denom: Option<String>,
 }
 
 #[cw_serde]
@@ -16,6 +21,10 @@ pub enum ExecuteMsg {
     ProposeConfigUpdate {
         factory_address: Option<String>,
         owner: Option<String>,
+        /// Optional new value for `Config.bluechip_denom`. Unset means
+        /// "leave the denom alone".
+        #[serde(default)]
+        bluechip_denom: Option<String>,
     },
     ExecuteConfigUpdate {},
     CancelConfigUpdate {},
@@ -46,4 +55,5 @@ pub enum QueryMsg {
 pub struct ConfigResponse {
     pub factory_address: Addr,
     pub owner: Addr,
+    pub bluechip_denom: String,
 }
