@@ -7,6 +7,7 @@ use cosmwasm_std::{
 };
 use pool_factory_interfaces::{IsPausedResponse, PoolQueryMsg, PoolStateResponseForFactory};
 
+use crate::pyth_types::{PriceResponse, PythQueryMsg};
 use crate::query::QueryMsg;
 
 pub fn mock_dependencies(
@@ -30,6 +31,9 @@ pub struct WasmMockQuerier {
     // factory's graceful-fallback behavior when a pool contract is broken
     // or has been migrated out from under the factory.
     pub query_error_pools: std::collections::HashSet<String>,
+    // When set, responds to mock-oracle GetPrice { price_id: "BLUECHIP_USD" }
+    // with this price. Used by the #[cfg(feature = "mock")] oracle-update tests.
+    pub mock_bluechip_usd_price: Option<cosmwasm_std::Uint128>,
 }
 
 impl Querier for WasmMockQuerier {
@@ -93,6 +97,24 @@ impl WasmMockQuerier {
                     }
                 }
 
+                // Mock-oracle GetPrice: tests set `mock_bluechip_usd_price`
+                // to configure what BLUECHIP_USD returns.
+                if let Ok(pyth_msg) = from_json::<PythQueryMsg>(&msg) {
+                    if let PythQueryMsg::GetPrice { price_id } = pyth_msg {
+                        if price_id == "BLUECHIP_USD" {
+                            if let Some(price) = self.mock_bluechip_usd_price {
+                                let resp = PriceResponse {
+                                    price,
+                                    publish_time: 0,
+                                    expo: -6,
+                                    conf: cosmwasm_std::Uint128::zero(),
+                                };
+                                return SystemResult::Ok(to_json_binary(&resp).into());
+                            }
+                        }
+                    }
+                }
+
                 if let Ok(_factory_msg) = from_json::<QueryMsg>(&msg) {
                     panic!("Unsupported factory query");
                 }
@@ -114,6 +136,7 @@ impl WasmMockQuerier {
             base,
             paused_pools: std::collections::HashSet::new(),
             query_error_pools: std::collections::HashSet::new(),
+            mock_bluechip_usd_price: None,
         }
     }
 }

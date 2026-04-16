@@ -1,4 +1,16 @@
 use cosmwasm_schema::cw_serde;
+use cosmwasm_std::Uint128;
+
+// Mirrors mockoracle::msg::PriceResponse. Used by the #[cfg(feature = "mock")]
+// oracle-update path, which reads the current bluechip price directly from
+// the configured mock oracle instead of deriving it from pool TWAPs.
+#[cw_serde]
+pub struct PriceResponse {
+    pub price: Uint128,
+    pub publish_time: u64,
+    pub expo: i32,
+    pub conf: Uint128,
+}
 
 #[cw_serde]
 pub struct PythPriceRetrievalResponse {

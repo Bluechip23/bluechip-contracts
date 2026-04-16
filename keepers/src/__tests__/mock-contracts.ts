@@ -78,6 +78,12 @@ export class MockContracts implements Executor {
   private oracleStarvation = false; // if true, convert throws
   private pools = new Map<string, PoolState>();
   private unregisteredPools = new Set<string>(); // auth test hook
+  // Mock-oracle push observability: every execute() call is recorded here
+  // so tests can assert "keeper pushed SetPrice before UpdateOraclePrice".
+  public readonly calls: Array<{ contract: string; msg: Record<string, unknown> }> = [];
+  // Test hook: make the next execute() against a given address throw.
+  // Used to simulate a transient mock-oracle-push failure.
+  private failOnceAddresses = new Set<string>();
 
   constructor(address: string, opts: MockContractsOptions) {
     this.address = address;
@@ -125,11 +131,27 @@ export class MockContracts implements Executor {
     this.unregisteredPools.add(address);
   }
 
+  /** Test hook: the next execute() against `address` throws. One-shot. */
+  failNextExecute(address: string): void {
+    this.failOnceAddresses.add(address);
+  }
+
   // Executor impl --------------------------------------------------------
 
   async execute(contract: string, msg: Record<string, unknown>): Promise<TxResult> {
+    this.calls.push({ contract, msg });
+    if (this.failOnceAddresses.has(contract)) {
+      this.failOnceAddresses.delete(contract);
+      throw new Error(`mock: forced failure on ${contract}`);
+    }
     if (contract === this.factoryAddress) {
       return this.executeFactory(msg);
+    }
+    if ("set_price" in msg) {
+      // Mock-oracle SetPrice: accept silently. Tests inspect `calls` to
+      // verify the keeper pushed the expected SetPrice before calling
+      // UpdateOraclePrice.
+      return { code: 0, transactionHash: nextHash(), events: [] };
     }
     // Otherwise treat as pool.
     return this.executePool(contract, msg);

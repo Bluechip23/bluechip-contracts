@@ -248,6 +248,37 @@ pub fn get_eligible_creator_pools(
     Ok(eligible)
 }
 
+// MOCK-ONLY: read the bluechip USD price directly from the configured mock
+// oracle contract (keyed under "BLUECHIP_USD"). In mock builds, the keeper
+// pushes a fresh SetPrice to this contract each tick; the factory then reads
+// it here and treats it as the authoritative price. Production builds are
+// untouched — they still derive the price from pool TWAPs.
+#[cfg(feature = "mock")]
+pub fn query_mock_bluechip_usd_price(deps: Deps) -> Result<Uint128, ContractError> {
+    use crate::pyth_types::{PriceResponse, PythQueryMsg};
+    let factory_config = FACTORYINSTANTIATEINFO.load(deps.storage)?;
+    let resp: PriceResponse = deps
+        .querier
+        .query_wasm_smart(
+            factory_config.pyth_contract_addr_for_conversions.as_str(),
+            &PythQueryMsg::GetPrice {
+                price_id: "BLUECHIP_USD".to_string(),
+            },
+        )
+        .map_err(|e| {
+            ContractError::Std(StdError::generic_err(format!(
+                "mock bluechip price query failed: {}",
+                e
+            )))
+        })?;
+    if resp.price.is_zero() {
+        return Err(ContractError::Std(StdError::generic_err(
+            "mock bluechip price is zero",
+        )));
+    }
+    Ok(resp.price)
+}
+
 pub fn update_internal_oracle_price(
     deps: DepsMut,
     env: Env,
@@ -261,6 +292,77 @@ pub fn update_internal_oracle_price(
         .saturating_add(oracle.update_interval);
     if current_time < next_update {
         return Err(ContractError::UpdateTooSoon { next_update });
+    }
+
+    // MOCK-ONLY short-circuit. If a mock oracle is configured with a
+    // BLUECHIP_USD price feed, read that price and skip pool TWAP math.
+    // When the mock oracle query returns no price (not configured, or
+    // feed id missing), fall through to the prod pool-TWAP path — this
+    // keeps existing factory tests that exercise the prod path under
+    // `--features mock` working unchanged.
+    #[cfg(feature = "mock")]
+    if let Ok(price) = query_mock_bluechip_usd_price(deps.as_ref()) {
+        oracle.bluechip_price_cache.last_price = price;
+        oracle.bluechip_price_cache.last_update = current_time;
+        oracle
+            .bluechip_price_cache
+            .twap_observations
+            .push(PriceObservation {
+                timestamp: current_time,
+                price,
+                atom_pool_price: price,
+            });
+        INTERNAL_ORACLE.save(deps.storage, &oracle)?;
+
+        let bounty_usd = ORACLE_UPDATE_BOUNTY_USD
+            .may_load(deps.storage)?
+            .unwrap_or_default();
+        let mut response = Response::new()
+            .add_attribute("action", "update_oracle")
+            .add_attribute("twap_price", price.to_string())
+            .add_attribute("mock_mode", "true");
+
+        if !bounty_usd.is_zero() {
+            // Convert USD -> bluechip using the price we just fetched from
+            // the mock oracle (not via get_bluechip_usd_price, which in mock
+            // builds returns the ATOM/USD shortcut used by other paths).
+            let bounty_bluechip = bounty_usd
+                .checked_mul(Uint128::from(PRICE_PRECISION))
+                .map_err(|_| {
+                    ContractError::Std(StdError::generic_err("bounty conversion overflow"))
+                })?
+                .checked_div(price)
+                .map_err(|_| {
+                    ContractError::Std(StdError::generic_err("bounty conversion div-by-zero"))
+                })?;
+            let balance = deps
+                .querier
+                .query_balance(env.contract.address.as_str(), ORACLE_BOUNTY_DENOM)?;
+            if !bounty_bluechip.is_zero() && balance.amount >= bounty_bluechip {
+                response = response
+                    .add_message(CosmosMsg::Bank(BankMsg::Send {
+                        to_address: info.sender.to_string(),
+                        amount: vec![Coin {
+                            denom: ORACLE_BOUNTY_DENOM.to_string(),
+                            amount: bounty_bluechip,
+                        }],
+                    }))
+                    .add_attribute("bounty_paid_bluechip", bounty_bluechip.to_string())
+                    .add_attribute("bounty_paid_usd", bounty_usd.to_string())
+                    .add_attribute("bounty_recipient", info.sender.to_string());
+            } else if bounty_bluechip.is_zero() {
+                response = response
+                    .add_attribute("bounty_skipped", "conversion_returned_zero")
+                    .add_attribute("bounty_configured_usd", bounty_usd.to_string());
+            } else {
+                response = response
+                    .add_attribute("bounty_skipped", "insufficient_factory_balance")
+                    .add_attribute("bounty_required_bluechip", bounty_bluechip.to_string())
+                    .add_attribute("bounty_configured_usd", bounty_usd.to_string())
+                    .add_attribute("factory_balance", balance.amount.to_string());
+            }
+        }
+        return Ok(response);
     }
 
     let mut pools_to_use = oracle.selected_pools.clone();

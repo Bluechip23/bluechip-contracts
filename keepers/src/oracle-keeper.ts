@@ -25,8 +25,23 @@ async function main(): Promise<void> {
   process.on("SIGINT", stop);
   process.on("SIGTERM", stop);
 
+  const mockPush = cfg.MOCK_ORACLE_ADDRESS
+    ? {
+        oracleAddress: cfg.MOCK_ORACLE_ADDRESS,
+        feedId: cfg.MOCK_PRICE_FEED_ID,
+        priceUbluechip: cfg.MOCK_PRICE_UBLUECHIP,
+      }
+    : undefined;
+  if (mockPush) {
+    log.info("mock price push enabled", {
+      mock_oracle: mockPush.oracleAddress,
+      feed_id: mockPush.feedId,
+      price: mockPush.priceUbluechip,
+    });
+  }
+
   while (!stopped) {
-    await runOracleIteration(client, cfg.FACTORY_ADDRESS);
+    await runOracleIteration(client, cfg.FACTORY_ADDRESS, mockPush);
     await checkKeeperBalance(client, cfg.GAS_DENOM, cfg.MIN_KEEPER_BALANCE_UBLUECHIP);
 
     const ms = nextOracleSleepMs(cfg.ORACLE_POLL_INTERVAL_MS);

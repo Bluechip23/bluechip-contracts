@@ -17,11 +17,14 @@ SEI_FROM          := taku
 WASM_TARGET       := wasm32-unknown-unknown
 ARTIFACTS         := artifacts
 
-# ─── Build (local testing — includes mock oracle with testing feature) ────────
+# ─── Build (local testing — mock oracle + factory mock feature enabled) ──────
+# Factory is built with --features mock so the keeper-pushes-fresh-price
+# oracle path activates. Oracle mock uses --features testing for entry points.
 build:
 	@mkdir -p $(ARTIFACTS)
 	RUSTFLAGS="-C link-arg=-s" cargo build --release --target $(WASM_TARGET)
 	RUSTFLAGS="-C link-arg=-s" cargo build --release --target $(WASM_TARGET) -p oracle --features testing
+	RUSTFLAGS="-C link-arg=-s" cargo build --release --target $(WASM_TARGET) -p factory --features mock
 	cp target/$(WASM_TARGET)/release/pool.wasm $(ARTIFACTS)/pool.wasm
 	cp target/$(WASM_TARGET)/release/factory.wasm $(ARTIFACTS)/factory.wasm
 	cp target/$(WASM_TARGET)/release/expand_economy.wasm $(ARTIFACTS)/expand_economy.wasm

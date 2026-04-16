@@ -17,10 +17,42 @@ export type OracleIterationResult =
  * so tests can exercise it against a mock Executor without needing a
  * running chain.
  */
+/**
+ * Mock-oracle price-push config. Set on local/testnet deployments where the
+ * factory is built with `--features mock`; the keeper refreshes the mock
+ * oracle's BLUECHIP_USD feed before each UpdateOraclePrice call. Unset in
+ * production — the production factory derives price from pool TWAPs and
+ * does not need a keeper-side push.
+ */
+export interface MockPricePushConfig {
+  oracleAddress: string;
+  feedId: string;
+  priceUbluechip: string;
+}
+
 export async function runOracleIteration(
   executor: Executor,
   factoryAddress: string,
+  mockPush?: MockPricePushConfig,
 ): Promise<OracleIterationResult> {
+  if (mockPush) {
+    try {
+      await executor.execute(mockPush.oracleAddress, {
+        set_price: {
+          price_id: mockPush.feedId,
+          price: mockPush.priceUbluechip,
+        },
+      });
+    } catch (err) {
+      // Per design: a failed mock-price push is a warning, not a blocker.
+      // UpdateOraclePrice will still read whatever's currently in the mock
+      // oracle and attempt the bounty. Losing a single refresh is cheaper
+      // than halting keeper progress.
+      log.warn("mock price push failed; continuing to UpdateOraclePrice", {
+        detail: err instanceof Error ? err.message : String(err),
+      });
+    }
+  }
   try {
     const tx = await executor.execute(factoryAddress, FactoryExecUpdateOraclePrice);
     const outcome = classifyBountyTx(tx);

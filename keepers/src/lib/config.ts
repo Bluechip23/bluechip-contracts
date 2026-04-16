@@ -57,6 +57,15 @@ export const ConfigSchema = z.object({
     .string()
     .default("1000000") // 1 bluechip minimum before we warn about gas
     .transform((s) => BigInt(s)),
+
+  // Mock-oracle price push (local/testnet only). When MOCK_ORACLE_ADDRESS
+  // is set, the oracle keeper pushes a fresh SetPrice to the mock oracle
+  // before each UpdateOraclePrice call, simulating the production flow
+  // where the factory reads a live price source every 5 minutes.
+  // Leave unset in production.
+  MOCK_ORACLE_ADDRESS: z.string().optional(),
+  MOCK_PRICE_FEED_ID: nonEmptyString.default("BLUECHIP_USD"),
+  MOCK_PRICE_UBLUECHIP: nonEmptyString.default("1000000"),
 });
 
 export type Config = z.infer<typeof ConfigSchema>;

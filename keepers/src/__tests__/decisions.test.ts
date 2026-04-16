@@ -231,3 +231,35 @@ describe("shouldContinueSamePool", () => {
     ).toBe(false);
   });
 });
+
+// ---------------------------------------------------------------------------
+// isExpectedSkipError — classify contract errors as routine skips vs. real errors
+// ---------------------------------------------------------------------------
+
+import { isExpectedSkipError } from "../lib/types.js";
+
+describe("isExpectedSkipError", () => {
+  it("treats the factory's UpdateTooSoon user-facing message as a skip", () => {
+    // Exact error string propagated from factory/src/error.rs line 21.
+    // The #[error(...)] display form is what reaches the client over RPC —
+    // NOT the Rust variant name. Matching only "UpdateTooSoon" misses it.
+    const msg =
+      "Query failed with (6): rpc error: code = Unknown desc = failed to " +
+      "execute message; message index: 0: Trying to update the oracle price " +
+      "too quickly. Please wait before updating again.: execute wasm contract failed";
+    expect(isExpectedSkipError(msg)).toBe(true);
+  });
+
+  it("still matches the Rust variant name when it appears directly", () => {
+    expect(isExpectedSkipError("UpdateTooSoon { next_update: 123 }")).toBe(true);
+  });
+
+  it("treats NothingToRecover as a skip", () => {
+    expect(isExpectedSkipError("NothingToRecover: distribution not in progress")).toBe(true);
+  });
+
+  it("does not treat arbitrary runtime errors as skips", () => {
+    expect(isExpectedSkipError("account does not exist")).toBe(false);
+    expect(isExpectedSkipError("insufficient funds")).toBe(false);
+  });
+});
