@@ -710,7 +710,9 @@ fn test_distribution_timeout_triggers_error() {
         .unwrap();
 
     let mut env = mock_env();
-    env.block.time = old_time.plus_seconds(7201); // Over 2 hours later
+    // Just past DISTRIBUTION_STALL_TIMEOUT_SECONDS (24h). Raised from the
+    // previous 2h window so a brief keeper outage no longer bricks a pool.
+    env.block.time = old_time.plus_seconds(crate::state::DISTRIBUTION_STALL_TIMEOUT_SECONDS + 1);
 
     // Permissionless — anyone can call ContinueDistribution
     let info = message_info(&Addr::unchecked("anyone"), &[]);
@@ -728,6 +730,60 @@ fn test_distribution_timeout_triggers_error() {
     // State should be marked as failed
     let updated = DISTRIBUTION_STATE.load(&deps.storage).unwrap();
     assert_eq!(updated.consecutive_failures, 99);
+}
+
+/// Regression: just BELOW the timeout, ContinueDistribution must succeed.
+/// Pins the new 24h window so a future "tighten the timeout" change has
+/// to also update this test.
+#[test]
+fn test_distribution_just_below_timeout_succeeds() {
+    let mut deps = mock_dependencies();
+    setup_pool_storage(&mut deps);
+    check_correct_factory(&mut deps);
+
+    for i in 0..3 {
+        COMMIT_LEDGER
+            .save(
+                &mut deps.storage,
+                &Addr::unchecked(format!("user{}", i)),
+                &Uint128::new(100),
+            )
+            .unwrap();
+    }
+
+    let old_time = Timestamp::from_seconds(1_000_000);
+    let dist_state = DistributionState {
+        is_distributing: true,
+        total_to_distribute: Uint128::new(1_000_000),
+        total_committed_usd: Uint128::new(300),
+        last_processed_key: None,
+        distributions_remaining: 3,
+        max_gas_per_tx: crate::state::DEFAULT_MAX_GAS_PER_TX,
+        estimated_gas_per_distribution: crate::state::DEFAULT_ESTIMATED_GAS_PER_DISTRIBUTION,
+        last_successful_batch_size: None,
+        consecutive_failures: 0,
+        started_at: old_time,
+        last_updated: old_time,
+    };
+    DISTRIBUTION_STATE
+        .save(&mut deps.storage, &dist_state)
+        .unwrap();
+
+    let mut env = mock_env();
+    env.block.time = old_time.plus_seconds(crate::state::DISTRIBUTION_STALL_TIMEOUT_SECONDS - 1);
+
+    let info = message_info(&Addr::unchecked("anyone"), &[]);
+    let res = execute(
+        deps.as_mut(),
+        env,
+        info,
+        ExecuteMsg::ContinueDistribution {},
+    );
+    assert!(
+        res.is_ok(),
+        "should still succeed at T = timeout - 1s, got: {:?}",
+        res.err()
+    );
 }
 
 #[test]

@@ -161,6 +161,16 @@ export class MockContracts implements Executor {
     return this.keeperBalance;
   }
 
+  async getAddressBalance(target: string, _denom: string): Promise<bigint> {
+    if (target === this.factoryAddress) {
+      return this.factoryBalance;
+    }
+    if (target === this.address) {
+      return this.keeperBalance;
+    }
+    return 0n;
+  }
+
   // Factory handlers -----------------------------------------------------
 
   private executeFactory(msg: Record<string, unknown>): TxResult {

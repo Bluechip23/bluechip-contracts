@@ -58,6 +58,19 @@ export const ConfigSchema = z.object({
     .default("1000000") // 1 bluechip minimum before we warn about gas
     .transform((s) => BigInt(s)),
 
+  // Warning threshold for the FACTORY contract's bounty reserve. Distinct
+  // from MIN_KEEPER_BALANCE_UBLUECHIP, which guards the keeper wallet's gas
+  // runway. The factory pays both the oracle bounty (capped at $1) and the
+  // distribution bounty (capped at $1 per batch) out of its native balance;
+  // when the reserve runs low, bounties begin emitting `bounty_skipped =
+  // insufficient_factory_balance` and the operator needs to top up. Default
+  // 100 bluechip ≈ a few thousand bounties at $0.05 — set lower for tighter
+  // alerting, higher to silence noise.
+  MIN_FACTORY_BOUNTY_RESERVE_UBLUECHIP: z
+    .string()
+    .default("100000000")
+    .transform((s) => BigInt(s)),
+
   // Mock-oracle price push (local/testnet only). When MOCK_ORACLE_ADDRESS
   // is set, the oracle keeper pushes a fresh SetPrice to the mock oracle
   // before each UpdateOraclePrice call, simulating the production flow

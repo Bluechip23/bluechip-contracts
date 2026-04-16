@@ -48,6 +48,10 @@ export async function buildKeeperClient(cfg: Config): Promise<KeeperClient> {
       const coin = await signer.getBalance(address, denom);
       return BigInt(coin.amount);
     },
+    async getAddressBalance(target, denom): Promise<bigint> {
+      const coin = await signer.getBalance(target, denom);
+      return BigInt(coin.amount);
+    },
     close: () => signer.disconnect(),
   };
 }

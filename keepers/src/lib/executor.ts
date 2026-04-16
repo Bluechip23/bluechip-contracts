@@ -22,4 +22,11 @@ export interface Executor {
 
   /** Query the keeper's own bluechip balance. Used to warn on low runway. */
   getBalance(denom: string): Promise<bigint>;
+
+  /**
+   * Query the bluechip balance of an arbitrary address. Used by the
+   * distribution keeper to surface low factory bounty reserves so
+   * operators can top up before bounties start getting skipped.
+   */
+  getAddressBalance(address: string, denom: string): Promise<bigint>;
 }

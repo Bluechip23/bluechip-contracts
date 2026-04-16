@@ -2,7 +2,11 @@ import "dotenv/config";
 import { loadConfigFromEnv } from "./lib/config.js";
 import { buildKeeperClient } from "./lib/client.js";
 import { nextOracleSleepMs } from "./lib/decisions.js";
-import { checkKeeperBalance, runOracleIteration } from "./lib/oracle-loop.js";
+import {
+  checkFactoryBalance,
+  checkKeeperBalance,
+  runOracleIteration,
+} from "./lib/oracle-loop.js";
 import { interruptibleSleep } from "./lib/sleep.js";
 import { log } from "./lib/logger.js";
 
@@ -43,6 +47,12 @@ async function main(): Promise<void> {
   while (!stopped) {
     await runOracleIteration(client, cfg.FACTORY_ADDRESS, mockPush);
     await checkKeeperBalance(client, cfg.GAS_DENOM, cfg.MIN_KEEPER_BALANCE_UBLUECHIP);
+    await checkFactoryBalance(
+      client,
+      cfg.FACTORY_ADDRESS,
+      cfg.GAS_DENOM,
+      cfg.MIN_FACTORY_BOUNTY_RESERVE_UBLUECHIP,
+    );
 
     const ms = nextOracleSleepMs(cfg.ORACLE_POLL_INTERVAL_MS);
     log.info("sleeping", { ms });

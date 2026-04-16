@@ -93,6 +93,14 @@ pub const DEFAULT_MAX_GAS_PER_TX: u64 = 2_000_000;
 pub const MAX_DISTRIBUTIONS_PER_TX: u32 = 40;
 pub const MINIMUM_LIQUIDITY: Uint128 = Uint128::new(1000);
 
+// Maximum wall-clock time between successful distribution batches before the
+// pool declares the distribution stalled and requires admin recovery via
+// `RecoverPoolStuckStates`. Sized for the worst case where the distribution
+// keeper is offline: at the default 30-min poll interval the previous 2h
+// window left almost no margin and risked bricking a pool on a brief
+// keeper outage. 24h gives operators a full day to react.
+pub const DISTRIBUTION_STALL_TIMEOUT_SECONDS: u64 = 86_400;
+
 // Distribution keeper bounty is paid by the factory, not the pool.
 // See factory::execute_pay_distribution_bounty. The pool just emits a
 // WasmMsg to the factory and the factory pays from its own native reserve.

@@ -726,20 +726,28 @@ pub fn execute_continue_distribution(
 
     let pool_info = POOL_INFO.load(deps.storage)?;
 
-    let mut msgs = process_distribution_batch(deps.storage, &pool_info, &env)?;
+    let (mut msgs, processed_count) =
+        process_distribution_batch(deps.storage, &pool_info, &env)?;
 
     // Bounty paid by the factory from its own reserve, not pool LP funds.
-    // Factory rejects unregistered pools, which would revert this whole
-    // tx — desired behavior since only legitimate pools should pay bounties.
-    msgs.push(CosmosMsg::Wasm(WasmMsg::Execute {
-        contract_addr: pool_info.factory_addr.to_string(),
-        msg: to_json_binary(
-            &pool_factory_interfaces::FactoryExecuteMsg::PayDistributionBounty {
-                recipient: info.sender.to_string(),
-            },
-        )?,
-        funds: vec![],
-    }));
+    // Only emit the PayDistributionBounty message when this call actually
+    // processed at least one committer. An empty/no-op call (cursor past
+    // end, stale-state cleanup) must not earn a bounty: it would let a
+    // keeper farm the factory reserve for zero work, and the factory's
+    // bounty cap doesn't gate frequency the way the oracle cooldown does.
+    if processed_count > 0 {
+        // Factory rejects unregistered pools, which reverts this whole tx —
+        // desired behavior since only legitimate pools should pay bounties.
+        msgs.push(CosmosMsg::Wasm(WasmMsg::Execute {
+            contract_addr: pool_info.factory_addr.to_string(),
+            msg: to_json_binary(
+                &pool_factory_interfaces::FactoryExecuteMsg::PayDistributionBounty {
+                    recipient: info.sender.to_string(),
+                },
+            )?,
+            funds: vec![],
+        }));
+    }
 
     // process_distribution_batch may have either removed the state
     // entirely (genuine completion) or flipped is_distributing=false
@@ -754,6 +762,8 @@ pub fn execute_continue_distribution(
         .add_messages(msgs)
         .add_attribute("action", "continue_distribution")
         .add_attribute("caller", info.sender.to_string())
+        .add_attribute("processed_count", processed_count.to_string())
+        .add_attribute("bounty_paid", (processed_count > 0).to_string())
         .add_attribute(
             "remaining_before",
             dist_state.distributions_remaining.to_string(),
