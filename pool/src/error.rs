@@ -22,9 +22,6 @@ pub enum ContractError {
     #[error("No distribution or threshold locks and none are in progress")]
     NothingToRecover {},
 
-    #[error("The Factory address used is not permitted to create a pool")]
-    InvalidFactory {},
-
     #[error("Invalid threshold parameters: {msg}")]
     InvalidThresholdParams { msg: String },
 

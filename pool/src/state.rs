@@ -17,7 +17,15 @@ pub const USD_RAISED_FROM_COMMIT: Item<Uint128> = Item::new("usd_raised");
 pub const COMMIT_INFO: Map<&Addr, Committing> = Map::new("sub_info");
 pub const COMMITFEEINFO: Item<CommitFeeInfo> = Item::new("fee_info");
 pub const NATIVE_RAISED_FROM_COMMIT: Item<Uint128> = Item::new("bluechip_raised");
-pub const REENTRANCY_GUARD: Item<bool> = Item::new("rate_limit_guard");
+// Reentrancy lock acquired by `commit` and `simple_swap` to reject
+// re-entry within the same tx (e.g. via a malicious cw20 hook). Storage
+// key is `"rate_limit_guard"` for backward compatibility with already-
+// deployed pools — the Rust binding was renamed from `REENTRANCY_GUARD`
+// because its previous name had nothing to do with rate limiting (which
+// is handled separately by USER_LAST_COMMIT) and confused liquidity-op
+// authors into adding spurious "reset on error" calls that paired with
+// no acquisition.
+pub const REENTRANCY_LOCK: Item<bool> = Item::new("rate_limit_guard");
 pub const IS_THRESHOLD_HIT: Item<bool> = Item::new("threshold_hit");
 pub const COMMIT_LEDGER: cw_storage_plus::Map<&Addr, Uint128> =
     cw_storage_plus::Map::new("commit_usd");
@@ -92,6 +100,14 @@ pub const DEFAULT_ESTIMATED_GAS_PER_DISTRIBUTION: u64 = 50_000;
 pub const DEFAULT_MAX_GAS_PER_TX: u64 = 2_000_000;
 pub const MAX_DISTRIBUTIONS_PER_TX: u32 = 40;
 pub const MINIMUM_LIQUIDITY: Uint128 = Uint128::new(1000);
+
+// Maximum wall-clock time between successful distribution batches before the
+// pool declares the distribution stalled and requires admin recovery via
+// `RecoverPoolStuckStates`. Sized for the worst case where the distribution
+// keeper is offline: at the default 30-min poll interval the previous 2h
+// window left almost no margin and risked bricking a pool on a brief
+// keeper outage. 24h gives operators a full day to react.
+pub const DISTRIBUTION_STALL_TIMEOUT_SECONDS: u64 = 86_400;
 
 // Distribution keeper bounty is paid by the factory, not the pool.
 // See factory::execute_pay_distribution_bounty. The pool just emits a

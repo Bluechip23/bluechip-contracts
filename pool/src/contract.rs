@@ -27,7 +27,7 @@ use crate::state::{
     PoolInfo, PoolSpecs, Position, ThresholdPayoutAmounts, COMMITFEEINFO, COMMIT_LIMIT_INFO,
     EXPECTED_FACTORY, IS_THRESHOLD_HIT, MINIMUM_LIQUIDITY, NATIVE_RAISED_FROM_COMMIT,
     NEXT_POSITION_ID, ORACLE_INFO, OWNER_POSITIONS, POOL_ANALYTICS, POOL_FEE_STATE, POOL_INFO,
-    POOL_PAUSED, POOL_SPECS, POOL_STATE, REENTRANCY_GUARD, THRESHOLD_PAYOUT_AMOUNTS,
+    POOL_PAUSED, POOL_SPECS, POOL_STATE, REENTRANCY_LOCK, THRESHOLD_PAYOUT_AMOUNTS,
     USD_RAISED_FROM_COMMIT,
 };
 use crate::state::{PoolState, LIQUIDITY_POSITIONS};
@@ -441,16 +441,16 @@ fn simple_swap(
 ) -> Result<Response, ContractError> {
     enforce_transaction_deadline(env.block.time, transaction_deadline)?;
 
-    let reentrancy_guard = REENTRANCY_GUARD.may_load(deps.storage)?.unwrap_or(false);
+    let reentrancy_guard = REENTRANCY_LOCK.may_load(deps.storage)?.unwrap_or(false);
     if reentrancy_guard {
         return Err(ContractError::ReentrancyGuard {});
     }
-    REENTRANCY_GUARD.save(deps.storage, &true)?;
+    REENTRANCY_LOCK.save(deps.storage, &true)?;
 
     let pool_specs = POOL_SPECS.load(deps.storage)?;
 
     if let Err(e) = check_rate_limit(&mut deps, &env, &pool_specs, &sender) {
-        REENTRANCY_GUARD.save(deps.storage, &false)?;
+        REENTRANCY_LOCK.save(deps.storage, &false)?;
         return Err(e);
     }
 
@@ -464,7 +464,7 @@ fn simple_swap(
         max_spread,
         to,
     );
-    REENTRANCY_GUARD.save(deps.storage, &false)?;
+    REENTRANCY_LOCK.save(deps.storage, &false)?;
     result
 }
 

@@ -76,4 +76,42 @@ describe("parseConfig", () => {
     });
     expect(cfg.MIN_KEEPER_BALANCE_UBLUECHIP).toBe(5_000_000n);
   });
+
+  it("rejects negative interval values", () => {
+    expect(() =>
+      parseConfig({ ...BASE_ENV, ORACLE_POLL_INTERVAL_MS: "-1" }),
+    ).toThrow(/integer/);
+  });
+
+  it("rejects non-numeric interval values", () => {
+    expect(() =>
+      parseConfig({ ...BASE_ENV, ORACLE_POLL_INTERVAL_MS: "soon" }),
+    ).toThrow(/integer/);
+  });
+
+  it("rejects zero ORACLE_POLL_INTERVAL_MS (would busy-loop)", () => {
+    expect(() =>
+      parseConfig({ ...BASE_ENV, ORACLE_POLL_INTERVAL_MS: "0" }),
+    ).toThrow(/integer/);
+  });
+
+  it("allows zero DISTRIBUTION_PER_POOL_DELAY_MS (means no delay)", () => {
+    const cfg = parseConfig({
+      ...BASE_ENV,
+      DISTRIBUTION_PER_POOL_DELAY_MS: "0",
+    });
+    expect(cfg.DISTRIBUTION_PER_POOL_DELAY_MS).toBe(0);
+  });
+
+  it("rejects negative MIN_KEEPER_BALANCE_UBLUECHIP", () => {
+    expect(() =>
+      parseConfig({ ...BASE_ENV, MIN_KEEPER_BALANCE_UBLUECHIP: "-1" }),
+    ).toThrow(/non-negative/);
+  });
+
+  it("rejects fractional MIN_KEEPER_BALANCE_UBLUECHIP", () => {
+    expect(() =>
+      parseConfig({ ...BASE_ENV, MIN_KEEPER_BALANCE_UBLUECHIP: "1.5" }),
+    ).toThrow(/non-negative/);
+  });
 });

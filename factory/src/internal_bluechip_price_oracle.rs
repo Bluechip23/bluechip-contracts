@@ -738,7 +738,10 @@ pub fn query_pyth_atom_usd_price(deps: Deps, env: Env) -> StdResult<Uint128> {
             return Err(StdError::generic_err("ATOM price is stale"));
         }
 
-        // Validate price is positive
+        // Validate price is positive. We rely on this check for the conf
+        // threshold below — moving or removing it would cause `price as u64`
+        // to wrap a negative value into a huge number and pass the conf
+        // check vacuously. Don't reorder.
         if price_data.price <= 0 {
             return Err(StdError::generic_err("Invalid negative or zero price"));
         }
@@ -746,7 +749,15 @@ pub fn query_pyth_atom_usd_price(deps: Deps, env: Env) -> StdResult<Uint128> {
         // Reject prices with wide confidence intervals (> 5% of price).
         // During low oracle participation or extreme volatility, Pyth may
         // report prices with very wide bands that are unreliable.
-        let conf_threshold = (price_data.price as u64) / 20; // 5%
+        //
+        // Use try_into() rather than `as u64` so a future edit that drops
+        // or reorders the negative-price check above produces an explicit
+        // runtime error rather than a silent wrap to u64::MAX-ish that
+        // would let a wide-conf price pass.
+        let price_u64: u64 = price_data.price.try_into().map_err(|_| {
+            StdError::generic_err("Price overflow when computing conf threshold")
+        })?;
+        let conf_threshold = price_u64 / 20; // 5%
         if price_data.conf > conf_threshold {
             return Err(StdError::generic_err(format!(
                 "Pyth confidence interval too wide: conf={} exceeds 5% of price={}",
@@ -992,12 +1003,11 @@ fn query_pool_safe(
     }
 }
 
-// 48-hour delay between proposing and executing a force-rotate, matching
-// the ProposeConfigUpdate / UpgradePools / ProposePoolConfigUpdate pattern.
-// This gives the community 48h of visibility before a rotation lands,
-// so a compromised admin can't instantly rotate the oracle sample set to
-// amplify a manipulation attempt.
-pub const FORCE_ROTATE_TIMELOCK_SECONDS: u64 = 86400 * 2;
+// Force-rotate uses the same 48h timelock as every other admin-initiated
+// state change. Re-exported here for backward compatibility with callers
+// that referenced the old name; new code should use
+// `crate::state::ADMIN_TIMELOCK_SECONDS` directly.
+pub use crate::state::ADMIN_TIMELOCK_SECONDS as FORCE_ROTATE_TIMELOCK_SECONDS;
 
 pub fn execute_propose_force_rotate_pools(
     deps: DepsMut,

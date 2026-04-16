@@ -1026,7 +1026,10 @@ fn test_oracle_force_rotate_pools() {
 
     // Fast-forward past the 48h timelock and execute.
     let mut future_env = env.clone();
-    future_env.block.time = future_env.block.time.plus_seconds(86400 * 2 + 1);
+    future_env.block.time = future_env
+    .block
+    .time
+    .plus_seconds(crate::state::ADMIN_TIMELOCK_SECONDS + 1);
 
     let result = execute(
         deps.as_mut(),

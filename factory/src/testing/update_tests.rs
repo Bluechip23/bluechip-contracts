@@ -267,7 +267,10 @@ fn test_update_specific_pool_from_registry() {
 
     // Advance time past 48-hour timelock
     let mut future_env = mock_env();
-    future_env.block.time = future_env.block.time.plus_seconds(86400 * 2 + 1);
+    future_env.block.time = future_env
+    .block
+    .time
+    .plus_seconds(crate::state::ADMIN_TIMELOCK_SECONDS + 1);
 
     let apply_msg = ExecuteMsg::ExecutePoolConfigUpdate { pool_id };
     let res = execute(deps.as_mut(), future_env, admin_info, apply_msg).unwrap();

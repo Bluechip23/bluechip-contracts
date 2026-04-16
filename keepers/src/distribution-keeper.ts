@@ -3,7 +3,7 @@ import { loadConfigFromEnv } from "./lib/config.js";
 import { buildKeeperClient } from "./lib/client.js";
 import { nextDistributionSleepMs } from "./lib/decisions.js";
 import { runDistributionSweep } from "./lib/distribution-loop.js";
-import { checkKeeperBalance } from "./lib/oracle-loop.js";
+import { checkFactoryBalance, checkKeeperBalance } from "./lib/oracle-loop.js";
 import { interruptibleSleep } from "./lib/sleep.js";
 import { log } from "./lib/logger.js";
 
@@ -40,6 +40,17 @@ async function main(): Promise<void> {
       cfg.DISTRIBUTION_PER_POOL_DELAY_MS,
     );
     await checkKeeperBalance(client, cfg.GAS_DENOM, cfg.MIN_KEEPER_BALANCE_UBLUECHIP);
+    // Distribution bounties are paid from the factory's native reserve, not
+    // the pools'. If the reserve drains, factory.PayDistributionBounty starts
+    // emitting `bounty_skipped = insufficient_factory_balance` and the
+    // keeper's effective compensation goes to zero. Surface a warning while
+    // there's still time to top up.
+    await checkFactoryBalance(
+      client,
+      cfg.FACTORY_ADDRESS,
+      cfg.GAS_DENOM,
+      cfg.MIN_FACTORY_BOUNTY_RESERVE_UBLUECHIP,
+    );
 
     const ms = nextDistributionSleepMs(cfg.DISTRIBUTION_POLL_INTERVAL_MS, madeProgress);
     log.info("sleeping", { ms, made_progress: madeProgress });

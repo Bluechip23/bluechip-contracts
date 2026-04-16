@@ -10,7 +10,7 @@ use crate::error::ContractError;
 use crate::msg::{ConfigResponse, ExecuteMsg, ExpandEconomyMsg, InstantiateMsg, QueryMsg};
 use crate::state::{
     Config, PendingConfigUpdate, PendingWithdrawal, CONFIG, CONFIG_TIMELOCK_SECONDS,
-    PENDING_CONFIG_UPDATE, PENDING_WITHDRAWAL, WITHDRAW_TIMELOCK_SECONDS,
+    DEFAULT_BLUECHIP_DENOM, PENDING_CONFIG_UPDATE, PENDING_WITHDRAWAL, WITHDRAW_TIMELOCK_SECONDS,
 };
 
 const CONTRACT_NAME: &str = "crates.io:expand-economy";
@@ -25,11 +25,21 @@ pub fn instantiate(
 ) -> Result<Response, ContractError> {
     set_contract_version(deps.storage, CONTRACT_NAME, CONTRACT_VERSION)?;
 
+    let bluechip_denom = msg
+        .bluechip_denom
+        .unwrap_or_else(|| DEFAULT_BLUECHIP_DENOM.to_string());
+    if bluechip_denom.trim().is_empty() {
+        return Err(ContractError::Std(StdError::generic_err(
+            "bluechip_denom must be non-empty",
+        )));
+    }
+
     let config = Config {
         factory_address: deps.api.addr_validate(&msg.factory_address)?,
         owner: deps
             .api
             .addr_validate(&msg.owner.unwrap_or_else(|| info.sender.to_string()))?,
+        bluechip_denom,
     };
 
     CONFIG.save(deps.storage, &config)?;
@@ -37,7 +47,8 @@ pub fn instantiate(
     Ok(Response::new()
         .add_attribute("action", "instantiate")
         .add_attribute("factory", config.factory_address)
-        .add_attribute("owner", config.owner))
+        .add_attribute("owner", config.owner)
+        .add_attribute("bluechip_denom", config.bluechip_denom))
 }
 
 #[cfg_attr(not(feature = "library"), entry_point)]
@@ -54,7 +65,8 @@ pub fn execute(
         ExecuteMsg::ProposeConfigUpdate {
             factory_address,
             owner,
-        } => execute_propose_config_update(deps, env, info, factory_address, owner),
+            bluechip_denom,
+        } => execute_propose_config_update(deps, env, info, factory_address, owner, bluechip_denom),
         ExecuteMsg::ExecuteConfigUpdate {} => execute_apply_config_update(deps, env, info),
         ExecuteMsg::CancelConfigUpdate {} => execute_cancel_config_update(deps, info),
         ExecuteMsg::ProposeWithdrawal {
@@ -89,7 +101,7 @@ pub fn execute_expand_economy(
             let send_msg = BankMsg::Send {
                 to_address: recipient.clone(),
                 amount: vec![Coin {
-                    denom: "ubluechip".to_string(),
+                    denom: config.bluechip_denom.clone(),
                     amount,
                 }],
             };
@@ -98,7 +110,8 @@ pub fn execute_expand_economy(
                 .add_message(send_msg)
                 .add_attribute("action", "request_reward")
                 .add_attribute("recipient", recipient)
-                .add_attribute("amount", amount))
+                .add_attribute("amount", amount)
+                .add_attribute("denom", config.bluechip_denom))
         }
     }
 }
@@ -109,6 +122,7 @@ pub fn execute_propose_config_update(
     info: MessageInfo,
     factory_address: Option<String>,
     owner: Option<String>,
+    bluechip_denom: Option<String>,
 ) -> Result<Response, ContractError> {
     let config = CONFIG.load(deps.storage)?;
     if info.sender != config.owner {
@@ -128,6 +142,16 @@ pub fn execute_propose_config_update(
     if let Some(ref addr) = owner {
         deps.api.addr_validate(addr)?;
     }
+    // Reject empty/whitespace denom at propose time so the mistake surfaces
+    // 48h earlier than it otherwise would (when someone tries to apply it
+    // and every subsequent RequestExpansion breaks).
+    if let Some(ref d) = bluechip_denom {
+        if d.trim().is_empty() {
+            return Err(ContractError::Std(StdError::generic_err(
+                "bluechip_denom must be non-empty",
+            )));
+        }
+    }
 
     let effective_after = env.block.time.plus_seconds(CONFIG_TIMELOCK_SECONDS);
 
@@ -136,6 +160,7 @@ pub fn execute_propose_config_update(
         &PendingConfigUpdate {
             factory_address,
             owner,
+            bluechip_denom,
             effective_after,
         },
     )?;
@@ -175,6 +200,16 @@ pub fn execute_apply_config_update(
     if let Some(new_owner) = pending.owner {
         config.owner = deps.api.addr_validate(&new_owner)?;
     }
+    if let Some(new_denom) = pending.bluechip_denom {
+        // Non-empty was already enforced at propose time; re-check here in
+        // case a migration ever inserts a PendingConfigUpdate directly.
+        if new_denom.trim().is_empty() {
+            return Err(ContractError::Std(StdError::generic_err(
+                "bluechip_denom must be non-empty",
+            )));
+        }
+        config.bluechip_denom = new_denom;
+    }
 
     CONFIG.save(deps.storage, &config)?;
     PENDING_CONFIG_UPDATE.remove(deps.storage);
@@ -182,7 +217,8 @@ pub fn execute_apply_config_update(
     Ok(Response::new()
         .add_attribute("action", "execute_config_update")
         .add_attribute("factory", config.factory_address)
-        .add_attribute("owner", config.owner))
+        .add_attribute("owner", config.owner)
+        .add_attribute("bluechip_denom", config.bluechip_denom))
 }
 
 pub fn execute_cancel_config_update(
@@ -319,5 +355,6 @@ fn query_config(deps: Deps) -> StdResult<ConfigResponse> {
     Ok(ConfigResponse {
         factory_address: config.factory_address,
         owner: config.owner,
+        bluechip_denom: config.bluechip_denom,
     })
 }

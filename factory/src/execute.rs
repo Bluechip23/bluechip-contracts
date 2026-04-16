@@ -11,10 +11,11 @@ use crate::pool_creation_reply::{finalize_pool, mint_create_pool, set_tokens};
 use crate::pool_struct::{CreatePool, PoolConfigUpdate, TempPoolCreation};
 use crate::state::{
     CreationStatus, FactoryInstantiate, PendingConfig, PendingPoolConfig, PoolCreationState,
-    PoolUpgrade, DISTRIBUTION_BOUNTY_USD, FACTORYINSTANTIATEINFO, MAX_DISTRIBUTION_BOUNTY_USD,
-    MAX_ORACLE_UPDATE_BOUNTY_USD, ORACLE_BOUNTY_DENOM, ORACLE_UPDATE_BOUNTY_USD, PENDING_CONFIG,
-    PENDING_POOL_CONFIG, PENDING_POOL_UPGRADE, POOL_COUNTER, POOL_CREATION_STATES,
-    POOLS_BY_CONTRACT_ADDRESS, POOL_REGISTRY, POOL_THRESHOLD_MINTED, TEMP_POOL_CREATION,
+    PoolUpgrade, ADMIN_TIMELOCK_SECONDS, DISTRIBUTION_BOUNTY_USD, FACTORYINSTANTIATEINFO,
+    MAX_DISTRIBUTION_BOUNTY_USD, MAX_ORACLE_UPDATE_BOUNTY_USD, ORACLE_BOUNTY_DENOM,
+    ORACLE_UPDATE_BOUNTY_USD, PENDING_CONFIG, PENDING_POOL_CONFIG, PENDING_POOL_UPGRADE,
+    POOL_COUNTER, POOL_CREATION_STATES, POOLS_BY_CONTRACT_ADDRESS, POOL_REGISTRY,
+    POOL_THRESHOLD_MINTED, TEMP_POOL_CREATION,
 };
 #[cfg(not(feature = "library"))]
 use cosmwasm_std::entry_point;
@@ -26,7 +27,6 @@ use cosmwasm_std::{Addr, Attribute, Binary, CosmosMsg, Order};
 use cw20::MinterResponse;
 const CONTRACT_NAME: &str = "crates.io:bluechip-factory";
 const CONTRACT_VERSION: &str = env!("CARGO_PKG_VERSION");
-pub const BURN_ADDRESS: &str = "cosmos1qqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqnrql8a";
 // Reply step constants (stored in low 8 bits of reply ID).
 pub const SET_TOKENS: u64 = 1;
 pub const MINT_CREATE_POOL: u64 = 2;
@@ -193,7 +193,7 @@ pub fn execute_propose_factory_config_update(
 
     let pending = PendingConfig {
         new_config: config,
-        effective_after: env.block.time.plus_seconds(86400 * 2), // 48 hour delay
+        effective_after: env.block.time.plus_seconds(ADMIN_TIMELOCK_SECONDS),
     };
     PENDING_CONFIG.save(deps.storage, &pending)?;
     Ok(Response::new()
@@ -367,7 +367,7 @@ pub fn execute_propose_pool_upgrade(
             .collect::<StdResult<Vec<_>>>()?
     };
 
-    let effective_after = env.block.time.plus_seconds(86400 * 2); // 48 hour delay
+    let effective_after = env.block.time.plus_seconds(ADMIN_TIMELOCK_SECONDS);
 
     PENDING_POOL_UPGRADE.save(
         deps.storage,
@@ -539,7 +539,7 @@ pub fn execute_propose_pool_config_update(
         )));
     }
 
-    let effective_after = env.block.time.plus_seconds(86400 * 2); // 48 hours
+    let effective_after = env.block.time.plus_seconds(ADMIN_TIMELOCK_SECONDS);
 
     PENDING_POOL_CONFIG.save(
         deps.storage,

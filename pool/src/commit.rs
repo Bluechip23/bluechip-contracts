@@ -12,7 +12,7 @@ use crate::generic_helpers::{
 use crate::state::{
     PoolState, COMMITFEEINFO, COMMIT_LEDGER, COMMIT_LIMIT_INFO, DISTRIBUTION_STATE,
     IS_THRESHOLD_HIT, LAST_THRESHOLD_ATTEMPT, NATIVE_RAISED_FROM_COMMIT, POOL_ANALYTICS,
-    POOL_FEE_STATE, POOL_INFO, POOL_PAUSED, POOL_SPECS, POOL_STATE, REENTRANCY_GUARD,
+    POOL_FEE_STATE, POOL_INFO, POOL_PAUSED, POOL_SPECS, POOL_STATE, REENTRANCY_LOCK,
     THRESHOLD_PAYOUT_AMOUNTS, THRESHOLD_PROCESSING, USD_RAISED_FROM_COMMIT,
 };
 use crate::swap_helper::{
@@ -46,17 +46,17 @@ pub fn commit(
     enforce_transaction_deadline(env.block.time, transaction_deadline)?;
 
     // Reentrancy protection
-    let reentrancy_guard = REENTRANCY_GUARD.may_load(deps.storage)?.unwrap_or(false);
+    let reentrancy_guard = REENTRANCY_LOCK.may_load(deps.storage)?.unwrap_or(false);
     if reentrancy_guard {
         return Err(ContractError::ReentrancyGuard {});
     }
-    REENTRANCY_GUARD.save(deps.storage, &true)?;
+    REENTRANCY_LOCK.save(deps.storage, &true)?;
 
     let pool_specs = POOL_SPECS.load(deps.storage)?;
     let sender = info.sender.clone();
 
     if let Err(e) = check_rate_limit(&mut deps, &env, &pool_specs, &sender) {
-        REENTRANCY_GUARD.save(deps.storage, &false)?;
+        REENTRANCY_LOCK.save(deps.storage, &false)?;
         return Err(e);
     }
 
@@ -69,7 +69,7 @@ pub fn commit(
         belief_price,
         max_spread,
     );
-    REENTRANCY_GUARD.save(deps.storage, &false)?;
+    REENTRANCY_LOCK.save(deps.storage, &false)?;
     result
 }
 
@@ -585,9 +585,10 @@ fn process_threshold_crossing_with_excess(
     let mut capped_excess = Uint128::zero();
 
     if effective_bluechip_excess > Uint128::zero() {
-        let mut pool_state = POOL_STATE.load(deps.storage)?;
-        let mut pool_fee_state = POOL_FEE_STATE.load(deps.storage)?;
-
+        // `trigger_threshold_payout` above mutated pool_state/pool_fee_state
+        // in place AND saved them to storage, so the caller-provided refs
+        // already reflect the post-seed pool. No reload needed; we modify
+        // the refs directly through the swap and save once at the end.
         let offer_pool = pool_state.reserve0;
         let ask_pool = pool_state.reserve1;
 
@@ -616,14 +617,14 @@ fn process_threshold_crossing_with_excess(
             )?;
         }
 
-        update_price_accumulator(&mut pool_state, env.block.time.seconds())?;
+        update_price_accumulator(pool_state, env.block.time.seconds())?;
 
         pool_state.reserve0 = offer_pool.checked_add(capped_excess)?;
         pool_state.reserve1 = ask_pool.checked_sub(return_amt.checked_add(commission_amt)?)?;
 
-        update_pool_fee_growth(&mut pool_fee_state, &pool_state, 0, commission_amt)?;
-        POOL_FEE_STATE.save(deps.storage, &pool_fee_state)?;
-        POOL_STATE.save(deps.storage, &pool_state)?;
+        update_pool_fee_growth(pool_fee_state, pool_state, 0, commission_amt)?;
+        POOL_FEE_STATE.save(deps.storage, pool_fee_state)?;
+        POOL_STATE.save(deps.storage, pool_state)?;
 
         if !return_amt.is_zero() {
             messages.push(
@@ -673,8 +674,10 @@ fn process_threshold_crossing_with_excess(
     }
     POOL_ANALYTICS.save(deps.storage, &analytics)?;
 
-    let pool_state_final = POOL_STATE.load(deps.storage)?;
-
+    // `pool_state` (outer &mut ref) already reflects the committed on-chain
+    // state after trigger_threshold_payout + the optional excess-swap block
+    // above. Previous code reloaded here; the reload was redundant and
+    // cost an extra storage read per threshold-crossing tx.
     Ok(Response::new()
         .add_messages(messages)
         .add_attribute("action", "commit")
@@ -696,15 +699,15 @@ fn process_threshold_crossing_with_excess(
         .add_attribute("bluechip_excess_returned", return_amt.to_string())
         .add_attribute("bluechip_excess_commission", commission_amt.to_string())
         .add_attribute("bluechip_excess_refunded", refunded_excess.to_string())
-        .add_attribute("reserve0_after", pool_state_final.reserve0.to_string())
-        .add_attribute("reserve1_after", pool_state_final.reserve1.to_string())
+        .add_attribute("reserve0_after", pool_state.reserve0.to_string())
+        .add_attribute("reserve1_after", pool_state.reserve1.to_string())
         .add_attribute(
             "total_commit_count",
             analytics.total_commit_count.to_string(),
         )
         .add_attribute(
             "pool_contract",
-            pool_state_final.pool_contract_address.to_string(),
+            pool_state.pool_contract_address.to_string(),
         )
         .add_attribute("block_height", env.block.height.to_string())
         .add_attribute("block_time", env.block.time.seconds().to_string()))
@@ -719,6 +722,13 @@ pub fn execute_continue_distribution(
     env: Env,
     info: MessageInfo,
 ) -> Result<Response, ContractError> {
+    // Defense in depth: emergency_withdraw flips is_distributing=false on
+    // drain (admin.rs::execute_emergency_withdraw), so the load+check below
+    // already rejects calls on drained pools — but reading EMERGENCY_DRAINED
+    // up front fails early with the canonical error and avoids the keeper
+    // ever issuing a tx against a drained pool.
+    ensure_not_drained(deps.storage)?;
+
     let dist_state = DISTRIBUTION_STATE.load(deps.storage)?;
     if !dist_state.is_distributing {
         return Err(ContractError::NothingToRecover {});
@@ -726,20 +736,28 @@ pub fn execute_continue_distribution(
 
     let pool_info = POOL_INFO.load(deps.storage)?;
 
-    let mut msgs = process_distribution_batch(deps.storage, &pool_info, &env)?;
+    let (mut msgs, processed_count) =
+        process_distribution_batch(deps.storage, &pool_info, &env)?;
 
     // Bounty paid by the factory from its own reserve, not pool LP funds.
-    // Factory rejects unregistered pools, which would revert this whole
-    // tx — desired behavior since only legitimate pools should pay bounties.
-    msgs.push(CosmosMsg::Wasm(WasmMsg::Execute {
-        contract_addr: pool_info.factory_addr.to_string(),
-        msg: to_json_binary(
-            &pool_factory_interfaces::FactoryExecuteMsg::PayDistributionBounty {
-                recipient: info.sender.to_string(),
-            },
-        )?,
-        funds: vec![],
-    }));
+    // Only emit the PayDistributionBounty message when this call actually
+    // processed at least one committer. An empty/no-op call (cursor past
+    // end, stale-state cleanup) must not earn a bounty: it would let a
+    // keeper farm the factory reserve for zero work, and the factory's
+    // bounty cap doesn't gate frequency the way the oracle cooldown does.
+    if processed_count > 0 {
+        // Factory rejects unregistered pools, which reverts this whole tx —
+        // desired behavior since only legitimate pools should pay bounties.
+        msgs.push(CosmosMsg::Wasm(WasmMsg::Execute {
+            contract_addr: pool_info.factory_addr.to_string(),
+            msg: to_json_binary(
+                &pool_factory_interfaces::FactoryExecuteMsg::PayDistributionBounty {
+                    recipient: info.sender.to_string(),
+                },
+            )?,
+            funds: vec![],
+        }));
+    }
 
     // process_distribution_batch may have either removed the state
     // entirely (genuine completion) or flipped is_distributing=false
@@ -754,6 +772,8 @@ pub fn execute_continue_distribution(
         .add_messages(msgs)
         .add_attribute("action", "continue_distribution")
         .add_attribute("caller", info.sender.to_string())
+        .add_attribute("processed_count", processed_count.to_string())
+        .add_attribute("bounty_paid", (processed_count > 0).to_string())
         .add_attribute(
             "remaining_before",
             dist_state.distributions_remaining.to_string(),

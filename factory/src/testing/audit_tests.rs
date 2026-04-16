@@ -231,8 +231,8 @@ fn test_config_update_before_timelock_fails() {
         _ => panic!("Expected TimelockNotExpired, got: {}", err),
     }
 
-    // Advance time past 48 hours
-    env.block.time = env.block.time.plus_seconds(86400 * 2 + 1);
+    // Advance time past the admin timelock
+    env.block.time = env.block.time.plus_seconds(crate::state::ADMIN_TIMELOCK_SECONDS + 1);
     let res = execute(deps.as_mut(), env, admin_info, update_msg).unwrap();
     assert!(res
         .attributes
@@ -274,7 +274,10 @@ fn test_update_pool_config_sends_message_to_pool() {
 
     // Step 2: Execute after timelock — should send WasmMsg to pool
     let mut future_env = env;
-    future_env.block.time = future_env.block.time.plus_seconds(86400 * 2 + 1);
+    future_env.block.time = future_env
+        .block
+        .time
+        .plus_seconds(crate::state::ADMIN_TIMELOCK_SECONDS + 1);
     let apply_msg = ExecuteMsg::ExecutePoolConfigUpdate { pool_id: 1 };
     let res = execute(deps.as_mut(), future_env, admin_info, apply_msg).unwrap();
     assert_eq!(res.messages.len(), 1);

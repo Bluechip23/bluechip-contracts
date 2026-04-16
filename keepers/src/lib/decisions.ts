@@ -68,8 +68,11 @@ export function classifyBountyTx(result: TxResult): TxOutcome {
 /**
  * Compute how long to sleep before the next oracle-keeper poll.
  *
- * Called after a loop iteration completes. Adds a small jitter so
- * multiple keeper instances don't all wake up at the same instant.
+ * Called after a loop iteration completes. Adds *centered* jitter
+ * (`±jitterMs/2`) so that multiple keepers booted at the same time
+ * actually drift apart rather than clustering at `base + small`. Result
+ * is clamped to >= 1 ms so we never accidentally schedule a 0-ms sleep
+ * and busy-loop.
  */
 export function nextOracleSleepMs(
   baseIntervalMs: number,
@@ -77,8 +80,10 @@ export function nextOracleSleepMs(
   random: () => number = Math.random,
 ): number {
   if (baseIntervalMs <= 0) return 0;
-  const jitter = Math.floor(random() * jitterMs);
-  return baseIntervalMs + jitter;
+  // (random()-0.5) ranges in [-0.5, 0.5), so jitter ranges in
+  // [-jitterMs/2, jitterMs/2).
+  const jitter = Math.floor((random() - 0.5) * jitterMs);
+  return Math.max(1, baseIntervalMs + jitter);
 }
 
 /**

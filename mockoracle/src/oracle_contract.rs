@@ -7,6 +7,15 @@
 //
 // To build for local testing:
 //   cargo build -p oracle --features testing
+//
+// IMPORTANT — staleness checks against this mock are dead code:
+//   Both `GetPrice` and `PythConversionPriceFeed` overwrite `publish_time` to
+//   the current block time on every query. This means the factory's
+//   `MAX_PRICE_AGE_SECONDS_BEFORE_STALE` gate
+//   (factory/src/internal_bluechip_price_oracle.rs::query_pyth_atom_usd_price)
+//   will ALWAYS see a fresh timestamp when reading from this mock. Tests
+//   that need to exercise the staleness fallback path must do so against
+//   the production code path or against a different test double.
 // ============================================================================
 
 use crate::msg::PriceResponse;
@@ -46,6 +55,13 @@ pub fn execute(
 ) -> StdResult<Response> {
     match msg {
         ExecuteMsg::SetPrice { price_id, price } => {
+            // Reject zero up front so the failure surfaces here rather than
+            // downstream as a div-by-zero in the factory's USD<->bluechip
+            // conversion. The factory does its own zero-check, but failing
+            // at the source makes test setup mistakes obvious.
+            if price.is_zero() {
+                return Err(StdError::generic_err("price must be > 0"));
+            }
             let new_price = PriceResponse {
                 price,
                 publish_time: env.block.time.seconds(), // current block timestamp
@@ -75,20 +91,40 @@ pub fn query(deps: Deps, env: Env, msg: PythQueryMsg) -> StdResult<Binary> {
                 .may_load(deps.storage, &id)?
                 .ok_or_else(|| StdError::generic_err("Price feed not found"))?;
 
-            let current_time = env.block.time.seconds() as i64;
+            let current_time = i64::try_from(env.block.time.seconds()).map_err(|_| {
+                StdError::generic_err("block time exceeds i64::MAX (impossible in practice)")
+            })?;
+
+            // Pyth's wire format is i64 for price and u64 for conf — but our
+            // mock stores both as Uint128, so we need a checked narrow.
+            // Surface a clear error instead of silently wrapping into a
+            // negative price (which downstream Pyth-style validators would
+            // reject with a confusing message).
+            let price_i64 = i64::try_from(stored_price.price.u128()).map_err(|_| {
+                StdError::generic_err(format!(
+                    "stored price {} exceeds i64::MAX; mock rejects values that wouldn't fit a real Pyth feed",
+                    stored_price.price
+                ))
+            })?;
+            let conf_u64 = u64::try_from(stored_price.conf.u128()).map_err(|_| {
+                StdError::generic_err(format!(
+                    "stored conf {} exceeds u64::MAX",
+                    stored_price.conf
+                ))
+            })?;
 
             let response = PriceFeedResponse {
                 price_feed: Some(PriceFeed {
                     id,
                     price: PythPriceRetrievalResponse {
-                        price: stored_price.price.u128() as i64,
-                        conf: stored_price.conf.u128() as u64,
+                        price: price_i64,
+                        conf: conf_u64,
                         expo: stored_price.expo,
                         publish_time: current_time,
                     },
                     ema_price: PythPriceRetrievalResponse {
-                        price: stored_price.price.u128() as i64,
-                        conf: stored_price.conf.u128() as u64,
+                        price: price_i64,
+                        conf: conf_u64,
                         expo: stored_price.expo,
                         publish_time: current_time,
                     },

@@ -125,6 +125,26 @@ bluechipChaind tx wasm execute $ORACLE_ADDR \
 
 sleep 3
 
+# ─── Step 5b: Set BLUECHIP/USD price ($1 = 1000000 at 6 decimals) ───────────
+# The mock branch of factory::update_internal_oracle_price reads this feed
+# directly (factory/src/internal_bluechip_price_oracle.rs::query_mock_bluechip_usd_price).
+# The oracle keeper's default MOCK_PRICE_FEED_ID is "BLUECHIP_USD" and it
+# pushes a fresh value before each update — but on first run, before the
+# keeper has had a chance to push, the factory needs *some* value here or
+# the bounty path falls through to the production path against a mock that
+# only has ATOM_USD. Pre-seed it so the very first UpdateOraclePrice call
+# against a fresh deployment exercises the mock short-circuit cleanly.
+echo ""
+echo "Setting BLUECHIP/USD price to \$1 (6 decimals — keeper will refresh)..."
+bluechipChaind tx wasm execute $ORACLE_ADDR \
+  '{"set_price":{"price_id":"BLUECHIP_USD","price":"1000000"}}' \
+  --from $FROM \
+  --chain-id $CHAIN_ID \
+  --keyring-backend $KEYRING \
+  -y
+
+sleep 3
+
 # ─── Step 6: Upload and instantiate Factory ─────────────────────────────────
 FACTORY_CODE_ID=$(store_and_get_code_id "factory.wasm" "Factory")
 
@@ -260,3 +280,4 @@ echo "To start frontend:  cd frontend && npm run dev"
 echo ""
 echo "To change prices:"
 echo "  bluechipChaind tx wasm execute $ORACLE_ADDR '{\"set_price\":{\"price_id\":\"ATOM_USD\",\"price\":\"NEW_PRICE\"}}' --from alice --chain-id $CHAIN_ID --keyring-backend test -y"
+echo "  bluechipChaind tx wasm execute $ORACLE_ADDR '{\"set_price\":{\"price_id\":\"BLUECHIP_USD\",\"price\":\"NEW_PRICE\"}}' --from alice --chain-id $CHAIN_ID --keyring-backend test -y"

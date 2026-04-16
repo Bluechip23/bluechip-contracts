@@ -8,7 +8,7 @@ use crate::liquidity_helpers::{
 };
 use crate::state::{
     PoolInfo, PoolSpecs, MINIMUM_LIQUIDITY, POOL_ANALYTICS, POOL_FEE_STATE, POOL_INFO, POOL_PAUSED,
-    POOL_SPECS, POOL_STATE, REENTRANCY_GUARD,
+    POOL_SPECS, POOL_STATE,
 };
 use crate::state::{
     Position, TokenMetadata, LIQUIDITY_POSITIONS, NEXT_POSITION_ID, OWNER_POSITIONS,
@@ -759,10 +759,7 @@ pub fn execute_add_to_position(
     enforce_transaction_deadline(env.block.time, transaction_deadline)?;
     let pool_specs: PoolSpecs = POOL_SPECS.load(deps.storage)?;
 
-    if let Err(e) = check_rate_limit(&mut deps, &env, &pool_specs, &sender) {
-        REENTRANCY_GUARD.save(deps.storage, &false)?;
-        return Err(e);
-    }
+    check_rate_limit(&mut deps, &env, &pool_specs, &sender)?;
     add_to_position(
         &mut deps,
         env,
@@ -791,10 +788,7 @@ pub fn execute_remove_all_liquidity(
     enforce_transaction_deadline(env.block.time, transaction_deadline)?;
     let pool_specs: PoolSpecs = POOL_SPECS.load(deps.storage)?;
     let sender = info.sender.clone();
-    if let Err(e) = check_rate_limit(&mut deps, &env, &pool_specs, &sender) {
-        REENTRANCY_GUARD.save(deps.storage, &false)?;
-        return Err(e);
-    }
+    check_rate_limit(&mut deps, &env, &pool_specs, &sender)?;
     remove_all_liquidity(
         &mut deps,
         env,
@@ -822,10 +816,7 @@ pub fn execute_remove_partial_liquidity(
     let pool_specs: PoolSpecs = POOL_SPECS.load(deps.storage)?;
     let sender = info.sender.clone();
 
-    if let Err(e) = check_rate_limit(&mut deps, &env, &pool_specs, &sender) {
-        REENTRANCY_GUARD.save(deps.storage, &false)?;
-        return Err(e);
-    }
+    check_rate_limit(&mut deps, &env, &pool_specs, &sender)?;
     remove_partial_liquidity(
         &mut deps,
         env,

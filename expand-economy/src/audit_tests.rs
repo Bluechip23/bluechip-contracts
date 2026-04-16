@@ -20,6 +20,7 @@ mod tests {
         let msg = InstantiateMsg {
             factory_address: factory_addr.to_string(),
             owner: Some(owner_addr.to_string()),
+            bluechip_denom: None,
         };
         instantiate(
             deps.as_mut(),
@@ -471,6 +472,7 @@ mod tests {
         let msg = ExecuteMsg::ProposeConfigUpdate {
             factory_address: Some(new_factory_addr.to_string()),
             owner: None,
+            bluechip_denom: None,
         };
 
         let err = execute(

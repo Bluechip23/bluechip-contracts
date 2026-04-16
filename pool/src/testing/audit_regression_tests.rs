@@ -15,7 +15,7 @@ use crate::state::{
     DistributionState, ExpectedFactory, RecoveryType, COMMIT_LEDGER,
     DEFAULT_ESTIMATED_GAS_PER_DISTRIBUTION, DEFAULT_MAX_GAS_PER_TX, DISTRIBUTION_STATE,
     EXPECTED_FACTORY, LIQUIDITY_POSITIONS, MINIMUM_LIQUIDITY, NEXT_POSITION_ID, POOL_FEE_STATE,
-    POOL_SPECS, POOL_STATE, REENTRANCY_GUARD, THRESHOLD_PROCESSING,
+    POOL_SPECS, POOL_STATE, REENTRANCY_LOCK, THRESHOLD_PROCESSING,
 };
 use crate::state::{EMERGENCY_DRAINED, OWNER_POSITIONS};
 use crate::testing::liquidity_tests::{
@@ -129,8 +129,8 @@ fn test_recover_stuck_reentrancy_guard() {
         .unwrap();
 
     // Simulate stuck reentrancy guard
-    REENTRANCY_GUARD.save(&mut deps.storage, &true).unwrap();
-    assert!(REENTRANCY_GUARD.load(&deps.storage).unwrap());
+    REENTRANCY_LOCK.save(&mut deps.storage, &true).unwrap();
+    assert!(REENTRANCY_LOCK.load(&deps.storage).unwrap());
 
     let env = mock_env();
     let factory_info = message_info(&Addr::unchecked("factory_contract"), &[]);
@@ -143,7 +143,7 @@ fn test_recover_stuck_reentrancy_guard() {
     let res = execute(deps.as_mut(), env, factory_info, msg).unwrap();
 
     // Guard should be reset
-    assert!(!REENTRANCY_GUARD.load(&deps.storage).unwrap());
+    assert!(!REENTRANCY_LOCK.load(&deps.storage).unwrap());
 
     // Check response attributes
     let recovered_attr = res
@@ -168,7 +168,7 @@ fn test_recover_stuck_reentrancy_guard_unauthorized() {
         )
         .unwrap();
 
-    REENTRANCY_GUARD.save(&mut deps.storage, &true).unwrap();
+    REENTRANCY_LOCK.save(&mut deps.storage, &true).unwrap();
 
     let env = mock_env();
     // Not the factory - should fail
@@ -182,7 +182,7 @@ fn test_recover_stuck_reentrancy_guard_unauthorized() {
     assert!(matches!(err, ContractError::Unauthorized {}));
 
     // Guard still stuck
-    assert!(REENTRANCY_GUARD.load(&deps.storage).unwrap());
+    assert!(REENTRANCY_LOCK.load(&deps.storage).unwrap());
 }
 
 #[test]
@@ -200,7 +200,7 @@ fn test_recover_not_stuck_returns_error() {
         .unwrap();
 
     // Guard is NOT stuck
-    REENTRANCY_GUARD.save(&mut deps.storage, &false).unwrap();
+    REENTRANCY_LOCK.save(&mut deps.storage, &false).unwrap();
 
     let env = mock_env();
     let factory_info = message_info(&Addr::unchecked("factory_contract"), &[]);
@@ -228,7 +228,7 @@ fn test_recover_both_resets_all_stuck_states() {
         .unwrap();
 
     // Simulate both stuck reentrancy guard and stuck threshold
-    REENTRANCY_GUARD.save(&mut deps.storage, &true).unwrap();
+    REENTRANCY_LOCK.save(&mut deps.storage, &true).unwrap();
     THRESHOLD_PROCESSING.save(&mut deps.storage, &true).unwrap();
 
     // Set last threshold attempt to far in the past so it qualifies as stuck
@@ -249,7 +249,7 @@ fn test_recover_both_resets_all_stuck_states() {
     let res = execute(deps.as_mut(), env, factory_info, msg).unwrap();
 
     // Both should be reset
-    assert!(!REENTRANCY_GUARD.load(&deps.storage).unwrap());
+    assert!(!REENTRANCY_LOCK.load(&deps.storage).unwrap());
     assert!(!THRESHOLD_PROCESSING.load(&deps.storage).unwrap());
 
     let recovered_attr = res
@@ -422,6 +422,187 @@ fn test_distribution_bounty_does_not_touch_pool_funds() {
         factory_msg_present,
         "expected WasmMsg::Execute to factory.PayDistributionBounty, got: {:?}",
         res.messages
+    );
+}
+
+/// Regression: ContinueDistribution must NOT push a PayDistributionBounty
+/// message when the call processed zero committers.
+///
+/// Before the fix, a keeper could collect a free bounty by calling
+/// ContinueDistribution after the ledger was already empty but before the
+/// state had been cleaned up — the pool would emit an unconditional bounty
+/// msg regardless of whether work was done. This test sets up exactly that
+/// scenario and asserts (a) the response contains zero messages, (b) the
+/// `bounty_paid=false` attribute is emitted, and (c) DISTRIBUTION_STATE is
+/// removed in the same tx.
+#[test]
+fn test_continue_distribution_skips_bounty_on_empty_batch() {
+    let mut deps = mock_dependencies();
+    setup_pool_post_threshold(&mut deps);
+
+    EXPECTED_FACTORY
+        .save(
+            &mut deps.storage,
+            &ExpectedFactory {
+                expected_factory_address: Addr::unchecked("factory_contract"),
+            },
+        )
+        .unwrap();
+
+    // Distribution is "in progress" by state, but the ledger is empty —
+    // matches the post-final-batch window in the old (buggy) flow where
+    // the cursor had advanced past the last entry but the state had not
+    // yet been cleaned up.
+    let dist_state = DistributionState {
+        is_distributing: true,
+        total_to_distribute: Uint128::new(500_000_000_000),
+        total_committed_usd: Uint128::new(25_000_000_000),
+        last_processed_key: None,
+        distributions_remaining: 1,
+        estimated_gas_per_distribution: DEFAULT_ESTIMATED_GAS_PER_DISTRIBUTION,
+        max_gas_per_tx: DEFAULT_MAX_GAS_PER_TX,
+        last_successful_batch_size: None,
+        consecutive_failures: 0,
+        started_at: Timestamp::from_seconds(1_600_000_000),
+        last_updated: Timestamp::from_seconds(1_600_000_000),
+    };
+    DISTRIBUTION_STATE
+        .save(&mut deps.storage, &dist_state)
+        .unwrap();
+
+    // No COMMIT_LEDGER entries — the empty-batch case.
+
+    let mut env = mock_env();
+    env.block.time = Timestamp::from_seconds(1_600_000_100);
+
+    let caller = message_info(&Addr::unchecked("bounty_hunter"), &[]);
+    let res = execute(
+        deps.as_mut(),
+        env,
+        caller,
+        ExecuteMsg::ContinueDistribution {},
+    )
+    .expect("call should still succeed — it's a clean no-op");
+
+    // No bounty msg emitted (and no mint msgs either, since nothing to mint).
+    assert!(
+        res.messages.is_empty(),
+        "no messages should be emitted on an empty batch, got: {:?}",
+        res.messages
+    );
+
+    // Attributes should explicitly call out the no-op for observability.
+    let bounty_paid = res
+        .attributes
+        .iter()
+        .find(|a| a.key == "bounty_paid")
+        .map(|a| a.value.as_str())
+        .unwrap_or("");
+    assert_eq!(
+        bounty_paid, "false",
+        "bounty_paid attribute must reflect that no bounty was emitted"
+    );
+    let processed = res
+        .attributes
+        .iter()
+        .find(|a| a.key == "processed_count")
+        .map(|a| a.value.as_str())
+        .unwrap_or("");
+    assert_eq!(processed, "0", "processed_count must reflect zero work");
+
+    // State must be cleaned up in the same tx (ledger-emptiness termination).
+    assert_eq!(
+        DISTRIBUTION_STATE.may_load(&deps.storage).unwrap(),
+        None,
+        "DISTRIBUTION_STATE must be removed when the ledger is empty"
+    );
+}
+
+/// Regression: when the batch processes the FINAL committer, the bounty IS
+/// paid AND the state is removed in the same tx — no extra empty cleanup
+/// call required. Pins that the natural-completion path doesn't regress.
+#[test]
+fn test_continue_distribution_completes_in_one_tx_when_final() {
+    let mut deps = mock_dependencies();
+    setup_pool_post_threshold(&mut deps);
+
+    EXPECTED_FACTORY
+        .save(
+            &mut deps.storage,
+            &ExpectedFactory {
+                expected_factory_address: Addr::unchecked("factory_contract"),
+            },
+        )
+        .unwrap();
+
+    // Single committer — one mint + one bounty msg, then state removed.
+    let committer = Addr::unchecked("only_committer");
+    COMMIT_LEDGER
+        .save(&mut deps.storage, &committer, &Uint128::new(5_000_000_000))
+        .unwrap();
+
+    let dist_state = DistributionState {
+        is_distributing: true,
+        total_to_distribute: Uint128::new(500_000_000_000),
+        total_committed_usd: Uint128::new(5_000_000_000),
+        last_processed_key: None,
+        distributions_remaining: 1,
+        estimated_gas_per_distribution: DEFAULT_ESTIMATED_GAS_PER_DISTRIBUTION,
+        max_gas_per_tx: DEFAULT_MAX_GAS_PER_TX,
+        last_successful_batch_size: None,
+        consecutive_failures: 0,
+        started_at: Timestamp::from_seconds(1_600_000_000),
+        last_updated: Timestamp::from_seconds(1_600_000_000),
+    };
+    DISTRIBUTION_STATE
+        .save(&mut deps.storage, &dist_state)
+        .unwrap();
+
+    let mut env = mock_env();
+    env.block.time = Timestamp::from_seconds(1_600_000_100);
+
+    let caller = message_info(&Addr::unchecked("bounty_hunter"), &[]);
+    let res = execute(
+        deps.as_mut(),
+        env,
+        caller,
+        ExecuteMsg::ContinueDistribution {},
+    )
+    .unwrap();
+
+    assert_eq!(
+        res.messages.len(),
+        2,
+        "expected 1 mint + 1 bounty msg, got: {:?}",
+        res.messages
+    );
+    let bounty_paid = res
+        .attributes
+        .iter()
+        .find(|a| a.key == "bounty_paid")
+        .map(|a| a.value.as_str())
+        .unwrap_or("");
+    assert_eq!(bounty_paid, "true");
+
+    let complete = res
+        .attributes
+        .iter()
+        .find(|a| a.key == "distribution_complete")
+        .map(|a| a.value.as_str())
+        .unwrap_or("");
+    assert_eq!(complete, "true", "should complete in this single tx");
+
+    assert_eq!(
+        DISTRIBUTION_STATE.may_load(&deps.storage).unwrap(),
+        None,
+        "DISTRIBUTION_STATE must be removed when the ledger is fully drained"
+    );
+    // Ledger is empty.
+    assert_eq!(
+        COMMIT_LEDGER
+            .keys(&deps.storage, None, None, cosmwasm_std::Order::Ascending)
+            .count(),
+        0
     );
 }
 

@@ -116,3 +116,34 @@ export async function checkKeeperBalance(
     });
   }
 }
+
+/**
+ * Best-effort check on the FACTORY contract's bounty reserve. Once it
+ * dips below the operator-configured threshold, both the oracle and
+ * distribution bounties will start emitting `bounty_skipped =
+ * insufficient_factory_balance`. We surface this as a warning *before*
+ * payouts dry up so the operator has time to refill from the bluechip
+ * main wallet. Never throws — failure to query is itself only a warning.
+ */
+export async function checkFactoryBalance(
+  executor: Executor,
+  factoryAddress: string,
+  denom: string,
+  minBalance: bigint,
+): Promise<void> {
+  try {
+    const balance = await executor.getAddressBalance(factoryAddress, denom);
+    if (balance < minBalance) {
+      log.warn("factory bounty reserve below threshold — top up soon", {
+        factory: factoryAddress,
+        balance: balance.toString(),
+        threshold: minBalance.toString(),
+      });
+    }
+  } catch (err) {
+    log.warn("factory balance check failed", {
+      factory: factoryAddress,
+      detail: err instanceof Error ? err.message : String(err),
+    });
+  }
+}

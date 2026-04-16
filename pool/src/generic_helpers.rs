@@ -4,7 +4,8 @@ use crate::msg::CommitFeeInfo;
 use crate::state::{
     CommitLimitInfo, Committing, PoolFeeState, PoolInfo, PoolSpecs, ThresholdPayoutAmounts,
     COMMIT_INFO, COMMIT_LEDGER, DEFAULT_ESTIMATED_GAS_PER_DISTRIBUTION, DEFAULT_MAX_GAS_PER_TX,
-    MAX_DISTRIBUTIONS_PER_TX, POOL_FEE_STATE, POOL_STATE, USER_LAST_COMMIT,
+    DISTRIBUTION_STALL_TIMEOUT_SECONDS, MAX_DISTRIBUTIONS_PER_TX, POOL_FEE_STATE, POOL_STATE,
+    USER_LAST_COMMIT,
 };
 use crate::state::{
     CreatorExcessLiquidity, DistributionState, PoolState, CREATOR_EXCESS_POSITION,
@@ -85,17 +86,6 @@ pub fn enforce_transaction_deadline(
         if current > dl {
             return Err(ContractError::TransactionExpired {});
         }
-    }
-    Ok(())
-}
-
-// Helper function to calculate liquidity for deposits
-pub fn validate_factory_address(
-    stored_factory_addr: &Addr,
-    candidate_factory_addr: &Addr,
-) -> Result<(), ContractError> {
-    if stored_factory_addr != candidate_factory_addr {
-        return Err(ContractError::InvalidFactory {});
     }
     Ok(())
 }
@@ -201,19 +191,27 @@ pub fn trigger_threshold_payout(
         payout.pool_seed_amount,
     )?);
 
-    let has_committers = COMMIT_LEDGER
-        .range(storage, None, None, Order::Ascending)
-        .next()
-        .is_some();
+    // Snapshot the committer count at threshold-crossing time. Post-threshold
+    // commits never enter COMMIT_LEDGER (they swap directly), so this number
+    // is the final size of the work queue. Saturating cast guards against the
+    // (currently unreachable) case where threshold settings allow > u32::MAX
+    // distinct committers.
+    let committer_count_usize = COMMIT_LEDGER
+        .keys(storage, None, None, Order::Ascending)
+        .count();
+    let committer_count = u32::try_from(committer_count_usize).unwrap_or(u32::MAX);
 
-    if has_committers {
+    if committer_count > 0 {
         let dist_state = DistributionState {
             is_distributing: true,
             total_to_distribute: payout.commit_return_amount,
             total_committed_usd: commit_config.commit_amount_for_threshold_usd,
             last_processed_key: None,
-            // u32::MAX: batch loop terminates via cursor exhaustion, not this counter.
-            distributions_remaining: u32::MAX,
+            // Real count, not u32::MAX. Termination is now driven by ledger
+            // emptiness in process_distribution_batch (the source of truth),
+            // and this field is informational/observability data showing
+            // how much of the original queue is left.
+            distributions_remaining: committer_count,
             estimated_gas_per_distribution: DEFAULT_ESTIMATED_GAS_PER_DISTRIBUTION,
             max_gas_per_tx: DEFAULT_MAX_GAS_PER_TX,
             last_successful_batch_size: None,
@@ -286,23 +284,35 @@ pub fn trigger_threshold_payout(
     Ok(msgs)
 }
 
+/// Process one batch of pending committer payouts.
+///
+/// Returns `(msgs, processed_count)` where `processed_count` is the number of
+/// committers whose ledger entries were drained in this call. Callers use
+/// this to decide whether the call did real work — important for the
+/// distribution-keeper bounty, which should never pay out for an empty/no-op
+/// batch (factory funds are finite, and keepers shouldn't farm empty calls).
+///
+/// Termination is driven by ledger emptiness, not by `distributions_remaining`.
+/// The counter is informational; the ground truth is whether COMMIT_LEDGER has
+/// any entries past the cursor. This means a single tx can both process the
+/// final committer AND remove DISTRIBUTION_STATE, eliminating the previous
+/// "one extra empty cleanup call" pattern that paid a free bounty.
 pub fn process_distribution_batch(
     storage: &mut dyn Storage,
     pool_info: &PoolInfo,
     env: &Env,
-) -> StdResult<Vec<CosmosMsg>> {
+) -> StdResult<(Vec<CosmosMsg>, u32)> {
     let mut msgs = Vec::new();
     let mut dist_state = match DISTRIBUTION_STATE.may_load(storage)? {
         Some(state) => state,
-        None => return Ok(vec![]), // No distribution in progress
+        None => return Ok((vec![], 0)), // No distribution in progress
     };
     let time_since_update = env
         .block
         .time
         .seconds()
         .saturating_sub(dist_state.last_updated.seconds());
-    if time_since_update > 7200 {
-        // 2 hours timeout
+    if time_since_update > DISTRIBUTION_STALL_TIMEOUT_SECONDS {
         dist_state.consecutive_failures = 99; // Mark as failed
         DISTRIBUTION_STATE.save(storage, &dist_state)?;
         return Err(StdError::generic_err(
@@ -313,7 +323,7 @@ pub fn process_distribution_batch(
 
     let effective_batch_size = calculate_effective_batch_size(&dist_state);
     let mut processed_count = 0u32;
-    let mut last_processed = None;
+    let mut last_processed: Option<Addr> = None;
     let batch_result: StdResult<Vec<(Addr, Uint128)>> = {
         COMMIT_LEDGER
             .range(storage, start_after, None, Order::Ascending)
@@ -324,33 +334,44 @@ pub fn process_distribution_batch(
     match batch_result {
         Ok(batch) => {
             for (payer, usd_paid) in batch.iter() {
-                let reward_result = calculate_committer_reward(
+                let reward = calculate_committer_reward(
                     *usd_paid,
                     dist_state.total_to_distribute,
                     dist_state.total_committed_usd,
-                );
+                )?;
 
-                match reward_result {
-                    Ok(reward) => {
-                        if !reward.is_zero() {
-                            msgs.push(mint_tokens(&pool_info.token_address, payer, reward)?);
-                        }
-                        COMMIT_LEDGER.remove(storage, payer);
-                        last_processed = Some(payer.clone());
-                        processed_count += 1;
-                    }
-                    Err(e) => {
-                        return Err(e);
-                    }
+                if !reward.is_zero() {
+                    msgs.push(mint_tokens(&pool_info.token_address, payer, reward)?);
                 }
+                COMMIT_LEDGER.remove(storage, payer);
+                last_processed = Some(payer.clone());
+                processed_count += 1;
             }
-            let new_remaining = dist_state
-                .distributions_remaining
-                .saturating_sub(processed_count);
 
-            if new_remaining == 0 {
+            // Use the actual ledger as the source of truth for termination.
+            // The cursor must start *after* whatever we last touched: either
+            // the last entry we processed in this call, or — if we processed
+            // nothing — the saved cursor from prior calls.
+            let recheck_start = last_processed
+                .as_ref()
+                .or(dist_state.last_processed_key.as_ref())
+                .map(Bound::exclusive);
+            let ledger_has_more = COMMIT_LEDGER
+                .range(storage, recheck_start, None, Order::Ascending)
+                .take(1)
+                .next()
+                .is_some();
+
+            if !ledger_has_more {
+                // Nothing left to distribute. Clean up regardless of whether
+                // we processed any entries this call (covers both "natural
+                // completion" and "stale state with empty ledger" paths).
                 DISTRIBUTION_STATE.remove(storage);
             } else if processed_count > 0 {
+                // Progress made; persist the new cursor for the next call.
+                let new_remaining = dist_state
+                    .distributions_remaining
+                    .saturating_sub(processed_count);
                 let updated_state = DistributionState {
                     is_distributing: true,
                     total_to_distribute: dist_state.total_to_distribute,
@@ -366,28 +387,20 @@ pub fn process_distribution_batch(
                 };
                 DISTRIBUTION_STATE.save(storage, &updated_state)?;
             } else {
-                let recheck_start = dist_state.last_processed_key.as_ref().map(Bound::exclusive);
-                let remaining_entries: Vec<_> = COMMIT_LEDGER
-                    .range(storage, recheck_start, None, Order::Ascending)
-                    .take(1)
-                    .collect::<StdResult<Vec<_>>>()?;
+                // Ledger has more entries but our `take(N)` returned zero.
+                // That's anomalous — bump the failure counter and bail after 5.
+                dist_state.consecutive_failures += 1;
 
-                if remaining_entries.is_empty() {
-                    DISTRIBUTION_STATE.remove(storage);
+                if dist_state.consecutive_failures >= 5 {
+                    dist_state.is_distributing = false;
+                    DISTRIBUTION_STATE.save(storage, &dist_state)?;
+
+                    return Err(StdError::generic_err(
+                        "Distribution failed too many times - manual recovery needed",
+                    ));
                 } else {
-                    dist_state.consecutive_failures += 1;
-
-                    if dist_state.consecutive_failures >= 5 {
-                        dist_state.is_distributing = false;
-                        DISTRIBUTION_STATE.save(storage, &dist_state)?;
-
-                        return Err(StdError::generic_err(
-                            "Distribution failed too many times - manual recovery needed",
-                        ));
-                    } else {
-                        dist_state.last_updated = env.block.time;
-                        DISTRIBUTION_STATE.save(storage, &dist_state)?;
-                    }
+                    dist_state.last_updated = env.block.time;
+                    DISTRIBUTION_STATE.save(storage, &dist_state)?;
                 }
             }
         }
@@ -412,7 +425,7 @@ pub fn process_distribution_batch(
         }
     }
 
-    Ok(msgs)
+    Ok((msgs, processed_count))
 }
 
 pub fn calculate_effective_batch_size(dist_state: &DistributionState) -> u32 {
