@@ -45,6 +45,30 @@ pub const COMMIT_LIMIT_INFO: Item<CommitLimitInfo> = Item::new("commit_config");
 pub const ORACLE_INFO: Item<OracleInfo> = Item::new("oracle_info");
 pub const POOL_FEE_STATE: Item<PoolFeeState> = Item::new("pool_fee_state");
 pub const CREATOR_EXCESS_POSITION: Item<CreatorExcessLiquidity> = Item::new("creator_excess");
+
+// Creator-claimable pot that receives the portion of LP fees "clipped"
+// away from small positions by `calculate_fee_size_multiplier`. Without
+// this, the clipped fees would sit forever in POOL_FEE_STATE.fee_reserve_*
+// unreachable to any position. Routing them into a dedicated pot that
+// the pool creator can claim (a) prevents the orphan-fee buildup, and
+// (b) gives creators an ongoing incentive tied to small-trade activity.
+pub const CREATOR_FEE_POT: Item<CreatorFeePot> = Item::new("creator_fee_pot");
+
+#[cw_serde]
+pub struct CreatorFeePot {
+    pub amount_0: Uint128,
+    pub amount_1: Uint128,
+}
+
+impl Default for CreatorFeePot {
+    fn default() -> Self {
+        Self {
+            amount_0: Uint128::zero(),
+            amount_1: Uint128::zero(),
+        }
+    }
+}
+
 pub const POOL_PAUSED: Item<bool> = Item::new("pool_paused");
 pub const POOL_ANALYTICS: Item<PoolAnalytics> = Item::new("pool_analytics");
 pub const EMERGENCY_WITHDRAWAL: Item<EmergencyWithdrawalInfo> = Item::new("emergency_withdrawal");

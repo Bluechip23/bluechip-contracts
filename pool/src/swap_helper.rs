@@ -102,7 +102,14 @@ pub fn update_price_accumulator(
     Ok(())
 }
 
-pub const MAX_ORACLE_STALENESS_SECONDS: u64 = 600; // 10 minutes
+// Pool-side acceptance window for the factory oracle's ConversionResponse.
+// Tightened from 600s (10 min) to 90s. The factory's own staleness
+// threshold is the same; keeping the two windows aligned prevents a
+// scenario where the factory is already about to reject a price but the
+// pool is still happy to use it. Combined effect: once Pyth is stale,
+// every pool freezes commits/conversions within 90s instead of pretending
+// the last known price is still authoritative for up to 10 minutes.
+pub const MAX_ORACLE_STALENESS_SECONDS: u64 = 90;
 
 pub fn get_usd_value_with_staleness_check(
     deps: Deps,

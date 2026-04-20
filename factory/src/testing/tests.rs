@@ -1,7 +1,7 @@
 use crate::mint_bluechips_pool_creation::calculate_mint_amount;
 use crate::state::{
     CreationStatus, FactoryInstantiate, PoolCreationState, FACTORYINSTANTIATEINFO,
-    FIRST_POOL_TIMESTAMP, POOLS_BY_CONTRACT_ADDRESS, POOLS_BY_ID, POOL_COUNTER,
+    FIRST_THRESHOLD_TIMESTAMP, POOLS_BY_CONTRACT_ADDRESS, POOLS_BY_ID, POOL_COUNTER,
     POOL_CREATION_STATES, SETCOMMIT, TEMP_POOL_CREATION,
 };
 use cosmwasm_std::{
@@ -2100,7 +2100,7 @@ fn test_no_mint_when_amount_is_zero() {
         .save(&mut deps.storage, &10_000_000_000_000)
         .unwrap();
 
-    FIRST_POOL_TIMESTAMP
+    FIRST_THRESHOLD_TIMESTAMP
         .save(&mut deps.storage, &env.block.time)
         .unwrap();
 
@@ -3339,13 +3339,17 @@ fn setup_oracle_with_cached_pyth(
 
 #[test]
 fn test_pyth_cache_accepts_fresh_cached_price_when_live_fails() {
-    // Live Pyth fails, cache is 100s old (well within 300s). Must succeed.
+    // Live Pyth fails, cache is comfortably inside the (tightened 90s)
+    // staleness window. Must succeed. The previous value (100s) became
+    // stale after the window tightened; using MAX - 30 keeps the test
+    // tracking whatever the constant evolves to.
     let mut deps = mock_dependencies(&[]);
     let env = mock_env();
+    let fresh_age = MAX_PRICE_AGE_SECONDS_BEFORE_STALE.saturating_sub(30);
     setup_oracle_with_cached_pyth(
         &mut deps,
         &env,
-        100, // 100 seconds old
+        fresh_age,
         Uint128::new(12_000_000),
         Uint128::new(1_000_000),
     );
@@ -3356,7 +3360,8 @@ fn test_pyth_cache_accepts_fresh_cached_price_when_live_fails() {
     let result = get_bluechip_usd_price(deps.as_ref(), env);
     assert!(
         result.is_ok(),
-        "fresh cache (100s old) must be accepted, got: {:?}",
+        "fresh cache ({}s old) must be accepted, got: {:?}",
+        fresh_age,
         result
     );
 }

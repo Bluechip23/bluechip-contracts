@@ -153,7 +153,7 @@ fn test_claim_excess_before_unlock_fails() {
         .unwrap();
 
     let info = message_info(&Addr::unchecked("creator"), &[]);
-    let msg = ExecuteMsg::ClaimCreatorExcessLiquidity {};
+    let msg = ExecuteMsg::ClaimCreatorExcessLiquidity { transaction_deadline: None };
 
     let err = execute(deps.as_mut(), env, info, msg).unwrap_err();
 
@@ -194,7 +194,7 @@ fn test_claim_excess_after_unlock_succeeds() {
         .unwrap();
 
     let info = message_info(&Addr::unchecked("creator"), &[]);
-    let msg = ExecuteMsg::ClaimCreatorExcessLiquidity {};
+    let msg = ExecuteMsg::ClaimCreatorExcessLiquidity { transaction_deadline: None };
 
     let res = execute(deps.as_mut(), env.clone(), info, msg).unwrap();
     // Should have 2 messages: bank send for bluechip + CW20 transfer for creator tokens
@@ -246,7 +246,7 @@ fn test_claim_excess_wrong_user_fails() {
         .unwrap();
 
     let info = message_info(&Addr::unchecked("hacker"), &[]);
-    let msg = ExecuteMsg::ClaimCreatorExcessLiquidity {};
+    let msg = ExecuteMsg::ClaimCreatorExcessLiquidity { transaction_deadline: None };
 
     let err = execute(deps.as_mut(), env, info, msg).unwrap_err();
     assert!(matches!(err, ContractError::Unauthorized {}));

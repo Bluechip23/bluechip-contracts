@@ -91,6 +91,24 @@ pub fn execute_emergency_withdraw(
     // and silently rewrite the recorded recipient. Reject re-entries.
     ensure_not_drained(deps.storage)?;
 
+    // Disable emergency withdraw pre-threshold. Pre-threshold, reserve0/1
+    // are both zero because pool seeding only happens inside
+    // `trigger_threshold_payout`. A drain here would sweep nothing out
+    // of state-tracked reserves, BUT it would mark the pool
+    // EMERGENCY_DRAINED and permanently lock all future actions — while
+    // the pool's actual bank balance (committed bluechip minus fees) sits
+    // stranded forever. The correct recovery path for a pre-threshold
+    // pool is a future cancel/refund flow; until that exists, refuse to
+    // run emergency withdraw at all before the threshold has crossed.
+    if !crate::state::IS_THRESHOLD_HIT
+        .may_load(deps.storage)?
+        .unwrap_or(false)
+    {
+        return Err(ContractError::Std(StdError::generic_err(
+            "EmergencyWithdraw is disabled before the commit threshold has been crossed. Committed funds are untracked in pool_state reserves and would be stranded.",
+        )));
+    }
+
     let now = env.block.time;
 
     // Phase 2: execute if timelock has elapsed
@@ -115,6 +133,16 @@ pub fn execute_emergency_withdraw(
             total0 = total0.checked_add(excess.bluechip_amount)?;
             total1 = total1.checked_add(excess.token_amount)?;
             CREATOR_EXCESS_POSITION.remove(deps.storage);
+        }
+
+        // Sweep the creator fee pot too — it's a pool-held balance that
+        // would otherwise remain undrained on emergency and leave a
+        // dangling claim with no legitimate settlement path once the
+        // pool is marked drained.
+        if let Some(pot) = crate::state::CREATOR_FEE_POT.may_load(deps.storage)? {
+            total0 = total0.checked_add(pot.amount_0)?;
+            total1 = total1.checked_add(pot.amount_1)?;
+            crate::state::CREATOR_FEE_POT.remove(deps.storage);
         }
 
         let fee_info = COMMITFEEINFO.load(deps.storage)?;

@@ -19,7 +19,7 @@ use crate::liquidity::{
     execute_remove_all_liquidity, execute_remove_partial_liquidity,
     execute_remove_partial_liquidity_by_percent,
 };
-use crate::liquidity_helpers::execute_claim_creator_excess;
+use crate::liquidity_helpers::{execute_claim_creator_excess, execute_claim_creator_fees};
 use crate::msg::{Cw20HookMsg, ExecuteMsg, MigrateMsg, PoolInstantiateMsg};
 use crate::query::query_check_commit;
 use crate::state::{
@@ -67,6 +67,47 @@ pub fn instantiate(
     msg.pool_token_info[1].check(deps.api)?;
     if msg.pool_token_info[0] == msg.pool_token_info[1] {
         return Err(ContractError::DoublingAssets {});
+    }
+
+    // Enforce the expected pair shape: exactly one Bluechip entry and
+    // exactly one CreatorToken entry whose address matches the factory-
+    // minted token. This is defense-in-depth — the factory already
+    // validates the shape and rewrites the sentinel — but the pool
+    // refuses to stand up unless the invariants actually hold here,
+    // so a buggy factory migration or a directly-instantiated pool
+    // (e.g. via a raw Wasm instantiate) can't silently produce a pool
+    // whose reserve accounting disagrees with its holdings.
+    let mut bluechip_count = 0usize;
+    let mut creator_match = false;
+    let mut creator_count = 0usize;
+    for t in msg.pool_token_info.iter() {
+        match t {
+            TokenType::Bluechip { denom } => {
+                if denom.trim().is_empty() {
+                    return Err(ContractError::Std(StdError::generic_err(
+                        "Bluechip denom must be non-empty",
+                    )));
+                }
+                bluechip_count += 1;
+            }
+            TokenType::CreatorToken { contract_addr } => {
+                creator_count += 1;
+                if contract_addr == &msg.token_address {
+                    creator_match = true;
+                }
+            }
+        }
+    }
+    if bluechip_count != 1 || creator_count != 1 {
+        return Err(ContractError::Std(StdError::generic_err(format!(
+            "pool_token_info must contain exactly one Bluechip and one CreatorToken (got {} Bluechip, {} CreatorToken)",
+            bluechip_count, creator_count
+        ))));
+    }
+    if !creator_match {
+        return Err(ContractError::Std(StdError::generic_err(
+            "CreatorToken.contract_addr in pool_token_info must equal msg.token_address",
+        )));
     }
     if (msg.commit_fee_info.commit_fee_bluechip + msg.commit_fee_info.commit_fee_creator)
         > Decimal::one()
@@ -260,6 +301,13 @@ pub fn execute(
         ExecuteMsg::Receive(cw20_msg) => execute_swap_cw20(deps, env, info, cw20_msg),
 
         // --- Liquidity ---
+        // Pause checks are now applied to EVERY liquidity-touching path.
+        // Previously only CollectFees honored POOL_PAUSED; deposits and
+        // removes could run unchecked while the pool was paused (e.g. mid
+        // emergency-withdraw window), which could either funnel fresh LP
+        // capital into a pending drain or let LPs race the drain. The
+        // drain-initiated path already flips POOL_PAUSED on, so a single
+        // check blocks both admin-pause and emergency-pending states.
         ExecuteMsg::DepositLiquidity {
             amount0,
             amount1,
@@ -268,6 +316,9 @@ pub fn execute(
             transaction_deadline,
         } => {
             ensure_not_drained(deps.storage)?;
+            if POOL_PAUSED.may_load(deps.storage)?.unwrap_or(false) {
+                return Err(ContractError::PoolPausedLowLiquidity {});
+            }
             if !query_check_commit(deps.as_ref())? {
                 return Err(ContractError::ShortOfThreshold {});
             }
@@ -293,6 +344,9 @@ pub fn execute(
             transaction_deadline,
         } => {
             ensure_not_drained(deps.storage)?;
+            if POOL_PAUSED.may_load(deps.storage)?.unwrap_or(false) {
+                return Err(ContractError::PoolPausedLowLiquidity {});
+            }
             if !query_check_commit(deps.as_ref())? {
                 return Err(ContractError::ShortOfThreshold {});
             }
@@ -324,33 +378,43 @@ pub fn execute(
             min_amount0,
             min_amount1,
             max_ratio_deviation_bps,
-        } => execute_remove_partial_liquidity(
-            deps,
-            env,
-            info,
-            position_id,
-            liquidity_to_remove,
-            transaction_deadline,
-            min_amount0,
-            min_amount1,
-            max_ratio_deviation_bps,
-        ),
+        } => {
+            if POOL_PAUSED.may_load(deps.storage)?.unwrap_or(false) {
+                return Err(ContractError::PoolPausedLowLiquidity {});
+            }
+            execute_remove_partial_liquidity(
+                deps,
+                env,
+                info,
+                position_id,
+                liquidity_to_remove,
+                transaction_deadline,
+                min_amount0,
+                min_amount1,
+                max_ratio_deviation_bps,
+            )
+        }
         ExecuteMsg::RemoveAllLiquidity {
             position_id,
             transaction_deadline,
             min_amount1,
             min_amount0,
             max_ratio_deviation_bps,
-        } => execute_remove_all_liquidity(
-            deps,
-            env,
-            info,
-            position_id,
-            transaction_deadline,
-            min_amount0,
-            min_amount1,
-            max_ratio_deviation_bps,
-        ),
+        } => {
+            if POOL_PAUSED.may_load(deps.storage)?.unwrap_or(false) {
+                return Err(ContractError::PoolPausedLowLiquidity {});
+            }
+            execute_remove_all_liquidity(
+                deps,
+                env,
+                info,
+                position_id,
+                transaction_deadline,
+                min_amount0,
+                min_amount1,
+                max_ratio_deviation_bps,
+            )
+        }
         ExecuteMsg::RemovePartialLiquidityByPercent {
             position_id,
             percentage,
@@ -358,18 +422,34 @@ pub fn execute(
             min_amount0,
             min_amount1,
             max_ratio_deviation_bps,
-        } => execute_remove_partial_liquidity_by_percent(
-            deps,
-            env,
-            info,
-            position_id,
-            percentage,
-            transaction_deadline,
-            min_amount0,
-            min_amount1,
-            max_ratio_deviation_bps,
-        ),
-        ExecuteMsg::ClaimCreatorExcessLiquidity {} => execute_claim_creator_excess(deps, env, info),
+        } => {
+            if POOL_PAUSED.may_load(deps.storage)?.unwrap_or(false) {
+                return Err(ContractError::PoolPausedLowLiquidity {});
+            }
+            execute_remove_partial_liquidity_by_percent(
+                deps,
+                env,
+                info,
+                position_id,
+                percentage,
+                transaction_deadline,
+                min_amount0,
+                min_amount1,
+                max_ratio_deviation_bps,
+            )
+        }
+        ExecuteMsg::ClaimCreatorExcessLiquidity { transaction_deadline } => {
+            if POOL_PAUSED.may_load(deps.storage)?.unwrap_or(false) {
+                return Err(ContractError::PoolPausedLowLiquidity {});
+            }
+            execute_claim_creator_excess(deps, env, info, transaction_deadline)
+        }
+        ExecuteMsg::ClaimCreatorFees { transaction_deadline } => {
+            if POOL_PAUSED.may_load(deps.storage)?.unwrap_or(false) {
+                return Err(ContractError::PoolPausedLowLiquidity {});
+            }
+            execute_claim_creator_fees(deps, env, info, transaction_deadline)
+        }
     }
 }
 
@@ -506,6 +586,15 @@ pub fn execute_simple_swap(
 
     let (return_amt, spread_amt, commission_amt) =
         compute_swap(offer_pool, ask_pool, offer_asset.amount, pool_specs.lp_fee)?;
+
+    // Reject dust swaps where the constant-product math floored
+    // return_amt to zero. Without this, the trader's offer would be
+    // absorbed into the pool while they receive nothing — effectively
+    // donating to LPs. Better to surface the "offer too small" error
+    // and let the caller bump their size or abandon.
+    if return_amt.is_zero() {
+        return Err(ContractError::ZeroAmount {});
+    }
 
     assert_max_spread(
         belief_price,

@@ -26,7 +26,13 @@ pub const POOLS_BY_CONTRACT_ADDRESS: Map<Addr, PoolStateResponseForFactory> =
 pub const POOL_REGISTRY: Map<u64, Addr> = Map::new("pool_registry");
 
 pub const POOL_CREATION_STATES: Map<u64, PoolCreationState> = Map::new("creation_states");
-pub const MAX_PRICE_AGE_SECONDS_BEFORE_STALE: u64 = 300;
+// Maximum age (seconds) of a Pyth price we are willing to use for USD
+// conversions. Tightened from 300s to 90s: a 5-minute window let an
+// attacker who spotted a favorable price pick-and-choose any moment in
+// the last 5 minutes to land a commit/swap. 90 seconds is inside typical
+// Pyth publish cadence while still cutting the attacker's useful window
+// to a fraction of a volatility half-life.
+pub const MAX_PRICE_AGE_SECONDS_BEFORE_STALE: u64 = 90;
 
 // Standard timelock applied to admin-initiated mutations of factory state
 // (config, pool config, pool upgrades, force-rotate). 48h gives the
@@ -35,7 +41,14 @@ pub const MAX_PRICE_AGE_SECONDS_BEFORE_STALE: u64 = 300;
 // constant rather than spelling out `86400 * 2`.
 pub const ADMIN_TIMELOCK_SECONDS: u64 = 86_400 * 2;
 pub const PENDING_POOL_UPGRADE: Item<PoolUpgrade> = Item::new("pending_upgrade");
-pub const FIRST_POOL_TIMESTAMP: Item<Timestamp> = Item::new("first_pool_timestamp");
+// Timestamp of the *first pool that crossed its commit threshold*.
+// Despite the old name `FIRST_POOL_TIMESTAMP`, this is NOT set on first
+// pool creation — it's lazy-set inside `calculate_and_mint_bluechip`
+// the first time any pool crosses its threshold. The mint-decay formula
+// uses `block.time - first_threshold_time` as its `s` input, so the decay
+// is anchored to the first threshold event, not to when the factory was
+// deployed. Storage key is preserved for migration compatibility.
+pub const FIRST_THRESHOLD_TIMESTAMP: Item<Timestamp> = Item::new("first_pool_timestamp");
 pub const POOL_THRESHOLD_MINTED: Map<u64, bool> = Map::new("pool_threshold_minted");
 pub const PENDING_POOL_CONFIG: Map<u64, PendingPoolConfig> = Map::new("pending_pool_config");
 

@@ -424,6 +424,13 @@ fn process_post_threshold_commit(
     let (return_amt, spread_amt, commission_amt) =
         compute_swap(offer_pool, ask_pool, swap_amount, pool_specs.lp_fee)?;
 
+    // Dust-swap guard: mirror simple_swap's zero-return rejection so a
+    // post-threshold commit that would consume the user's bluechip
+    // without yielding any creator tokens fails loudly.
+    if return_amt.is_zero() {
+        return Err(ContractError::ZeroAmount {});
+    }
+
     assert_max_spread(
         belief_price,
         max_spread,

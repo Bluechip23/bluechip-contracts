@@ -75,7 +75,21 @@ pub enum ExecuteMsg {
         min_amount1: Option<Uint128>,
         max_ratio_deviation_bps: Option<u16>,
     },
-    ClaimCreatorExcessLiquidity {},
+    ClaimCreatorExcessLiquidity {
+        // Optional deadline protecting the claim from lying in the mempool
+        // indefinitely. Unset preserves the pre-existing behavior for
+        // backwards-compatibility with already-built clients.
+        #[serde(default)]
+        transaction_deadline: Option<Timestamp>,
+    },
+    // Empties the CREATOR_FEE_POT into the creator wallet. The pot
+    // accumulates the portion of LP fees that the fee-size multiplier
+    // clipped off small positions — previously orphaned in fee_reserve,
+    // now routed here. Creator-only.
+    ClaimCreatorFees {
+        #[serde(default)]
+        transaction_deadline: Option<Timestamp>,
+    },
     CancelEmergencyWithdraw {},
 }
 

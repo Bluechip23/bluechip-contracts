@@ -2,13 +2,13 @@ use crate::asset::get_bluechip_denom;
 use crate::error::ContractError;
 use crate::generic_helpers::{check_rate_limit, enforce_transaction_deadline};
 use crate::liquidity_helpers::{
-    build_fee_transfer_msgs, calc_capped_fees, calc_liquidity_for_deposit,
-    calculate_fee_size_multiplier, calculate_fees_owed, check_ratio_deviation, check_slippage,
-    sync_position_on_transfer, verify_position_ownership,
+    build_fee_transfer_msgs, calc_capped_fees_with_clip, calc_liquidity_for_deposit,
+    calculate_fee_size_multiplier, calculate_fees_owed_split, check_ratio_deviation,
+    check_slippage, sync_position_on_transfer, verify_position_ownership,
 };
 use crate::state::{
-    PoolInfo, PoolSpecs, MINIMUM_LIQUIDITY, POOL_ANALYTICS, POOL_FEE_STATE, POOL_INFO, POOL_PAUSED,
-    POOL_SPECS, POOL_STATE,
+    PoolInfo, PoolSpecs, CREATOR_FEE_POT, MINIMUM_LIQUIDITY, POOL_ANALYTICS, POOL_FEE_STATE,
+    POOL_INFO, POOL_PAUSED, POOL_SPECS, POOL_STATE,
 };
 use crate::state::{
     Position, TokenMetadata, LIQUIDITY_POSITIONS, NEXT_POSITION_ID, OWNER_POSITIONS,
@@ -282,7 +282,8 @@ pub fn execute_collect_fees(
         &info.sender,
         &pool_fee_state,
     )?;
-    let (fees_owed_0, fees_owed_1) = calc_capped_fees(&liquidity_position, &pool_fee_state)?;
+    let ((fees_owed_0, fees_owed_1), _, (clipped_0, clipped_1)) =
+        calc_capped_fees_with_clip(&liquidity_position, &pool_fee_state)?;
 
     liquidity_position.fee_growth_inside_0_last = pool_fee_state.fee_growth_global_0;
     liquidity_position.fee_growth_inside_1_last = pool_fee_state.fee_growth_global_1;
@@ -291,8 +292,24 @@ pub fn execute_collect_fees(
     liquidity_position.unclaimed_fees_1 = Uint128::zero();
 
     update_price_accumulator(&mut pool_state, env.block.time.seconds())?;
-    pool_fee_state.fee_reserve_0 = pool_fee_state.fee_reserve_0.checked_sub(fees_owed_0)?;
-    pool_fee_state.fee_reserve_1 = pool_fee_state.fee_reserve_1.checked_sub(fees_owed_1)?;
+    // Debit both the LP payout and the creator-pot slice from fee_reserve
+    // in a single pass, then credit CREATOR_FEE_POT. Keeps the reserve
+    // invariant (reserve == owed_to_someone) tight.
+    pool_fee_state.fee_reserve_0 = pool_fee_state
+        .fee_reserve_0
+        .checked_sub(fees_owed_0)?
+        .checked_sub(clipped_0)?;
+    pool_fee_state.fee_reserve_1 = pool_fee_state
+        .fee_reserve_1
+        .checked_sub(fees_owed_1)?
+        .checked_sub(clipped_1)?;
+
+    let mut pot = CREATOR_FEE_POT
+        .may_load(deps.storage)?
+        .unwrap_or_default();
+    pot.amount_0 = pot.amount_0.checked_add(clipped_0)?;
+    pot.amount_1 = pot.amount_1.checked_add(clipped_1)?;
+    CREATOR_FEE_POT.save(deps.storage, &pot)?;
 
     LIQUIDITY_POSITIONS.save(deps.storage, &position_id, &liquidity_position)?;
     POOL_STATE.save(deps.storage, &pool_state)?;
@@ -307,6 +324,8 @@ pub fn execute_collect_fees(
         .add_attribute("collector", info.sender.to_string())
         .add_attribute("fees_0", fees_owed_0)
         .add_attribute("fees_1", fees_owed_1)
+        .add_attribute("clipped_to_creator_pot_0", clipped_0)
+        .add_attribute("clipped_to_creator_pot_1", clipped_1)
         .add_attribute(
             "fee_reserve_0_after",
             pool_fee_state.fee_reserve_0.to_string(),
@@ -365,7 +384,8 @@ pub fn add_to_position(
         &pool_fee_state,
     )?;
     // Collect pending fees before adding new liquidity to reset accounting.
-    let (fees_owed_0, fees_owed_1) = calc_capped_fees(&liquidity_position, &pool_fee_state)?;
+    let ((fees_owed_0, fees_owed_1), _, (clipped_0, clipped_1)) =
+        calc_capped_fees_with_clip(&liquidity_position, &pool_fee_state)?;
 
     let mut messages = build_deposit_transfer_msgs(
         &prep.pool_info,
@@ -388,8 +408,21 @@ pub fn add_to_position(
     pool_state.total_liquidity = pool_state.total_liquidity.checked_add(prep.liquidity)?;
 
     update_price_accumulator(&mut pool_state, env.block.time.seconds())?;
-    pool_fee_state.fee_reserve_0 = pool_fee_state.fee_reserve_0.checked_sub(fees_owed_0)?;
-    pool_fee_state.fee_reserve_1 = pool_fee_state.fee_reserve_1.checked_sub(fees_owed_1)?;
+    pool_fee_state.fee_reserve_0 = pool_fee_state
+        .fee_reserve_0
+        .checked_sub(fees_owed_0)?
+        .checked_sub(clipped_0)?;
+    pool_fee_state.fee_reserve_1 = pool_fee_state
+        .fee_reserve_1
+        .checked_sub(fees_owed_1)?
+        .checked_sub(clipped_1)?;
+
+    let mut pot = CREATOR_FEE_POT
+        .may_load(deps.storage)?
+        .unwrap_or_default();
+    pot.amount_0 = pot.amount_0.checked_add(clipped_0)?;
+    pot.amount_1 = pot.amount_1.checked_add(clipped_1)?;
+    CREATOR_FEE_POT.save(deps.storage, &pot)?;
 
     pool_state.reserve0 = pool_state.reserve0.checked_add(prep.actual_amount0)?;
     pool_state.reserve1 = pool_state.reserve1.checked_add(prep.actual_amount1)?;
@@ -489,7 +522,8 @@ pub fn remove_all_liquidity(
         min_amount1,
         max_ratio_deviation_bps,
     )?;
-    let (fees_owed_0, fees_owed_1) = calc_capped_fees(&liquidity_position, &pool_fee_state)?;
+    let ((fees_owed_0, fees_owed_1), _, (clipped_0, clipped_1)) =
+        calc_capped_fees_with_clip(&liquidity_position, &pool_fee_state)?;
 
     let total_amount_0 = user_share_0.checked_add(fees_owed_0)?;
     let total_amount_1 = user_share_1.checked_add(fees_owed_1)?;
@@ -505,8 +539,21 @@ pub fn remove_all_liquidity(
     update_price_accumulator(&mut pool_state, env.block.time.seconds())?;
     pool_state.reserve0 = pool_state.reserve0.checked_sub(user_share_0)?;
     pool_state.reserve1 = pool_state.reserve1.checked_sub(user_share_1)?;
-    pool_fee_state.fee_reserve_0 = pool_fee_state.fee_reserve_0.checked_sub(fees_owed_0)?;
-    pool_fee_state.fee_reserve_1 = pool_fee_state.fee_reserve_1.checked_sub(fees_owed_1)?;
+    pool_fee_state.fee_reserve_0 = pool_fee_state
+        .fee_reserve_0
+        .checked_sub(fees_owed_0)?
+        .checked_sub(clipped_0)?;
+    pool_fee_state.fee_reserve_1 = pool_fee_state
+        .fee_reserve_1
+        .checked_sub(fees_owed_1)?
+        .checked_sub(clipped_1)?;
+
+    let mut pot = CREATOR_FEE_POT
+        .may_load(deps.storage)?
+        .unwrap_or_default();
+    pot.amount_0 = pot.amount_0.checked_add(clipped_0)?;
+    pot.amount_1 = pot.amount_1.checked_add(clipped_1)?;
+    CREATOR_FEE_POT.save(deps.storage, &pot)?;
 
     POOL_STATE.save(deps.storage, &pool_state)?;
     LIQUIDITY_POSITIONS.remove(deps.storage, &position_id);
@@ -608,15 +655,17 @@ pub fn remove_partial_liquidity(
     }
     let current_reserve0 = pool_state.reserve0;
     let current_reserve1 = pool_state.reserve1;
-    // Only calculate fees on the portion being removed.
-    let fees_owed_0 = calculate_fees_owed(
+    // Only calculate fees on the portion being removed. Split returns
+    // `(adjusted, clipped)`; the clipped slice is routed to the creator
+    // pot below so it isn't orphaned in fee_reserve.
+    let (fees_owed_0, clipped_0) = calculate_fees_owed_split(
         liquidity_to_remove,
         pool_fee_state.fee_growth_global_0,
         liquidity_position.fee_growth_inside_0_last,
         liquidity_position.fee_size_multiplier,
     )?;
 
-    let fees_owed_1 = calculate_fees_owed(
+    let (fees_owed_1, clipped_1) = calculate_fees_owed_split(
         liquidity_to_remove,
         pool_fee_state.fee_growth_global_1,
         liquidity_position.fee_growth_inside_1_last,
@@ -624,17 +673,20 @@ pub fn remove_partial_liquidity(
     )?;
 
     // Preserve fees on the remaining portion so resetting the snapshot
-    // below doesn't discard them.
+    // below doesn't discard them. Only the adjusted (LP-facing) portion
+    // is preserved; the clipped slice of the remaining liquidity will
+    // accrue through the standard fee_growth snapshot on the next
+    // collect and route to the pot at that time.
     let remaining_liquidity = liquidity_position
         .liquidity
         .checked_sub(liquidity_to_remove)?;
-    let preserved_fees_0 = calculate_fees_owed(
+    let (preserved_fees_0, _preserved_clip_0) = calculate_fees_owed_split(
         remaining_liquidity,
         pool_fee_state.fee_growth_global_0,
         liquidity_position.fee_growth_inside_0_last,
         liquidity_position.fee_size_multiplier,
     )?;
-    let preserved_fees_1 = calculate_fees_owed(
+    let (preserved_fees_1, _preserved_clip_1) = calculate_fees_owed_split(
         remaining_liquidity,
         pool_fee_state.fee_growth_global_1,
         liquidity_position.fee_growth_inside_1_last,
@@ -654,6 +706,10 @@ pub fn remove_partial_liquidity(
 
     let fees_owed_0 = fees_owed_0.min(pool_fee_state.fee_reserve_0);
     let fees_owed_1 = fees_owed_1.min(pool_fee_state.fee_reserve_1);
+    // Cap the clip slice against whatever fee_reserve is left after the
+    // LP portion so the two debits can't exceed the actual reserve.
+    let clipped_0 = clipped_0.min(pool_fee_state.fee_reserve_0.saturating_sub(fees_owed_0));
+    let clipped_1 = clipped_1.min(pool_fee_state.fee_reserve_1.saturating_sub(fees_owed_1));
 
     check_slippage(withdrawal_amount_0, min_amount0, "bluechip")?;
     check_slippage(withdrawal_amount_1, min_amount1, "cw20")?;
@@ -669,8 +725,21 @@ pub fn remove_partial_liquidity(
     update_price_accumulator(&mut pool_state, env.block.time.seconds())?;
     pool_state.reserve0 = pool_state.reserve0.checked_sub(withdrawal_amount_0)?;
     pool_state.reserve1 = pool_state.reserve1.checked_sub(withdrawal_amount_1)?;
-    pool_fee_state.fee_reserve_0 = pool_fee_state.fee_reserve_0.checked_sub(fees_owed_0)?;
-    pool_fee_state.fee_reserve_1 = pool_fee_state.fee_reserve_1.checked_sub(fees_owed_1)?;
+    pool_fee_state.fee_reserve_0 = pool_fee_state
+        .fee_reserve_0
+        .checked_sub(fees_owed_0)?
+        .checked_sub(clipped_0)?;
+    pool_fee_state.fee_reserve_1 = pool_fee_state
+        .fee_reserve_1
+        .checked_sub(fees_owed_1)?
+        .checked_sub(clipped_1)?;
+
+    let mut pot = CREATOR_FEE_POT
+        .may_load(deps.storage)?
+        .unwrap_or_default();
+    pot.amount_0 = pot.amount_0.checked_add(clipped_0)?;
+    pot.amount_1 = pot.amount_1.checked_add(clipped_1)?;
+    CREATOR_FEE_POT.save(deps.storage, &pot)?;
 
     pool_state.total_liquidity = pool_state
         .total_liquidity
