@@ -318,7 +318,6 @@ async function handleSubscribe() {
                     info:   { bluechip: { denom: BLUECHIP_CONFIG.nativeDenom } },
                     amount: microAmount
                 },
-                amount:               microAmount,
                 transaction_deadline: deadlineNs,
                 belief_price:         null,
                 max_spread:           (isThresholdCrossed && spreadInput) ? spreadInput : null

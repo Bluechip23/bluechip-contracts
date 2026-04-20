@@ -63,7 +63,6 @@ const CommitModal: React.FC<TokenModalProps> = ({
                     info: { bluechip: { denom: DEFAULT_CHAIN_CONFIG.nativeDenom } },
                     amount: amountInMicroUnits
                 },
-                amount: amountInMicroUnits,
                 transaction_deadline: deadlineInNs,
                 belief_price: null as string | null,
                 max_spread: (isThresholdCrossed && maxSpread && parseFloat(maxSpread) > 0)

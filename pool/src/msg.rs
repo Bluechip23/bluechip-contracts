@@ -30,7 +30,6 @@ pub enum ExecuteMsg {
     EmergencyWithdraw {},
     Commit {
         asset: TokenInfo,
-        amount: Uint128,
         transaction_deadline: Option<Timestamp>,
         belief_price: Option<Decimal>,
         max_spread: Option<Decimal>,

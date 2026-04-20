@@ -31,13 +31,11 @@ use crate::asset::{get_bluechip_denom, TokenType};
 // Prevents dust commit griefing that bloats COMMIT_LEDGER and distribution.
 pub const MIN_COMMIT_USD: Uint128 = Uint128::new(1_000_000);
 
-#[allow(clippy::too_many_arguments)]
 pub fn commit(
     mut deps: DepsMut,
     env: Env,
     info: MessageInfo,
     asset: TokenInfo,
-    amount: Uint128,
     transaction_deadline: Option<Timestamp>,
     belief_price: Option<Decimal>,
     max_spread: Option<Decimal>,
@@ -65,7 +63,6 @@ pub fn commit(
         env,
         info,
         asset,
-        amount,
         belief_price,
         max_spread,
     );
@@ -73,16 +70,15 @@ pub fn commit(
     result
 }
 
-#[allow(clippy::too_many_arguments)]
 fn execute_commit_logic(
     deps: &mut DepsMut,
     env: Env,
     info: MessageInfo,
     asset: TokenInfo,
-    amount: Uint128,
     belief_price: Option<Decimal>,
     max_spread: Option<Decimal>,
 ) -> Result<Response, ContractError> {
+    let amount = asset.amount;
     let pool_info = POOL_INFO.load(deps.storage)?;
     let mut pool_state = POOL_STATE.load(deps.storage)?;
     let pool_specs = POOL_SPECS.load(deps.storage)?;
@@ -97,9 +93,6 @@ fn execute_commit_logic(
         && !asset.info.equal(&pool_info.pool_info.asset_infos[1])
     {
         return Err(ContractError::AssetMismatch {});
-    }
-    if amount != asset.amount {
-        return Err(ContractError::MismatchAmount {});
     }
     if asset.amount.is_zero() {
         return Err(ContractError::ZeroAmount {});

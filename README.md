@@ -156,12 +156,18 @@ The commit function is the core user interaction for subscriptions:
 ```json
 {
   "commit": {
-    "pool_id": "pool_contract_address"
+    "asset": {
+      "info": { "bluechip": { "denom": "ubluechip" } },
+      "amount": "1000000"
+    },
+    "transaction_deadline": null,
+    "belief_price": null,
+    "max_spread": null
   }
 }
 ```
 
-**Send with:** Native bluechip tokens attached to the transaction. Commit transactions can only be carried out with bluechip tokens.
+**Send with:** Native bluechip tokens attached to the transaction, in the same `amount` as `asset.amount`. Commit transactions can only be carried out with bluechip tokens.
 
 ### What Happens When You Commit
 
@@ -411,9 +417,16 @@ The commit function can be called from any frontend that supports Cosmos transac
 
 ```javascript
 // Using CosmJS
+const amount = "1000000"; // micro-units
 const msg = {
   commit: {
-    pool_id: "pool_contract_address"
+    asset: {
+      info: { bluechip: { denom: "ubluechip" } },
+      amount
+    },
+    transaction_deadline: null,
+    belief_price: null,
+    max_spread: null
   }
 };
 
@@ -423,7 +436,7 @@ const result = await client.execute(
   msg,
   "auto",
   undefined,
-  [{ denom: "bluechip", amount: "1000000" }]
+  [{ denom: "ubluechip", amount }]
 );
 ```
 
