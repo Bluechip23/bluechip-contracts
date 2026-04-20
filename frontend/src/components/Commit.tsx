@@ -51,7 +51,6 @@ const Commit = ({ client, address }: CommitProps) => {
                     },
                     amount: amountInMicroUnits
                 },
-                amount: amountInMicroUnits,
                 transaction_deadline: deadlineInNs,
                 belief_price: null as string | null,
                 max_spread: (isThresholdCrossed && maxSpread && parseFloat(maxSpread) > 0)

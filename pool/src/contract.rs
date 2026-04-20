@@ -206,7 +206,6 @@ pub fn execute(
         // --- Commit & Distribution ---
         ExecuteMsg::Commit {
             asset,
-            amount,
             transaction_deadline,
             belief_price,
             max_spread,
@@ -223,7 +222,6 @@ pub fn execute(
                 env,
                 info,
                 asset,
-                amount,
                 transaction_deadline,
                 belief_price,
                 max_spread,
