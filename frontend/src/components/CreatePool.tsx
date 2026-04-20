@@ -80,8 +80,10 @@ const CreatePool = ({ client, address }: CreatePoolProps) => {
                         creator_token_address: address, // Placeholder, will be set by factory
                         commit_amount_for_threshold: DEFAULT_CONFIG.commitAmountForThreshold,
                         commit_limit_usd: DEFAULT_CONFIG.commitThresholdUsd,
-                        pyth_contract_addr_for_conversions: import.meta.env.VITE_ORACLE_ADDRESS || 'oracle_address_placeholder',
-                        pyth_atom_usd_price_feed_id: 'ATOM_USD',
+                        // Schema requires these strings but the factory ignores them and
+                        // uses its own stored pyth config (set at factory instantiation).
+                        pyth_contract_addr_for_conversions: '',
+                        pyth_atom_usd_price_feed_id: '',
                         max_bluechip_lock_per_pool: DEFAULT_CONFIG.maxBluechipLock,
                         creator_excess_liquidity_lock_days: DEFAULT_CONFIG.creatorExcessLockDays,
                         is_standard_pool: isStandardPool
