@@ -3,7 +3,7 @@ import { Card, CardContent, Typography, TextField, Button, Box, Alert, Tabs, Tab
 import ContentCopyIcon from '@mui/icons-material/ContentCopy';
 import CommitTracker from './CommitTracker';
 import { SigningCosmWasmClient } from '@cosmjs/cosmwasm-stargate';
-import { DEFAULT_CHAIN_CONFIG } from '../types/FrontendTypes';
+import { DEFAULT_CHAIN_CONFIG, getBluechipDenom } from '../types/FrontendTypes';
 
 interface CommitProps {
     client: SigningCosmWasmClient | null;
@@ -36,6 +36,12 @@ const Commit = ({ client, address }: CommitProps) => {
                 return;
             }
             const amountInMicroUnits = Math.floor(amountVal * 1_000_000).toString();
+
+            // Pool denom is configurable per-pool; read it from the pool's pair {} query
+            // rather than assuming DEFAULT_CHAIN_CONFIG.nativeDenom.
+            const pairInfo = await client.queryContractSmart(targetContractAddress, { pair: {} });
+            const bluechipDenom = getBluechipDenom(pairInfo.asset_infos) ?? DEFAULT_CHAIN_CONFIG.nativeDenom;
+
             const thresholdStatus = await client.queryContractSmart(targetContractAddress, {
                 is_fully_commited: {}
             });
@@ -47,7 +53,7 @@ const Commit = ({ client, address }: CommitProps) => {
             const commitMsg = {
                 asset: {
                     info: {
-                        bluechip: { denom: DEFAULT_CHAIN_CONFIG.nativeDenom }
+                        bluechip: { denom: bluechipDenom }
                     },
                     amount: amountInMicroUnits
                 },
@@ -61,7 +67,7 @@ const Commit = ({ client, address }: CommitProps) => {
                 commit: commitMsg
             };
 
-            const funds = [{ denom: DEFAULT_CHAIN_CONFIG.nativeDenom, amount: amountInMicroUnits }];
+            const funds = [{ denom: bluechipDenom, amount: amountInMicroUnits }];
 
             console.log('Sending commit message:', JSON.stringify(msg, null, 2));
             console.log('With funds:', funds);
