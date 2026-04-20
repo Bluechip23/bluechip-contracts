@@ -607,10 +607,30 @@ fn process_threshold_crossing_with_excess(
             commission_amt = comm;
         }
 
-        if !capped_excess.is_zero() && max_spread.is_some() {
+        if !capped_excess.is_zero() {
+            // Unconditional slippage protection on the threshold-crossing
+            // excess swap. Previously gated on max_spread.is_some(), which
+            // meant callers who omitted max_spread skipped the check
+            // entirely.
+            //
+            // The path-aware default (25%) instead of the pool-wide
+            // DEFAULT_SLIPPAGE (0.5%) reflects the structural reality of
+            // this swap: the excess can be up to 20% of the freshly-seeded
+            // pool's reserves, which by x*y=k math produces an inherent
+            // spread of ~15–20% even under honest conditions. A 0.5% cap
+            // would revert virtually every real threshold crossing with
+            // non-trivial excess. 25% gives a small buffer over the 20%
+            // design ceiling: anything worse than that indicates either
+            // a bug, a pathological pool seed, or that the excess cap
+            // wasn't applied — all cases the caller should know about.
+            //
+            // Users who explicitly set a tighter `max_spread` get that
+            // stricter bound honored; callers who forgot to specify one
+            // get 25% instead of no protection at all.
+            let effective_max_spread = max_spread.or(Some(Decimal::percent(25)));
             assert_max_spread(
                 belief_price,
-                max_spread,
+                effective_max_spread,
                 capped_excess,
                 return_amt.checked_add(commission_amt)?,
                 spread_amt,
