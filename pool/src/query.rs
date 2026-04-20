@@ -95,7 +95,17 @@ pub fn query(deps: Deps, env: Env, msg: QueryMsg) -> StdResult<Binary> {
         ),
         QueryMsg::GetAllPools {} => query_for_factory(deps, env, PoolQueryMsg::GetAllPools {}),
         QueryMsg::IsPaused {} => query_for_factory(deps, env, PoolQueryMsg::IsPaused {}),
+        QueryMsg::FactoryNotifyStatus {} => to_json_binary(&query_factory_notify_status(deps)?),
     }
+}
+
+pub fn query_factory_notify_status(
+    deps: Deps,
+) -> StdResult<crate::msg::FactoryNotifyStatusResponse> {
+    let pending = crate::state::PENDING_FACTORY_NOTIFY
+        .may_load(deps.storage)?
+        .unwrap_or(false);
+    Ok(crate::msg::FactoryNotifyStatusResponse { pending })
 }
 
 pub fn query_is_paused(deps: Deps) -> StdResult<pool_factory_interfaces::IsPausedResponse> {

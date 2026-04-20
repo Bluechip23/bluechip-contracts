@@ -76,6 +76,23 @@ pub const PENDING_EMERGENCY_WITHDRAW: Item<Timestamp> = Item::new("pending_emerg
 pub const EMERGENCY_DRAINED: Item<bool> = Item::new("emergency_drained");
 pub const EMERGENCY_WITHDRAW_DELAY_SECONDS: u64 = 86_400;
 
+// Set to `true` when NotifyThresholdCrossed to the factory failed via the
+// reply_on_error path during a threshold-crossing commit. All pool-side
+// threshold state (IS_THRESHOLD_HIT, reserves, committer distribution)
+// still succeeds — only the factory's POOL_THRESHOLD_MINTED flag and the
+// per-pool Bluechip mint reward are pending. Any caller can invoke
+// ExecuteMsg::RetryFactoryNotify to re-send the notification; on success
+// this flag is cleared by the reply handler. Absence or `false` means
+// "either never crossed threshold, or factory notification already
+// succeeded" — the pool's IS_THRESHOLD_HIT disambiguates.
+pub const PENDING_FACTORY_NOTIFY: Item<bool> = Item::new("pending_factory_notify");
+
+// Reply IDs for SubMsg dispatches. Kept sparse so future features can
+// slot in without renumbering. The pool has only one caller of reply()
+// today (factory-notify), so this is mostly forward-looking.
+pub const REPLY_ID_FACTORY_NOTIFY_INITIAL: u64 = 1;
+pub const REPLY_ID_FACTORY_NOTIFY_RETRY: u64 = 2;
+
 #[cw_serde]
 pub struct PoolAnalytics {
     /// Total number of swaps executed on this pool.

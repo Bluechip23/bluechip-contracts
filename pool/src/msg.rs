@@ -90,6 +90,12 @@ pub enum ExecuteMsg {
         #[serde(default)]
         transaction_deadline: Option<Timestamp>,
     },
+    // Re-sends NotifyThresholdCrossed to the factory when the initial
+    // notification during threshold-crossing failed and PENDING_FACTORY_NOTIFY
+    // is set. Anyone can call: factory's POOL_THRESHOLD_MINTED idempotency
+    // check gates double-mints, so at worst a stray caller burns gas on a
+    // no-op. Clears the pending flag on successful reply.
+    RetryFactoryNotify {},
     CancelEmergencyWithdraw {},
 }
 
@@ -165,6 +171,16 @@ pub enum QueryMsg {
     GetAllPools {},
     #[returns(pool_factory_interfaces::IsPausedResponse)]
     IsPaused {},
+    // Reports whether a NotifyThresholdCrossed-to-factory notification
+    // is pending retry (see PENDING_FACTORY_NOTIFY / RetryFactoryNotify).
+    // Useful for keepers and ops dashboards watching for stuck pools.
+    #[returns(FactoryNotifyStatusResponse)]
+    FactoryNotifyStatus {},
+}
+
+#[cw_serde]
+pub struct FactoryNotifyStatusResponse {
+    pub pending: bool,
 }
 
 #[cw_serde]

@@ -225,7 +225,7 @@ fn execute_commit_logic(
                             })?;
                         IS_THRESHOLD_HIT.save(deps.storage, &true)?;
 
-                        messages.extend(trigger_threshold_payout(
+                        let payout = trigger_threshold_payout(
                             deps.storage,
                             &pool_info,
                             &mut pool_state,
@@ -234,7 +234,8 @@ fn execute_commit_logic(
                             &threshold_payout,
                             &fee_info,
                             &env,
-                        )?);
+                        )?;
+                        messages.extend(payout.other_msgs);
                         update_commit_info(
                             deps.storage,
                             &sender,
@@ -250,7 +251,11 @@ fn execute_commit_logic(
                         analytics.total_commit_count += 1;
                         POOL_ANALYTICS.save(deps.storage, &analytics)?;
 
+                        // `payout.factory_notify` is attached as a SubMsg so a
+                        // factory-side failure lands in the pool's reply handler
+                        // (see P4-H5) rather than reverting the commit.
                         Ok(Response::new()
+                            .add_submessage(payout.factory_notify)
                             .add_messages(messages)
                             .add_attribute("action", "commit")
                             .add_attribute("phase", "threshold_hit_exact")
@@ -556,7 +561,10 @@ fn process_threshold_crossing_with_excess(
 
     IS_THRESHOLD_HIT.save(deps.storage, &true)?;
 
-    messages.extend(trigger_threshold_payout(
+    // Hold factory_notify aside; it becomes a SubMsg on the final Response
+    // so a factory-side failure is recoverable via RetryFactoryNotify
+    // rather than reverting the whole threshold crossing (P4-H5).
+    let payout_msgs = trigger_threshold_payout(
         deps.storage,
         pool_info,
         pool_state,
@@ -565,7 +573,9 @@ fn process_threshold_crossing_with_excess(
         threshold_payout,
         fee_info,
         &env,
-    )?);
+    )?;
+    messages.extend(payout_msgs.other_msgs);
+    let factory_notify = payout_msgs.factory_notify;
 
     update_commit_info(
         deps.storage,
@@ -699,6 +709,7 @@ fn process_threshold_crossing_with_excess(
     // above. Previous code reloaded here; the reload was redundant and
     // cost an extra storage read per threshold-crossing tx.
     Ok(Response::new()
+        .add_submessage(factory_notify)
         .add_messages(messages)
         .add_attribute("action", "commit")
         .add_attribute("phase", "threshold_crossing")

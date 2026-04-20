@@ -30,11 +30,14 @@ use crate::state::{
     POOL_PAUSED, POOL_SPECS, POOL_STATE, REENTRANCY_LOCK, THRESHOLD_PAYOUT_AMOUNTS,
     USD_RAISED_FROM_COMMIT,
 };
-use crate::state::{PoolState, LIQUIDITY_POSITIONS};
+use crate::state::{
+    PoolState, LIQUIDITY_POSITIONS, PENDING_FACTORY_NOTIFY, REPLY_ID_FACTORY_NOTIFY_INITIAL,
+    REPLY_ID_FACTORY_NOTIFY_RETRY,
+};
 use crate::swap_helper::{assert_max_spread, compute_swap, update_price_accumulator};
 use cosmwasm_std::{
-    entry_point, from_json, Addr, Decimal, DepsMut, Env, MessageInfo, Response, StdError,
-    StdResult, Uint128,
+    entry_point, from_json, to_json_binary, Addr, CosmosMsg, Decimal, DepsMut, Env, MessageInfo,
+    Reply, Response, StdError, StdResult, SubMsg, SubMsgResult, Uint128, WasmMsg,
 };
 use cw2::set_contract_version;
 use cw20::Cw20ReceiveMsg;
@@ -450,6 +453,100 @@ pub fn execute(
             }
             execute_claim_creator_fees(deps, env, info, transaction_deadline)
         }
+        ExecuteMsg::RetryFactoryNotify {} => execute_retry_factory_notify(deps, env, info),
+    }
+}
+
+/// Re-sends `NotifyThresholdCrossed` to the factory when the initial
+/// notification (dispatched via `reply_on_error` during threshold-crossing
+/// commit) failed. This entrypoint is callable by ANYONE; the factory's
+/// POOL_THRESHOLD_MINTED idempotency check prevents a successful mint from
+/// firing twice. Reply handling clears PENDING_FACTORY_NOTIFY on success.
+///
+/// Why permissionless: recovery-path tx. If a factory misconfiguration or
+/// expand-economy stall caused the initial notification to fail, we want
+/// anyone — a keeper, a committer, Bluechip ops — to be able to nudge the
+/// system back to consistent state once the root cause is fixed. The worst
+/// an abusive caller can do is waste their own gas on a factory reject.
+pub fn execute_retry_factory_notify(
+    deps: DepsMut,
+    _env: Env,
+    _info: MessageInfo,
+) -> Result<Response, ContractError> {
+    let pending = PENDING_FACTORY_NOTIFY
+        .may_load(deps.storage)?
+        .unwrap_or(false);
+    if !pending {
+        return Err(ContractError::Std(StdError::generic_err(
+            "No pending factory notification to retry",
+        )));
+    }
+
+    let pool_info = POOL_INFO.load(deps.storage)?;
+    let notify = SubMsg::reply_always(
+        CosmosMsg::Wasm(WasmMsg::Execute {
+            contract_addr: pool_info.factory_addr.to_string(),
+            msg: to_json_binary(
+                &pool_factory_interfaces::FactoryExecuteMsg::NotifyThresholdCrossed {
+                    pool_id: pool_info.pool_id,
+                },
+            )?,
+            funds: vec![],
+        }),
+        REPLY_ID_FACTORY_NOTIFY_RETRY,
+    );
+
+    Ok(Response::new()
+        .add_submessage(notify)
+        .add_attribute("action", "retry_factory_notify")
+        .add_attribute("pool_id", pool_info.pool_id.to_string()))
+}
+
+/// SubMsg reply handler.
+///
+/// Two reply IDs come through here:
+///   - REPLY_ID_FACTORY_NOTIFY_INITIAL (from the threshold-crossing commit).
+///     Fires only on error (reply_on_error). We set PENDING_FACTORY_NOTIFY
+///     and return Ok so the parent commit tx survives.
+///   - REPLY_ID_FACTORY_NOTIFY_RETRY (from execute_retry_factory_notify).
+///     Fires always (reply_always). On success we clear the pending flag;
+///     on failure we keep it so another retry can be attempted.
+#[cfg_attr(not(feature = "library"), entry_point)]
+pub fn reply(deps: DepsMut, env: Env, msg: Reply) -> StdResult<Response> {
+    match msg.id {
+        REPLY_ID_FACTORY_NOTIFY_INITIAL => {
+            let err = match msg.result {
+                SubMsgResult::Err(e) => e,
+                // reply_on_error shouldn't produce Ok here; treat as no-op.
+                SubMsgResult::Ok(_) => return Ok(Response::new()),
+            };
+            PENDING_FACTORY_NOTIFY.save(deps.storage, &true)?;
+            Ok(Response::new()
+                .add_attribute("action", "factory_notify_deferred")
+                .add_attribute("reason", err)
+                .add_attribute("block_time", env.block.time.seconds().to_string()))
+        }
+        REPLY_ID_FACTORY_NOTIFY_RETRY => match msg.result {
+            SubMsgResult::Ok(_) => {
+                PENDING_FACTORY_NOTIFY.save(deps.storage, &false)?;
+                Ok(Response::new()
+                    .add_attribute("action", "factory_notify_retry_succeeded")
+                    .add_attribute("block_time", env.block.time.seconds().to_string()))
+            }
+            SubMsgResult::Err(e) => {
+                // Keep the pending flag set so another retry can be attempted
+                // later. Don't revert — that would propagate the error back
+                // to the caller and could trap gas in a retry loop.
+                Ok(Response::new()
+                    .add_attribute("action", "factory_notify_retry_failed")
+                    .add_attribute("reason", e)
+                    .add_attribute("block_time", env.block.time.seconds().to_string()))
+            }
+        },
+        _ => Err(StdError::generic_err(format!(
+            "Unknown reply id: {}",
+            msg.id
+        ))),
     }
 }
 
