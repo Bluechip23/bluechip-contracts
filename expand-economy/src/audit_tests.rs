@@ -160,6 +160,13 @@ mod tests {
     fn test_execute_withdrawal_after_timelock_with_recipient() {
         let mut deps = mock_dependencies();
         setup_contract(&mut deps);
+        // Fund the contract so the new balance-clamp in execute_withdrawal
+        // doesn't clip the payout to zero. The contract address comes from
+        // mock_env() — hard-coded to `cosmos2contract` by cosmwasm's mock.
+        deps.querier.bank.update_balance(
+            mock_env().contract.address.to_string(),
+            coins(10_000_000, "ubluechip"),
+        );
 
         let owner_addr = MockApi::default().addr_make("owner");
         let recipient_addr = MockApi::default().addr_make("valid_recipient");
@@ -207,6 +214,12 @@ mod tests {
     fn test_execute_withdrawal_defaults_to_sender() {
         let mut deps = mock_dependencies();
         setup_contract(&mut deps);
+        // Fund the contract so the balance-clamp in execute_withdrawal
+        // does not clip the payout to zero.
+        deps.querier.bank.update_balance(
+            mock_env().contract.address.to_string(),
+            coins(10_000_000, "ubluechip"),
+        );
 
         let owner_addr = MockApi::default().addr_make("owner");
 

@@ -210,6 +210,56 @@ pub fn execute_cancel_factory_config_update(
     Ok(Response::new().add_attribute("action", "cancel_config_update"))
 }
 
+// Sentinel placeholder the caller must supply for the CreatorToken slot.
+// The factory mints a fresh CW20 during pool creation and rewrites this
+// entry to the real address in mint_create_pool. Any other value in the
+// CreatorToken slot is rejected so attackers can't smuggle an arbitrary
+// (possibly malicious) CW20 into the pool's asset_infos.
+pub const CREATOR_TOKEN_SENTINEL: &str = "WILL_BE_CREATED_BY_FACTORY";
+
+// Validates the pair shape supplied by the pool creator:
+//   - exactly one Bluechip entry
+//   - exactly one CreatorToken entry whose contract_addr equals the sentinel
+// Anything else (duplicate Bluechips with different denoms, two CreatorTokens,
+// a CreatorToken pointing at some pre-existing CW20) is rejected up front so
+// the downstream instantiate doesn't have to untangle a malformed pair.
+pub(crate) fn validate_pool_token_info(
+    pool_token_info: &[crate::asset::TokenType; 2],
+) -> Result<(), ContractError> {
+    use crate::asset::TokenType;
+
+    let mut bluechip_count = 0usize;
+    let mut creator_count = 0usize;
+    for t in pool_token_info.iter() {
+        match t {
+            TokenType::Bluechip { denom } => {
+                if denom.trim().is_empty() {
+                    return Err(ContractError::Std(StdError::generic_err(
+                        "Bluechip denom must be non-empty",
+                    )));
+                }
+                bluechip_count += 1;
+            }
+            TokenType::CreatorToken { contract_addr } => {
+                if contract_addr.as_str() != CREATOR_TOKEN_SENTINEL {
+                    return Err(ContractError::Std(StdError::generic_err(format!(
+                        "CreatorToken contract_addr must be the sentinel \"{}\"; got \"{}\". The factory mints the CW20 itself and rewrites this field.",
+                        CREATOR_TOKEN_SENTINEL, contract_addr
+                    ))));
+                }
+                creator_count += 1;
+            }
+        }
+    }
+    if bluechip_count != 1 || creator_count != 1 {
+        return Err(ContractError::Std(StdError::generic_err(format!(
+            "pool_token_info must contain exactly one Bluechip and one CreatorToken (got {} Bluechip, {} CreatorToken)",
+            bluechip_count, creator_count
+        ))));
+    }
+    Ok(())
+}
+
 // Validates creator token metadata before any state is written.
 // - decimals must be 6 (threshold payout and mint cap are calibrated for 6-decimal tokens)
 // - name: 3-50 chars, printable ASCII only (no control chars, no extended unicode)
@@ -265,10 +315,26 @@ fn execute_create_creator_pool(
     pool_msg: CreatePool,
     token_info: CreatorTokenInfo,
 ) -> Result<Response, ContractError> {
-    // Validate token metadata up front, before any state writes.
+    // Validate token metadata and pair shape up front, before any state
+    // writes. These checks must stay at the top of the handler — they
+    // guard every later step of pool creation.
     validate_creator_token_info(&token_info)?;
+    validate_pool_token_info(&pool_msg.pool_token_info)?;
 
     let factory_cw20 = FACTORYINSTANTIATEINFO.load(deps.storage)?;
+
+    // `is_standard_pool = Some(true)` skips the commit phase entirely and
+    // lets the pool enter trading mode at instantiation. That's a powerful
+    // bypass of the whole two-phase model, so only the factory admin may
+    // request it. Unspecified or `Some(false)` is permissionless.
+    if matches!(pool_msg.is_standard_pool, Some(true))
+        && info.sender != factory_cw20.factory_admin_address
+    {
+        return Err(ContractError::Std(StdError::generic_err(
+            "Only the factory admin can create a standard pool (is_standard_pool=true)",
+        )));
+    }
+
     let sender = info.sender.clone();
     let pool_counter = POOL_COUNTER.load(deps.storage).unwrap_or(0);
     let pool_id = pool_counter + 1;

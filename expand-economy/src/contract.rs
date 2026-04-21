@@ -137,8 +137,14 @@ pub fn execute_expand_economy(
                     .add_attribute("reason", "zero_amount"));
             }
 
+            // Validate the recipient at the contract boundary rather than
+            // letting a malformed string surface as an opaque bank-module
+            // error deep in the tx pipeline. Also guards against callers
+            // accidentally forwarding an IBC-wrapped / wrong-prefix string.
+            let recipient_addr = deps.api.addr_validate(&recipient)?;
+
             let send_msg = BankMsg::Send {
-                to_address: recipient.clone(),
+                to_address: recipient_addr.to_string(),
                 amount: vec![Coin {
                     denom: config.bluechip_denom.clone(),
                     amount,
@@ -148,7 +154,7 @@ pub fn execute_expand_economy(
             Ok(Response::new()
                 .add_message(send_msg)
                 .add_attribute("action", "request_reward")
-                .add_attribute("recipient", recipient)
+                .add_attribute("recipient", recipient_addr)
                 .add_attribute("amount", amount)
                 .add_attribute("denom", config.bluechip_denom))
         }
@@ -323,20 +329,38 @@ pub fn execute_withdrawal(
 
     PENDING_WITHDRAWAL.remove(deps.storage);
 
-    let send_msg = BankMsg::Send {
-        to_address: pending.recipient.clone(),
-        amount: vec![Coin {
-            denom: pending.denom.clone(),
-            amount: pending.amount,
-        }],
-    };
+    // Clamp the requested amount to the contract's current balance so a
+    // proposed-but-stale withdrawal (e.g. balance drew down via
+    // RequestExpansion between propose and execute) doesn't fail the
+    // whole tx at the bank module. Transfer the smaller of (requested,
+    // balance) and emit both values so the caller can detect the clamp.
+    let balance = deps
+        .querier
+        .query_balance(env.contract.address.as_str(), &pending.denom)?;
+    let amount_to_send = pending.amount.min(balance.amount);
 
-    Ok(Response::new()
-        .add_message(send_msg)
+    let mut response = Response::new()
         .add_attribute("action", "execute_withdrawal")
-        .add_attribute("recipient", pending.recipient)
-        .add_attribute("amount", pending.amount)
-        .add_attribute("denom", pending.denom))
+        .add_attribute("recipient", pending.recipient.clone())
+        .add_attribute("requested_amount", pending.amount)
+        .add_attribute("amount", amount_to_send)
+        .add_attribute("contract_balance", balance.amount)
+        .add_attribute("denom", pending.denom.clone());
+
+    if !amount_to_send.is_zero() {
+        let send_msg = BankMsg::Send {
+            to_address: pending.recipient.clone(),
+            amount: vec![Coin {
+                denom: pending.denom,
+                amount: amount_to_send,
+            }],
+        };
+        response = response.add_message(send_msg);
+    } else {
+        response = response.add_attribute("note", "no funds available; withdrawal skipped");
+    }
+
+    Ok(response)
 }
 
 pub fn execute_cancel_withdrawal(

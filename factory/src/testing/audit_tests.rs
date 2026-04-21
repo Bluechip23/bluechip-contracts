@@ -522,7 +522,7 @@ fn test_m_new_5_multi_pool_creator_no_registry_collision() {
                     denom: "ubluechip".to_string(),
                 },
                 TokenType::CreatorToken {
-                    contract_addr: Addr::unchecked("WILL_BE_CREATED"),
+                    contract_addr: Addr::unchecked("WILL_BE_CREATED_BY_FACTORY"),
                 },
             ],
             factory_to_create_pool_addr: Addr::unchecked("factory"),
@@ -582,7 +582,7 @@ fn test_m_new_5_multi_pool_creator_no_registry_collision() {
                     denom: "ubluechip".to_string(),
                 },
                 TokenType::CreatorToken {
-                    contract_addr: Addr::unchecked("WILL_BE_CREATED"),
+                    contract_addr: Addr::unchecked("WILL_BE_CREATED_BY_FACTORY"),
                 },
             ],
             factory_to_create_pool_addr: Addr::unchecked("factory"),

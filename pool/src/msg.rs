@@ -75,7 +75,27 @@ pub enum ExecuteMsg {
         min_amount1: Option<Uint128>,
         max_ratio_deviation_bps: Option<u16>,
     },
-    ClaimCreatorExcessLiquidity {},
+    ClaimCreatorExcessLiquidity {
+        // Optional deadline protecting the claim from lying in the mempool
+        // indefinitely. Unset preserves the pre-existing behavior for
+        // backwards-compatibility with already-built clients.
+        #[serde(default)]
+        transaction_deadline: Option<Timestamp>,
+    },
+    // Empties the CREATOR_FEE_POT into the creator wallet. The pot
+    // accumulates the portion of LP fees that the fee-size multiplier
+    // clipped off small positions — previously orphaned in fee_reserve,
+    // now routed here. Creator-only.
+    ClaimCreatorFees {
+        #[serde(default)]
+        transaction_deadline: Option<Timestamp>,
+    },
+    // Re-sends NotifyThresholdCrossed to the factory when the initial
+    // notification during threshold-crossing failed and PENDING_FACTORY_NOTIFY
+    // is set. Anyone can call: factory's POOL_THRESHOLD_MINTED idempotency
+    // check gates double-mints, so at worst a stray caller burns gas on a
+    // no-op. Clears the pending flag on successful reply.
+    RetryFactoryNotify {},
     CancelEmergencyWithdraw {},
 }
 
@@ -151,6 +171,16 @@ pub enum QueryMsg {
     GetAllPools {},
     #[returns(pool_factory_interfaces::IsPausedResponse)]
     IsPaused {},
+    // Reports whether a NotifyThresholdCrossed-to-factory notification
+    // is pending retry (see PENDING_FACTORY_NOTIFY / RetryFactoryNotify).
+    // Useful for keepers and ops dashboards watching for stuck pools.
+    #[returns(FactoryNotifyStatusResponse)]
+    FactoryNotifyStatus {},
+}
+
+#[cw_serde]
+pub struct FactoryNotifyStatusResponse {
+    pub pending: bool,
 }
 
 #[cw_serde]

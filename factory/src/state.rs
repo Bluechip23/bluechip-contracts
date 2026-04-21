@@ -26,7 +26,14 @@ pub const POOLS_BY_CONTRACT_ADDRESS: Map<Addr, PoolStateResponseForFactory> =
     Map::new("pools_by_contract_address");
 pub const POOL_REGISTRY: Map<u64, Addr> = Map::new("pool_registry");
 
-pub const MAX_PRICE_AGE_SECONDS_BEFORE_STALE: u64 = 300;
+pub const POOL_CREATION_STATES: Map<u64, PoolCreationState> = Map::new("creation_states");
+// Maximum age (seconds) of a Pyth price we are willing to use for USD
+// conversions. Tightened from 300s to 90s: a 5-minute window let an
+// attacker who spotted a favorable price pick-and-choose any moment in
+// the last 5 minutes to land a commit/swap. 90 seconds is inside typical
+// Pyth publish cadence while still cutting the attacker's useful window
+// to a fraction of a volatility half-life.
+pub const MAX_PRICE_AGE_SECONDS_BEFORE_STALE: u64 = 90;
 
 // Standard timelock applied to admin-initiated mutations of factory state
 // (config, pool config, pool upgrades, force-rotate). 48h gives the
@@ -35,7 +42,14 @@ pub const MAX_PRICE_AGE_SECONDS_BEFORE_STALE: u64 = 300;
 // constant rather than spelling out `86400 * 2`.
 pub const ADMIN_TIMELOCK_SECONDS: u64 = 86_400 * 2;
 pub const PENDING_POOL_UPGRADE: Item<PoolUpgrade> = Item::new("pending_upgrade");
-pub const FIRST_POOL_TIMESTAMP: Item<Timestamp> = Item::new("first_pool_timestamp");
+// Timestamp of the *first pool that crossed its commit threshold*.
+// Despite the old name `FIRST_POOL_TIMESTAMP`, this is NOT set on first
+// pool creation — it's lazy-set inside `calculate_and_mint_bluechip`
+// the first time any pool crosses its threshold. The mint-decay formula
+// uses `block.time - first_threshold_time` as its `s` input, so the decay
+// is anchored to the first threshold event, not to when the factory was
+// deployed. Storage key is preserved for migration compatibility.
+pub const FIRST_THRESHOLD_TIMESTAMP: Item<Timestamp> = Item::new("first_pool_timestamp");
 pub const POOL_THRESHOLD_MINTED: Map<u64, bool> = Map::new("pool_threshold_minted");
 pub const PENDING_POOL_CONFIG: Map<u64, PendingPoolConfig> = Map::new("pending_pool_config");
 
@@ -50,8 +64,13 @@ pub const PENDING_POOL_CONFIG: Map<u64, PendingPoolConfig> = Map::new("pending_p
 pub const ORACLE_UPDATE_BOUNTY_USD: Item<Uint128> = Item::new("oracle_update_bounty_usd");
 
 // Hard cap to protect the factory's reserve if the admin key is
-// compromised. $1 USD per successful update (6 decimals).
-pub const MAX_ORACLE_UPDATE_BOUNTY_USD: Uint128 = Uint128::new(1_000_000);
+// compromised. $0.10 USD per successful update (6 decimals). Realistic
+// keeper gas is on the order of $0.003–$0.03 per oracle update on typical
+// Cosmos chains; $0.10 leaves generous headroom for gas spikes while
+// capping the yearly drain if admin is compromised: $0.10 × 288 updates/day
+// = $28.80/day ≈ $10.5k/year max. The prior $1.00 cap was 10× higher and
+// pure overpayment.
+pub const MAX_ORACLE_UPDATE_BOUNTY_USD: Uint128 = Uint128::new(100_000);
 
 // Native denom the bounty is paid in (after USD->bluechip conversion).
 // The factory must be pre-funded with this denom by the bluechip main
@@ -65,8 +84,13 @@ pub const ORACLE_BOUNTY_DENOM: &str = "ubluechip";
 // own pre-funded native balance.
 pub const DISTRIBUTION_BOUNTY_USD: Item<Uint128> = Item::new("distribution_bounty_usd");
 
-// Hard cap. $1 USD per batch (6 decimals).
-pub const MAX_DISTRIBUTION_BOUNTY_USD: Uint128 = Uint128::new(1_000_000);
+// Hard cap. $0.10 USD per batch (6 decimals). A distribution batch is
+// up to MAX_DISTRIBUTIONS_PER_TX=40 mints + a handful of storage writes;
+// realistic gas ~$0.01–$0.10. The $0.10 cap leaves margin for expensive
+// chains and gas-price spikes but still caps admin-compromise blast
+// radius: at worst a compromised admin burns $0.10 × committer_count/40
+// per pool's full distribution. Was $1.00, which was ~10× overpayment.
+pub const MAX_DISTRIBUTION_BOUNTY_USD: Uint128 = Uint128::new(100_000);
 
 // ForceRotateOraclePools is a 2-step action: admin proposes a rotation,
 // the timelock elapses, then admin invokes ForceRotateOraclePools to

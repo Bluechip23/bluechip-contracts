@@ -19,7 +19,7 @@ use crate::liquidity::{
     execute_remove_all_liquidity, execute_remove_partial_liquidity,
     execute_remove_partial_liquidity_by_percent,
 };
-use crate::liquidity_helpers::execute_claim_creator_excess;
+use crate::liquidity_helpers::{execute_claim_creator_excess, execute_claim_creator_fees};
 use crate::msg::{Cw20HookMsg, ExecuteMsg, MigrateMsg, PoolInstantiateMsg};
 use crate::query::query_check_commit;
 use crate::state::{
@@ -30,11 +30,14 @@ use crate::state::{
     POOL_FEE_STATE, POOL_INFO, POOL_PAUSED, POOL_SPECS, POOL_STATE, REENTRANCY_LOCK,
     THRESHOLD_PAYOUT_AMOUNTS, USD_RAISED_FROM_COMMIT,
 };
-use crate::state::{PoolState, LIQUIDITY_POSITIONS};
+use crate::state::{
+    PoolState, LIQUIDITY_POSITIONS, PENDING_FACTORY_NOTIFY, REPLY_ID_FACTORY_NOTIFY_INITIAL,
+    REPLY_ID_FACTORY_NOTIFY_RETRY,
+};
 use crate::swap_helper::{assert_max_spread, compute_swap, update_price_accumulator};
 use cosmwasm_std::{
-    entry_point, from_json, Addr, Decimal, DepsMut, Env, MessageInfo, Response, StdError,
-    StdResult, Uint128,
+    entry_point, from_json, to_json_binary, Addr, CosmosMsg, Decimal, DepsMut, Env, MessageInfo,
+    Reply, Response, StdError, StdResult, SubMsg, SubMsgResult, Uint128, WasmMsg,
 };
 use cw2::set_contract_version;
 use cw20::Cw20ReceiveMsg;
@@ -67,6 +70,47 @@ pub fn instantiate(
     msg.pool_token_info[1].check(deps.api)?;
     if msg.pool_token_info[0] == msg.pool_token_info[1] {
         return Err(ContractError::DoublingAssets {});
+    }
+
+    // Enforce the expected pair shape: exactly one Bluechip entry and
+    // exactly one CreatorToken entry whose address matches the factory-
+    // minted token. This is defense-in-depth — the factory already
+    // validates the shape and rewrites the sentinel — but the pool
+    // refuses to stand up unless the invariants actually hold here,
+    // so a buggy factory migration or a directly-instantiated pool
+    // (e.g. via a raw Wasm instantiate) can't silently produce a pool
+    // whose reserve accounting disagrees with its holdings.
+    let mut bluechip_count = 0usize;
+    let mut creator_match = false;
+    let mut creator_count = 0usize;
+    for t in msg.pool_token_info.iter() {
+        match t {
+            TokenType::Bluechip { denom } => {
+                if denom.trim().is_empty() {
+                    return Err(ContractError::Std(StdError::generic_err(
+                        "Bluechip denom must be non-empty",
+                    )));
+                }
+                bluechip_count += 1;
+            }
+            TokenType::CreatorToken { contract_addr } => {
+                creator_count += 1;
+                if contract_addr == &msg.token_address {
+                    creator_match = true;
+                }
+            }
+        }
+    }
+    if bluechip_count != 1 || creator_count != 1 {
+        return Err(ContractError::Std(StdError::generic_err(format!(
+            "pool_token_info must contain exactly one Bluechip and one CreatorToken (got {} Bluechip, {} CreatorToken)",
+            bluechip_count, creator_count
+        ))));
+    }
+    if !creator_match {
+        return Err(ContractError::Std(StdError::generic_err(
+            "CreatorToken.contract_addr in pool_token_info must equal msg.token_address",
+        )));
     }
     if (msg.commit_fee_info.commit_fee_bluechip + msg.commit_fee_info.commit_fee_creator)
         > Decimal::one()
@@ -260,6 +304,13 @@ pub fn execute(
         ExecuteMsg::Receive(cw20_msg) => execute_swap_cw20(deps, env, info, cw20_msg),
 
         // --- Liquidity ---
+        // Pause checks are now applied to EVERY liquidity-touching path.
+        // Previously only CollectFees honored POOL_PAUSED; deposits and
+        // removes could run unchecked while the pool was paused (e.g. mid
+        // emergency-withdraw window), which could either funnel fresh LP
+        // capital into a pending drain or let LPs race the drain. The
+        // drain-initiated path already flips POOL_PAUSED on, so a single
+        // check blocks both admin-pause and emergency-pending states.
         ExecuteMsg::DepositLiquidity {
             amount0,
             amount1,
@@ -268,6 +319,9 @@ pub fn execute(
             transaction_deadline,
         } => {
             ensure_not_drained(deps.storage)?;
+            if POOL_PAUSED.may_load(deps.storage)?.unwrap_or(false) {
+                return Err(ContractError::PoolPausedLowLiquidity {});
+            }
             if !query_check_commit(deps.as_ref())? {
                 return Err(ContractError::ShortOfThreshold {});
             }
@@ -293,6 +347,9 @@ pub fn execute(
             transaction_deadline,
         } => {
             ensure_not_drained(deps.storage)?;
+            if POOL_PAUSED.may_load(deps.storage)?.unwrap_or(false) {
+                return Err(ContractError::PoolPausedLowLiquidity {});
+            }
             if !query_check_commit(deps.as_ref())? {
                 return Err(ContractError::ShortOfThreshold {});
             }
@@ -324,33 +381,52 @@ pub fn execute(
             min_amount0,
             min_amount1,
             max_ratio_deviation_bps,
-        } => execute_remove_partial_liquidity(
-            deps,
-            env,
-            info,
-            position_id,
-            liquidity_to_remove,
-            transaction_deadline,
-            min_amount0,
-            min_amount1,
-            max_ratio_deviation_bps,
-        ),
+        } => {
+            // Defense-in-depth: currently a drained pool has
+            // total_liquidity == 0 so the math inside remove_partial_liquidity
+            // would error out on its own. That's a coincidence, not a
+            // guarantee. If a future partial-drain or recovery path ever
+            // leaves non-zero total_liquidity after EMERGENCY_DRAINED is set,
+            // an explicit check here keeps users from pulling against
+            // already-swept reserves with arbitrary math.
+            ensure_not_drained(deps.storage)?;
+            if POOL_PAUSED.may_load(deps.storage)?.unwrap_or(false) {
+                return Err(ContractError::PoolPausedLowLiquidity {});
+            }
+            execute_remove_partial_liquidity(
+                deps,
+                env,
+                info,
+                position_id,
+                liquidity_to_remove,
+                transaction_deadline,
+                min_amount0,
+                min_amount1,
+                max_ratio_deviation_bps,
+            )
+        }
         ExecuteMsg::RemoveAllLiquidity {
             position_id,
             transaction_deadline,
             min_amount1,
             min_amount0,
             max_ratio_deviation_bps,
-        } => execute_remove_all_liquidity(
-            deps,
-            env,
-            info,
-            position_id,
-            transaction_deadline,
-            min_amount0,
-            min_amount1,
-            max_ratio_deviation_bps,
-        ),
+        } => {
+            ensure_not_drained(deps.storage)?;
+            if POOL_PAUSED.may_load(deps.storage)?.unwrap_or(false) {
+                return Err(ContractError::PoolPausedLowLiquidity {});
+            }
+            execute_remove_all_liquidity(
+                deps,
+                env,
+                info,
+                position_id,
+                transaction_deadline,
+                min_amount0,
+                min_amount1,
+                max_ratio_deviation_bps,
+            )
+        }
         ExecuteMsg::RemovePartialLiquidityByPercent {
             position_id,
             percentage,
@@ -358,18 +434,131 @@ pub fn execute(
             min_amount0,
             min_amount1,
             max_ratio_deviation_bps,
-        } => execute_remove_partial_liquidity_by_percent(
-            deps,
-            env,
-            info,
-            position_id,
-            percentage,
-            transaction_deadline,
-            min_amount0,
-            min_amount1,
-            max_ratio_deviation_bps,
-        ),
-        ExecuteMsg::ClaimCreatorExcessLiquidity {} => execute_claim_creator_excess(deps, env, info),
+        } => {
+            ensure_not_drained(deps.storage)?;
+            if POOL_PAUSED.may_load(deps.storage)?.unwrap_or(false) {
+                return Err(ContractError::PoolPausedLowLiquidity {});
+            }
+            execute_remove_partial_liquidity_by_percent(
+                deps,
+                env,
+                info,
+                position_id,
+                percentage,
+                transaction_deadline,
+                min_amount0,
+                min_amount1,
+                max_ratio_deviation_bps,
+            )
+        }
+        ExecuteMsg::ClaimCreatorExcessLiquidity { transaction_deadline } => {
+            ensure_not_drained(deps.storage)?;
+            if POOL_PAUSED.may_load(deps.storage)?.unwrap_or(false) {
+                return Err(ContractError::PoolPausedLowLiquidity {});
+            }
+            execute_claim_creator_excess(deps, env, info, transaction_deadline)
+        }
+        ExecuteMsg::ClaimCreatorFees { transaction_deadline } => {
+            ensure_not_drained(deps.storage)?;
+            if POOL_PAUSED.may_load(deps.storage)?.unwrap_or(false) {
+                return Err(ContractError::PoolPausedLowLiquidity {});
+            }
+            execute_claim_creator_fees(deps, env, info, transaction_deadline)
+        }
+        ExecuteMsg::RetryFactoryNotify {} => execute_retry_factory_notify(deps, env, info),
+    }
+}
+
+/// Re-sends `NotifyThresholdCrossed` to the factory when the initial
+/// notification (dispatched via `reply_on_error` during threshold-crossing
+/// commit) failed. This entrypoint is callable by ANYONE; the factory's
+/// POOL_THRESHOLD_MINTED idempotency check prevents a successful mint from
+/// firing twice. Reply handling clears PENDING_FACTORY_NOTIFY on success.
+///
+/// Why permissionless: recovery-path tx. If a factory misconfiguration or
+/// expand-economy stall caused the initial notification to fail, we want
+/// anyone — a keeper, a committer, Bluechip ops — to be able to nudge the
+/// system back to consistent state once the root cause is fixed. The worst
+/// an abusive caller can do is waste their own gas on a factory reject.
+pub fn execute_retry_factory_notify(
+    deps: DepsMut,
+    _env: Env,
+    _info: MessageInfo,
+) -> Result<Response, ContractError> {
+    let pending = PENDING_FACTORY_NOTIFY
+        .may_load(deps.storage)?
+        .unwrap_or(false);
+    if !pending {
+        return Err(ContractError::Std(StdError::generic_err(
+            "No pending factory notification to retry",
+        )));
+    }
+
+    let pool_info = POOL_INFO.load(deps.storage)?;
+    let notify = SubMsg::reply_always(
+        CosmosMsg::Wasm(WasmMsg::Execute {
+            contract_addr: pool_info.factory_addr.to_string(),
+            msg: to_json_binary(
+                &pool_factory_interfaces::FactoryExecuteMsg::NotifyThresholdCrossed {
+                    pool_id: pool_info.pool_id,
+                },
+            )?,
+            funds: vec![],
+        }),
+        REPLY_ID_FACTORY_NOTIFY_RETRY,
+    );
+
+    Ok(Response::new()
+        .add_submessage(notify)
+        .add_attribute("action", "retry_factory_notify")
+        .add_attribute("pool_id", pool_info.pool_id.to_string()))
+}
+
+/// SubMsg reply handler.
+///
+/// Two reply IDs come through here:
+///   - REPLY_ID_FACTORY_NOTIFY_INITIAL (from the threshold-crossing commit).
+///     Fires only on error (reply_on_error). We set PENDING_FACTORY_NOTIFY
+///     and return Ok so the parent commit tx survives.
+///   - REPLY_ID_FACTORY_NOTIFY_RETRY (from execute_retry_factory_notify).
+///     Fires always (reply_always). On success we clear the pending flag;
+///     on failure we keep it so another retry can be attempted.
+#[cfg_attr(not(feature = "library"), entry_point)]
+pub fn reply(deps: DepsMut, env: Env, msg: Reply) -> StdResult<Response> {
+    match msg.id {
+        REPLY_ID_FACTORY_NOTIFY_INITIAL => {
+            let err = match msg.result {
+                SubMsgResult::Err(e) => e,
+                // reply_on_error shouldn't produce Ok here; treat as no-op.
+                SubMsgResult::Ok(_) => return Ok(Response::new()),
+            };
+            PENDING_FACTORY_NOTIFY.save(deps.storage, &true)?;
+            Ok(Response::new()
+                .add_attribute("action", "factory_notify_deferred")
+                .add_attribute("reason", err)
+                .add_attribute("block_time", env.block.time.seconds().to_string()))
+        }
+        REPLY_ID_FACTORY_NOTIFY_RETRY => match msg.result {
+            SubMsgResult::Ok(_) => {
+                PENDING_FACTORY_NOTIFY.save(deps.storage, &false)?;
+                Ok(Response::new()
+                    .add_attribute("action", "factory_notify_retry_succeeded")
+                    .add_attribute("block_time", env.block.time.seconds().to_string()))
+            }
+            SubMsgResult::Err(e) => {
+                // Keep the pending flag set so another retry can be attempted
+                // later. Don't revert — that would propagate the error back
+                // to the caller and could trap gas in a retry loop.
+                Ok(Response::new()
+                    .add_attribute("action", "factory_notify_retry_failed")
+                    .add_attribute("reason", e)
+                    .add_attribute("block_time", env.block.time.seconds().to_string()))
+            }
+        },
+        _ => Err(StdError::generic_err(format!(
+            "Unknown reply id: {}",
+            msg.id
+        ))),
     }
 }
 
@@ -508,6 +697,15 @@ pub fn execute_simple_swap(
 
     let (return_amt, spread_amt, commission_amt) =
         compute_swap(offer_pool, ask_pool, offer_asset.amount, pool_specs.lp_fee)?;
+
+    // Reject dust swaps where the constant-product math floored
+    // return_amt to zero. Without this, the trader's offer would be
+    // absorbed into the pool while they receive nothing — effectively
+    // donating to LPs. Better to surface the "offer too small" error
+    // and let the caller bump their size or abandon.
+    if return_amt.is_zero() {
+        return Err(ContractError::ZeroAmount {});
+    }
 
     assert_max_spread(
         belief_price,

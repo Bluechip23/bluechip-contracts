@@ -1,6 +1,6 @@
 use crate::{
     error::ContractError,
-    state::{FACTORYINSTANTIATEINFO, FIRST_POOL_TIMESTAMP},
+    state::{FACTORYINSTANTIATEINFO, FIRST_THRESHOLD_TIMESTAMP},
 };
 use cosmwasm_std::{BankMsg, Coin, CosmosMsg, DepsMut, Env, StdError, StdResult, Uint128};
 
@@ -56,11 +56,15 @@ pub fn calculate_and_mint_bluechip(
 ) -> Result<Vec<CosmosMsg>, ContractError> {
     let messages = vec![];
 
-    // Still track the first pool timestamp for future use (s/6)
-    let first_pool_time = match FIRST_POOL_TIMESTAMP.may_load(deps.storage)? {
+    // Lazy-init the "first threshold crossed" anchor timestamp. The
+    // decay formula's `s` input is `block.time - first_threshold_time`
+    // so `s == 0` for the pool that triggers this branch for the very
+    // first time. Subsequent pools see a growing `s`, which shrinks
+    // the mint amount per the polynomial below.
+    let first_threshold_time = match FIRST_THRESHOLD_TIMESTAMP.may_load(deps.storage)? {
         Some(time) => time,
         None => {
-            FIRST_POOL_TIMESTAMP.save(deps.storage, &env.block.time)?;
+            FIRST_THRESHOLD_TIMESTAMP.save(deps.storage, &env.block.time)?;
             env.block.time
         }
     };
@@ -75,7 +79,7 @@ pub fn calculate_and_mint_bluechip(
         .block
         .time
         .seconds()
-        .saturating_sub(first_pool_time.seconds());
+        .saturating_sub(first_threshold_time.seconds());
 
     let mint_amount = calculate_mint_amount(seconds_elapsed, pool_id)?;
     let mut msgs = Vec::new();

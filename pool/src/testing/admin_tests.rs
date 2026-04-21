@@ -7,7 +7,12 @@ use cosmwasm_std::testing::{message_info, mock_dependencies, mock_env, MockApi};
 use cosmwasm_std::{Addr, Coin, Decimal, Uint128};
 
 fn mock_instantiate_msg() -> PoolInstantiateMsg {
+    // Both the CreatorToken entry and `token_address` must be bech32-valid
+    // (cosmwasm's mock API rejects raw strings via addr_validate) AND must
+    // equal each other (post-audit pair-shape invariant). Using the same
+    // MockApi-derived address for both satisfies both.
     let api = MockApi::default();
+    let token_addr = api.addr_make("creator_token");
     PoolInstantiateMsg {
         pool_id: 1,
         pool_token_info: [
@@ -15,7 +20,7 @@ fn mock_instantiate_msg() -> PoolInstantiateMsg {
                 denom: "ublue".to_string(),
             },
             TokenType::CreatorToken {
-                contract_addr: api.addr_make("creator_token"),
+                contract_addr: token_addr.clone(),
             },
         ],
         cw20_token_contract_id: 123,
@@ -30,7 +35,7 @@ fn mock_instantiate_msg() -> PoolInstantiateMsg {
         commit_threshold_limit_usd: Uint128::new(1000),
         commit_amount_for_threshold: Uint128::new(1000),
         position_nft_address: Addr::unchecked("nft_addr"),
-        token_address: Addr::unchecked("token_addr"),
+        token_address: token_addr,
         max_bluechip_lock_per_pool: Uint128::new(10000),
         creator_excess_liquidity_lock_days: 7,
         is_standard_pool: Some(true),

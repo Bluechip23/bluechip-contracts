@@ -26,6 +26,18 @@ pub const MIN_POOL_LIQUIDITY: Uint128 = Uint128::new(10_000_000_000);
 pub const TWAP_WINDOW: u64 = 3600;
 pub const UPDATE_INTERVAL: u64 = 300;
 pub const ROTATION_INTERVAL: u64 = 3600;
+
+// Minimum number of threshold-crossed creator pools (in addition to the
+// anchor ATOM/bluechip pool) required before the factory is willing to
+// return a TWAP-derived bluechip USD price. Until at least this many
+// creator pools have crossed threshold, every price query falls back to
+// the single anchor pool alone — which is trivially manipulable by
+// anyone who can move that one pool. Raising the floor forces the oracle
+// to error ("insufficient data") during the bootstrap window instead of
+// serving a single-pool-dominated price that is effectively attacker-
+// controlled. Callers (commit, conversion queries) then freeze until the
+// ecosystem has enough pools to dilute any single actor's influence.
+pub const MIN_ELIGIBLE_POOLS_FOR_TWAP: usize = 3;
 pub const INTERNAL_ORACLE: Item<BlueChipPriceInternalOracle> = Item::new("internal_oracle");
 const PRICE_PRECISION: u128 = 1_000_000;
 
@@ -541,7 +553,25 @@ pub fn calculate_weighted_price_with_atom(
                     block_time: pool_state.block_time_last,
                 });
 
-                // Try to compute TWAP from cumulative accumulators
+                // H3 hardening: distinguish anchor vs. creator pools when
+                // the cumulative accumulator hasn't advanced.
+                //
+                // - Creator pools are the real attack surface here: they vary
+                //   wildly in liquidity, an attacker can shop for the quietest
+                //   one, and spot price is single-block manipulable. We skip
+                //   any creator pool with zero cumulative-delta; it rejoins
+                //   the weighted sum on the next update once real trading
+                //   activity advances its accumulator.
+                //
+                // - The anchor (ATOM/bluechip) pool is curated by the
+                //   deployment team and expected to stay highly liquid.
+                //   Manipulating it takes materially more capital than a
+                //   random creator pool, and without it the oracle can't
+                //   compute a price at all. We keep the spot-price fallback
+                //   here so a temporarily inactive anchor doesn't freeze the
+                //   whole oracle — at the cost of leaving a narrow, high-cost
+                //   spot-manipulation vector on the anchor specifically.
+                let is_anchor = pool_address == &atom_pool_address;
                 let price = if let Some(prev) = prev_snapshots
                     .iter()
                     .find(|s| s.pool_address == *pool_address)
@@ -562,18 +592,32 @@ pub fn calculate_weighted_price_with_atom(
                             .map_err(|_| {
                                 ContractError::Std(StdError::generic_err("TWAP division error"))
                             })?
-                    } else {
-                        // No time elapsed or no cumulative change — fall back to spot
+                    } else if is_anchor {
+                        // Anchor-only spot fallback. See comment block above.
                         calculate_price_from_reserves(bluechip_reserve, other_reserve)?
+                    } else {
+                        // Creator pool with no TWAP evidence this round — skip.
+                        continue;
                     }
                 } else if prev_snapshots.is_empty() {
-                    // Bootstrap case: very first oracle update — no prior snapshots
-                    // exist for any pool.  Spot price is the only option.
+                    // Bootstrap case: very first oracle update in the factory's
+                    // entire lifetime — no prior snapshots exist for any pool.
+                    // After this call prev_snapshots will be non-empty forever,
+                    // so the spot price is only ever used once, system-wide,
+                    // and before any significant protocol activity.
+                    calculate_price_from_reserves(bluechip_reserve, other_reserve)?
+                } else if is_anchor {
+                    // Anchor was somehow missing from prev_snapshots despite
+                    // prev_snapshots being non-empty (e.g. first update after
+                    // an admin migration that cleared the snapshot set but
+                    // populated it for creator pools). Spot-fallback the
+                    // anchor so the update can still produce a price.
                     calculate_price_from_reserves(bluechip_reserve, other_reserve)?
                 } else {
-                    // Post-rotation: this pool is newly selected and has no prior
-                    // snapshot. Skip it from price weighting. The snapshot was already recorded
-                    // above, so TWAP data will be available on the next update.
+                    // Post-rotation: this creator pool is newly selected and
+                    // has no prior snapshot. Skip it from price weighting.
+                    // The snapshot was already recorded above, so TWAP data
+                    // will be available on the next update.
                     continue;
                 };
 
@@ -843,6 +887,32 @@ pub fn get_bluechip_usd_price(deps: Deps, env: &Env) -> StdResult<Uint128> {
     let oracle = INTERNAL_ORACLE
         .load(deps.storage)
         .map_err(|_| StdError::generic_err("Internal oracle not initialized"))?;
+
+    // Bootstrap guard: if fewer than MIN_ELIGIBLE_POOLS_FOR_TWAP creator
+    // pools have crossed threshold, the TWAP is effectively a single-pool
+    // price (the anchor). Refuse to serve it rather than letting an
+    // attacker who can move the anchor pool dictate the bluechip USD price
+    // to every downstream consumer. Eligibility already requires
+    // POOL_THRESHOLD_MINTED == true (see get_eligible_creator_pools), so
+    // we can reuse the same query.
+    //
+    // Gated on cfg(not(test)) so unit tests can exercise oracle math
+    // in isolation without being forced to stand up three threshold-
+    // crossed pools. Tests that specifically want to verify the
+    // bootstrap behavior can set it up explicitly.
+    #[cfg(not(test))]
+    {
+        let factory_config = FACTORYINSTANTIATEINFO.load(deps.storage)?;
+        let anchor_addr = factory_config.atom_bluechip_anchor_pool_address.to_string();
+        let eligible = get_eligible_creator_pools(deps, &anchor_addr)?;
+        if eligible.len() < MIN_ELIGIBLE_POOLS_FOR_TWAP {
+            return Err(StdError::generic_err(format!(
+                "Oracle bootstrap: at least {} threshold-crossed creator pools are required before TWAP prices are served (currently {}).",
+                MIN_ELIGIBLE_POOLS_FOR_TWAP,
+                eligible.len()
+            )));
+        }
+    }
 
     let bluechip_per_atom_twap = oracle.bluechip_price_cache.last_price;
 

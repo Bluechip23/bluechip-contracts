@@ -16,8 +16,8 @@ use crate::state::{
     THRESHOLD_PAYOUT_AMOUNTS, THRESHOLD_PROCESSING, USD_RAISED_FROM_COMMIT,
 };
 use crate::swap_helper::{
-    assert_max_spread, compute_swap, get_bluechip_value, get_usd_value_with_staleness_check,
-    update_price_accumulator,
+    assert_max_spread, compute_swap, get_oracle_conversion_with_staleness,
+    update_price_accumulator, usd_to_bluechip_at_rate,
 };
 use cosmwasm_std::{
     to_json_binary, Addr, CosmosMsg, Decimal, DepsMut, Env, MessageInfo, Response, StdError,
@@ -98,8 +98,21 @@ fn execute_commit_logic(
         return Err(ContractError::ZeroAmount {});
     }
 
-    let usd_value =
-        get_usd_value_with_staleness_check(deps.as_ref(), asset.amount, env.block.time.seconds())?;
+    // Snapshot the oracle rate once at commit entry and thread it through
+    // every conversion that happens during this handler (P4-M6). Prevents
+    // mid-tx drift where the USD valuation at the top of the handler could
+    // disagree with the bluechip_to_threshold conversion computed later in
+    // process_threshold_crossing_with_excess. No current path allows
+    // drift within a single tx — the factory's cached price doesn't change
+    // during a commit — but threading one rate explicitly makes the
+    // invariant load-bearing rather than incidental.
+    let oracle_snapshot =
+        get_oracle_conversion_with_staleness(deps.as_ref(), asset.amount, env.block.time.seconds())?;
+    let usd_value = oracle_snapshot.amount;
+    let oracle_rate = oracle_snapshot.rate_used;
+    if oracle_rate.is_zero() {
+        return Err(ContractError::InvalidOraclePrice {});
+    }
     if usd_value.is_zero() {
         return Err(ContractError::InvalidOraclePrice {});
     }
@@ -200,6 +213,7 @@ fn execute_commit_logic(
                             amount_after_fees,
                             usd_value,
                             usd_to_threshold,
+                            oracle_rate,
                             &mut pool_state,
                             &mut pool_fee_state,
                             &pool_specs,
@@ -225,7 +239,7 @@ fn execute_commit_logic(
                             })?;
                         IS_THRESHOLD_HIT.save(deps.storage, &true)?;
 
-                        messages.extend(trigger_threshold_payout(
+                        let payout = trigger_threshold_payout(
                             deps.storage,
                             &pool_info,
                             &mut pool_state,
@@ -234,7 +248,8 @@ fn execute_commit_logic(
                             &threshold_payout,
                             &fee_info,
                             &env,
-                        )?);
+                        )?;
+                        messages.extend(payout.other_msgs);
                         update_commit_info(
                             deps.storage,
                             &sender,
@@ -250,7 +265,11 @@ fn execute_commit_logic(
                         analytics.total_commit_count += 1;
                         POOL_ANALYTICS.save(deps.storage, &analytics)?;
 
+                        // `payout.factory_notify` is attached as a SubMsg so a
+                        // factory-side failure lands in the pool's reply handler
+                        // (see P4-H5) rather than reverting the commit.
                         Ok(Response::new()
+                            .add_submessage(payout.factory_notify)
                             .add_messages(messages)
                             .add_attribute("action", "commit")
                             .add_attribute("phase", "threshold_hit_exact")
@@ -424,6 +443,13 @@ fn process_post_threshold_commit(
     let (return_amt, spread_amt, commission_amt) =
         compute_swap(offer_pool, ask_pool, swap_amount, pool_specs.lp_fee)?;
 
+    // Dust-swap guard: mirror simple_swap's zero-return rejection so a
+    // post-threshold commit that would consume the user's bluechip
+    // without yielding any creator tokens fails loudly.
+    if return_amt.is_zero() {
+        return Err(ContractError::ZeroAmount {});
+    }
+
     assert_max_spread(
         belief_price,
         max_spread,
@@ -517,6 +543,7 @@ fn process_threshold_crossing_with_excess(
     amount_after_fees: Uint128,
     usd_value: Uint128,
     usd_to_threshold: Uint128,
+    oracle_rate: Uint128,
     pool_state: &mut PoolState,
     pool_fee_state: &mut crate::state::PoolFeeState,
     pool_specs: &crate::state::PoolSpecs,
@@ -528,7 +555,11 @@ fn process_threshold_crossing_with_excess(
     belief_price: Option<Decimal>,
     max_spread: Option<Decimal>,
 ) -> Result<Response, ContractError> {
-    let bluechip_to_threshold = get_bluechip_value(deps.as_ref(), usd_to_threshold)?;
+    // Reuse the rate captured at commit() entry rather than re-querying the
+    // oracle (P4-M6). usd_to_bluechip_at_rate is the inverse of the
+    // bluechip_to_usd math used to produce usd_value, so thresholding is
+    // arithmetically consistent with the valuation.
+    let bluechip_to_threshold = usd_to_bluechip_at_rate(usd_to_threshold, oracle_rate)?;
     let bluechip_excess = asset.amount.checked_sub(bluechip_to_threshold)?;
 
     let threshold_portion_after_fees = if amount.is_zero() {
@@ -549,7 +580,10 @@ fn process_threshold_crossing_with_excess(
 
     IS_THRESHOLD_HIT.save(deps.storage, &true)?;
 
-    messages.extend(trigger_threshold_payout(
+    // Hold factory_notify aside; it becomes a SubMsg on the final Response
+    // so a factory-side failure is recoverable via RetryFactoryNotify
+    // rather than reverting the whole threshold crossing (P4-H5).
+    let payout_msgs = trigger_threshold_payout(
         deps.storage,
         pool_info,
         pool_state,
@@ -558,7 +592,9 @@ fn process_threshold_crossing_with_excess(
         threshold_payout,
         fee_info,
         &env,
-    )?);
+    )?;
+    messages.extend(payout_msgs.other_msgs);
+    let factory_notify = payout_msgs.factory_notify;
 
     update_commit_info(
         deps.storage,
@@ -600,10 +636,30 @@ fn process_threshold_crossing_with_excess(
             commission_amt = comm;
         }
 
-        if !capped_excess.is_zero() && max_spread.is_some() {
+        if !capped_excess.is_zero() {
+            // Unconditional slippage protection on the threshold-crossing
+            // excess swap. Previously gated on max_spread.is_some(), which
+            // meant callers who omitted max_spread skipped the check
+            // entirely.
+            //
+            // The path-aware default (25%) instead of the pool-wide
+            // DEFAULT_SLIPPAGE (0.5%) reflects the structural reality of
+            // this swap: the excess can be up to 20% of the freshly-seeded
+            // pool's reserves, which by x*y=k math produces an inherent
+            // spread of ~15–20% even under honest conditions. A 0.5% cap
+            // would revert virtually every real threshold crossing with
+            // non-trivial excess. 25% gives a small buffer over the 20%
+            // design ceiling: anything worse than that indicates either
+            // a bug, a pathological pool seed, or that the excess cap
+            // wasn't applied — all cases the caller should know about.
+            //
+            // Users who explicitly set a tighter `max_spread` get that
+            // stricter bound honored; callers who forgot to specify one
+            // get 25% instead of no protection at all.
+            let effective_max_spread = max_spread.or(Some(Decimal::percent(25)));
             assert_max_spread(
                 belief_price,
-                max_spread,
+                effective_max_spread,
                 capped_excess,
                 return_amt.checked_add(commission_amt)?,
                 spread_amt,
@@ -672,6 +728,7 @@ fn process_threshold_crossing_with_excess(
     // above. Previous code reloaded here; the reload was redundant and
     // cost an extra storage read per threshold-crossing tx.
     Ok(Response::new()
+        .add_submessage(factory_notify)
         .add_messages(messages)
         .add_attribute("action", "commit")
         .add_attribute("phase", "threshold_crossing")

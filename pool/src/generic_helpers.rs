@@ -13,7 +13,7 @@ use crate::state::{
 };
 use cosmwasm_std::{
     to_json_binary, Addr, Coin, CosmosMsg, Decimal, Decimal256, DepsMut, Env, Order, StdError,
-    StdResult, Storage, Timestamp, Uint128, Uint256, WasmMsg,
+    StdResult, Storage, SubMsg, Timestamp, Uint128, Uint256, WasmMsg,
 };
 use cw20::Cw20ExecuteMsg;
 use cw_storage_plus::Bound;
@@ -135,6 +135,18 @@ pub fn validate_pool_threshold_payments(
     Ok(())
 }
 
+/// Output of `trigger_threshold_payout`. The factory notification is
+/// separated from the rest of the payout messages because we want it
+/// delivered via `SubMsg::reply_on_error` — a failure there should NOT
+/// revert the pool-side threshold-crossing state (P4-H5). The caller
+/// splices `factory_notify` in as a SubMsg and `other_msgs` as plain
+/// CosmosMsgs on the returned Response.
+#[derive(Debug)]
+pub struct ThresholdPayoutMsgs {
+    pub factory_notify: SubMsg,
+    pub other_msgs: Vec<CosmosMsg>,
+}
+
 #[allow(clippy::too_many_arguments)]
 pub fn trigger_threshold_payout(
     storage: &mut dyn Storage,
@@ -145,18 +157,25 @@ pub fn trigger_threshold_payout(
     payout: &ThresholdPayoutAmounts,
     fee_info: &CommitFeeInfo,
     env: &Env,
-) -> StdResult<Vec<CosmosMsg>> {
-    let mut msgs = Vec::new();
+) -> StdResult<ThresholdPayoutMsgs> {
+    // Factory notification goes out as a `reply_on_error` SubMsg. If the
+    // factory handler fails, the pool's `reply` entrypoint sets
+    // PENDING_FACTORY_NOTIFY=true and swallows the error so the commit
+    // tx overall still succeeds. See state::PENDING_FACTORY_NOTIFY.
+    let factory_notify = SubMsg::reply_on_error(
+        CosmosMsg::Wasm(WasmMsg::Execute {
+            contract_addr: pool_info.factory_addr.to_string(),
+            msg: to_json_binary(
+                &pool_factory_interfaces::FactoryExecuteMsg::NotifyThresholdCrossed {
+                    pool_id: pool_info.pool_id,
+                },
+            )?,
+            funds: vec![],
+        }),
+        crate::state::REPLY_ID_FACTORY_NOTIFY_INITIAL,
+    );
 
-    msgs.push(CosmosMsg::Wasm(WasmMsg::Execute {
-        contract_addr: pool_info.factory_addr.to_string(),
-        msg: to_json_binary(
-            &pool_factory_interfaces::FactoryExecuteMsg::NotifyThresholdCrossed {
-                pool_id: pool_info.pool_id,
-            },
-        )?,
-        funds: vec![],
-    }));
+    let mut other_msgs: Vec<CosmosMsg> = Vec::new();
 
     let total = payout
         .creator_reward_amount
@@ -173,19 +192,19 @@ pub fn trigger_threshold_payout(
         ));
     }
 
-    msgs.push(mint_tokens(
+    other_msgs.push(mint_tokens(
         &pool_info.token_address,
         &fee_info.creator_wallet_address,
         payout.creator_reward_amount,
     )?);
 
-    msgs.push(mint_tokens(
+    other_msgs.push(mint_tokens(
         &pool_info.token_address,
         &fee_info.bluechip_wallet_address,
         payout.bluechip_reward_amount,
     )?);
 
-    msgs.push(mint_tokens(
+    other_msgs.push(mint_tokens(
         &pool_info.token_address,
         &env.contract.address,
         payout.pool_seed_amount,
@@ -281,7 +300,10 @@ pub fn trigger_threshold_payout(
     POOL_STATE.save(storage, pool_state)?;
     POOL_FEE_STATE.save(storage, pool_fee_state)?;
 
-    Ok(msgs)
+    Ok(ThresholdPayoutMsgs {
+        factory_notify,
+        other_msgs,
+    })
 }
 
 /// Process one batch of pending committer payouts.
