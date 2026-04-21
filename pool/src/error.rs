@@ -110,9 +110,6 @@ pub enum ContractError {
     #[error("pool can not cover reserves")]
     InsufficientReserves {},
 
-    #[error("Oracle price deviation: oracle={oracle}, twap={twap}")]
-    OraclePriceDeviation { oracle: Uint128, twap: Uint128 },
-
     #[error("Incorrect bluechip denom: provided: {provided}, required: {required}")]
     IncorrectNativeDenom { provided: String, required: String },
 

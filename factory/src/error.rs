@@ -1,4 +1,4 @@
-use cosmwasm_std::{OverflowError, StdError, Timestamp, Uint128};
+use cosmwasm_std::{OverflowError, StdError, Timestamp};
 use semver::Error as SemVerError;
 use thiserror::Error;
 
@@ -10,8 +10,6 @@ pub enum ContractError {
     QueryError { msg: String },
     #[error("Unauthorized")]
     Unauthorized {},
-    #[error("Oracle price deviation: oracle={oracle}, twap={twap}")]
-    OraclePriceDeviation { oracle: Uint128, twap: Uint128 },
     #[error("Invalid Price")]
     InvalidPrice {},
 

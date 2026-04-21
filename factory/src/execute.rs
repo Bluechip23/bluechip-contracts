@@ -10,12 +10,12 @@ use crate::pool_create_cleanup::handle_cleanup_reply;
 use crate::pool_creation_reply::{finalize_pool, mint_create_pool, set_tokens};
 use crate::pool_struct::{CreatePool, PoolConfigUpdate, TempPoolCreation};
 use crate::state::{
-    CreationStatus, FactoryInstantiate, PendingConfig, PendingPoolConfig, PoolCreationState,
-    PoolUpgrade, ADMIN_TIMELOCK_SECONDS, DISTRIBUTION_BOUNTY_USD, FACTORYINSTANTIATEINFO,
-    MAX_DISTRIBUTION_BOUNTY_USD, MAX_ORACLE_UPDATE_BOUNTY_USD, ORACLE_BOUNTY_DENOM,
-    ORACLE_UPDATE_BOUNTY_USD, PENDING_CONFIG, PENDING_POOL_CONFIG, PENDING_POOL_UPGRADE,
-    POOL_COUNTER, POOL_CREATION_STATES, POOLS_BY_CONTRACT_ADDRESS, POOL_REGISTRY,
-    POOL_THRESHOLD_MINTED, TEMP_POOL_CREATION,
+    CreationStatus, FactoryInstantiate, PendingConfig, PendingPoolConfig, PoolCreationContext,
+    PoolCreationState, PoolUpgrade, ADMIN_TIMELOCK_SECONDS, DISTRIBUTION_BOUNTY_USD,
+    FACTORYINSTANTIATEINFO, MAX_DISTRIBUTION_BOUNTY_USD, MAX_ORACLE_UPDATE_BOUNTY_USD,
+    ORACLE_BOUNTY_DENOM, ORACLE_UPDATE_BOUNTY_USD, PENDING_CONFIG, PENDING_POOL_CONFIG,
+    PENDING_POOL_UPGRADE, POOLS_BY_CONTRACT_ADDRESS, POOL_COUNTER, POOL_CREATION_CONTEXT,
+    POOL_REGISTRY, POOL_THRESHOLD_MINTED,
 };
 #[cfg(not(feature = "library"))]
 use cosmwasm_std::entry_point;
@@ -273,17 +273,6 @@ fn execute_create_creator_pool(
     let pool_counter = POOL_COUNTER.load(deps.storage).unwrap_or(0);
     let pool_id = pool_counter + 1;
     POOL_COUNTER.save(deps.storage, &pool_id)?;
-    TEMP_POOL_CREATION.save(
-        deps.storage,
-        pool_id,
-        &TempPoolCreation {
-            temp_pool_info: pool_msg,
-            temp_creator_wallet: info.sender.clone(),
-            pool_id,
-            creator_token_addr: None,
-            nft_addr: None,
-        },
-    )?;
     let msg = WasmMsg::Instantiate {
         code_id: factory_cw20.cw20_token_contract_id,
         //creating the creator token only, no minting.
@@ -303,17 +292,29 @@ fn execute_create_creator_pool(
         admin: Some(env.contract.address.to_string()),
         label: token_info.name,
     };
-    let creation_state = PoolCreationState {
+    POOL_CREATION_CONTEXT.save(
+        deps.storage,
         pool_id,
-        creator: info.sender,
-        creator_token_address: None,
-        mint_new_position_nft_address: None,
-        pool_address: None,
-        creation_time: env.block.time,
-        status: CreationStatus::Started,
-        retry_count: 0,
-    };
-    POOL_CREATION_STATES.save(deps.storage, pool_id, &creation_state)?;
+        &PoolCreationContext {
+            temp: TempPoolCreation {
+                temp_pool_info: pool_msg,
+                temp_creator_wallet: info.sender.clone(),
+                pool_id,
+                creator_token_addr: None,
+                nft_addr: None,
+            },
+            state: PoolCreationState {
+                pool_id,
+                creator: info.sender,
+                creator_token_address: None,
+                mint_new_position_nft_address: None,
+                pool_address: None,
+                creation_time: env.block.time,
+                status: CreationStatus::Started,
+                retry_count: 0,
+            },
+        },
+    )?;
     let sub_msg = vec![SubMsg::reply_on_success(
         msg,
         encode_reply_id(pool_id, SET_TOKENS),
@@ -919,10 +920,7 @@ pub fn execute_pay_distribution_bounty(
 ) -> Result<Response, ContractError> {
     // Auth: caller must be a registered pool. POOLS_BY_CONTRACT_ADDRESS is
     // populated at pool creation and keyed by the pool's contract address.
-    if POOLS_BY_CONTRACT_ADDRESS
-        .may_load(deps.storage, info.sender.clone())?
-        .is_none()
-    {
+    if !POOLS_BY_CONTRACT_ADDRESS.has(deps.storage, info.sender.clone()) {
         return Err(ContractError::Unauthorized {});
     }
 

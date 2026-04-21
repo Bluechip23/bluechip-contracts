@@ -8,10 +8,7 @@ use crate::{
         give_pool_ownership_cw20_and_nft,
     },
     pool_struct::{CommitFeeInfo, PoolDetails, ThresholdPayoutAmounts},
-    state::{
-        CommitInfo, CreationStatus, FACTORYINSTANTIATEINFO, POOL_CREATION_STATES, SETCOMMIT,
-        TEMP_POOL_CREATION,
-    },
+    state::{CreationStatus, FACTORYINSTANTIATEINFO, POOL_CREATION_CONTEXT},
 };
 use cosmwasm_std::{
     to_json_binary, DepsMut, Env, Reply, Response, StdError, SubMsg, SubMsgResult, Uint128, WasmMsg,
@@ -26,20 +23,16 @@ pub fn set_tokens(
     msg: Reply,
     pool_id: u64,
 ) -> Result<Response, ContractError> {
-    let mut pool_context = TEMP_POOL_CREATION.load(deps.storage, pool_id)?;
-    let mut creation_state = POOL_CREATION_STATES.load(deps.storage, pool_id)?;
+    let mut ctx = POOL_CREATION_CONTEXT.load(deps.storage, pool_id)?;
 
     match msg.result {
         SubMsgResult::Ok(result) => {
             let token_address = extract_contract_address(&deps, &result)?;
 
-            // Update both context and creation state
-            pool_context.creator_token_addr = Some(token_address.clone());
-            TEMP_POOL_CREATION.save(deps.storage, pool_id, &pool_context)?;
-
-            creation_state.creator_token_address = Some(token_address.clone());
-            creation_state.status = CreationStatus::TokenCreated;
-            POOL_CREATION_STATES.save(deps.storage, pool_id, &creation_state)?;
+            ctx.temp.creator_token_addr = Some(token_address.clone());
+            ctx.state.creator_token_address = Some(token_address.clone());
+            ctx.state.status = CreationStatus::TokenCreated;
+            POOL_CREATION_CONTEXT.save(deps.storage, pool_id, &ctx)?;
 
             let config = FACTORYINSTANTIATEINFO.load(deps.storage)?;
             let nft_instantiate_msg = to_json_binary(&Cw721InstantiateMsg {
@@ -66,8 +59,8 @@ pub fn set_tokens(
                 .add_submessage(sub_msg))
         }
         SubMsgResult::Err(err) => {
-            creation_state.status = CreationStatus::Failed;
-            POOL_CREATION_STATES.save(deps.storage, pool_id, &creation_state)?;
+            ctx.state.status = CreationStatus::Failed;
+            POOL_CREATION_CONTEXT.save(deps.storage, pool_id, &ctx)?;
             cleanup_temp_state(deps.storage, pool_id)?;
 
             Err(ContractError::TokenCreationFailed {
@@ -84,23 +77,19 @@ pub fn mint_create_pool(
     msg: Reply,
     pool_id: u64,
 ) -> Result<Response, ContractError> {
-    let mut pool_context = TEMP_POOL_CREATION.load(deps.storage, pool_id)?;
-    let mut creation_state = POOL_CREATION_STATES.load(deps.storage, pool_id)?;
+    let mut ctx = POOL_CREATION_CONTEXT.load(deps.storage, pool_id)?;
 
     match msg.result {
         SubMsgResult::Ok(result) => {
             let nft_address = extract_contract_address(&deps, &result)?;
 
-            // Update context
-            pool_context.nft_addr = Some(nft_address.clone());
-            TEMP_POOL_CREATION.save(deps.storage, pool_id, &pool_context)?;
-
-            creation_state.mint_new_position_nft_address = Some(nft_address.clone());
-            creation_state.status = CreationStatus::NftCreated;
-            POOL_CREATION_STATES.save(deps.storage, pool_id, &creation_state)?;
+            ctx.temp.nft_addr = Some(nft_address.clone());
+            ctx.state.mint_new_position_nft_address = Some(nft_address.clone());
+            ctx.state.status = CreationStatus::NftCreated;
+            POOL_CREATION_CONTEXT.save(deps.storage, pool_id, &ctx)?;
 
             let factory_config = FACTORYINSTANTIATEINFO.load(deps.storage)?;
-            let token_address = pool_context.creator_token_addr.clone().ok_or_else(|| {
+            let token_address = ctx.temp.creator_token_addr.clone().ok_or_else(|| {
                 ContractError::Std(StdError::generic_err("missing token address"))
             })?;
 
@@ -116,7 +105,7 @@ pub fn mint_create_pool(
             let threshold_binary = to_json_binary(&threshold_payout)?;
 
             // Update asset infos with actual token address
-            let mut updated_asset_infos = pool_context.temp_pool_info.pool_token_info.clone();
+            let mut updated_asset_infos = ctx.temp.temp_pool_info.pool_token_info.clone();
             for asset_info in updated_asset_infos.iter_mut() {
                 if let TokenType::CreatorToken { contract_addr } = asset_info {
                     if contract_addr.as_str() == "WILL_BE_CREATED_BY_FACTORY" {
@@ -134,7 +123,7 @@ pub fn mint_create_pool(
                     threshold_payout: Some(threshold_binary),
                     commit_fee_info: CommitFeeInfo {
                         bluechip_wallet_address: factory_config.bluechip_wallet_address.clone(),
-                        creator_wallet_address: pool_context.temp_creator_wallet.clone(),
+                        creator_wallet_address: ctx.temp.temp_creator_wallet.clone(),
                         commit_fee_bluechip: factory_config.commit_fee_bluechip,
                         commit_fee_creator: factory_config.commit_fee_creator,
                     },
@@ -146,7 +135,7 @@ pub fn mint_create_pool(
                     max_bluechip_lock_per_pool: factory_config.max_bluechip_lock_per_pool,
                     creator_excess_liquidity_lock_days: factory_config
                         .creator_excess_liquidity_lock_days,
-                    is_standard_pool: pool_context.temp_pool_info.is_standard_pool,
+                    is_standard_pool: ctx.temp.temp_pool_info.is_standard_pool,
                 })?,
                 funds: vec![],
                 admin: Some(env.contract.address.to_string()),
@@ -163,10 +152,10 @@ pub fn mint_create_pool(
                 .add_submessage(sub_msg))
         }
         SubMsgResult::Err(err) => {
-            creation_state.status = CreationStatus::CleaningUp;
-            POOL_CREATION_STATES.save(deps.storage, pool_id, &creation_state)?;
+            ctx.state.status = CreationStatus::CleaningUp;
+            POOL_CREATION_CONTEXT.save(deps.storage, pool_id, &ctx)?;
 
-            let cleanup_msgs = create_cleanup_messages(&creation_state, pool_id)?;
+            let cleanup_msgs = create_cleanup_messages(&ctx.state, pool_id)?;
 
             Ok(Response::new()
                 .add_submessages(cleanup_msgs)
@@ -183,54 +172,35 @@ pub fn finalize_pool(
     msg: Reply,
     pool_id: u64,
 ) -> Result<Response, ContractError> {
-    let pool_context = TEMP_POOL_CREATION.load(deps.storage, pool_id)?;
-    let mut creation_state = POOL_CREATION_STATES.load(deps.storage, pool_id)?;
+    let mut ctx = POOL_CREATION_CONTEXT.load(deps.storage, pool_id)?;
 
     match msg.result {
         SubMsgResult::Ok(result) => {
             let pool_address = extract_contract_address(&deps, &result)?;
 
-            creation_state.pool_address = Some(pool_address.clone());
-            creation_state.status = CreationStatus::PoolCreated;
-            POOL_CREATION_STATES.save(deps.storage, pool_id, &creation_state)?;
-
-            let token_address = pool_context.creator_token_addr.ok_or_else(|| {
+            let token_address = ctx.temp.creator_token_addr.clone().ok_or_else(|| {
                 ContractError::Std(StdError::generic_err("missing token address"))
             })?;
-            let nft_address = pool_context
+            let nft_address = ctx
+                .temp
                 .nft_addr
+                .clone()
                 .ok_or_else(|| ContractError::Std(StdError::generic_err("missing nft address")))?;
-
-            // Create commit parameters
-            let commit_info = CommitInfo {
-                pool_id,
-                creator: pool_context.temp_creator_wallet.clone(),
-                creator_token_addr: token_address.clone(),
-                creator_pool_addr: pool_address.clone(),
-            };
 
             let pool_details = PoolDetails {
                 pool_id,
-                pool_token_info: pool_context.temp_pool_info.pool_token_info,
+                pool_token_info: ctx.temp.temp_pool_info.pool_token_info.clone(),
                 creator_pool_addr: pool_address.clone(),
             };
-
-            SETCOMMIT.save(deps.storage, pool_id, &commit_info)?;
 
             // Transfer ownership to pool
             let ownership_msgs =
                 give_pool_ownership_cw20_and_nft(&token_address, &nft_address, &pool_address)?;
 
-            // Creation succeeded end-to-end. Remove the per-pool creation
-            // state entry rather than leaving it in storage with
-            // status=Completed, which would otherwise accumulate indefinitely.
-            // Mutate local copy just so the attribute lookup below remains
-            // accurate; we don't persist it.
-            creation_state.status = CreationStatus::Completed;
-            POOL_CREATION_STATES.remove(deps.storage, pool_id);
-
-            // Clean up temporary state
-            cleanup_temp_state(deps.storage, pool_id)?;
+            // Creation succeeded end-to-end. The entire creation context
+            // (temp + state) is dropped rather than left around with
+            // status=Completed, which would accumulate indefinitely.
+            POOL_CREATION_CONTEXT.remove(deps.storage, pool_id);
 
             // Single atomic write across the three pool-registry maps so
             // they cannot drift. See state::register_pool.
@@ -243,9 +213,9 @@ pub fn finalize_pool(
                 .add_attribute("pool_id", pool_id.to_string()))
         }
         SubMsgResult::Err(err) => {
-            creation_state.status = CreationStatus::CleaningUp;
-            POOL_CREATION_STATES.save(deps.storage, pool_id, &creation_state)?;
-            let cleanup_msgs = create_cleanup_messages(&creation_state, pool_id)?;
+            ctx.state.status = CreationStatus::CleaningUp;
+            POOL_CREATION_CONTEXT.save(deps.storage, pool_id, &ctx)?;
+            let cleanup_msgs = create_cleanup_messages(&ctx.state, pool_id)?;
             Ok(Response::new()
                 .add_submessages(cleanup_msgs)
                 .add_attribute("action", "pool_creation_failed_cleanup")
