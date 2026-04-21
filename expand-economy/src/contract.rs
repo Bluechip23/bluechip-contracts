@@ -1,10 +1,12 @@
 #[cfg(not(feature = "library"))]
 use cosmwasm_std::entry_point;
 use cosmwasm_std::{
-    to_json_binary, BankMsg, Binary, Coin, Deps, DepsMut, Env, MessageInfo, Response, StdError,
-    StdResult, Uint128,
+    to_json_binary, Addr, BankMsg, Binary, Coin, Deps, DepsMut, Env, MessageInfo, Response,
+    StdError, StdResult, Storage, Uint128,
 };
 use cw2::set_contract_version;
+use cw_storage_plus::Item;
+use serde::{de::DeserializeOwned, Serialize};
 
 use crate::error::ContractError;
 use crate::msg::{ConfigResponse, ExecuteMsg, ExpandEconomyMsg, InstantiateMsg, QueryMsg};
@@ -15,6 +17,43 @@ use crate::state::{
 
 const CONTRACT_NAME: &str = "crates.io:expand-economy";
 const CONTRACT_VERSION: &str = env!("CARGO_PKG_VERSION");
+
+/// Load `CONFIG` and require the sender to match `config.owner`.
+fn load_config_as_owner(storage: &dyn Storage, sender: &Addr) -> Result<Config, ContractError> {
+    let config = CONFIG.load(storage)?;
+    if sender != config.owner {
+        return Err(ContractError::Unauthorized {});
+    }
+    Ok(config)
+}
+
+/// Error with `err_msg` if `item` is already populated.
+fn ensure_absent<T>(
+    storage: &dyn Storage,
+    item: &Item<T>,
+    err_msg: &str,
+) -> Result<(), ContractError>
+where
+    T: Serialize + DeserializeOwned,
+{
+    if item.may_load(storage)?.is_some() {
+        return Err(ContractError::Std(StdError::generic_err(err_msg)));
+    }
+    Ok(())
+}
+
+/// Load `item` or return `ContractError::Std(generic_err(err_msg))`.
+fn load_or_err<T>(
+    storage: &dyn Storage,
+    item: &Item<T>,
+    err_msg: &str,
+) -> Result<T, ContractError>
+where
+    T: Serialize + DeserializeOwned,
+{
+    item.may_load(storage)?
+        .ok_or_else(|| ContractError::Std(StdError::generic_err(err_msg)))
+}
 
 #[cfg_attr(not(feature = "library"), entry_point)]
 pub fn instantiate(
@@ -130,16 +169,12 @@ pub fn execute_propose_config_update(
     owner: Option<String>,
     bluechip_denom: Option<String>,
 ) -> Result<Response, ContractError> {
-    let config = CONFIG.load(deps.storage)?;
-    if info.sender != config.owner {
-        return Err(ContractError::Unauthorized {});
-    }
-
-    if PENDING_CONFIG_UPDATE.may_load(deps.storage)?.is_some() {
-        return Err(ContractError::Std(StdError::generic_err(
-            "A config update is already pending. Cancel it first.",
-        )));
-    }
+    load_config_as_owner(deps.storage, &info.sender)?;
+    ensure_absent(
+        deps.storage,
+        &PENDING_CONFIG_UPDATE,
+        "A config update is already pending. Cancel it first.",
+    )?;
 
     // Validate addresses early so invalid proposals fail at propose time
     if let Some(ref addr) = factory_address {
@@ -181,16 +216,12 @@ pub fn execute_apply_config_update(
     env: Env,
     info: MessageInfo,
 ) -> Result<Response, ContractError> {
-    let config = CONFIG.load(deps.storage)?;
-    if info.sender != config.owner {
-        return Err(ContractError::Unauthorized {});
-    }
-
-    let pending = PENDING_CONFIG_UPDATE
-        .may_load(deps.storage)?
-        .ok_or_else(|| {
-            ContractError::Std(StdError::generic_err("No pending config update to execute"))
-        })?;
+    let mut config = load_config_as_owner(deps.storage, &info.sender)?;
+    let pending = load_or_err(
+        deps.storage,
+        &PENDING_CONFIG_UPDATE,
+        "No pending config update to execute",
+    )?;
 
     if env.block.time < pending.effective_after {
         return Err(ContractError::Std(StdError::generic_err(format!(
@@ -199,7 +230,6 @@ pub fn execute_apply_config_update(
         ))));
     }
 
-    let mut config = config;
     if let Some(factory) = pending.factory_address {
         config.factory_address = deps.api.addr_validate(&factory)?;
     }
@@ -231,19 +261,13 @@ pub fn execute_cancel_config_update(
     deps: DepsMut,
     info: MessageInfo,
 ) -> Result<Response, ContractError> {
-    let config = CONFIG.load(deps.storage)?;
-    if info.sender != config.owner {
-        return Err(ContractError::Unauthorized {});
-    }
-
-    if PENDING_CONFIG_UPDATE.may_load(deps.storage)?.is_none() {
-        return Err(ContractError::Std(StdError::generic_err(
-            "No pending config update to cancel",
-        )));
-    }
-
+    load_config_as_owner(deps.storage, &info.sender)?;
+    load_or_err(
+        deps.storage,
+        &PENDING_CONFIG_UPDATE,
+        "No pending config update to cancel",
+    )?;
     PENDING_CONFIG_UPDATE.remove(deps.storage);
-
     Ok(Response::new().add_attribute("action", "cancel_config_update"))
 }
 
@@ -255,15 +279,12 @@ pub fn execute_propose_withdrawal(
     denom: String,
     recipient: Option<String>,
 ) -> Result<Response, ContractError> {
-    let config = CONFIG.load(deps.storage)?;
-    if info.sender != config.owner {
-        return Err(ContractError::Unauthorized {});
-    }
-    if PENDING_WITHDRAWAL.may_load(deps.storage)?.is_some() {
-        return Err(ContractError::Std(StdError::generic_err(
-            "A withdrawal is already pending. Cancel it first.",
-        )));
-    }
+    load_config_as_owner(deps.storage, &info.sender)?;
+    ensure_absent(
+        deps.storage,
+        &PENDING_WITHDRAWAL,
+        "A withdrawal is already pending. Cancel it first.",
+    )?;
 
     let target = recipient.unwrap_or_else(|| info.sender.to_string());
     deps.api.addr_validate(&target)?;
@@ -292,14 +313,12 @@ pub fn execute_withdrawal(
     env: Env,
     info: MessageInfo,
 ) -> Result<Response, ContractError> {
-    let config = CONFIG.load(deps.storage)?;
-    if info.sender != config.owner {
-        return Err(ContractError::Unauthorized {});
-    }
-
-    let pending = PENDING_WITHDRAWAL.may_load(deps.storage)?.ok_or_else(|| {
-        ContractError::Std(StdError::generic_err("No pending withdrawal to execute"))
-    })?;
+    load_config_as_owner(deps.storage, &info.sender)?;
+    let pending = load_or_err(
+        deps.storage,
+        &PENDING_WITHDRAWAL,
+        "No pending withdrawal to execute",
+    )?;
 
     if env.block.time < pending.execute_after {
         return Err(ContractError::Std(StdError::generic_err(format!(
@@ -348,19 +367,13 @@ pub fn execute_cancel_withdrawal(
     deps: DepsMut,
     info: MessageInfo,
 ) -> Result<Response, ContractError> {
-    let config = CONFIG.load(deps.storage)?;
-    if info.sender != config.owner {
-        return Err(ContractError::Unauthorized {});
-    }
-
-    if PENDING_WITHDRAWAL.may_load(deps.storage)?.is_none() {
-        return Err(ContractError::Std(StdError::generic_err(
-            "No pending withdrawal to cancel",
-        )));
-    }
-
+    load_config_as_owner(deps.storage, &info.sender)?;
+    load_or_err(
+        deps.storage,
+        &PENDING_WITHDRAWAL,
+        "No pending withdrawal to cancel",
+    )?;
     PENDING_WITHDRAWAL.remove(deps.storage);
-
     Ok(Response::new().add_attribute("action", "cancel_withdrawal"))
 }
 

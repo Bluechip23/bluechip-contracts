@@ -6,17 +6,18 @@ use cw_storage_plus::{Item, Map};
 use pool_factory_interfaces::PoolStateResponseForFactory;
 
 pub const FACTORYINSTANTIATEINFO: Item<FactoryInstantiate> = Item::new("config");
-pub const TEMP_POOL_CREATION: Map<u64, TempPoolCreation> = Map::new("temp_pool_creation_v2");
+// Single source of truth for every in-flight pool creation. Combines the
+// formerly-split TEMP_POOL_CREATION (pool inputs + discovered addresses)
+// and POOL_CREATION_STATES (lifecycle status + retry count) into one map
+// so the three reply handlers can't leave the two halves out of sync.
+pub const POOL_CREATION_CONTEXT: Map<u64, PoolCreationContext> =
+    Map::new("pool_creation_ctx_v3");
 pub const PENDING_CONFIG: Item<PendingConfig> = Item::new("pending_config");
 pub const POOL_COUNTER: Item<u64> = Item::new("pool_counter");
-// Keyed by pool_id (not creator address) to avoid collisions when the
-// same creator makes multiple pools.
-pub const SETCOMMIT: Map<u64, CommitInfo> = Map::new("commit_info");
 
 // Three coupled pool-registry maps. They MUST stay in sync — every pool
-// that exists must appear in all three, every removal must remove from all
-// three. Always go through `register_pool` / `unregister_pool` rather than
-// touching them individually.
+// that exists must appear in all three. Always go through `register_pool`
+// rather than touching them individually.
 //   - POOLS_BY_ID:               pool_id  -> PoolDetails (token info, addresses)
 //   - POOL_REGISTRY:             pool_id  -> pool contract Addr (lookup shortcut)
 //   - POOLS_BY_CONTRACT_ADDRESS: pool addr -> snapshot used by oracle / queries
@@ -131,14 +132,6 @@ pub struct PendingConfig {
 }
 
 #[cw_serde]
-pub struct CommitInfo {
-    pub pool_id: u64,
-    pub creator: Addr,
-    pub creator_token_addr: Addr,
-    pub creator_pool_addr: Addr,
-}
-
-#[cw_serde]
 pub struct PoolCreationState {
     pub pool_id: u64,
     pub creator: Addr,
@@ -148,6 +141,15 @@ pub struct PoolCreationState {
     pub creation_time: Timestamp,
     pub status: CreationStatus,
     pub retry_count: u8,
+}
+
+/// Unified view of an in-flight pool creation. `temp` carries the original
+/// create msg plus the CW20/CW721 addresses discovered during the reply
+/// chain; `state` carries lifecycle/status for failure-recovery and queries.
+#[cw_serde]
+pub struct PoolCreationContext {
+    pub temp: TempPoolCreation,
+    pub state: PoolCreationState,
 }
 
 #[cw_serde]
@@ -217,19 +219,4 @@ pub fn register_pool(
     )?;
 
     Ok(())
-}
-
-/// Atomically remove a pool from all three registry maps. Currently no
-/// caller — pool removal isn't part of the lifecycle today — but provided
-/// so future cleanup paths (e.g. a "fully drained / opt-out" feature)
-/// can't accidentally leave one of the three maps populated.
-#[allow(dead_code)]
-pub fn unregister_pool(
-    storage: &mut dyn Storage,
-    pool_id: u64,
-    pool_address: &Addr,
-) {
-    POOLS_BY_ID.remove(storage, pool_id);
-    POOL_REGISTRY.remove(storage, pool_id);
-    POOLS_BY_CONTRACT_ADDRESS.remove(storage, pool_address.clone());
 }

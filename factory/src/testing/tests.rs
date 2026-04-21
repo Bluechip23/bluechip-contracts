@@ -1,8 +1,8 @@
 use crate::mint_bluechips_pool_creation::calculate_mint_amount;
 use crate::state::{
-    CreationStatus, FactoryInstantiate, PoolCreationState, FACTORYINSTANTIATEINFO,
-    FIRST_THRESHOLD_TIMESTAMP, POOLS_BY_CONTRACT_ADDRESS, POOLS_BY_ID, POOL_COUNTER,
-    POOL_CREATION_STATES, SETCOMMIT, TEMP_POOL_CREATION,
+    CreationStatus, FactoryInstantiate, PoolCreationContext, PoolCreationState,
+    FACTORYINSTANTIATEINFO, FIRST_POOL_TIMESTAMP, POOLS_BY_CONTRACT_ADDRESS, POOLS_BY_ID,
+    POOL_COUNTER, POOL_CREATION_CONTEXT, POOL_REGISTRY,
 };
 use cosmwasm_std::{
     Addr, BankMsg, Binary, CosmosMsg, Decimal, Env, Event, OwnedDeps, Reply, SubMsgResponse,
@@ -522,8 +522,8 @@ fn test_multiple_pool_creation() {
 
         // Load the pool context that was just created (use loop index as pool_id)
         let pool_id = i;
-        let pool_context = TEMP_POOL_CREATION.load(&deps.storage, pool_id).unwrap();
-        let creator = pool_context.temp_creator_wallet.clone();
+        let ctx = POOL_CREATION_CONTEXT.load(&deps.storage, pool_id).unwrap();
+        let creator = ctx.temp.temp_creator_wallet.clone();
 
         // Verify this is a new unique ID
         assert!(
@@ -533,10 +533,9 @@ fn test_multiple_pool_creation() {
         );
         created_pool_ids.push(pool_id);
 
-        // The creation state should already be created by execute, but verify it exists
-        let creation_state = POOL_CREATION_STATES.load(&deps.storage, pool_id).unwrap();
-        assert_eq!(creation_state.status, CreationStatus::Started);
-        assert_eq!(creation_state.creator, creator);
+        // The creation state should already be populated by execute, but verify it
+        assert_eq!(ctx.state.status, CreationStatus::Started);
+        assert_eq!(ctx.state.creator, creator);
 
         // Simulate complete reply chain with the actual pool_id
         simulate_complete_reply_chain(&mut deps, env.clone(), pool_id);
@@ -546,16 +545,11 @@ fn test_multiple_pool_creation() {
             "Pool should be stored by ID"
         );
 
-        // Creation state should be removed on successful completion to
+        // Creation context should be removed on successful completion to
         // avoid permanent storage bloat per pool.
         assert!(
-            POOL_CREATION_STATES.load(&deps.storage, pool_id).is_err(),
-            "POOL_CREATION_STATES should be removed after successful creation"
-        );
-
-        assert!(
-            TEMP_POOL_CREATION.load(&deps.storage, pool_id).is_err(),
-            "Temp storage should be cleaned up after pool creation"
+            POOL_CREATION_CONTEXT.load(&deps.storage, pool_id).is_err(),
+            "POOL_CREATION_CONTEXT should be removed after successful creation"
         );
     }
 
@@ -643,13 +637,12 @@ fn test_complete_pool_creation_flow() {
     );
 
     let pool_id = POOL_COUNTER.load(&deps.storage).unwrap();
-    let pool_context = TEMP_POOL_CREATION.load(&deps.storage, pool_id).unwrap();
-    let _creator = pool_context.temp_creator_wallet.clone();
+    let ctx = POOL_CREATION_CONTEXT.load(&deps.storage, pool_id).unwrap();
 
     assert!(pool_id > 0);
-    assert_eq!(pool_context.temp_creator_wallet, admin_addr());
-    assert!(pool_context.creator_token_addr.is_none());
-    assert!(pool_context.nft_addr.is_none());
+    assert_eq!(ctx.temp.temp_creator_wallet, admin_addr());
+    assert!(ctx.temp.creator_token_addr.is_none());
+    assert!(ctx.temp.nft_addr.is_none());
 
     let token_addr = make_addr("token_address");
     let token_reply =
@@ -657,16 +650,11 @@ fn test_complete_pool_creation_flow() {
     let res = pool_creation_reply(deps.as_mut(), env.clone(), token_reply).unwrap();
 
     // Reload context and check token was set
-    let pool_context = TEMP_POOL_CREATION.load(&deps.storage, pool_id).unwrap();
-    assert_eq!(pool_context.creator_token_addr, Some(token_addr.clone()));
+    let ctx = POOL_CREATION_CONTEXT.load(&deps.storage, pool_id).unwrap();
+    assert_eq!(ctx.temp.creator_token_addr, Some(token_addr.clone()));
+    assert_eq!(ctx.state.status, CreationStatus::TokenCreated);
+    assert_eq!(ctx.state.creator_token_address, Some(token_addr.clone()));
     assert_eq!(res.messages.len(), 1);
-
-    let updated_state = POOL_CREATION_STATES.load(&deps.storage, pool_id).unwrap();
-    assert_eq!(updated_state.status, CreationStatus::TokenCreated);
-    assert_eq!(
-        updated_state.creator_token_address,
-        Some(token_addr.clone())
-    );
 
     // Step 2: NFT Creation Reply
     let nft_addr = make_addr("nft_address");
@@ -676,16 +664,14 @@ fn test_complete_pool_creation_flow() {
     );
     let res = pool_creation_reply(deps.as_mut(), env.clone(), nft_reply).unwrap();
 
-    let pool_context = TEMP_POOL_CREATION.load(&deps.storage, pool_id).unwrap();
-    assert_eq!(pool_context.nft_addr, Some(nft_addr.clone()));
-    assert_eq!(res.messages.len(), 1);
-
-    let updated_state = POOL_CREATION_STATES.load(&deps.storage, pool_id).unwrap();
-    assert_eq!(updated_state.status, CreationStatus::NftCreated);
+    let ctx = POOL_CREATION_CONTEXT.load(&deps.storage, pool_id).unwrap();
+    assert_eq!(ctx.temp.nft_addr, Some(nft_addr.clone()));
+    assert_eq!(ctx.state.status, CreationStatus::NftCreated);
     assert_eq!(
-        updated_state.mint_new_position_nft_address,
+        ctx.state.mint_new_position_nft_address,
         Some(nft_addr.clone())
     );
+    assert_eq!(res.messages.len(), 1);
 
     // Step 3: Pool Finalization Reply
     let pool_addr = make_addr("pool_address");
@@ -693,19 +679,17 @@ fn test_complete_pool_creation_flow() {
         create_instantiate_reply(encode_reply_id(pool_id, FINALIZE_POOL), pool_addr.as_str());
     let res = pool_creation_reply(deps.as_mut(), env.clone(), pool_reply).unwrap();
 
-    let commit_info = SETCOMMIT.load(&deps.storage, pool_id).unwrap();
-    assert_eq!(commit_info.pool_id, pool_id);
-    assert_eq!(commit_info.creator_pool_addr, pool_addr.clone());
-
     let pool_by_id = POOLS_BY_ID.load(&deps.storage, pool_id).unwrap();
+    assert_eq!(pool_by_id.pool_id, pool_id);
     assert_eq!(pool_by_id.creator_pool_addr, pool_addr.clone());
 
-    assert!(TEMP_POOL_CREATION.load(&deps.storage, pool_id).is_err());
+    let registered_addr = POOL_REGISTRY.load(&deps.storage, pool_id).unwrap();
+    assert_eq!(registered_addr, pool_addr.clone());
 
-    // POOL_CREATION_STATES is cleared on success to avoid permanent bloat.
+    // Creation context is cleared on success to avoid permanent bloat.
     assert!(
-        POOL_CREATION_STATES.load(&deps.storage, pool_id).is_err(),
-        "POOL_CREATION_STATES should be removed after successful creation"
+        POOL_CREATION_CONTEXT.load(&deps.storage, pool_id).is_err(),
+        "POOL_CREATION_CONTEXT should be removed after successful creation"
     );
 
     assert_eq!(res.messages.len(), 2);
@@ -825,31 +809,27 @@ fn test_reply_handling() {
         is_standard_pool: None,
     };
 
-    let pool_context = TempPoolCreation {
-        pool_id,
-        temp_creator_wallet: the_admin.clone(),
-        temp_pool_info: pool_msg,
-        creator_token_addr: None,
-        nft_addr: None,
+    let ctx = PoolCreationContext {
+        temp: TempPoolCreation {
+            pool_id,
+            temp_creator_wallet: the_admin.clone(),
+            temp_pool_info: pool_msg,
+            creator_token_addr: None,
+            nft_addr: None,
+        },
+        state: PoolCreationState {
+            pool_id,
+            creator: the_admin.clone(),
+            creator_token_address: None,
+            mint_new_position_nft_address: None,
+            pool_address: None,
+            creation_time: env.block.time,
+            status: CreationStatus::Started,
+            retry_count: 0,
+        },
     };
-
-    TEMP_POOL_CREATION
-        .save(deps.as_mut().storage, pool_id, &pool_context)
-        .unwrap();
-
-    // Set up the creation state
-    let creation_state = PoolCreationState {
-        pool_id,
-        creator: the_admin.clone(),
-        creator_token_address: None,
-        mint_new_position_nft_address: None,
-        pool_address: None,
-        creation_time: env.block.time,
-        status: CreationStatus::Started,
-        retry_count: 0,
-    };
-    POOL_CREATION_STATES
-        .save(deps.as_mut().storage, pool_id, &creation_state)
+    POOL_CREATION_CONTEXT
+        .save(deps.as_mut().storage, pool_id, &ctx)
         .unwrap();
 
     let contract_addr_obj = make_addr("token_contract_address");
@@ -876,24 +856,20 @@ fn test_reply_handling() {
     assert_eq!(res.attributes[1], ("token_address", contract_addr));
     assert_eq!(res.attributes[2], ("pool_id", "1"));
 
-    let updated_state = POOL_CREATION_STATES
+    let updated_ctx = POOL_CREATION_CONTEXT
         .load(deps.as_ref().storage, pool_id)
         .unwrap();
-    assert_eq!(updated_state.status, CreationStatus::TokenCreated);
+    assert_eq!(updated_ctx.state.status, CreationStatus::TokenCreated);
     assert_eq!(
-        updated_state.creator_token_address,
+        updated_ctx.state.creator_token_address,
         Some(Addr::unchecked(contract_addr))
     );
-
-    let updated_context = TEMP_POOL_CREATION
-        .load(deps.as_ref().storage, pool_id)
-        .unwrap();
     assert_eq!(
-        updated_context.creator_token_addr,
+        updated_ctx.temp.creator_token_addr,
         Some(Addr::unchecked(contract_addr))
     );
-    assert_eq!(updated_context.pool_id, pool_id);
-    assert_eq!(updated_context.temp_creator_wallet, the_admin);
+    assert_eq!(updated_ctx.temp.pool_id, pool_id);
+    assert_eq!(updated_ctx.temp.temp_creator_wallet, the_admin);
 }
 
 #[test]
@@ -1659,7 +1635,7 @@ fn test_query_pyth_atom_usd_price_success() {
         .unwrap();
 
     let env = mock_env();
-    let result = query_pyth_atom_usd_price(deps.as_ref(), env);
+    let result = query_pyth_atom_usd_price(deps.as_ref(), &env);
 
     assert!(result.is_ok(), "Should successfully query Pyth price");
 
@@ -1696,7 +1672,7 @@ fn test_query_pyth_atom_usd_price_default() {
         .save(deps.as_mut().storage, &config)
         .unwrap();
     let env = mock_env();
-    let result = query_pyth_atom_usd_price(deps.as_ref(), env);
+    let result = query_pyth_atom_usd_price(deps.as_ref(), &env);
 
     assert!(result.is_ok(), "Should use default price");
     let price = result.unwrap();
@@ -1733,21 +1709,21 @@ fn test_query_pyth_extreme_atom_prices() {
     MOCK_PYTH_PRICE
         .save(deps.as_mut().storage, &Uint128::new(10_000))
         .unwrap();
-    let result_low = query_pyth_atom_usd_price(deps.as_ref(), env.clone());
+    let result_low = query_pyth_atom_usd_price(deps.as_ref(), &env);
     assert!(result_low.is_ok(), "Should handle low ATOM price");
     assert_eq!(result_low.unwrap(), Uint128::new(10_000)); // $0.01
 
     MOCK_PYTH_PRICE
         .save(deps.as_mut().storage, &Uint128::new(10_000_000_000))
         .unwrap();
-    let result_high = query_pyth_atom_usd_price(deps.as_ref(), env.clone());
+    let result_high = query_pyth_atom_usd_price(deps.as_ref(), &env);
     assert!(result_high.is_ok(), "Should handle high ATOM price");
     assert_eq!(result_high.unwrap(), Uint128::new(10_000_000_000)); // $10,000
 
     MOCK_PYTH_PRICE
         .save(deps.as_mut().storage, &Uint128::new(100_000_000))
         .unwrap();
-    let result_med = query_pyth_atom_usd_price(deps.as_ref(), env.clone());
+    let result_med = query_pyth_atom_usd_price(deps.as_ref(), &env);
     assert!(result_med.is_ok(), "Should handle $100 ATOM price");
     assert_eq!(result_med.unwrap(), Uint128::new(100_000_000)); // $100
 }
@@ -1806,7 +1782,7 @@ fn test_get_bluechip_usd_price_with_pyth() {
         .unwrap();
 
     let env = mock_env();
-    let result = get_bluechip_usd_price(deps.as_ref(), env);
+    let result = get_bluechip_usd_price(deps.as_ref(), &env);
 
     assert!(result.is_ok(), "Should calculate bluechip USD price");
     let bluechip_price = result.unwrap();
@@ -1871,21 +1847,21 @@ fn test_bluechip_usd_price_with_different_atom_prices() {
     MOCK_PYTH_PRICE
         .save(deps.as_mut().storage, &Uint128::new(5_000_000))
         .unwrap();
-    let price1 = get_bluechip_usd_price(deps.as_ref(), env.clone()).unwrap();
+    let price1 = get_bluechip_usd_price(deps.as_ref(), &env).unwrap();
     println!("ATOM=$5 -> Bluechip=${}", price1);
     assert_eq!(price1, Uint128::new(500_000)); // $0.50
 
     MOCK_PYTH_PRICE
         .save(deps.as_mut().storage, &Uint128::new(20_000_000))
         .unwrap();
-    let price2 = get_bluechip_usd_price(deps.as_ref(), env.clone()).unwrap();
+    let price2 = get_bluechip_usd_price(deps.as_ref(), &env).unwrap();
     println!("ATOM=$20 -> Bluechip=${}", price2);
     assert_eq!(price2, Uint128::new(2_000_000)); // $2.00
 
     MOCK_PYTH_PRICE
         .save(deps.as_mut().storage, &Uint128::new(100_000_000))
         .unwrap();
-    let price3 = get_bluechip_usd_price(deps.as_ref(), env.clone()).unwrap();
+    let price3 = get_bluechip_usd_price(deps.as_ref(), &env).unwrap();
     println!("ATOM=$100 -> Bluechip=${}", price3);
     assert_eq!(price3, Uint128::new(10_000_000)); // $10.00
 }
@@ -3357,7 +3333,7 @@ fn test_pyth_cache_accepts_fresh_cached_price_when_live_fails() {
         .save(&mut deps.storage, &true)
         .unwrap();
 
-    let result = get_bluechip_usd_price(deps.as_ref(), env);
+    let result = get_bluechip_usd_price(deps.as_ref(), &env);
     assert!(
         result.is_ok(),
         "fresh cache ({}s old) must be accepted, got: {:?}",
@@ -3383,7 +3359,7 @@ fn test_pyth_cache_accepts_at_exact_max_age() {
         .save(&mut deps.storage, &true)
         .unwrap();
 
-    let result = get_bluechip_usd_price(deps.as_ref(), env);
+    let result = get_bluechip_usd_price(deps.as_ref(), &env);
     assert!(
         result.is_ok(),
         "cache at exactly {}s old must be accepted, got: {:?}",
@@ -3408,7 +3384,7 @@ fn test_pyth_cache_rejects_one_second_past_max() {
         .save(&mut deps.storage, &true)
         .unwrap();
 
-    let err = get_bluechip_usd_price(deps.as_ref(), env).unwrap_err();
+    let err = get_bluechip_usd_price(deps.as_ref(), &env).unwrap_err();
     assert!(
         format!("{}", err).contains("stale")
             || format!("{}", err).contains("no valid cached"),
@@ -3435,7 +3411,7 @@ fn test_pyth_cache_rejects_far_past_max() {
         .save(&mut deps.storage, &true)
         .unwrap();
 
-    let err = get_bluechip_usd_price(deps.as_ref(), env).unwrap_err();
+    let err = get_bluechip_usd_price(deps.as_ref(), &env).unwrap_err();
     assert!(
         format!("{}", err).contains("stale")
             || format!("{}", err).contains("no valid cached"),
@@ -3461,7 +3437,7 @@ fn test_pyth_cache_rejects_zero_cached_price() {
         .save(&mut deps.storage, &true)
         .unwrap();
 
-    let err = get_bluechip_usd_price(deps.as_ref(), env).unwrap_err();
+    let err = get_bluechip_usd_price(deps.as_ref(), &env).unwrap_err();
     assert!(
         format!("{}", err).contains("stale")
             || format!("{}", err).contains("no valid cached"),
@@ -3485,7 +3461,7 @@ fn test_pyth_live_price_bypasses_cache_entirely() {
     );
     // Leave MOCK_PYTH_SHOULD_FAIL unset so live path succeeds.
 
-    let result = get_bluechip_usd_price(deps.as_ref(), env);
+    let result = get_bluechip_usd_price(deps.as_ref(), &env);
     assert!(
         result.is_ok(),
         "live pyth should bypass the cache age check, got: {:?}",

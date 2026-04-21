@@ -5,7 +5,7 @@ use crate::internal_bluechip_price_oracle::{
 use crate::msg::FactoryInstantiateResponse;
 use crate::state::{
     CreationStatus, DISTRIBUTION_BOUNTY_USD, FACTORYINSTANTIATEINFO, ORACLE_UPDATE_BOUNTY_USD,
-    POOLS_BY_ID, POOL_CREATION_STATES,
+    POOLS_BY_ID, POOL_CREATION_CONTEXT,
 };
 use cosmwasm_schema::{cw_serde, QueryResponses};
 #[cfg(not(feature = "library"))]
@@ -92,10 +92,11 @@ pub fn query_pool_creation_status(
     deps: Deps,
     pool_id: u64,
 ) -> StdResult<Option<PoolCreationStatusResponse>> {
-    let state = match POOL_CREATION_STATES.may_load(deps.storage, pool_id)? {
-        Some(s) => s,
+    let ctx = match POOL_CREATION_CONTEXT.may_load(deps.storage, pool_id)? {
+        Some(c) => c,
         None => return Ok(None),
     };
+    let state = ctx.state;
     Ok(Some(PoolCreationStatusResponse {
         pool_id: state.pool_id,
         creator: state.creator,
@@ -158,7 +159,7 @@ pub fn handle_internal_bluechip_oracle_query(
 ) -> StdResult<Binary> {
     match msg {
         FactoryQueryMsg::GetBluechipUsdPrice {} => {
-            to_json_binary(&get_bluechip_usd_price(deps, env)?)
+            to_json_binary(&get_bluechip_usd_price(deps, &env)?)
         }
         FactoryQueryMsg::ConvertBluechipToUsd { amount } => {
             to_json_binary(&bluechip_to_usd(deps, amount, env)?)

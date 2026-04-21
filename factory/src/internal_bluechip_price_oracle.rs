@@ -201,60 +201,52 @@ pub fn get_eligible_creator_pools(
     deps: Deps,
     atom_pool_contract_address: &str,
 ) -> StdResult<Vec<String>> {
-    // Build the set of pool addresses eligible for oracle sampling.
-    // A pool is eligible only if:
-    //   1. It contains a bluechip token (so we can price it against ATOM)
-    //   2. It has crossed its commit threshold (POOL_THRESHOLD_MINTED == true)
+    // Return every pool eligible for oracle sampling. A pool is eligible iff:
+    //   1. It contains a bluechip token (so we can price it against ATOM).
+    //   2. It has crossed its commit threshold (POOL_THRESHOLD_MINTED == true).
+    //   3. Its current reserves sum to >= MIN_POOL_LIQUIDITY.
     //
     // The threshold-crossed gate is the important one: pool creation is
     // permissionless, so without this check a spammer could bloat the oracle
-    // sample set with pre-threshold pools. The MIN_POOL_LIQUIDITY check
-    // further down is defense-in-depth and catches pools that crossed
-    // threshold but later drained below the safety floor.
-    let bluechip_pool_addrs: std::collections::HashSet<Addr> = POOLS_BY_ID
-        .range(deps.storage, None, None, Order::Ascending)
-        .filter_map(|result| {
-            let (pool_id, pool_details) = result.ok()?;
-            let has_bluechip = pool_details
-                .pool_token_info
-                .iter()
-                .any(|token| matches!(token, TokenType::Bluechip { .. }));
-            let threshold_crossed = POOL_THRESHOLD_MINTED
-                .may_load(deps.storage, pool_id)
-                .ok()
-                .flatten()
-                .unwrap_or(false);
-            if has_bluechip && threshold_crossed {
-                Some(pool_details.creator_pool_addr)
-            } else {
-                None
-            }
-        })
-        .collect();
-
+    // sample set with pre-threshold pools. The MIN_POOL_LIQUIDITY check is
+    // defense-in-depth for pools that crossed threshold but later drained.
+    //
+    // Single pass over POOLS_BY_ID: for each candidate we check the two
+    // cheap in-storage gates first and only incur the cross-contract
+    // PoolStateResponseForFactory query when both pass. The older
+    // implementation did two full range scans plus a HashSet build, which
+    // dominated oracle-update gas at scale.
     let mut eligible = Vec::new();
+    for row in POOLS_BY_ID.range(deps.storage, None, None, Order::Ascending) {
+        let (pool_id, pool_details) = row?;
 
-    for result in POOLS_BY_CONTRACT_ADDRESS.range(deps.storage, None, None, Order::Ascending) {
-        let (pool_address, _pool_data) = result?;
-
-        if pool_address.as_str() == atom_pool_contract_address {
+        if pool_details.creator_pool_addr.as_str() == atom_pool_contract_address {
             continue;
         }
-
-        if !bluechip_pool_addrs.contains(&pool_address) {
+        let has_bluechip = pool_details
+            .pool_token_info
+            .iter()
+            .any(|token| matches!(token, TokenType::Bluechip { .. }));
+        if !has_bluechip {
+            continue;
+        }
+        if !POOL_THRESHOLD_MINTED
+            .may_load(deps.storage, pool_id)?
+            .unwrap_or(false)
+        {
             continue;
         }
 
         let pool_state: PoolStateResponseForFactory = deps.querier.query_wasm_smart(
-            pool_address.to_string(),
+            pool_details.creator_pool_addr.to_string(),
             &PoolQueryMsg::GetPoolState {
-                pool_contract_address: pool_address.to_string(),
+                pool_contract_address: pool_details.creator_pool_addr.to_string(),
             },
         )?;
 
         let total_liquidity = pool_state.reserve0.saturating_add(pool_state.reserve1);
         if total_liquidity >= MIN_POOL_LIQUIDITY {
-            eligible.push(pool_address.to_string());
+            eligible.push(pool_details.creator_pool_addr.to_string());
         }
     }
     Ok(eligible)
@@ -289,6 +281,43 @@ pub fn query_mock_bluechip_usd_price(deps: Deps) -> Result<Uint128, ContractErro
         )));
     }
     Ok(resp.price)
+}
+
+// Append the oracle-update keeper-bounty outcome attributes (and, on success,
+// the BankMsg transfer) to `response`. Three branches, deterministic attribute
+// shape. Shared between the mock and prod oracle paths so the attribute
+// schema can only drift in one place.
+fn apply_oracle_bounty(
+    mut response: Response,
+    bounty_usd: Uint128,
+    bounty_bluechip: Uint128,
+    factory_balance: Uint128,
+    recipient: &Addr,
+) -> Response {
+    if !bounty_bluechip.is_zero() && factory_balance >= bounty_bluechip {
+        response = response
+            .add_message(CosmosMsg::Bank(BankMsg::Send {
+                to_address: recipient.to_string(),
+                amount: vec![Coin {
+                    denom: ORACLE_BOUNTY_DENOM.to_string(),
+                    amount: bounty_bluechip,
+                }],
+            }))
+            .add_attribute("bounty_paid_bluechip", bounty_bluechip.to_string())
+            .add_attribute("bounty_paid_usd", bounty_usd.to_string())
+            .add_attribute("bounty_recipient", recipient.to_string());
+    } else if bounty_bluechip.is_zero() {
+        response = response
+            .add_attribute("bounty_skipped", "conversion_returned_zero")
+            .add_attribute("bounty_configured_usd", bounty_usd.to_string());
+    } else {
+        response = response
+            .add_attribute("bounty_skipped", "insufficient_factory_balance")
+            .add_attribute("bounty_required_bluechip", bounty_bluechip.to_string())
+            .add_attribute("bounty_configured_usd", bounty_usd.to_string())
+            .add_attribute("factory_balance", factory_balance.to_string());
+    }
+    response
 }
 
 pub fn update_internal_oracle_price(
@@ -350,29 +379,13 @@ pub fn update_internal_oracle_price(
             let balance = deps
                 .querier
                 .query_balance(env.contract.address.as_str(), ORACLE_BOUNTY_DENOM)?;
-            if !bounty_bluechip.is_zero() && balance.amount >= bounty_bluechip {
-                response = response
-                    .add_message(CosmosMsg::Bank(BankMsg::Send {
-                        to_address: info.sender.to_string(),
-                        amount: vec![Coin {
-                            denom: ORACLE_BOUNTY_DENOM.to_string(),
-                            amount: bounty_bluechip,
-                        }],
-                    }))
-                    .add_attribute("bounty_paid_bluechip", bounty_bluechip.to_string())
-                    .add_attribute("bounty_paid_usd", bounty_usd.to_string())
-                    .add_attribute("bounty_recipient", info.sender.to_string());
-            } else if bounty_bluechip.is_zero() {
-                response = response
-                    .add_attribute("bounty_skipped", "conversion_returned_zero")
-                    .add_attribute("bounty_configured_usd", bounty_usd.to_string());
-            } else {
-                response = response
-                    .add_attribute("bounty_skipped", "insufficient_factory_balance")
-                    .add_attribute("bounty_required_bluechip", bounty_bluechip.to_string())
-                    .add_attribute("bounty_configured_usd", bounty_usd.to_string())
-                    .add_attribute("factory_balance", balance.amount.to_string());
-            }
+            response = apply_oracle_bounty(
+                response,
+                bounty_usd,
+                bounty_bluechip,
+                balance.amount,
+                &info.sender,
+            );
         }
         return Ok(response);
     }
@@ -417,7 +430,7 @@ pub fn update_internal_oracle_price(
     oracle.bluechip_price_cache.last_update = current_time;
 
     // Cache the Pyth ATOM/USD price alongside the TWAP update
-    if let Ok(pyth_price) = query_pyth_atom_usd_price(deps.as_ref(), env.clone()) {
+    if let Ok(pyth_price) = query_pyth_atom_usd_price(deps.as_ref(), &env) {
         oracle.bluechip_price_cache.cached_pyth_price = pyth_price;
         oracle.bluechip_price_cache.cached_pyth_timestamp = current_time;
     }
@@ -444,33 +457,16 @@ pub fn update_internal_oracle_price(
         // bounty rather than reverting the whole oracle update.
         match usd_to_bluechip(deps.as_ref(), bounty_usd, env.clone()) {
             Ok(conv) => {
-                let bounty_bluechip = conv.amount;
                 let balance = deps
                     .querier
                     .query_balance(env.contract.address.as_str(), ORACLE_BOUNTY_DENOM)?;
-                if !bounty_bluechip.is_zero() && balance.amount >= bounty_bluechip {
-                    response = response
-                        .add_message(CosmosMsg::Bank(BankMsg::Send {
-                            to_address: info.sender.to_string(),
-                            amount: vec![Coin {
-                                denom: ORACLE_BOUNTY_DENOM.to_string(),
-                                amount: bounty_bluechip,
-                            }],
-                        }))
-                        .add_attribute("bounty_paid_bluechip", bounty_bluechip.to_string())
-                        .add_attribute("bounty_paid_usd", bounty_usd.to_string())
-                        .add_attribute("bounty_recipient", info.sender.to_string());
-                } else if bounty_bluechip.is_zero() {
-                    response = response
-                        .add_attribute("bounty_skipped", "conversion_returned_zero")
-                        .add_attribute("bounty_configured_usd", bounty_usd.to_string());
-                } else {
-                    response = response
-                        .add_attribute("bounty_skipped", "insufficient_factory_balance")
-                        .add_attribute("bounty_required_bluechip", bounty_bluechip.to_string())
-                        .add_attribute("bounty_configured_usd", bounty_usd.to_string())
-                        .add_attribute("factory_balance", balance.amount.to_string());
-                }
+                response = apply_oracle_bounty(
+                    response,
+                    bounty_usd,
+                    conv.amount,
+                    balance.amount,
+                    &info.sender,
+                );
             }
             Err(_) => {
                 response = response
@@ -735,7 +731,7 @@ pub fn calculate_twap(observations: &[PriceObservation]) -> Result<Uint128, Cont
 
     Ok(weighted_average)
 }
-pub fn query_pyth_atom_usd_price(deps: Deps, env: Env) -> StdResult<Uint128> {
+pub fn query_pyth_atom_usd_price(deps: Deps, env: &Env) -> StdResult<Uint128> {
     #[cfg(not(test))]
     {
         let factory = FACTORYINSTANTIATEINFO.load(deps.storage)?;
@@ -853,9 +849,9 @@ pub fn query_pyth_atom_usd_price(deps: Deps, env: Env) -> StdResult<Uint128> {
     }
 }
 
-pub fn get_bluechip_usd_price(deps: Deps, env: Env) -> StdResult<Uint128> {
+pub fn get_bluechip_usd_price(deps: Deps, env: &Env) -> StdResult<Uint128> {
     // Try live Pyth price first; fall back to cached price if Pyth is stale.
-    let atom_usd_price = match query_pyth_atom_usd_price(deps, env.clone()) {
+    let atom_usd_price = match query_pyth_atom_usd_price(deps, env) {
         Ok(price) => price,
         Err(_) => {
             // Pyth query failed (likely stale). The cache only bridges very
@@ -952,7 +948,7 @@ pub fn get_bluechip_usd_price(deps: Deps, env: Env) -> StdResult<Uint128> {
 /// Core conversion: when `to_usd` is true, converts bluechip→USD; otherwise USD→bluechip.
 fn convert_with_oracle(
     deps: Deps,
-    env: Env,
+    env: &Env,
     amount: Uint128,
     to_usd: bool,
 ) -> StdResult<ConversionResponse> {
@@ -994,11 +990,11 @@ pub fn bluechip_to_usd(
     bluechip_amount: Uint128,
     env: Env,
 ) -> StdResult<ConversionResponse> {
-    convert_with_oracle(deps, env, bluechip_amount, true)
+    convert_with_oracle(deps, &env, bluechip_amount, true)
 }
 
 pub fn usd_to_bluechip(deps: Deps, usd_amount: Uint128, env: Env) -> StdResult<ConversionResponse> {
-    convert_with_oracle(deps, env, usd_amount, false)
+    convert_with_oracle(deps, &env, usd_amount, false)
 }
 
 pub fn get_price_with_staleness_check(
