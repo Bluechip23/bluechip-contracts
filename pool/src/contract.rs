@@ -23,12 +23,12 @@ use crate::liquidity_helpers::execute_claim_creator_excess;
 use crate::msg::{Cw20HookMsg, ExecuteMsg, MigrateMsg, PoolInstantiateMsg};
 use crate::query::query_check_commit;
 use crate::state::{
-    CommitLimitInfo, ExpectedFactory, OracleInfo, PoolAnalytics, PoolDetails, PoolFeeState,
-    PoolInfo, PoolSpecs, Position, ThresholdPayoutAmounts, COMMITFEEINFO, COMMIT_LIMIT_INFO,
-    EXPECTED_FACTORY, IS_THRESHOLD_HIT, MINIMUM_LIQUIDITY, NATIVE_RAISED_FROM_COMMIT,
-    NEXT_POSITION_ID, ORACLE_INFO, OWNER_POSITIONS, POOL_ANALYTICS, POOL_FEE_STATE, POOL_INFO,
-    POOL_PAUSED, POOL_SPECS, POOL_STATE, REENTRANCY_LOCK, THRESHOLD_PAYOUT_AMOUNTS,
-    USD_RAISED_FROM_COMMIT,
+    CommitLimitInfo, ExpectedFactory, OracleInfo, PoolAnalytics, PoolCtx, PoolDetails,
+    PoolFeeState, PoolInfo, PoolSpecs, Position, ThresholdPayoutAmounts, COMMITFEEINFO,
+    COMMIT_LIMIT_INFO, EXPECTED_FACTORY, IS_THRESHOLD_HIT, MINIMUM_LIQUIDITY,
+    NATIVE_RAISED_FROM_COMMIT, NEXT_POSITION_ID, ORACLE_INFO, OWNER_POSITIONS, POOL_ANALYTICS,
+    POOL_FEE_STATE, POOL_INFO, POOL_PAUSED, POOL_SPECS, POOL_STATE, REENTRANCY_LOCK,
+    THRESHOLD_PAYOUT_AMOUNTS, USD_RAISED_FROM_COMMIT,
 };
 use crate::state::{PoolState, LIQUIDITY_POSITIONS};
 use crate::swap_helper::{assert_max_spread, compute_swap, update_price_accumulator};
@@ -477,10 +477,12 @@ pub fn execute_simple_swap(
     max_spread: Option<Decimal>,
     to: Option<Addr>,
 ) -> Result<Response, ContractError> {
-    let pool_info = POOL_INFO.load(deps.storage)?;
-    let mut pool_state = POOL_STATE.load(deps.storage)?;
-    let mut pool_fee_state = POOL_FEE_STATE.load(deps.storage)?;
-    let pool_specs = POOL_SPECS.load(deps.storage)?;
+    let PoolCtx {
+        info: pool_info,
+        state: mut pool_state,
+        fees: mut pool_fee_state,
+        specs: pool_specs,
+    } = PoolCtx::load(deps.storage)?;
 
     let (offer_index, offer_pool, ask_pool) =
         if offer_asset.info.equal(&pool_info.pool_info.asset_infos[0]) {
@@ -562,7 +564,8 @@ pub fn execute_simple_swap(
         pool_info.pool_info.asset_infos[0].clone()
     };
 
-    let receiver = to.unwrap_or(sender.clone());
+    // Lazy-evaluate sender.clone() so the clone is skipped when `to` is Some.
+    let receiver = to.unwrap_or_else(|| sender.clone());
     let msgs = if !return_amt.is_zero() {
         vec![TokenInfo {
             info: ask_asset_info.clone(),

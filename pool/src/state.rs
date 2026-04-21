@@ -3,7 +3,7 @@ use crate::{
     msg::CommitFeeInfo,
 };
 use cosmwasm_schema::cw_serde;
-use cosmwasm_std::{Addr, Decimal, StdResult, Timestamp, Uint128};
+use cosmwasm_std::{Addr, Decimal, StdResult, Storage, Timestamp, Uint128};
 use cw_storage_plus::Item;
 use cw_storage_plus::Map;
 
@@ -248,5 +248,33 @@ impl PoolDetails {
         contract_addr: Addr,
     ) -> StdResult<[TokenInfo; 2]> {
         pool_factory_interfaces::asset::query_pools(&self.asset_infos, querier, contract_addr)
+    }
+}
+
+/// The four state items read by every swap / commit / liquidity hot path.
+/// Bundled so handlers that touch more than one can `load` once and let the
+/// borrow checker enforce mutation vs read-only access on each field.
+///
+/// Only `state` and `fees` are ever mutated on the swap path; `info` and
+/// `specs` stay read-only. Callers still save the dirty items themselves —
+/// this struct is a loader, not a write-back cache.
+pub struct PoolCtx {
+    pub info: PoolInfo,
+    pub state: PoolState,
+    pub fees: PoolFeeState,
+    pub specs: PoolSpecs,
+}
+
+impl PoolCtx {
+    /// Single-shot load of the four core state items in one place. Keeps
+    /// the four `.load()` calls in one spot so every new state item added
+    /// to the hot path lands here exactly once.
+    pub fn load(storage: &dyn Storage) -> StdResult<Self> {
+        Ok(Self {
+            info: POOL_INFO.load(storage)?,
+            state: POOL_STATE.load(storage)?,
+            fees: POOL_FEE_STATE.load(storage)?,
+            specs: POOL_SPECS.load(storage)?,
+        })
     }
 }

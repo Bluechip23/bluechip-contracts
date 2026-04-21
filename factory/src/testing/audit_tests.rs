@@ -17,7 +17,7 @@ use crate::msg::{CreatorTokenInfo, ExecuteMsg};
 use crate::pool_struct::{CommitFeeInfo, CreatePool, PoolConfigUpdate, PoolDetails};
 use crate::state::{
     FactoryInstantiate, PENDING_CONFIG, POOLS_BY_CONTRACT_ADDRESS, POOLS_BY_ID, POOL_COUNTER,
-    POOL_REGISTRY, POOL_THRESHOLD_MINTED, SETCOMMIT,
+    POOL_REGISTRY, POOL_THRESHOLD_MINTED,
 };
 use crate::testing::tests::{create_instantiate_reply, setup_atom_pool};
 use pool_factory_interfaces::PoolStateResponseForFactory;
@@ -504,10 +504,10 @@ fn test_m_new_4_confidence_interval_threshold_arithmetic() {
     );
 }
 
-/// When the same creator creates two pools, both pool's CommitInfo entries
+/// When the same creator creates two pools, both pool's registry entries
 /// should be independently stored (keyed by pool_id, not creator address).
 #[test]
-fn test_m_new_5_multi_pool_creator_no_setcommit_collision() {
+fn test_m_new_5_multi_pool_creator_no_registry_collision() {
     let mut deps = mock_deps_with_querier(&[]);
     setup_factory(&mut deps);
 
@@ -567,10 +567,12 @@ fn test_m_new_5_multi_pool_creator_no_setcommit_collision() {
         create_instantiate_reply(encode_reply_id(pool_id_1, FINALIZE_POOL), pool_1.as_str());
     pool_creation_reply(deps.as_mut(), env.clone(), pool_reply).unwrap();
 
-    // Verify pool 1 commit info
-    let commit_1 = SETCOMMIT.load(&deps.storage, pool_id_1).unwrap();
-    assert_eq!(commit_1.pool_id, pool_id_1);
-    assert_eq!(commit_1.creator_pool_addr, pool_1.clone());
+    // Verify pool 1 registry info
+    let pool_1_addr = POOL_REGISTRY.load(&deps.storage, pool_id_1).unwrap();
+    let pool_1_details = POOLS_BY_ID.load(&deps.storage, pool_id_1).unwrap();
+    assert_eq!(pool_1_addr, pool_1.clone());
+    assert_eq!(pool_1_details.pool_id, pool_id_1);
+    assert_eq!(pool_1_details.creator_pool_addr, pool_1.clone());
 
     // Create second pool from the SAME creator (admin)
     let create_msg_2 = ExecuteMsg::Create {
@@ -626,20 +628,23 @@ fn test_m_new_5_multi_pool_creator_no_setcommit_collision() {
         create_instantiate_reply(encode_reply_id(pool_id_2, FINALIZE_POOL), pool_2.as_str());
     pool_creation_reply(deps.as_mut(), env.clone(), pool_reply).unwrap();
 
-    // Verify pool 2 commit info
-    let commit_2 = SETCOMMIT.load(&deps.storage, pool_id_2).unwrap();
-    assert_eq!(commit_2.pool_id, pool_id_2);
-    assert_eq!(commit_2.creator_pool_addr, pool_2);
+    // Verify pool 2 registry info
+    let pool_2_addr = POOL_REGISTRY.load(&deps.storage, pool_id_2).unwrap();
+    let pool_2_details = POOLS_BY_ID.load(&deps.storage, pool_id_2).unwrap();
+    assert_eq!(pool_2_addr, pool_2.clone());
+    assert_eq!(pool_2_details.pool_id, pool_id_2);
+    assert_eq!(pool_2_details.creator_pool_addr, pool_2);
 
-    // KEY ASSERTION: Pool 1's commit info should still be intact
+    // KEY ASSERTION: Pool 1's registry entry should still be intact
     // (This would fail with the old creator-address key, as pool 2 would overwrite pool 1)
-    let commit_1_after = SETCOMMIT.load(&deps.storage, pool_id_1).unwrap();
+    let pool_1_addr_after = POOL_REGISTRY.load(&deps.storage, pool_id_1).unwrap();
+    let pool_1_details_after = POOLS_BY_ID.load(&deps.storage, pool_id_1).unwrap();
     assert_eq!(
-        commit_1_after.pool_id, pool_id_1,
-        "Pool 1 commit info should not be overwritten by pool 2"
+        pool_1_details_after.pool_id, pool_id_1,
+        "Pool 1 registry entry should not be overwritten by pool 2"
     );
     assert_eq!(
-        commit_1_after.creator_pool_addr, pool_1,
+        pool_1_addr_after, pool_1,
         "Pool 1 pool address should still be pool_addr_1, not pool_addr_2"
     );
 }

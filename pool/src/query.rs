@@ -111,12 +111,20 @@ pub fn query_pair_info(deps: Deps) -> StdResult<PoolDetails> {
 }
 
 pub fn query_check_threshold_limit(deps: Deps) -> StdResult<CommitStatus> {
+    let usd_raised = USD_RAISED_FROM_COMMIT.load(deps.storage)?;
+    threshold_status_from(deps, usd_raised)
+}
+
+/// Like `query_check_threshold_limit` but reuses a caller-supplied
+/// `usd_raised` to skip one redundant storage read. Callers that already
+/// loaded `USD_RAISED_FROM_COMMIT` for their own response (e.g.
+/// `query_analytics`) should prefer this variant.
+fn threshold_status_from(deps: Deps, usd_raised: Uint128) -> StdResult<CommitStatus> {
     let threshold_hit = IS_THRESHOLD_HIT.load(deps.storage)?;
-    let commit_config = COMMIT_LIMIT_INFO.load(deps.storage)?;
     if threshold_hit {
         Ok(CommitStatus::FullyCommitted)
     } else {
-        let usd_raised = USD_RAISED_FROM_COMMIT.load(deps.storage)?;
+        let commit_config = COMMIT_LIMIT_INFO.load(deps.storage)?;
         Ok(CommitStatus::InProgress {
             raised: usd_raised,
             target: commit_config.commit_amount_for_threshold_usd,
@@ -375,7 +383,9 @@ pub fn query_analytics(deps: Deps) -> StdResult<PoolAnalyticsResponse> {
     let next_position_id = NEXT_POSITION_ID.load(deps.storage)?;
     let usd_raised = USD_RAISED_FROM_COMMIT.load(deps.storage)?;
     let bluechip_raised = NATIVE_RAISED_FROM_COMMIT.load(deps.storage)?;
-    let threshold_status = query_check_threshold_limit(deps)?;
+    // Reuse the already-loaded usd_raised to avoid the second storage read
+    // that the public query_check_threshold_limit would otherwise incur.
+    let threshold_status = threshold_status_from(deps, usd_raised)?;
 
     let current_price_0_to_1 = if !pool_state.reserve0.is_zero() {
         cosmwasm_std::Decimal::from_ratio(pool_state.reserve1, pool_state.reserve0).to_string()
