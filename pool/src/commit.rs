@@ -16,8 +16,8 @@ use crate::state::{
     THRESHOLD_PAYOUT_AMOUNTS, THRESHOLD_PROCESSING, USD_RAISED_FROM_COMMIT,
 };
 use crate::swap_helper::{
-    assert_max_spread, compute_swap, get_bluechip_value, get_usd_value_with_staleness_check,
-    update_price_accumulator,
+    assert_max_spread, compute_swap, get_oracle_conversion_with_staleness,
+    update_price_accumulator, usd_to_bluechip_at_rate,
 };
 use cosmwasm_std::{
     to_json_binary, Addr, CosmosMsg, Decimal, DepsMut, Env, MessageInfo, Response, StdError,
@@ -98,8 +98,21 @@ fn execute_commit_logic(
         return Err(ContractError::ZeroAmount {});
     }
 
-    let usd_value =
-        get_usd_value_with_staleness_check(deps.as_ref(), asset.amount, env.block.time.seconds())?;
+    // Snapshot the oracle rate once at commit entry and thread it through
+    // every conversion that happens during this handler (P4-M6). Prevents
+    // mid-tx drift where the USD valuation at the top of the handler could
+    // disagree with the bluechip_to_threshold conversion computed later in
+    // process_threshold_crossing_with_excess. No current path allows
+    // drift within a single tx — the factory's cached price doesn't change
+    // during a commit — but threading one rate explicitly makes the
+    // invariant load-bearing rather than incidental.
+    let oracle_snapshot =
+        get_oracle_conversion_with_staleness(deps.as_ref(), asset.amount, env.block.time.seconds())?;
+    let usd_value = oracle_snapshot.amount;
+    let oracle_rate = oracle_snapshot.rate_used;
+    if oracle_rate.is_zero() {
+        return Err(ContractError::InvalidOraclePrice {});
+    }
     if usd_value.is_zero() {
         return Err(ContractError::InvalidOraclePrice {});
     }
@@ -200,6 +213,7 @@ fn execute_commit_logic(
                             amount_after_fees,
                             usd_value,
                             usd_to_threshold,
+                            oracle_rate,
                             &mut pool_state,
                             &mut pool_fee_state,
                             &pool_specs,
@@ -529,6 +543,7 @@ fn process_threshold_crossing_with_excess(
     amount_after_fees: Uint128,
     usd_value: Uint128,
     usd_to_threshold: Uint128,
+    oracle_rate: Uint128,
     pool_state: &mut PoolState,
     pool_fee_state: &mut crate::state::PoolFeeState,
     pool_specs: &crate::state::PoolSpecs,
@@ -540,7 +555,11 @@ fn process_threshold_crossing_with_excess(
     belief_price: Option<Decimal>,
     max_spread: Option<Decimal>,
 ) -> Result<Response, ContractError> {
-    let bluechip_to_threshold = get_bluechip_value(deps.as_ref(), usd_to_threshold)?;
+    // Reuse the rate captured at commit() entry rather than re-querying the
+    // oracle (P4-M6). usd_to_bluechip_at_rate is the inverse of the
+    // bluechip_to_usd math used to produce usd_value, so thresholding is
+    // arithmetically consistent with the valuation.
+    let bluechip_to_threshold = usd_to_bluechip_at_rate(usd_to_threshold, oracle_rate)?;
     let bluechip_excess = asset.amount.checked_sub(bluechip_to_threshold)?;
 
     let threshold_portion_after_fees = if amount.is_zero() {

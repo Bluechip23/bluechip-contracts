@@ -63,8 +63,13 @@ pub const PENDING_POOL_CONFIG: Map<u64, PendingPoolConfig> = Map::new("pending_p
 pub const ORACLE_UPDATE_BOUNTY_USD: Item<Uint128> = Item::new("oracle_update_bounty_usd");
 
 // Hard cap to protect the factory's reserve if the admin key is
-// compromised. $1 USD per successful update (6 decimals).
-pub const MAX_ORACLE_UPDATE_BOUNTY_USD: Uint128 = Uint128::new(1_000_000);
+// compromised. $0.10 USD per successful update (6 decimals). Realistic
+// keeper gas is on the order of $0.003–$0.03 per oracle update on typical
+// Cosmos chains; $0.10 leaves generous headroom for gas spikes while
+// capping the yearly drain if admin is compromised: $0.10 × 288 updates/day
+// = $28.80/day ≈ $10.5k/year max. The prior $1.00 cap was 10× higher and
+// pure overpayment.
+pub const MAX_ORACLE_UPDATE_BOUNTY_USD: Uint128 = Uint128::new(100_000);
 
 // Native denom the bounty is paid in (after USD->bluechip conversion).
 // The factory must be pre-funded with this denom by the bluechip main
@@ -78,8 +83,13 @@ pub const ORACLE_BOUNTY_DENOM: &str = "ubluechip";
 // own pre-funded native balance.
 pub const DISTRIBUTION_BOUNTY_USD: Item<Uint128> = Item::new("distribution_bounty_usd");
 
-// Hard cap. $1 USD per batch (6 decimals).
-pub const MAX_DISTRIBUTION_BOUNTY_USD: Uint128 = Uint128::new(1_000_000);
+// Hard cap. $0.10 USD per batch (6 decimals). A distribution batch is
+// up to MAX_DISTRIBUTIONS_PER_TX=40 mints + a handful of storage writes;
+// realistic gas ~$0.01–$0.10. The $0.10 cap leaves margin for expensive
+// chains and gas-price spikes but still caps admin-compromise blast
+// radius: at worst a compromised admin burns $0.10 × committer_count/40
+// per pool's full distribution. Was $1.00, which was ~10× overpayment.
+pub const MAX_DISTRIBUTION_BOUNTY_USD: Uint128 = Uint128::new(100_000);
 
 // ForceRotateOraclePools is a 2-step action: admin proposes a rotation,
 // the timelock elapses, then admin invokes ForceRotateOraclePools to

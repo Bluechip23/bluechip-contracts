@@ -382,6 +382,14 @@ pub fn execute(
             min_amount1,
             max_ratio_deviation_bps,
         } => {
+            // Defense-in-depth: currently a drained pool has
+            // total_liquidity == 0 so the math inside remove_partial_liquidity
+            // would error out on its own. That's a coincidence, not a
+            // guarantee. If a future partial-drain or recovery path ever
+            // leaves non-zero total_liquidity after EMERGENCY_DRAINED is set,
+            // an explicit check here keeps users from pulling against
+            // already-swept reserves with arbitrary math.
+            ensure_not_drained(deps.storage)?;
             if POOL_PAUSED.may_load(deps.storage)?.unwrap_or(false) {
                 return Err(ContractError::PoolPausedLowLiquidity {});
             }
@@ -404,6 +412,7 @@ pub fn execute(
             min_amount0,
             max_ratio_deviation_bps,
         } => {
+            ensure_not_drained(deps.storage)?;
             if POOL_PAUSED.may_load(deps.storage)?.unwrap_or(false) {
                 return Err(ContractError::PoolPausedLowLiquidity {});
             }
@@ -426,6 +435,7 @@ pub fn execute(
             min_amount1,
             max_ratio_deviation_bps,
         } => {
+            ensure_not_drained(deps.storage)?;
             if POOL_PAUSED.may_load(deps.storage)?.unwrap_or(false) {
                 return Err(ContractError::PoolPausedLowLiquidity {});
             }
@@ -442,12 +452,14 @@ pub fn execute(
             )
         }
         ExecuteMsg::ClaimCreatorExcessLiquidity { transaction_deadline } => {
+            ensure_not_drained(deps.storage)?;
             if POOL_PAUSED.may_load(deps.storage)?.unwrap_or(false) {
                 return Err(ContractError::PoolPausedLowLiquidity {});
             }
             execute_claim_creator_excess(deps, env, info, transaction_deadline)
         }
         ExecuteMsg::ClaimCreatorFees { transaction_deadline } => {
+            ensure_not_drained(deps.storage)?;
             if POOL_PAUSED.may_load(deps.storage)?.unwrap_or(false) {
                 return Err(ContractError::PoolPausedLowLiquidity {});
             }

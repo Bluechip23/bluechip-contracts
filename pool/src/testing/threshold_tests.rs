@@ -52,6 +52,19 @@ fn test_threshold_with_excess_creates_position() {
 
     setup_pool_with_excess_config(&mut deps);
 
+    // Override max_bluechip_lock_per_pool to a value below the realistic
+    // pools_bluechip_seed that this test will generate. After P4-M6 the
+    // bluechip_to_threshold is derived arithmetically from the rate
+    // captured at commit entry, rather than via a second mock oracle
+    // query that used to return a flat constant. The realistic seed for
+    // this test's tiny usd_to_threshold ($100) is ~94_000 ubluechip, so
+    // the cap must be under that for the excess branch to fire.
+    let mut commit_config = COMMIT_LIMIT_INFO.load(&deps.storage).unwrap();
+    commit_config.max_bluechip_lock_per_pool = Uint128::new(10_000);
+    COMMIT_LIMIT_INFO
+        .save(&mut deps.storage, &commit_config)
+        .unwrap();
+
     USD_RAISED_FROM_COMMIT
         .save(&mut deps.storage, &Uint128::new(24_900_000_000))
         .unwrap();
