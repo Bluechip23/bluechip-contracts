@@ -1402,3 +1402,291 @@ After 3a+3b (co-landed):
 Step 3 is ~50% complete once 3a+3b lands. After 3c and 3d, every shared
 handler in the creator-pool crate is either in `pool-core` or is a
 commit-phase handler.
+
+## Step 3c — `admin.rs` split
+
+Source: `pool/src/admin.rs` (462 lines). The administrative handlers
+(pause/unpause/emergency-withdraw/config-update) are mostly shared, but
+two details make this the trickiest sub-step of Step 3:
+
+1. `execute_emergency_withdraw` sweeps `CREATOR_FEE_POT` and
+   `CREATOR_EXCESS_POSITION` — the former is in pool-core per Step 2a,
+   the latter was marked creator-only in Step 2a but is now referenced
+   from a handler we want in pool-core.
+2. `execute_emergency_withdraw` halts `DISTRIBUTION_STATE` on drain,
+   and `DISTRIBUTION_STATE` is commit-only.
+
+The resolution is NOT "pull DISTRIBUTION_STATE/CREATOR_EXCESS_POSITION
+into pool-core" (that would leak commit-phase concepts back into the
+shared library). Instead we factor the handler so pool-core does the
+core drain and creator-pool layers its commit-specific bookkeeping
+around it.
+
+### Items that MOVE to `pool-core/src/admin.rs`
+
+Shared admin handlers, pure of commit-phase state references.
+
+| Item | Kind | Notes |
+|---|---|---|
+| `ensure_not_drained` | fn | reads shared `EMERGENCY_DRAINED` Item; called by every LP/swap path |
+| `execute_pause` | fn | auth: `POOL_INFO.factory_addr`; writes `POOL_PAUSED` |
+| `execute_unpause` | fn | symmetrical |
+| `execute_cancel_emergency_withdraw` | fn | removes `PENDING_EMERGENCY_WITHDRAW`, unpauses |
+| `execute_update_config_from_factory` | fn | updates `POOL_SPECS` (lp_fee, min_commit_interval, usd_payment_tolerance_bps) and `ORACLE_INFO.oracle_addr`; all state involved is shared |
+| `execute_emergency_withdraw_initiate` | fn (factored, see below) | Phase 1: pauses pool + writes `PENDING_EMERGENCY_WITHDRAW` timestamp |
+| `execute_emergency_withdraw_core_drain` | fn (factored, see below) | Phase 2: sweeps `POOL_STATE` reserves + `POOL_FEE_STATE.fee_reserve_*` + `CREATOR_FEE_POT`, writes `EMERGENCY_WITHDRAWAL` audit, flips `EMERGENCY_DRAINED`. Returns `(Response, drain_total_0, drain_total_1)` so the caller can layer extras on top. |
+
+### The emergency-withdraw factoring
+
+Today `execute_emergency_withdraw` is a single ~150-line function that
+branches on whether `PENDING_EMERGENCY_WITHDRAW` is populated (phase 1
+vs phase 2). The split rewrites it as follows:
+
+`pool-core/src/admin.rs`:
+
+```rust
+pub fn execute_emergency_withdraw_initiate(
+    deps: DepsMut,
+    env: Env,
+    info: MessageInfo,
+) -> Result<Response, ContractError> {
+    // 1. Auth (info.sender == POOL_INFO.factory_addr)
+    // 2. ensure_not_drained
+    // 3. Require PENDING_EMERGENCY_WITHDRAW is NOT already set
+    // 4. POOL_PAUSED := true
+    // 5. PENDING_EMERGENCY_WITHDRAW := env.block.time + 24h
+    // 6. Return "emergency_withdraw_initiated" response
+}
+
+pub fn execute_emergency_withdraw_core_drain(
+    deps: DepsMut,
+    env: Env,
+    info: MessageInfo,
+) -> Result<CoreDrainResult, ContractError> {
+    // 1. Auth
+    // 2. Require PENDING_EMERGENCY_WITHDRAW set AND timelock elapsed
+    // 3. Load pool_info, pool_state, pool_fee_state
+    // 4. Accumulate drain totals: reserves + fee_reserves + CREATOR_FEE_POT
+    // 5. Build transfer messages via shared build_transfer_msg
+    //    (shape-agnostic per Commit 4b)
+    // 6. Zero reserves, clear fee_reserves, remove CREATOR_FEE_POT
+    // 7. Write EMERGENCY_WITHDRAWAL audit record
+    // 8. EMERGENCY_DRAINED := true
+    // 9. Return { drain_messages, total_0, total_1, recipient }
+}
+
+pub struct CoreDrainResult {
+    pub messages: Vec<CosmosMsg>,
+    pub total_0: Uint128,
+    pub total_1: Uint128,
+    pub recipient: Addr,
+    pub total_liquidity_at_withdrawal: Uint128,
+}
+```
+
+### Items that STAY in `pool/src/admin.rs` (creator-pool only)
+
+| Item | Kind | Why it stays |
+|---|---|---|
+| `execute_recover_stuck_states` | fn | dispatches on creator-only `RecoveryType` enum |
+| `recover_threshold` | private fn | clears `THRESHOLD_PROCESSING` (commit-only Item) |
+| `recover_distribution` | private fn | restarts `DISTRIBUTION_STATE` (commit-only) |
+| `recover_reentrancy_guard` | private fn | could be shared; kept with siblings for cohesion. Standard-pool doesn't need stuck-state recovery — the failure modes (stalled distribution, stuck threshold processing) only occur in commit flows. |
+| `execute_emergency_withdraw` | fn (creator-pool wrapper) | Wraps the two pool-core phase functions and adds commit-only concerns: pre-threshold rejection (IS_THRESHOLD_HIT gate), CREATOR_EXCESS_POSITION sweep, DISTRIBUTION_STATE halt. |
+
+Creator-pool wrapper (`pool/src/admin.rs` after split):
+
+```rust
+pub use pool_core::admin::{
+    ensure_not_drained, execute_cancel_emergency_withdraw,
+    execute_pause, execute_unpause, execute_update_config_from_factory,
+};
+
+use pool_core::admin::{
+    execute_emergency_withdraw_core_drain, execute_emergency_withdraw_initiate,
+    CoreDrainResult,
+};
+
+/// Creator-pool emergency withdraw: adds pre-threshold rejection,
+/// CREATOR_EXCESS_POSITION sweep, and DISTRIBUTION_STATE halt on top
+/// of the shared core drain.
+pub fn execute_emergency_withdraw(
+    mut deps: DepsMut,
+    env: Env,
+    info: MessageInfo,
+) -> Result<Response, ContractError> {
+    // Commit-only gate: reject pre-threshold (committed funds are
+    // untracked in reserves; see audit finding context).
+    if !IS_THRESHOLD_HIT.may_load(deps.storage)?.unwrap_or(false) {
+        return Err(ContractError::Std(StdError::generic_err(
+            "EmergencyWithdraw is disabled before the commit threshold has been crossed...",
+        )));
+    }
+
+    // Phase 1 vs Phase 2 dispatch.
+    let is_phase_2 = PENDING_EMERGENCY_WITHDRAW.may_load(deps.storage)?.is_some();
+    if !is_phase_2 {
+        return execute_emergency_withdraw_initiate(deps, env, info);
+    }
+
+    // Phase 2: commit-only prelude — CREATOR_EXCESS_POSITION sweep
+    // into the drain, plus halt any in-flight distribution.
+    let excess = CREATOR_EXCESS_POSITION.may_load(deps.storage)?;
+    if let Some(ref e) = excess {
+        // Pre-credit excess balances; core drain doesn't know about them.
+        // (Exact mechanism: either stage into POOL_STATE.reserves before
+        // the core drain, or pass amounts into a variant of the core
+        // drain that accepts pre-credits. Pick whichever is cleaner
+        // when you write the code.)
+    }
+
+    // Halt distribution (no-op if not distributing).
+    if let Ok(mut dist) = DISTRIBUTION_STATE.load(deps.storage) {
+        dist.is_distributing = false;
+        dist.distributions_remaining = 0;
+        DISTRIBUTION_STATE.save(deps.storage, &dist)?;
+    }
+
+    let CoreDrainResult { messages, total_0, total_1, recipient, total_liquidity_at_withdrawal } =
+        execute_emergency_withdraw_core_drain(deps, env.clone(), info)?;
+
+    // If excess was swept, remove the Item and roll the amounts into
+    // the response attributes (not the message set — core drain
+    // already built those).
+    let (final_0, final_1) = if let Some(e) = excess {
+        CREATOR_EXCESS_POSITION.remove(deps.storage);
+        (total_0 + e.bluechip_amount, total_1 + e.token_amount)
+        // NOTE: the `messages` returned by core drain do NOT include
+        // the excess balances — to actually drain them too the core
+        // function needs a hook, or creator-pool builds its own extra
+        // BankMsg+CW20Transfer for the excess amounts and extends the
+        // message list. See "design choice" note below.
+    } else {
+        (total_0, total_1)
+    };
+
+    Ok(Response::new()
+        .add_messages(messages)
+        .add_attribute("action", "emergency_withdraw")
+        .add_attribute("recipient", recipient)
+        .add_attribute("amount0", final_0)
+        .add_attribute("amount1", final_1)
+        .add_attribute("total_liquidity", total_liquidity_at_withdrawal)
+        // ... remaining attributes unchanged ...
+    )
+}
+```
+
+### Design choice to make during 3c implementation
+
+How to route `CREATOR_EXCESS_POSITION` balances into the core drain's
+message list:
+
+**Option A — core drain accepts pre-credit amounts.** Add
+`extra_to_drain_0`/`extra_to_drain_1` parameters to
+`execute_emergency_withdraw_core_drain`. Creator-pool passes excess
+amounts; standard-pool passes zeroes. Core drain builds messages for
+the combined totals. Simple, but pool-core's function signature grows.
+
+**Option B — creator-pool builds its own excess-drain messages and
+concats.** Core drain returns messages for reserves+fees+pot only.
+Creator-pool builds extra BankMsg+CW20Transfer for the excess amounts
+itself and extends the message list. Cleaner pool-core API, slightly
+duplicated message-building logic on the creator side.
+
+**Recommendation: Option A.** Keep the message construction in one
+place (pool-core's `build_transfer_msg`-using core drain), and let
+creator-pool just thread the numbers through.
+
+### Update `pool-core/src/lib.rs`
+
+```rust
+pub mod error;
+pub mod state;
+pub mod asset;
+pub mod swap;
+pub mod msg;
+pub mod generic;
+pub mod liquidity_helpers;
+pub mod liquidity;
+pub mod admin;    // 3c
+```
+
+### Cargo.toml changes
+
+None.
+
+### Expected compile-error patterns after 3c
+
+1. **`CREATOR_EXCESS_POSITION` not in pool-core** — confirmed per 2a
+   classification. Creator-pool's wrapper accesses it directly; pool-core
+   never touches it. Clean.
+
+2. **`IS_THRESHOLD_HIT` load in creator-pool wrapper** — resolves
+   through the `pub use pool_core::state::*;` re-export in
+   `pool/src/state.rs`. `IS_THRESHOLD_HIT` is in pool-core per Step 2a.
+
+3. **`DISTRIBUTION_STATE` load in creator-pool wrapper** — stays in
+   creator-pool per Step 2a. Direct `crate::state::DISTRIBUTION_STATE`
+   reference. Clean.
+
+4. **Factory forwards** — `factory/src/execute.rs` calls the pool's
+   emergency-withdraw by dispatching a `PoolAdminMsg::EmergencyWithdraw {}`
+   through a `WasmMsg::Execute`. The pool-side routing (ExecuteMsg
+   variant) stays in creator-pool / standard-pool. The factory doesn't
+   care which variant of the handler runs. No factory change in 3c.
+
+5. **Standard-pool's `execute_emergency_withdraw`** — not in scope for
+   3c (standard-pool doesn't exist yet). Written in Step 4b as:
+   ```rust
+   pub fn execute_emergency_withdraw(deps, env, info) -> Result<Response, ContractError> {
+       if PENDING_EMERGENCY_WITHDRAW.may_load(deps.storage)?.is_some() {
+           let CoreDrainResult { messages, total_0, total_1, recipient, .. } =
+               execute_emergency_withdraw_core_drain(deps, env, info)?;
+           Ok(Response::new().add_messages(messages).add_attribute("action", "emergency_withdraw"))
+       } else {
+           execute_emergency_withdraw_initiate(deps, env, info)
+       }
+   }
+   ```
+
+### Verification after 3c
+
+```
+cargo check -p pool-core
+cargo check -p pool
+cargo test -p pool   # admin_tests should pass
+```
+
+Existing `pool/src/testing/admin_tests.rs` tests the creator-pool
+entry point behavior (factory-only auth, pre-threshold rejection,
+timelock, drain). After 3c those tests continue to exercise the
+creator-pool wrapper + pool-core core. Behavior unchanged.
+
+### Suggested commit message
+
+```
+H14 split (3c/N): extract shared admin handlers to pool-core
+
+Moves pause / unpause / cancel-emergency-withdraw /
+update-config-from-factory / ensure_not_drained to pool-core::admin
+wholesale. Factors execute_emergency_withdraw into two phase-specific
+pool-core helpers (execute_emergency_withdraw_initiate for phase 1,
+execute_emergency_withdraw_core_drain for phase 2) so creator-pool
+can wrap them with its commit-only extras (pre-threshold rejection,
+CREATOR_EXCESS_POSITION sweep, DISTRIBUTION_STATE halt) without
+polluting pool-core with commit-phase concepts.
+
+Stays in creator-pool:
+  - execute_recover_stuck_states + private recovery helpers
+  - execute_emergency_withdraw (now a thin wrapper around pool-core
+    with the commit-only concerns layered in)
+
+Standard-pool's execute_emergency_withdraw (Step 4b) will also call
+the two pool-core phase functions directly, with no wrapper needed
+because standard pools have neither a threshold gate, a creator excess
+position, nor distribution state.
+
+No behavior change on the creator-pool path. Tests in
+pool/src/testing/admin_tests.rs continue to pass.
+```
