@@ -955,3 +955,271 @@ next.
 
 No behavior change.
 ```
+
+## Step 3a — `liquidity.rs` + `liquidity_helpers.rs`
+
+Source files:
+- `pool/src/liquidity.rs` (975 lines) — LP-operation handler bodies
+- `pool/src/liquidity_helpers.rs` (554 lines) — math + validators +
+  two commit-only claim handlers
+
+After Commit 4b (pair-shape generalization), every LP op body and
+every math helper in these two files is pair-shape agnostic and is
+called by both pool kinds. The only commit-only code here is the two
+`execute_claim_creator_*` handlers at the bottom of `liquidity_helpers.rs`.
+
+### `liquidity.rs` — wholesale move to `pool-core/src/liquidity.rs`
+
+All 9 public functions plus their internal helpers move verbatim:
+
+| Item | Kind | Notes |
+|---|---|---|
+| `DepositPrep` struct | private | per-deposit state bundle incl. `refund_amount0/1` per-side refunds (from 4b) |
+| `collect_deposit_side` | private fn | per-asset `TokenType` dispatch — Native verifies funds + emits refund, CW20 emits TransferFrom |
+| `prepare_deposit` | private fn | wraps `calc_liquidity_for_deposit` + calls `collect_deposit_side` for each side |
+| `execute_deposit_liquidity` | pub fn | first-deposit and general-deposit path; mints position NFT |
+| `execute_collect_fees` | pub fn | LP fee collection; sweeps `CREATOR_FEE_POT` clip |
+| `add_to_position` | pub fn | add to existing position + auto-collect pending |
+| `execute_add_to_position` | pub fn | rate-limited entry wrapper |
+| `remove_all_liquidity` | pub fn | full withdraw + fees |
+| `execute_remove_all_liquidity` | pub fn | rate-limited entry wrapper |
+| `remove_partial_liquidity` | pub fn | partial withdraw + fees; preserves `unclaimed_fees_*` |
+| `execute_remove_partial_liquidity` | pub fn | rate-limited entry wrapper |
+| `execute_remove_partial_liquidity_by_percent` | pub fn | thin wrapper over partial |
+
+`pool/src/liquidity.rs` after the move:
+
+```rust
+//! LP-operation handlers live in `pool_core::liquidity`. This re-export
+//! preserves every `use crate::liquidity::X;` import in the creator-pool
+//! crate and its tests.
+pub use pool_core::liquidity::*;
+```
+
+### `liquidity_helpers.rs` — split
+
+#### MOVE to `pool-core/src/liquidity_helpers.rs`
+
+Math, validators, position-integrity helpers — called by shared LP ops
+and by commit-only `execute_claim_creator_*` alike.
+
+| Item | Kind |
+|---|---|
+| `OPTIMAL_LIQUIDITY` | `pub const Uint128 = 1_000_000` |
+| `calculate_unclaimed_fees` | fn |
+| `calculate_fees_owed` | fn |
+| `calculate_fees_owed_split` | fn (returns `(adjusted, clipped)`) |
+| `calc_capped_fees` | fn |
+| `calc_capped_fees_with_clip` | fn (primary fee-payout computer) |
+| `build_fee_transfer_msgs` | fn (shape-agnostic via `build_transfer_msg`) |
+| `build_transfer_msg` | fn (per-asset dispatch — added in 4b) |
+| `check_slippage` | fn |
+| `check_ratio_deviation` | fn |
+| `calculate_fee_size_multiplier` | fn |
+| `integer_sqrt` | fn |
+| `calc_liquidity_for_deposit` | fn (first-deposit ratio math) |
+| `verify_position_ownership` | fn (CW721 ownership query) |
+| `sync_position_on_transfer` | fn (fee-checkpoint reset on NFT transfer — audit H8 surface) |
+
+#### STAY in `pool/src/liquidity_helpers.rs`
+
+Commit-phase-specific wallet claim handlers. Both depend on commit-only
+storage Items (`CREATOR_FEE_POT` is shared but only ever written by the
+commit-pool fee clipping flow; `CREATOR_EXCESS_POSITION` is commit-only).
+
+| Item | Kind | Why it stays |
+|---|---|---|
+| `execute_claim_creator_fees` | pub fn | sweeps `CREATOR_FEE_POT` to `COMMITFEEINFO.creator_wallet_address`; creator concept is commit-only |
+| `execute_claim_creator_excess` | pub fn | sweeps `CREATOR_EXCESS_POSITION`; this Item only exists in commit-pool state |
+
+`pool/src/liquidity_helpers.rs` after the split:
+
+```rust
+//! Commit-phase-only claim handlers. The shared math + validators
+//! previously in this file now live in `pool_core::liquidity_helpers`
+//! and are re-exported below.
+pub use pool_core::liquidity_helpers::*;
+
+use crate::error::ContractError;
+use crate::state::{CreatorFeePot, COMMITFEEINFO, CREATOR_EXCESS_POSITION, CREATOR_FEE_POT, POOL_INFO};
+use cosmwasm_std::{
+    to_json_binary, CosmosMsg, DepsMut, Env, MessageInfo, Response, WasmMsg,
+};
+
+pub fn execute_claim_creator_fees(...) { /* unchanged body */ }
+pub fn execute_claim_creator_excess(...) { /* unchanged body */ }
+```
+
+### Cross-step dependencies (important)
+
+`pool-core/src/liquidity.rs` imports two helpers that today live in
+`pool/src/generic_helpers.rs`:
+
+- `check_rate_limit` — called by `execute_add_to_position`, `execute_remove_*`
+- `enforce_transaction_deadline` — called by every public LP entry point
+
+Both of these move to `pool-core/src/generic.rs` in **Step 3b**, not 3a.
+
+**Resolution options**, in order of preference:
+
+1. **Co-land 3a and 3b as a single commit.** The two steps are
+   naturally coupled — neither makes sense deployed alone. This is the
+   recommended path. Commit subject: `H14 split (3a+3b/N): liquidity +
+   helpers + generic utilities`.
+
+2. **Pre-move `check_rate_limit` and `enforce_transaction_deadline`
+   into a new `pool-core/src/generic.rs` as part of 3a**, leaving the
+   rest of `generic_helpers.rs` for 3b. This keeps 3a self-contained
+   but nibbles 3b's scope.
+
+3. **Temporarily declare them private in pool-core/src/liquidity.rs**
+   as copies; delete in 3b. Works but leaves duplication until 3b lands.
+
+**Default recommendation: option 1** — land 3a+3b together.
+
+### Also depends on (already landed or being landed)
+
+- `pool-core::state::{PoolInfo, PoolState, PoolFeeState, PoolSpecs, Position, CreatorFeePot, POOL_INFO, POOL_STATE, POOL_FEE_STATE, POOL_SPECS, POOL_ANALYTICS, POOL_PAUSED, LIQUIDITY_POSITIONS, NEXT_POSITION_ID, OWNER_POSITIONS, CREATOR_FEE_POT, MINIMUM_LIQUIDITY}` — all moved in 2a.
+- `pool-core::asset::TokenType`, `pool-core::asset::TokenInfoPoolExt` — moved in 2b.
+- `pool-core::swap::update_price_accumulator` — moved in 2c.
+- `pool-core::error::ContractError` — moved in the C1-series error.rs commit.
+
+### `packages/pool-core/src/liquidity.rs` imports
+
+```rust
+use crate::asset::TokenType;
+use crate::error::ContractError;
+use crate::liquidity_helpers::{
+    build_fee_transfer_msgs, calc_capped_fees_with_clip, calc_liquidity_for_deposit,
+    calculate_fee_size_multiplier, calculate_fees_owed_split, check_ratio_deviation,
+    check_slippage, sync_position_on_transfer, verify_position_ownership,
+};
+use crate::state::{
+    CreatorFeePot, PoolInfo, PoolSpecs, Position, TokenMetadata,
+    CREATOR_FEE_POT, LIQUIDITY_POSITIONS, MINIMUM_LIQUIDITY, NEXT_POSITION_ID,
+    OWNER_POSITIONS, POOL_ANALYTICS, POOL_FEE_STATE, POOL_INFO, POOL_PAUSED,
+    POOL_SPECS, POOL_STATE,
+};
+use crate::swap::update_price_accumulator;
+use crate::generic::{check_rate_limit, enforce_transaction_deadline};  // 3b co-landed
+use cosmwasm_std::{
+    to_json_binary, Addr, BankMsg, Coin, CosmosMsg, Deps, DepsMut, Env, MessageInfo,
+    Response, StdError, Timestamp, Uint128, WasmMsg,
+};
+use pool_factory_interfaces::cw721_msgs::{Action, Cw721ExecuteMsg};
+```
+
+### `packages/pool-core/src/liquidity_helpers.rs` imports
+
+```rust
+use crate::asset::{get_native_denom, TokenType};
+use crate::error::ContractError;
+use crate::state::{
+    PoolFeeState, PoolInfo, Position, LIQUIDITY_POSITIONS, OWNER_POSITIONS,
+};
+use cosmwasm_std::{
+    to_json_binary, Addr, CosmosMsg, Decimal, Deps, StdError, StdResult, Storage, Uint128, WasmMsg,
+};
+```
+
+(Note: `get_native_denom` comes from the re-exported `pool_factory_interfaces::asset`, which pool-core re-exports via `pub use pool_factory_interfaces::asset::*` inside `pool-core/src/asset.rs`. So `crate::asset::get_native_denom` resolves correctly.)
+
+### Update `pool-core/src/lib.rs`
+
+```rust
+pub mod error;
+pub mod state;
+pub mod asset;
+pub mod swap;
+pub mod msg;
+pub mod liquidity_helpers;  // 3a
+pub mod liquidity;          // 3a  — depends on liquidity_helpers, generic
+pub mod generic;            // 3b (co-landed)
+```
+
+`liquidity` references `generic`, so put `generic;` above `liquidity;`
+if your module declaration order is visually meaningful. Rust does not
+care about declaration order for resolution.
+
+### Cargo.toml changes
+
+None for 3a. pool-core already depends on `pool-factory-interfaces`,
+`cosmwasm-std`, `cw-storage-plus`, and (via wildcard re-exports) `cw20`.
+
+### Expected compile-error patterns after 3a
+
+(Assuming 3a+3b co-landed per option 1.)
+
+1. **`DepositPrep` not pub** — it's declared `struct DepositPrep` (module
+   private). That's fine — it's only used inside `liquidity.rs` itself,
+   which moves wholesale. No cross-crate access needed.
+
+2. **Path change for `prep.collect_msgs`** — `prep` is a local of type
+   `DepositPrep` built inside pool-core; consumers (`execute_deposit_liquidity`
+   and `add_to_position`) are in the same file, so field access stays
+   identical.
+
+3. **`CreatorFeePot` import path** — struct is in `pool-core::state`
+   after 2a; import resolves.
+
+4. **CW721 message construction** — `Cw721ExecuteMsg::<TokenMetadata>::Mint {...}`
+   and `Cw721ExecuteMsg::<()>::UpdateOwnership(...)` both used;
+   `TokenMetadata` lives in `pool-core::state` (moved 2a). Typing stays
+   clean.
+
+5. **Tests** — `pool/src/testing/liquidity_tests.rs` imports
+   `crate::liquidity::X`. Glob re-export handles it.
+
+### Verification after 3a (or 3a+3b combined)
+
+```
+cargo check -p pool-core
+cargo check -p pool
+cargo test -p pool
+```
+
+Focus: the pool's existing liquidity tests. If they pass unchanged,
+the shape-agnostic code path works as before.
+
+### Suggested commit message (if co-landed 3a+3b)
+
+```
+H14 split (3a+3b/N): extract liquidity + liquidity_helpers + generic to pool-core
+
+Combined extraction — the two steps share dependencies tightly enough
+(pool-core::liquidity imports check_rate_limit and
+enforce_transaction_deadline from generic) that splitting them into
+separate commits would leave the tree non-building in between.
+
+Moved to pool-core:
+  - liquidity.rs wholesale (9 LP ops + DepositPrep + collect_deposit_side)
+  - liquidity_helpers.rs minus execute_claim_creator_{fees,excess}
+    (fee math, slippage/ratio validators, integer_sqrt,
+     fee_size_multiplier, verify_position_ownership,
+     sync_position_on_transfer, OPTIMAL_LIQUIDITY)
+  - generic_helpers.rs shared subset: check_rate_limit,
+    enforce_transaction_deadline, update_pool_fee_growth,
+    decimal2decimal256, get_bank_transfer_to_msg, mint_tokens
+
+Stayed in pool/:
+  - liquidity_helpers.rs: execute_claim_creator_fees,
+    execute_claim_creator_excess (both depend on commit-only Items)
+  - generic_helpers.rs: trigger_threshold_payout,
+    process_distribution_batch, validate_pool_threshold_payments,
+    update_commit_info, calculate_effective_batch_size,
+    calculate_committer_reward, ThresholdPayoutMsgs struct,
+    DISTRIBUTION_STATE machinery
+
+pool-core::swap also drops its private inline decimal2decimal256
+(from 2c) and imports it from pool-core::generic now.
+
+Three glob re-export shims preserve every existing call site:
+  - pool/src/liquidity.rs
+  - pool/src/liquidity_helpers.rs
+  - pool/src/generic_helpers.rs
+
+No behavior change. All existing tests pass unchanged.
+```
+
+(If you split 3a and 3b separately per options 2 or 3, adjust
+accordingly — the plan is unchanged; only the commit boundary differs.)
