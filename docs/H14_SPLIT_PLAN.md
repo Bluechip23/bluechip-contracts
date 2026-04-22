@@ -1223,3 +1223,182 @@ No behavior change. All existing tests pass unchanged.
 
 (If you split 3a and 3b separately per options 2 or 3, adjust
 accordingly — the plan is unchanged; only the commit boundary differs.)
+
+## Step 3b — `generic_helpers.rs` split
+
+Source: `pool/src/generic_helpers.rs` (562 lines). The file is a mix of
+primitive utilities (rate limit, deadline check, decimal conversions,
+bank/mint message builders) and commit-phase-specific heavy lifting
+(threshold payout, distribution batching, commit-ledger bookkeeping).
+
+### Items that MOVE to `pool-core/src/generic.rs`
+
+Shared primitives used by swap, liquidity, and (in the case of
+`update_pool_fee_growth` and `check_rate_limit`) by commit too.
+
+| Item | Kind | Notes |
+|---|---|---|
+| `update_pool_fee_growth` | fn | updates `PoolFeeState.fee_growth_global_*` + `fee_reserve_*`; called by every swap and post-threshold commit |
+| `check_rate_limit` | fn | reads/writes shared `USER_LAST_COMMIT` Item; called by every rate-limited entry point |
+| `enforce_transaction_deadline` | fn | pure check; called by every user-facing entry |
+| `decimal2decimal256` | fn | pure — used by swap math. Deletes the temporary private copy `pool-core/src/swap.rs` grew in Step 2c. |
+| `get_bank_transfer_to_msg` | fn | thin `BankMsg::Send` builder; used by LP operations and fee payouts |
+
+### Items that STAY in `pool/src/generic_helpers.rs` (creator-pool only)
+
+The entire threshold-payout / distribution machinery. These functions
+depend on `ThresholdPayoutAmounts`, `CommitLimitInfo`, `DistributionState`,
+`CREATOR_EXCESS_POSITION`, `COMMIT_LEDGER`, `COMMIT_INFO`, `NATIVE_RAISED_FROM_COMMIT` —
+every one of which is creator-pool-only state per Step 2a.
+
+| Item | Kind | Notes |
+|---|---|---|
+| `validate_pool_threshold_payments` | fn | called from creator-pool `instantiate` on the commit-pool path |
+| `ThresholdPayoutMsgs` | struct | return type of `trigger_threshold_payout`; bundles `factory_notify` SubMsg + `other_msgs` |
+| `trigger_threshold_payout` | fn | ~150 lines; mints creator+bluechip rewards, seeds pool reserves, sets up distribution |
+| `process_distribution_batch` | fn | ~130 lines; drains `COMMIT_LEDGER` in MAX_DISTRIBUTIONS_PER_TX-sized batches |
+| `calculate_effective_batch_size` | fn | helper to `process_distribution_batch` |
+| `calculate_committer_reward` | private fn | helper to `process_distribution_batch` |
+| `update_commit_info` | fn | updates `COMMIT_INFO` ledger entry for a committer |
+| `mint_tokens` | fn | builds a `Cw20ExecuteMsg::Mint`; only called from `trigger_threshold_payout` and `process_distribution_batch` |
+
+### `pool/src/generic_helpers.rs` after the split
+
+```rust
+//! Commit-phase helpers that compose the shared primitives in
+//! pool_core::generic with commit-only state (ThresholdPayoutAmounts,
+//! CommitLimitInfo, DistributionState, COMMIT_LEDGER, etc.). Existing
+//! `use crate::generic_helpers::X;` imports resolve via the re-export
+//! below for the shared items, or fall through to the local defs for
+//! commit-only items.
+pub use pool_core::generic::*;
+
+use crate::error::ContractError;
+use crate::state::{
+    CommitLimitInfo, DistributionState, PoolFeeState, PoolInfo, PoolState,
+    ThresholdPayoutAmounts, Committing, CREATOR_EXCESS_POSITION, COMMIT_INFO,
+    COMMIT_LEDGER, DISTRIBUTION_STATE, DISTRIBUTION_STALL_TIMEOUT_SECONDS,
+    DEFAULT_ESTIMATED_GAS_PER_DISTRIBUTION, DEFAULT_MAX_GAS_PER_TX,
+    MAX_DISTRIBUTIONS_PER_TX, NATIVE_RAISED_FROM_COMMIT, POOL_FEE_STATE,
+    POOL_STATE,
+};
+use crate::msg::CommitFeeInfo;  // re-exported from pool_core::msg after 2d
+use crate::state::{CreatorExcessLiquidity};  // stays creator-only per 2a
+use cosmwasm_std::{
+    to_json_binary, Addr, CosmosMsg, Decimal, DepsMut, Env, Order, StdError,
+    StdResult, Storage, SubMsg, Timestamp, Uint128, WasmMsg,
+};
+use cw20::Cw20ExecuteMsg;
+use cw_storage_plus::Bound;
+
+pub struct ThresholdPayoutMsgs { /* unchanged */ }
+pub fn validate_pool_threshold_payments(...) { /* unchanged */ }
+pub fn trigger_threshold_payout(...) { /* unchanged */ }
+pub fn process_distribution_batch(...) { /* unchanged */ }
+pub fn calculate_effective_batch_size(...) { /* unchanged */ }
+fn calculate_committer_reward(...) { /* unchanged, private */ }
+pub fn update_commit_info(...) { /* unchanged */ }
+pub fn mint_tokens(...) { /* unchanged */ }
+```
+
+### `packages/pool-core/src/generic.rs` imports
+
+```rust
+use crate::error::ContractError;
+use crate::state::{PoolFeeState, PoolSpecs, PoolState, USER_LAST_COMMIT};
+use cosmwasm_std::{
+    Addr, BankMsg, Coin, CosmosMsg, Decimal, Decimal256, DepsMut, Env, StdError,
+    StdResult, Timestamp, Uint128,
+};
+```
+
+### Update `pool-core/src/swap.rs`
+
+Delete the private inline `decimal2decimal256` added in Step 2c and
+replace with:
+
+```rust
+use crate::generic::decimal2decimal256;
+```
+
+Net effect of 3b on pool-core/src/swap.rs: -8 lines (inline fn body),
++1 line (use import).
+
+### Update `pool-core/src/lib.rs`
+
+```rust
+pub mod error;
+pub mod state;
+pub mod asset;
+pub mod swap;
+pub mod msg;
+pub mod generic;            // 3b (co-landed with 3a per recommendation)
+pub mod liquidity_helpers;  // 3a
+pub mod liquidity;          // 3a — depends on generic
+```
+
+### Cargo.toml changes
+
+None. pool-core already has `cosmwasm-std`, `cw-storage-plus`.
+
+Creator-pool's generic_helpers.rs uses `cw20`, `cw_storage_plus::Bound`,
+etc. — those deps are already in `pool/Cargo.toml`.
+
+### Expected compile-error patterns after 3b
+
+1. **`decimal2decimal256` duplicate definition** — if Step 2c's private
+   inline is not deleted when 3b lands, you get a name-shadowing warning
+   inside `pool-core/src/swap.rs`. Fix: delete the inline, import from
+   `crate::generic`.
+
+2. **`USER_LAST_COMMIT` visibility** — Item is `pub` in `pool-core::state`
+   after 2a. `pool-core::generic::check_rate_limit` imports it as
+   `use crate::state::USER_LAST_COMMIT;`. Clean.
+
+3. **`trigger_threshold_payout` / `process_distribution_batch` call
+   sites** — `pool/src/commit.rs` imports these as
+   `use crate::generic_helpers::{trigger_threshold_payout,
+   process_distribution_batch};`. They stay in creator-pool's
+   `generic_helpers.rs` so the import path is unchanged. ✓
+
+4. **`mint_tokens` call sites** — only `trigger_threshold_payout` and
+   `process_distribution_batch` call `mint_tokens`, both in creator-pool
+   after the split. Local path (`crate::generic_helpers::mint_tokens`)
+   continues to resolve. ✓
+
+5. **`enforce_transaction_deadline` call sites outside
+   liquidity/commit** — `pool/src/liquidity_helpers.rs` (now the
+   claim-handler file) calls `crate::generic_helpers::enforce_transaction_deadline`
+   inside `execute_claim_creator_fees` and `execute_claim_creator_excess`.
+   Resolves through the glob re-export in `pool/src/generic_helpers.rs`. ✓
+
+6. **`update_pool_fee_growth` called from `pool-core::liquidity`** —
+   post-3b, `pool-core::liquidity::execute_collect_fees` (and the
+   remove-liquidity paths) call `update_pool_fee_growth` via
+   `crate::generic::update_pool_fee_growth`. No cross-crate call
+   needed. ✓
+
+### Verification after 3b (co-landed with 3a)
+
+```
+cargo check -p pool-core
+cargo check -p pool
+cargo test -p pool
+```
+
+If split from 3a into a separate commit (not recommended), verify that
+the intermediate tree built between 3a alone and 3a+3b — it will NOT,
+so don't attempt.
+
+### Step 3 progress tracker
+
+After 3a+3b (co-landed):
+
+- [x] 3a  liquidity + liquidity_helpers
+- [x] 3b  generic_helpers
+- [ ] 3c  admin (pause / emergency_withdraw / update_config_from_factory shared; execute_recover_stuck_states stays)
+- [ ] 3d  query (~15 shared queries; 4 commit-only stay)
+
+Step 3 is ~50% complete once 3a+3b lands. After 3c and 3d, every shared
+handler in the creator-pool crate is either in `pool-core` or is a
+commit-phase handler.
