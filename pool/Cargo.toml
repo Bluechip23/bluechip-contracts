@@ -36,6 +36,7 @@ cw-storage-plus = { workspace = true }
 thiserror = { workspace = true }
 
 pool-factory-interfaces = { path = "../packages/pool-factory-interfaces" }
+pool-core = { path = "../packages/pool-core" }
 cw-utils = { workspace = true }
 
 [dev-dependencies]

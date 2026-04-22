@@ -32,3 +32,5 @@
 //!
 //! STATUS: skeleton. Code extraction from `pool/` happens in subsequent
 //! commits (see H14 split-series plan).
+
+pub mod error;
