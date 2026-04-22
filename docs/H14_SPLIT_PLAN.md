@@ -266,3 +266,197 @@ should be smaller — no commit.rs in its wasm).
 ---
 
 Steps 2–5 will be appended to this document in subsequent turns.
+
+## Step 2a — `state.rs` split
+
+Source: `pool/src/state.rs` (338 lines). Target split:
+
+- `packages/pool-core/src/state.rs` (shared items + structs)
+- `pool/src/state.rs` (commit-specific items + re-export of shared from
+  pool-core, so every existing `use crate::state::X;` in the creator-pool
+  crate keeps resolving)
+
+### Items that MOVE to `pool-core/src/state.rs`
+
+Structs used by shared code paths:
+
+| Struct | Notes |
+|---|---|
+| `TokenMetadata` | NFT position metadata — shared |
+| `PoolState` | reserves, cumulative prices, NFT-accept flag — shared |
+| `PoolFeeState` | fee_growth + fee_reserve — shared |
+| `PoolSpecs` | lp_fee, min_commit_interval, usd_payment_tolerance_bps — shared |
+| `PoolInfo` | pool_id, token_address, position_nft_address, factory_addr — shared |
+| `PoolDetails` (pool-side) | asset_infos + contract_addr + pool_type; `query_pools` impl moves with it — shared |
+| `Position` | LP position record — shared |
+| `PoolAnalytics` + `Default` impl | counters — shared |
+| `CreatorFeePot` + `Default` impl | struct is shared because emergency_withdraw sweeps it; Item is shared too (standard pool never writes, but `may_load` returns `None`) |
+| `EmergencyWithdrawalInfo` | audit-trail struct — shared |
+| `ExpectedFactory` | factory-address pin — shared |
+| `PoolCtx` + `impl PoolCtx::load` | bundle loader for the four hot-path items — shared |
+
+Storage Items that move:
+
+| Item | Key | Notes |
+|---|---|---|
+| `POOL_INFO` | `"pool_info"` | shared |
+| `POOL_STATE` | `"pool_state"` | shared |
+| `POOL_FEE_STATE` | `"pool_fee_state"` | shared |
+| `POOL_SPECS` | `"pool_specs"` | shared |
+| `POOL_ANALYTICS` | `"pool_analytics"` | shared |
+| `LIQUIDITY_POSITIONS` | `"positions"` | shared |
+| `OWNER_POSITIONS` | `"owner_positions"` | shared |
+| `NEXT_POSITION_ID` | `"next_position_id"` | shared |
+| `POOL_PAUSED` | `"pool_paused"` | shared |
+| `EMERGENCY_WITHDRAWAL` | `"emergency_withdrawal"` | shared |
+| `PENDING_EMERGENCY_WITHDRAW` | `"pending_emergency_withdraw"` | shared |
+| `EMERGENCY_DRAINED` | `"emergency_drained"` | shared |
+| `EXPECTED_FACTORY` | `"expected_factory"` | shared |
+| `REENTRANCY_LOCK` | `"rate_limit_guard"` | shared |
+| `USER_LAST_COMMIT` | `"user_last_commit"` | shared (rate limit applies to both kinds) |
+| `IS_THRESHOLD_HIT` | `"threshold_hit"` | shared (shared `query_check_commit` reads it; standard pool sets it `true` at instantiate) |
+| `CREATOR_FEE_POT` | `"creator_fee_pot"` | shared (emergency_withdraw sweeps it; standard pool's stays empty) |
+| `COMMITFEEINFO` | `"fee_info"` | shared (emergency_withdraw reads `bluechip_wallet_address` off it for the drain recipient; standard pool saves zero-valued placeholder at instantiate) |
+| `ORACLE_INFO` | `"oracle_info"` | shared (struct + Item both — though its `oracle_addr` field is effectively dead code per audit H9; leave as-is for now, separate cleanup) |
+
+Constants that move:
+
+| Constant | Value | Notes |
+|---|---|---|
+| `MINIMUM_LIQUIDITY` | `Uint128::new(1000)` | shared |
+| `EMERGENCY_WITHDRAW_DELAY_SECONDS` | `86_400` | shared |
+
+### Items that STAY in `pool/src/state.rs` (creator-pool only)
+
+Storage Items (commit-phase only):
+
+- `USD_RAISED_FROM_COMMIT`, `NATIVE_RAISED_FROM_COMMIT`
+- `COMMIT_LEDGER`, `COMMIT_INFO`
+- `THRESHOLD_PROCESSING`, `THRESHOLD_PAYOUT_AMOUNTS`, `COMMIT_LIMIT_INFO`
+- `LAST_THRESHOLD_ATTEMPT`, `PENDING_FACTORY_NOTIFY`
+- `DISTRIBUTION_STATE`, `CREATOR_EXCESS_POSITION`
+
+Structs (commit-phase only):
+
+- `Committing`, `DistributionState`, `CreatorExcessLiquidity`
+- `ThresholdPayoutAmounts`, `CommitLimitInfo`, `RecoveryType`
+
+Constants (commit-phase only):
+
+- `REPLY_ID_FACTORY_NOTIFY_INITIAL`, `REPLY_ID_FACTORY_NOTIFY_RETRY`
+- `DEFAULT_ESTIMATED_GAS_PER_DISTRIBUTION`, `DEFAULT_MAX_GAS_PER_TX`
+- `MAX_DISTRIBUTIONS_PER_TX`, `DISTRIBUTION_STALL_TIMEOUT_SECONDS`
+
+Scheduled to be **removed entirely in Step 4** (dead with split wasms):
+
+- `pub use pool_factory_interfaces::PoolKind;` re-export
+- `POOL_KIND: Item<PoolKind>` storage Item
+- `pub fn load_pool_kind(...)` helper
+
+Leave these in place during Step 2a; Step 4 is where they go. Keeping
+them until then avoids breaking `require_commit_pool` and the tagged-enum
+instantiate dispatch, both of which are still live code today.
+
+### `pool/src/state.rs` after the split
+
+Top of file becomes:
+
+```rust
+// Shared structs, Items, and constants live in pool-core. This glob
+// re-export preserves every `use crate::state::X;` import in the
+// creator-pool crate (including tests) without touching call sites.
+// Commit-phase-specific items are defined below.
+pub use pool_core::state::*;
+
+use cosmwasm_schema::cw_serde;
+use cosmwasm_std::{Addr, StdResult, Timestamp, Uint128};
+use cw_storage_plus::{Item, Map};
+use crate::msg::CommitFeeInfo;  // CommitFeeInfo itself is moved in Step 2d
+```
+
+...followed by the commit-only Items, structs, and constants listed above.
+
+### `packages/pool-core/src/state.rs` imports
+
+The new file needs:
+
+```rust
+use cosmwasm_schema::cw_serde;
+use cosmwasm_std::{Addr, Decimal, StdResult, Storage, Uint128, Timestamp, QuerierWrapper};
+use cw_storage_plus::{Item, Map};
+use pool_factory_interfaces::asset::{PoolPairType, TokenInfo, TokenType};
+use crate::msg::CommitFeeInfo;  // CommitFeeInfo lives in pool_core::msg after Step 2d
+```
+
+Note the dependency on `CommitFeeInfo` — `COMMITFEEINFO` Item's value
+type. Step 2d is where `CommitFeeInfo` moves to `pool-core/src/msg.rs`.
+If you execute 2a before 2d, temporarily import it from `crate::msg::CommitFeeInfo`
+in creator-pool and re-export from pool-core via a forward-declaration,
+or just do 2a and 2d together. Simplest: commit them in one PR.
+
+### Update `pool-core/src/lib.rs`
+
+Add `pub mod state;` alongside the existing `pub mod error;`.
+
+### Cargo.toml changes
+
+None for Step 2a. `pool-core` already depends on `pool-factory-interfaces`
+and `cw-storage-plus` (added in C1 skeleton). `pool/` already depends on
+`pool-core` (added in the error.rs extraction).
+
+### Expected compile-error patterns
+
+When you `cargo check -p pool-core -p pool` after executing 2a:
+
+1. **Missing `CommitFeeInfo` in pool-core state.rs** — if 2d hasn't
+   landed yet. Either land 2d first, or temporarily declare a stub
+   `pub struct CommitFeeInfo { ... }` in pool-core/src/msg.rs (with
+   identical fields) that 2d will replace.
+
+2. **Orphan implementation** of `PoolDetails::query_pools` — `PoolDetails`
+   is moving to pool-core but `query_pools` calls
+   `pool_factory_interfaces::asset::query_pools`, which is fine. Should
+   Just Work.
+
+3. **Visibility errors** on items that were `pub(crate)` and now cross a
+   crate boundary. Search for `pub(crate)` in `pool/src/state.rs` (there
+   are none currently — every storage Item is already `pub`), so this is
+   a non-issue for 2a.
+
+4. **Duplicate definition** if you forget to delete the original in
+   `pool/src/state.rs`. After `pub use pool_core::state::*;` at the top
+   of `pool/src/state.rs`, a local `pub const POOL_STATE: ...` re-declaration
+   would collide. Delete the originals.
+
+5. **Tests** — `pool/src/testing/*.rs` files use `use crate::state::X;`.
+   These resolve through the glob re-export, so no test file changes are
+   required for 2a.
+
+### Verification after 2a
+
+```
+cargo check -p pool-core
+cargo check -p pool
+cargo test -p pool   # existing tests should still pass; no behavior change
+```
+
+If step 2a is committed alone (before 2d), expect one compile error
+around `CommitFeeInfo`. The fix is either (a) co-land 2d, or (b) stub
+`CommitFeeInfo` in pool-core temporarily as described above.
+
+### Suggested commit message
+
+```
+H14 split (2a/N): extract shared state items to pool-core
+
+Moves every storage key, struct, and constant in pool/src/state.rs that
+is used by both pool kinds into packages/pool-core/src/state.rs.
+Commit-phase-specific items (COMMIT_LEDGER, THRESHOLD_PAYOUT_AMOUNTS,
+DISTRIBUTION_STATE, etc.) stay in pool/src/state.rs behind a glob
+re-export of pool_core::state::* so existing call sites keep resolving.
+
+See docs/H14_SPLIT_PLAN.md#step-2a for the item-by-item mapping.
+
+No behavior change. Creator-pool wasm should produce an identical
+artifact after this commit.
+```
