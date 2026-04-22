@@ -2181,3 +2181,265 @@ standard_pool.wasm alongside. Doing them twice (once in 4a, once in
 No behavior change. All existing tests pass with `cargo test -p
 creator-pool`.
 ```
+
+## Step 4b-i — `standard-pool/` crate skeleton
+
+Minimum viable crate: Cargo manifest, workspace registration, empty
+`lib.rs` with module stubs, and the one-line `error.rs` re-export
+matching the pattern creator-pool already uses. No contract entry
+points yet — those land in 4b-ii. Commit-alone should build cleanly
+as an empty library crate.
+
+### `standard-pool/Cargo.toml`
+
+Mirror `creator-pool/Cargo.toml` with the crate renamed and the
+commit-pool-only dev-deps trimmed.
+
+```toml
+[package]
+name = "standard-pool"
+version.workspace = true
+authors = ["bestselection18 <noahsflood908@gmail.com>"]
+edition = "2021"
+description = "Bluechip standard xyk pool (no commit phase)"
+license = "Apache-2.0"
+repository = "https://github.com/bestselection18"
+
+exclude = [
+  "artifacts/*",
+]
+
+[lib]
+crate-type = ["cdylib", "rlib"]
+
+[features]
+# for more explicit tests, cargo test --features=backtraces
+backtraces = []
+# use library feature to disable all instantiate/execute/query exports
+library = []
+
+[package.metadata.scripts]
+optimize = { workspace = true }
+
+[dependencies]
+cosmwasm-schema = { workspace = true }
+cw2 = { workspace = true }
+cw20 = { workspace = true }
+
+cosmwasm-std = { workspace = true }
+cw-storage-plus = { workspace = true }
+thiserror = { workspace = true }
+
+pool-factory-interfaces = { path = "../packages/pool-factory-interfaces" }
+pool-core = { path = "../packages/pool-core" }
+cw-utils = { workspace = true }
+
+[dev-dependencies]
+cw-multi-test = { workspace = true }
+easy-addr = { workspace = true }
+factory = { path = "../factory", features = ["library"] }
+oracle = { path = "../mockoracle", features = ["library"] }
+cw20-base = { workspace = true }
+```
+
+Notes:
+
+- `cdylib` is necessary — standard-pool DOES compile to a wasm artifact
+  (unlike pool-core, which is `rlib` only). Each contract produces its
+  own wasm.
+- `library` feature is kept in parallel with creator-pool's convention:
+  when enabled, it strips the `#[entry_point]` exports so the crate
+  can be used as a plain Rust library in other crates' tests (e.g.,
+  integration tests that want to instantiate a standard-pool in a
+  `cw-multi-test` environment without duplicating the contract logic).
+- `cw20` + `cw20-base` kept because shared LP code emits
+  `Cw20ExecuteMsg::Transfer` / `TransferFrom` / `Mint` messages, so
+  the crate compiles against cw20's type definitions. Dev-dep on
+  `cw20-base` is for multi-test integrations.
+- `factory` and `oracle` dev-deps mirror creator-pool: useful for
+  integration tests that exercise the full stack.
+
+### Workspace root `Cargo.toml`
+
+Add `"standard-pool"` to the members array (alphabetical placement or
+grouped with `"creator-pool"` — no compiler preference):
+
+```diff
+[workspace]
+members = [
+    "packages/*",
+    "creator-pool",
++   "standard-pool",
+    "factory",
+    "mockoracle",
+    "expand-economy",
+    "router",
+]
+```
+
+### `standard-pool/src/lib.rs` (skeleton)
+
+```rust
+//! Bluechip Standard Pool — plain xyk pool around two pre-existing
+//! assets (any combination of `Native` and `CreatorToken`). No commit
+//! phase, no threshold, no distribution; immediately tradeable and
+//! depositable at creation.
+//!
+//! The vast majority of this crate's logic lives in `pool_core`. The
+//! modules below are thin entry-point wrappers: they define the
+//! `#[entry_point]` exports and route each `ExecuteMsg` / `QueryMsg`
+//! variant to the corresponding `pool_core::*` handler.
+
+pub mod contract;
+pub mod error;
+pub mod msg;
+pub mod query;
+
+#[cfg(test)]
+mod testing;
+```
+
+The `testing` submodule is added so Step 5a has a place to land new
+integration tests for standard-pool without re-working lib.rs.
+
+### `standard-pool/src/error.rs`
+
+Follows the same pattern as `creator-pool/src/error.rs` after C1's
+`error.rs` extraction:
+
+```rust
+//! Re-export of the shared `ContractError` type from `pool-core`.
+//! Every existing `use crate::error::ContractError;` resolves through
+//! this glob re-export unchanged. Creator-pool uses the identical
+//! pattern; both contracts produce the same error type on the wire.
+pub use pool_core::error::*;
+```
+
+The full `ContractError` enum has commit-phase variants (ShortOfThreshold,
+TooFrequentCommits, InvalidThresholdParams, etc.) that standard-pool
+never constructs. Rust doesn't warn on unconstructed enum variants of
+public types, and sharing the type keeps client-side error handling
+uniform across both pool kinds.
+
+### `standard-pool/src/msg.rs` (placeholder)
+
+Landed in 4b-ii. For 4b-i, a one-line placeholder keeps the module
+declaration resolvable:
+
+```rust
+//! ExecuteMsg/QueryMsg/MigrateMsg definitions land in H14 split Step 4b-ii.
+```
+
+### `standard-pool/src/contract.rs` (placeholder)
+
+Similarly:
+
+```rust
+//! instantiate/execute/query/migrate/reply entry points land in H14 split
+//! Step 4b-ii.
+```
+
+### `standard-pool/src/query.rs` (placeholder)
+
+```rust
+//! Top-level query dispatch lands in H14 split Step 4b-ii. Shared
+//! handler bodies already live in pool_core::query.
+```
+
+### `standard-pool/src/testing/mod.rs` (placeholder)
+
+```rust
+//! Integration tests for standard-pool land in H14 split Step 5a.
+```
+
+### Cargo.toml of `factory/`, `router/`, `mockoracle/`, `expand-economy/` — no changes
+
+None of these crates reference `standard-pool` at the Rust level
+(factory only dispatches via `WasmMsg::Instantiate { code_id, msg }`
+using the flat `StandardPoolInstantiateMsg` from `pool_factory_interfaces`).
+
+### `Makefile` — add a build step for standard-pool
+
+After 4a's `pool.wasm` → `creator_pool.wasm` rename, the Makefile
+builds one pool artifact. 4b-i adds a parallel line for the new wasm:
+
+```diff
+- cp target/$(WASM_TARGET)/release/creator_pool.wasm $(ARTIFACTS)/creator_pool.wasm
++ cp target/$(WASM_TARGET)/release/creator_pool.wasm $(ARTIFACTS)/creator_pool.wasm
++ cp target/$(WASM_TARGET)/release/standard_pool.wasm $(ARTIFACTS)/standard_pool.wasm
+```
+
+Same for the `cosmwasm-check` lines (add a second invocation for
+`standard_pool.wasm`).
+
+### Expected compile-error patterns after 4b-i
+
+1. **`cargo check -p standard-pool`** — empty crate with placeholder
+   modules. Expect warnings for unused imports (none yet) but no errors.
+   Every placeholder module is a `//!`-doc-comment-only file, which is
+   valid Rust.
+
+2. **`cargo check --workspace`** — succeeds. The new crate is
+   registered as a workspace member but has no content that depends
+   on anything else yet.
+
+3. **`cargo test --workspace`** — runs all existing tests plus a
+   zero-test run on standard-pool. Passes.
+
+4. **Makefile**: `make build` produces `creator_pool.wasm` + an empty
+   `standard_pool.wasm`. The wasm might not meet the optimizer's size
+   check if the crate has `crate-type = ["cdylib"]` but no actual
+   `#[entry_point]`s — test this when you run the build. Fix in 4b-ii
+   by adding the entry points.
+
+   If 4b-i alone is committed and you want `make build` to succeed,
+   temporarily leave standard-pool as `crate-type = ["rlib"]` only
+   and add `"cdylib"` in 4b-ii when entry points land. That avoids
+   producing an empty cdylib. Recommended ordering: **co-land 4b-i
+   and 4b-ii** if you want a clean `make build`, or accept a
+   temporarily-unbuildable wasm between the two commits.
+
+### Verification after 4b-i
+
+```
+cargo check --workspace     # must pass
+cargo check -p standard-pool  # must pass, zero warnings on module stubs
+# make build deferred until 4b-ii
+```
+
+### Suggested commit message
+
+```
+H14 split (4b-i/N): add standard-pool/ crate skeleton
+
+New library+contract crate for the standard (non-commit-phase) xyk
+pool. Skeleton only: Cargo.toml, workspace registration, lib.rs
+module declarations, error.rs re-export of pool_core. All other
+modules are placeholder files with //! doc-only contents; entry
+points (instantiate/execute/query/migrate/reply) + msg definitions
+land in 4b-ii.
+
+Cargo layout:
+  standard-pool/
+  ├── Cargo.toml       (mirrors creator-pool; depends on pool-core
+  │                     + pool-factory-interfaces; dev-deps on
+  │                     factory + oracle for integration tests)
+  └── src/
+      ├── lib.rs
+      ├── error.rs     (pub use pool_core::error::*;)
+      ├── msg.rs       (placeholder)
+      ├── contract.rs  (placeholder)
+      ├── query.rs     (placeholder)
+      └── testing/
+          └── mod.rs   (placeholder for Step 5a)
+
+Workspace root Cargo.toml: adds "standard-pool" to members.
+
+Makefile: adds a parallel cp line for standard_pool.wasm alongside
+the existing creator_pool.wasm. The wasm artifact itself will be
+effectively empty after 4b-i alone — recommend co-landing 4b-ii to
+avoid an interim non-buildable state.
+
+No factory, router, mockoracle, or expand-economy changes.
+No behavior change on creator-pool. cargo check --workspace passes.
+```
