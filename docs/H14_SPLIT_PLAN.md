@@ -460,3 +460,114 @@ See docs/H14_SPLIT_PLAN.md#step-2a for the item-by-item mapping.
 No behavior change. Creator-pool wasm should produce an identical
 artifact after this commit.
 ```
+
+## Step 2b — `asset.rs` move
+
+Source: `pool/src/asset.rs` (104 lines). This is mostly a wholesale
+move — every item is used by shared swap/liquidity/fee-message-building
+code that will live in pool-core.
+
+### Items that MOVE to `pool-core/src/asset.rs`
+
+| Item | Kind | Notes |
+|---|---|---|
+| `pub use pool_factory_interfaces::asset::*;` | re-export | preserves `TokenType`, `TokenInfo`, `PoolPairType`, `get_native_denom`, `native_asset*`, `token_asset*`, `query_pools`, etc. as `pool_core::asset::*` |
+| `UBLUECHIP_DENOM` | constant | shared default for the canonical bluechip denom |
+| `TokenInfoPoolExt` trait | trait | 3 methods: `deduct_tax`, `into_msg`, `confirm_sent_native_balance` |
+| `impl TokenInfoPoolExt for TokenInfo` | impl block | moves with the trait |
+| `PoolPairInfo` struct + `impl PoolPairInfo::query_pools` | struct + impl | shared — used in query responses by both pools |
+| `call_pool_info(deps, pool_info)` function | function | used by `query_cumulative_prices` (shared query); depends on `PoolInfo` which lives in `pool-core::state` after 2a |
+
+Nothing stays in `pool/src/asset.rs` except the re-export shim.
+
+### `pool/src/asset.rs` after the split
+
+Replace the entire file (104 lines) with a single re-export:
+
+```rust
+//! Re-export of `pool_core::asset::*`. Preserves every existing
+//! `use crate::asset::X;` import in the creator-pool crate, including
+//! the `TokenInfoPoolExt` trait import needed for method-call resolution
+//! on `TokenInfo` values.
+pub use pool_core::asset::*;
+```
+
+### `packages/pool-core/src/asset.rs` imports
+
+```rust
+pub use pool_factory_interfaces::asset::*;
+
+use crate::state::PoolInfo;
+use cosmwasm_std::{
+    to_json_binary, Addr, BankMsg, Coin, CosmosMsg, Deps, MessageInfo, QuerierWrapper,
+    StdError, StdResult, WasmMsg,
+};
+use cw20::Cw20ExecuteMsg;
+use cw_utils::must_pay;
+```
+
+Note the `use crate::state::PoolInfo;` — depends on Step 2a having moved
+`PoolInfo` into `pool-core/src/state.rs` already. Correct dependency
+order: **land 2a before 2b**.
+
+### Update `pool-core/src/lib.rs`
+
+Add `pub mod asset;` alongside existing `pub mod error;` and (after 2a)
+`pub mod state;`. Order:
+
+```rust
+pub mod error;
+pub mod state;   // 2a
+pub mod asset;   // 2b  — depends on state
+```
+
+### Cargo.toml changes
+
+None. `pool-core` already has `pool-factory-interfaces`, `cosmwasm-std`,
+`cw20`, `cw-utils` from the C1 skeleton.
+
+### Expected compile-error patterns after 2b
+
+1. **Trait-method resolution in creator-pool** — Rust requires the trait
+   to be in scope for method calls like `offer_asset.into_msg(&querier, to)`.
+   Existing creator-pool files do `use crate::asset::TokenInfoPoolExt;`
+   or rely on the glob re-export. Since `pool/src/asset.rs` now
+   `pub use pool_core::asset::*;`, those imports resolve to
+   `pool_core::asset::TokenInfoPoolExt`. Should Just Work.
+
+2. **Circular import risk** — `pool-core::asset` depends on
+   `pool-core::state::PoolInfo`. `pool-core::state` does NOT depend on
+   `pool-core::asset` (it uses `pool_factory_interfaces::asset::TokenType`
+   directly). No cycle. Confirmed clean.
+
+3. **Test files** — creator-pool tests reference `crate::asset::TokenInfoPoolExt`,
+   `crate::asset::call_pool_info`, etc. Glob re-export in `pool/src/asset.rs`
+   covers them.
+
+### Verification after 2b
+
+```
+cargo check -p pool-core
+cargo check -p pool
+cargo test -p pool   # behavior-preserving; all existing tests pass
+```
+
+### Suggested commit message
+
+```
+H14 split (2b/N): extract asset.rs to pool-core
+
+Moves pool/src/asset.rs wholesale to packages/pool-core/src/asset.rs:
+TokenInfoPoolExt trait + impl, PoolPairInfo struct, call_pool_info
+helper, UBLUECHIP_DENOM constant, and the pool_factory_interfaces::asset
+glob re-export.
+
+pool/src/asset.rs becomes a one-line `pub use pool_core::asset::*;`
+shim so every `use crate::asset::X;` import (including trait-method
+imports for TokenInfo) keeps resolving unchanged.
+
+Depends on Step 2a (state.rs split) for the PoolInfo type that
+call_pool_info consumes.
+
+No behavior change.
+```
