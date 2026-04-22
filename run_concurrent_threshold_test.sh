@@ -714,6 +714,7 @@ print(json.dumps({
     'atom_bluechip_anchor_pool_address':  '$ALICE',
     'bluechip_mint_contract_address':     '$EXP_ADDR',
     'bluechip_denom':                      'ubluechip',
+    'standard_pool_creation_fee_usd':      '1000000',
 }))
 ")
 

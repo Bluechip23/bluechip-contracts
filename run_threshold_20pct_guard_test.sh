@@ -115,7 +115,8 @@ FINIT=$(cat <<EOF
   "creator_excess_liquidity_lock_days":7,
   "atom_bluechip_anchor_pool_address":"$ALICE",
   "bluechip_mint_contract_address":null,
-  "bluechip_denom": "ubluechip"
+  "bluechip_denom": "ubluechip",
+  "standard_pool_creation_fee_usd": "1000000"
 }
 EOF
 )

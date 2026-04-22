@@ -37,6 +37,7 @@ fn test_repro_token_sort_order_bug() {
         atom_bluechip_anchor_pool_address: atom_pool.clone(),
         bluechip_mint_contract_address: None,
         bluechip_denom: "ubluechip".to_string(),
+        standard_pool_creation_fee_usd: cosmwasm_std::Uint128::new(1_000_000),
     };
     FACTORYINSTANTIATEINFO
         .save(deps.as_mut().storage, &config)

@@ -30,6 +30,10 @@ const CONTRACT_VERSION: &str = env!("CARGO_PKG_VERSION");
 pub const SET_TOKENS: u64 = 1;
 pub const MINT_CREATE_POOL: u64 = 2;
 pub const FINALIZE_POOL: u64 = 3;
+// Standard-pool reply chain. Sparse numbering leaves room for additional
+// commit-pool steps (4–9) without clashing.
+pub const MINT_STANDARD_NFT: u64 = 10;
+pub const FINALIZE_STANDARD_POOL: u64 = 11;
 
 // Encodes a pool_id and a step into a single SubMsg reply ID.
 pub fn encode_reply_id(pool_id: u64, step: u64) -> u64 {
@@ -65,6 +69,10 @@ pub fn instantiate(
     }
 
     FACTORYINSTANTIATEINFO.save(deps.storage, &msg)?;
+    // Anchor address starts as whatever the deployer passes (typically a
+    // placeholder wallet); the one-shot SetAnchorPool overwrites it with
+    // the real anchor pool's contract address after that pool is created.
+    crate::state::INITIAL_ANCHOR_SET.save(deps.storage, &false)?;
     // Both keeper bounties default to zero. Admin enables them via
     // SetOracleUpdateBounty / SetDistributionBounty (each takes a USD
     // value in 6 decimals) once the factory has been pre-funded with
@@ -142,6 +150,13 @@ pub fn execute(
             pool_id,
             recovery_type,
         } => execute_recover_pool_stuck_states(deps, info, pool_id, recovery_type),
+        ExecuteMsg::CreateStandardPool {
+            pool_token_info,
+            label,
+        } => execute_create_standard_pool(deps, env, info, pool_token_info, label),
+        ExecuteMsg::SetAnchorPool { pool_id } => {
+            execute_set_anchor_pool(deps, env, info, pool_id)
+        }
     }
 }
 
@@ -423,6 +438,12 @@ pub fn pool_creation_reply(deps: DepsMut, env: Env, msg: Reply) -> Result<Respon
         SET_TOKENS => set_tokens(deps, env, msg, pool_id),
         MINT_CREATE_POOL => mint_create_pool(deps, env, msg, pool_id),
         FINALIZE_POOL => finalize_pool(deps, env, msg, pool_id),
+        MINT_STANDARD_NFT => {
+            crate::pool_creation_reply::mint_standard_nft(deps, env, msg, pool_id)
+        }
+        FINALIZE_STANDARD_POOL => {
+            crate::pool_creation_reply::finalize_standard_pool(deps, env, msg, pool_id)
+        }
         _ => Err(ContractError::UnknownReplyId { id: msg.id }),
     }
 }
@@ -1089,4 +1110,306 @@ pub fn execute_pay_distribution_bounty(
         .add_attribute("bounty_paid_usd", bounty_usd.to_string())
         .add_attribute("recipient", recipient_addr.to_string())
         .add_attribute("pool", info.sender.to_string()))
+}
+
+// ---------------------------------------------------------------------------
+// H14 — Standard pool creation
+// ---------------------------------------------------------------------------
+
+/// Validates a `[TokenType; 2]` pair supplied to `CreateStandardPool`.
+///
+/// Rules (looser than the commit-pool validator at `validate_pool_token_info`
+/// because standard pools can hold ANY pair, not just bluechip + creator):
+///   - No self-pair: the two entries must differ. Same denom on both sides
+///     (`Bluechip("uatom")` + `Bluechip("uatom")`) or same address on both
+///     sides (`CreatorToken("cosmos1...")` ×2) is rejected.
+///   - `Bluechip { denom }`: denom must be non-empty. We do NOT enforce the
+///     canonical bluechip_denom check from H3 here — standard pools can
+///     include arbitrary native or IBC denoms (this is how the ATOM/bluechip
+///     anchor pool is built).
+///   - `CreatorToken { contract_addr }`: address must bech32-validate, AND
+///     the address must answer a `Cw20QueryMsg::TokenInfo {}` query (so we
+///     reject typos and non-CW20 contracts at creation rather than at first
+///     deposit).
+fn validate_standard_pool_token_info(
+    deps: Deps,
+    pair: &[crate::asset::TokenType; 2],
+) -> Result<(), ContractError> {
+    use crate::asset::TokenType;
+
+    // Self-pair check.
+    match (&pair[0], &pair[1]) {
+        (TokenType::Bluechip { denom: a }, TokenType::Bluechip { denom: b }) if a == b => {
+            return Err(ContractError::Std(StdError::generic_err(
+                "Standard pool pair cannot use the same Bluechip denom on both sides",
+            )));
+        }
+        (
+            TokenType::CreatorToken { contract_addr: a },
+            TokenType::CreatorToken { contract_addr: b },
+        ) if a == b => {
+            return Err(ContractError::Std(StdError::generic_err(
+                "Standard pool pair cannot use the same CreatorToken on both sides",
+            )));
+        }
+        _ => {}
+    }
+
+    for entry in pair.iter() {
+        match entry {
+            TokenType::Bluechip { denom } => {
+                if denom.trim().is_empty() {
+                    return Err(ContractError::Std(StdError::generic_err(
+                        "Standard pool: Bluechip denom must be non-empty",
+                    )));
+                }
+            }
+            TokenType::CreatorToken { contract_addr } => {
+                deps.api.addr_validate(contract_addr.as_str()).map_err(|e| {
+                    ContractError::Std(StdError::generic_err(format!(
+                        "Standard pool: invalid CreatorToken address {}: {}",
+                        contract_addr, e
+                    )))
+                })?;
+                // Verify the address actually responds to a CW20 TokenInfo
+                // query. Catches typos pointing at random contracts and
+                // pre-instantiate addresses. The query is cheap and the
+                // response is discarded — we only care whether it succeeds.
+                let _info: cw20::TokenInfoResponse = deps
+                    .querier
+                    .query_wasm_smart(
+                        contract_addr.to_string(),
+                        &cw20::Cw20QueryMsg::TokenInfo {},
+                    )
+                    .map_err(|e| {
+                        ContractError::Std(StdError::generic_err(format!(
+                            "Standard pool: CreatorToken {} did not respond to TokenInfo query (not a CW20?): {}",
+                            contract_addr, e
+                        )))
+                    })?;
+            }
+        }
+    }
+
+    Ok(())
+}
+
+/// Permissionless entry point for creating a plain xyk pool around two
+/// pre-existing assets. Caller pays a USD-denominated fee (in ubluechip)
+/// configured on the factory; the fee is forwarded to
+/// `bluechip_wallet_address`. The pool is NOT eligible for oracle sampling
+/// and has no commit phase or distribution.
+///
+/// Reply chain (2 steps, vs the commit-pool chain's 3): NFT instantiate
+/// → pool instantiate → register & transfer NFT ownership. CW20 minting
+/// is skipped entirely (standard pools wrap existing tokens).
+fn execute_create_standard_pool(
+    deps: DepsMut,
+    env: Env,
+    info: MessageInfo,
+    pool_token_info: [crate::asset::TokenType; 2],
+    label: String,
+) -> Result<Response, ContractError> {
+    let factory_config = FACTORYINSTANTIATEINFO.load(deps.storage)?;
+
+    // Pair-shape validation runs first so bad input fails before we charge
+    // the fee or write any state.
+    validate_standard_pool_token_info(deps.as_ref(), &pool_token_info)?;
+
+    if label.trim().is_empty() {
+        return Err(ContractError::Std(StdError::generic_err(
+            "label must be non-empty",
+        )));
+    }
+
+    // Compute required fee. USD-denominated config converted to bluechip
+    // via the oracle; falls back to the hardcoded constant when the oracle
+    // is unavailable (the bootstrap case — the very first standard pool,
+    // typically the anchor itself, has no oracle data to draw on).
+    let usd_fee = factory_config.standard_pool_creation_fee_usd;
+    let (required_bluechip, fee_source) = if usd_fee.is_zero() {
+        (Uint128::zero(), "disabled")
+    } else {
+        match crate::internal_bluechip_price_oracle::usd_to_bluechip(
+            deps.as_ref(),
+            usd_fee,
+            env.clone(),
+        ) {
+            Ok(conv) if !conv.amount.is_zero() => (conv.amount, "oracle"),
+            _ => (
+                crate::state::STANDARD_POOL_CREATION_FEE_FALLBACK_BLUECHIP,
+                "fallback",
+            ),
+        }
+    };
+
+    // Caller must supply at least the required amount in the canonical
+    // bluechip denom. We don't refund overpayment — the caller controls
+    // their input and can use the conversion query to size it precisely.
+    let paid_bluechip = info
+        .funds
+        .iter()
+        .find(|c| c.denom == factory_config.bluechip_denom)
+        .map(|c| c.amount)
+        .unwrap_or_default();
+    if paid_bluechip < required_bluechip {
+        return Err(ContractError::Std(StdError::generic_err(format!(
+            "Insufficient creation fee: required {} {}, paid {} {}",
+            required_bluechip, factory_config.bluechip_denom, paid_bluechip, factory_config.bluechip_denom
+        ))));
+    }
+
+    let pool_counter = POOL_COUNTER.load(deps.storage).unwrap_or(0);
+    let pool_id = pool_counter + 1;
+    POOL_COUNTER.save(deps.storage, &pool_id)?;
+
+    // Forward whatever the caller paid to the bluechip wallet. If they
+    // overpaid, the surplus stays with the protocol — same convention as
+    // commit-fee handling.
+    let mut messages: Vec<CosmosMsg> = Vec::new();
+    if !paid_bluechip.is_zero() {
+        messages.push(CosmosMsg::Bank(cosmwasm_std::BankMsg::Send {
+            to_address: factory_config.bluechip_wallet_address.to_string(),
+            amount: vec![cosmwasm_std::Coin {
+                denom: factory_config.bluechip_denom.clone(),
+                amount: paid_bluechip,
+            }],
+        }));
+    }
+
+    crate::state::STANDARD_POOL_CREATION_CONTEXT.save(
+        deps.storage,
+        pool_id,
+        &crate::state::StandardPoolCreationContext {
+            pool_id,
+            pool_token_info,
+            creator: info.sender.clone(),
+            label: label.clone(),
+            nft_addr: None,
+        },
+    )?;
+
+    let nft_msg = WasmMsg::Instantiate {
+        code_id: factory_config.cw721_nft_contract_id,
+        msg: to_json_binary(&pool_factory_interfaces::cw721_msgs::Cw721InstantiateMsg {
+            name: format!("Standard Pool {} LP", pool_id),
+            symbol: "AMM-LP".to_string(),
+            minter: env.contract.address.to_string(),
+        })?,
+        funds: vec![],
+        admin: Some(env.contract.address.to_string()),
+        label: format!("AMM-LP-NFT-Standard-{}", pool_id),
+    };
+    let sub_msg = SubMsg::reply_on_success(nft_msg, encode_reply_id(pool_id, MINT_STANDARD_NFT));
+
+    Ok(Response::new()
+        .add_messages(messages)
+        .add_submessage(sub_msg)
+        .add_attribute("action", "create_standard_pool")
+        .add_attribute("pool_id", pool_id.to_string())
+        .add_attribute("creator", info.sender.to_string())
+        .add_attribute("required_fee_bluechip", required_bluechip.to_string())
+        .add_attribute("paid_fee_bluechip", paid_bluechip.to_string())
+        .add_attribute("fee_source", fee_source)
+        .add_attribute("label", label))
+}
+
+/// One-shot bootstrap: admin sets the ATOM/bluechip anchor pool address
+/// to a previously-created standard pool. Callable exactly once per
+/// deployment; subsequent anchor changes go through the standard 48h
+/// `ProposeConfigUpdate` flow.
+///
+/// Validates that the chosen pool:
+///   - exists in the registry
+///   - is a `PoolKind::Standard` pool
+///   - includes the canonical bluechip denom on at least one side
+///     (so the anchor is actually priceable in bluechip terms)
+///
+/// On success, also rotates the oracle's `selected_pools` to include the
+/// new anchor immediately and clears the cached price so downstream reads
+/// see "needs update" rather than the placeholder-derived (zero) value.
+fn execute_set_anchor_pool(
+    deps: DepsMut,
+    env: Env,
+    info: MessageInfo,
+    pool_id: u64,
+) -> Result<Response, ContractError> {
+    assert_correct_factory_address(deps.as_ref(), info.clone())?;
+
+    if crate::state::INITIAL_ANCHOR_SET
+        .may_load(deps.storage)?
+        .unwrap_or(false)
+    {
+        return Err(ContractError::Std(StdError::generic_err(
+            "Anchor pool has already been set; subsequent changes require ProposeConfigUpdate (48h timelock)",
+        )));
+    }
+
+    let pool_addr = POOL_REGISTRY.load(deps.storage, pool_id).map_err(|_| {
+        ContractError::Std(StdError::generic_err(format!(
+            "Pool {} not found in registry",
+            pool_id
+        )))
+    })?;
+    let pool_details = POOLS_BY_ID.load(deps.storage, pool_id).map_err(|_| {
+        ContractError::Std(StdError::generic_err(format!(
+            "Pool {} not found in POOLS_BY_ID",
+            pool_id
+        )))
+    })?;
+
+    if pool_details.pool_kind != pool_factory_interfaces::PoolKind::Standard {
+        return Err(ContractError::Std(StdError::generic_err(
+            "Anchor pool must be a standard pool",
+        )));
+    }
+
+    let factory_config = FACTORYINSTANTIATEINFO.load(deps.storage)?;
+    let canonical = &factory_config.bluechip_denom;
+    let has_canonical_bluechip = pool_details.pool_token_info.iter().any(|t| {
+        matches!(t, crate::asset::TokenType::Bluechip { denom } if denom == canonical)
+    });
+    if !has_canonical_bluechip {
+        return Err(ContractError::Std(StdError::generic_err(format!(
+            "Anchor pool must include the canonical bluechip denom \"{}\" on one side",
+            canonical
+        ))));
+    }
+
+    // Update the anchor address on the factory config in-place. We don't
+    // go through the timelock path here — that's the entire point of the
+    // one-shot.
+    FACTORYINSTANTIATEINFO.update(deps.storage, |mut cfg| -> StdResult<_> {
+        cfg.atom_bluechip_anchor_pool_address = pool_addr.clone();
+        Ok(cfg)
+    })?;
+
+    // Refresh the oracle's selected pool set so the next UpdateOraclePrice
+    // call queries the new anchor (the placeholder might already be in
+    // selected_pools from initialize_internal_bluechip_oracle, and queries
+    // against it would fail). Also clear the price cache so downstream
+    // consumers can't accidentally consume a stale value derived from the
+    // placeholder — last_price was zero anyway, but defense-in-depth.
+    let mut oracle = crate::internal_bluechip_price_oracle::INTERNAL_ORACLE.load(deps.storage)?;
+    let new_pools = crate::internal_bluechip_price_oracle::select_random_pools_with_atom(
+        deps.as_ref(),
+        env.clone(),
+        crate::internal_bluechip_price_oracle::ORACLE_POOL_COUNT,
+    )?;
+    oracle.selected_pools = new_pools.clone();
+    oracle.atom_pool_contract_address = pool_addr.clone();
+    oracle.last_rotation = env.block.time.seconds();
+    oracle.pool_cumulative_snapshots.clear();
+    oracle.bluechip_price_cache.last_price = Uint128::zero();
+    oracle.bluechip_price_cache.last_update = 0;
+    oracle.bluechip_price_cache.twap_observations.clear();
+    crate::internal_bluechip_price_oracle::INTERNAL_ORACLE.save(deps.storage, &oracle)?;
+
+    crate::state::INITIAL_ANCHOR_SET.save(deps.storage, &true)?;
+
+    Ok(Response::new()
+        .add_attribute("action", "set_anchor_pool")
+        .add_attribute("pool_id", pool_id.to_string())
+        .add_attribute("pool_addr", pool_addr.to_string())
+        .add_attribute("pools_in_oracle_after_refresh", new_pools.len().to_string()))
 }

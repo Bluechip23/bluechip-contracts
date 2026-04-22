@@ -99,6 +99,28 @@ pub const MAX_DISTRIBUTION_BOUNTY_USD: Uint128 = Uint128::new(100_000);
 // community to notice and respond.
 pub const PENDING_ORACLE_ROTATION: Item<Timestamp> = Item::new("pending_oracle_rotation");
 
+// One-shot bootstrap flag for the anchor pool. False until the admin
+// invokes `ExecuteMsg::SetAnchorPool { pool_id }` exactly once; flipped
+// to true at that point. After flip, any subsequent change to
+// `atom_bluechip_anchor_pool_address` must go through the standard 48h
+// `ProposeConfigUpdate` → `UpdateConfig` flow. The one-shot exists
+// purely to dodge the launch-day chicken-and-egg: the admin needs to
+// (a) deploy the factory, (b) create the ATOM/bluechip standard pool
+// via CreateStandardPool, then (c) point the factory at it as the
+// anchor — and (c) needs to be immediate, not 48h after deploy. After
+// the one-shot fires, normal change-control resumes.
+pub const INITIAL_ANCHOR_SET: Item<bool> = Item::new("initial_anchor_set");
+
+// Hardcoded fallback fee in ubluechip when the USD-to-bluechip oracle
+// conversion fails (Pyth stale, oracle uninitialized, anchor pool not
+// liquid yet, etc.). Load-bearing during launch, since the very first
+// CreateStandardPool call — the one that creates the ATOM/bluechip
+// anchor pool — necessarily happens before the oracle has any data to
+// price USD against. 100 bluechip is a reasonable safety floor; the
+// admin tunes the USD-denominated fee separately via
+// `FactoryInstantiate.standard_pool_creation_fee_usd`.
+pub const STANDARD_POOL_CREATION_FEE_FALLBACK_BLUECHIP: Uint128 = Uint128::new(100_000_000);
+
 #[cw_serde]
 pub struct PendingPoolConfig {
     pub pool_id: u64,
@@ -132,6 +154,19 @@ pub struct FactoryInstantiate {
     /// having every downstream oracle/commit path treat that denom's
     /// balance as real bluechip.
     pub bluechip_denom: String,
+    /// USD-denominated fee (6 decimals: 1_000_000 = $1.00) charged on
+    /// every `CreateStandardPool` call. Paid in ubluechip — the handler
+    /// converts USD → bluechip via the internal oracle at call time. If
+    /// the oracle is unavailable (bootstrap, Pyth outage, no anchor
+    /// liquidity yet), the handler falls back to the hardcoded
+    /// `STANDARD_POOL_CREATION_FEE_FALLBACK_BLUECHIP` constant so that
+    /// the very first standard pool — usually the anchor pool itself —
+    /// can still be created before the oracle has any data.
+    ///
+    /// Tunable via the existing 48h `ProposeConfigUpdate` flow.
+    /// Setting this to zero disables the fee entirely (legitimate
+    /// configuration choice for permissioned deployments).
+    pub standard_pool_creation_fee_usd: Uint128,
 }
 
 #[cw_serde]
@@ -160,6 +195,30 @@ pub struct PoolCreationContext {
     pub temp: TempPoolCreation,
     pub state: PoolCreationState,
 }
+
+/// Per-`CreateStandardPool` in-flight context. Mirrors the role of
+/// `PoolCreationContext` for the much shorter standard-pool reply chain.
+/// Standard pools don't mint a fresh CW20, so the chain is just
+/// CW721-instantiate → pool-instantiate (no SET_TOKENS step), and the
+/// state is correspondingly leaner. Removed by `finalize_standard_pool`
+/// once registration completes; on failure the entire tx reverts and
+/// nothing persists (same atomicity guarantees as commit pools — see
+/// pool_create_cleanup.rs comment block).
+#[cw_serde]
+pub struct StandardPoolCreationContext {
+    pub pool_id: u64,
+    pub pool_token_info: [crate::asset::TokenType; 2],
+    pub creator: Addr,
+    /// Caller-supplied label propagated to the pool wasm's instantiate
+    /// label field (visible to block explorers and operator tooling).
+    pub label: String,
+    /// Set after the CW721 NFT instantiate sub-message returns; consumed
+    /// by `finalize_standard_pool` to wire ownership to the new pool.
+    pub nft_addr: Option<Addr>,
+}
+
+pub const STANDARD_POOL_CREATION_CONTEXT: Map<u64, StandardPoolCreationContext> =
+    Map::new("std_pool_ctx");
 
 #[cw_serde]
 pub enum CreationStatus {

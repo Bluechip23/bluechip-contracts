@@ -5,6 +5,8 @@ pub mod asset;
 pub mod cw721_msgs;
 pub mod routing;
 
+use crate::asset::TokenType;
+
 #[cw_serde]
 pub enum PoolQueryMsg {
     GetPoolState { pool_contract_address: String },
@@ -110,4 +112,27 @@ pub enum ExpandEconomyMsg {
 #[cw_serde]
 pub enum ExpandEconomyExecuteMsg {
     ExpandEconomy(ExpandEconomyMsg),
+}
+
+/// Wire-format instantiate message sent by the factory's CreateStandardPool
+/// reply chain to a freshly instantiated standard pool wasm.
+///
+/// Standard pools are plain xyk pools around two pre-existing assets:
+/// they do not have a commit phase, do not mint a fresh CW20, and do not
+/// participate in oracle sampling. Compared to the commit-pool
+/// instantiate shape (`pool::msg::PoolInstantiateMsg`), the only inputs
+/// the pool needs are: which two assets it wraps, which CW721 contract
+/// to mint position NFTs on, and which factory it belongs to.
+///
+/// Lives in `pool_factory_interfaces` (not the factory or pool crate)
+/// because both sides need to agree on the layout exactly. The pool's
+/// instantiate handler dispatches between this struct and the existing
+/// commit-pool instantiate shape based on which one deserializes
+/// successfully (added in H14 Commit 3).
+#[cw_serde]
+pub struct StandardPoolInstantiateMsg {
+    pub pool_id: u64,
+    pub pool_token_info: [TokenType; 2],
+    pub used_factory_addr: Addr,
+    pub position_nft_address: Addr,
 }

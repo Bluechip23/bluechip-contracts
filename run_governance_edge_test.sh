@@ -225,6 +225,7 @@ propose = {
             "atom_bluechip_anchor_pool_address": factory.get("atom_bluechip_anchor_pool_address", alice),
             "bluechip_mint_contract_address": factory.get("bluechip_mint_contract_address", None),
             "bluechip_denom": factory.get("bluechip_denom", "ubluechip"),
+            "standard_pool_creation_fee_usd": factory.get("standard_pool_creation_fee_usd", "1000000"),
         }
     }
 }
