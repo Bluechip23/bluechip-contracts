@@ -1690,3 +1690,319 @@ position, nor distribution state.
 No behavior change on the creator-pool path. Tests in
 pool/src/testing/admin_tests.rs continue to pass.
 ```
+
+## Step 3d — `query.rs` split
+
+Source: `pool/src/query.rs` (524 lines). The top-level `query` dispatch
+function stays per-contract (each contract has its own `QueryMsg` enum),
+but every individual `query_*` handler is either shared or commit-only.
+
+### Items that MOVE to `pool-core/src/query.rs`
+
+Pure readers of shared state:
+
+| Item | Reads |
+|---|---|
+| `query_pair_info` | `POOL_INFO` |
+| `query_pool_state` | `POOL_STATE` |
+| `query_fee_state` | `POOL_FEE_STATE` |
+| `query_pool_info` | `POOL_FEE_STATE`, `NEXT_POSITION_ID`, `POOL_STATE` |
+| `query_position` | `LIQUIDITY_POSITIONS`, `POOL_FEE_STATE` (+ `calculate_unclaimed_fees`) |
+| `query_positions` | iterates `LIQUIDITY_POSITIONS` |
+| `query_positions_by_owner` | iterates `OWNER_POSITIONS` |
+| `query_config` | `POOL_STATE` |
+| `query_simulation` | `POOL_INFO`, `POOL_SPECS`, `compute_swap` |
+| `query_reverse_simulation` | `POOL_INFO`, `POOL_SPECS`, `compute_offer_amount` |
+| `query_cumulative_prices` | `POOL_INFO`, `POOL_STATE`, `update_price_accumulator` |
+| `query_fee_info` | `COMMITFEEINFO` (shared per 2a) |
+| `query_is_paused` | `POOL_PAUSED` |
+| `query_check_commit` | `IS_THRESHOLD_HIT` (shared per 2a; standard pool always returns `true`) |
+| `query_for_factory` | builds `PoolStateResponseForFactory` from `POOL_STATE` + `POOL_INFO`; consumed by factory's oracle |
+| `build_factory_response` | private helper for `query_for_factory` |
+
+### `query_analytics` factoring (schema-uniformity surgery)
+
+`PoolAnalyticsResponse` contains a `threshold_status: CommitStatus`
+field. Both pool kinds expose it, but the computation differs:
+
+- Creator-pool reads `USD_RAISED_FROM_COMMIT`, `COMMIT_LIMIT_INFO` (both
+  commit-only Items per 2a) and returns `CommitStatus::InProgress` or
+  `::FullyCommitted` depending on `IS_THRESHOLD_HIT`.
+- Standard-pool has no raised/limit concept; always reports
+  `CommitStatus::FullyCommitted`, `total_usd_raised: Uint128::zero()`,
+  `total_bluechip_raised: Uint128::zero()`.
+
+Resolution — same pattern as `execute_emergency_withdraw` in 3c:
+factor the shared response construction out of the status resolution.
+
+`pool-core/src/query.rs`:
+
+```rust
+/// Assembles the parts of PoolAnalyticsResponse that don't depend on
+/// commit-phase state. Each contract provides the commit-adjacent
+/// fields (threshold_status, total_usd_raised, total_bluechip_raised)
+/// from whatever state it has access to.
+pub fn query_analytics_core(
+    deps: Deps,
+    threshold_status: CommitStatus,
+    total_usd_raised: Uint128,
+    total_bluechip_raised: Uint128,
+) -> StdResult<PoolAnalyticsResponse> {
+    let analytics = POOL_ANALYTICS.load(deps.storage).unwrap_or_default();
+    let pool_state = POOL_STATE.load(deps.storage)?;
+    let pool_fee_state = POOL_FEE_STATE.load(deps.storage)?;
+    let next_position_id = NEXT_POSITION_ID.load(deps.storage)?;
+
+    let current_price_0_to_1 = if !pool_state.reserve0.is_zero() {
+        Decimal::from_ratio(pool_state.reserve1, pool_state.reserve0).to_string()
+    } else { "0".to_string() };
+    let current_price_1_to_0 = if !pool_state.reserve1.is_zero() {
+        Decimal::from_ratio(pool_state.reserve0, pool_state.reserve1).to_string()
+    } else { "0".to_string() };
+
+    Ok(PoolAnalyticsResponse {
+        analytics,
+        current_price_0_to_1,
+        current_price_1_to_0,
+        total_value_locked_0: pool_state.reserve0,
+        total_value_locked_1: pool_state.reserve1,
+        fee_reserve_0: pool_fee_state.fee_reserve_0,
+        fee_reserve_1: pool_fee_state.fee_reserve_1,
+        threshold_status,
+        total_usd_raised,
+        total_bluechip_raised,
+        total_positions: next_position_id,
+    })
+}
+```
+
+Creator-pool wrapper (`pool/src/query.rs`):
+
+```rust
+pub fn query_analytics(deps: Deps) -> StdResult<PoolAnalyticsResponse> {
+    let usd_raised = USD_RAISED_FROM_COMMIT.load(deps.storage)?;
+    let bluechip_raised = NATIVE_RAISED_FROM_COMMIT.load(deps.storage)?;
+    let threshold_status = threshold_status_from(deps, usd_raised)?;
+    pool_core::query::query_analytics_core(deps, threshold_status, usd_raised, bluechip_raised)
+}
+```
+
+Standard-pool wrapper (Step 4b):
+
+```rust
+pub fn query_analytics(deps: Deps) -> StdResult<PoolAnalyticsResponse> {
+    pool_core::query::query_analytics_core(
+        deps,
+        CommitStatus::FullyCommitted,
+        Uint128::zero(),
+        Uint128::zero(),
+    )
+}
+```
+
+### Items that STAY in `pool/src/query.rs` (creator-pool only)
+
+| Item | Reads (commit-only) |
+|---|---|
+| `query_check_threshold_limit` | `USD_RAISED_FROM_COMMIT`, `COMMIT_LIMIT_INFO` |
+| `threshold_status_from` | private helper used by both `query_check_threshold_limit` and `query_analytics` |
+| `query_pool_committers` | iterates `COMMIT_INFO` Map |
+| `query_factory_notify_status` | `PENDING_FACTORY_NOTIFY` |
+| `query_last_committed` | (if implemented as a handler vs. inline in `query`) `COMMIT_INFO` load |
+| `query_committing_info` (inline in `query` dispatch) | `COMMIT_INFO` load — lives inside `pub fn query` today, not a standalone fn; can stay inline in creator-pool's `query` dispatch |
+| `query_analytics` | wrapper — see factoring above |
+| **The top-level `pub fn query(deps, env, msg: QueryMsg)` dispatch** | stays in creator-pool; each crate has its own `QueryMsg` enum with different variants |
+
+### `pool/src/query.rs` after the split
+
+```rust
+//! Creator-pool query dispatch + commit-only query handlers. Shared
+//! handlers live in pool_core::query and are re-exported so existing
+//! imports via `use crate::query::X;` resolve unchanged.
+pub use pool_core::query::*;
+
+use crate::error::ContractError;
+use crate::msg::{
+    CommitStatus, LastCommittedResponse, PoolAnalyticsResponse, PoolCommitResponse,
+    QueryMsg, FactoryNotifyStatusResponse, CommitterInfo,
+};
+use crate::state::{
+    COMMIT_INFO, COMMIT_LIMIT_INFO, IS_THRESHOLD_HIT, NATIVE_RAISED_FROM_COMMIT,
+    USD_RAISED_FROM_COMMIT,
+};
+use cosmwasm_std::{entry_point, to_json_binary, Addr, Binary, Deps, Env, Order, StdResult, Uint128};
+use cw_storage_plus::Bound;
+
+#[cfg_attr(not(feature = "library"), entry_point)]
+pub fn query(deps: Deps, env: Env, msg: QueryMsg) -> StdResult<Binary> {
+    match msg {
+        // Shared — forward to pool-core
+        QueryMsg::Pair {} => to_json_binary(&pool_core::query::query_pair_info(deps)?),
+        QueryMsg::PoolState {} => to_json_binary(&pool_core::query::query_pool_state(deps)?),
+        QueryMsg::FeeState {} => to_json_binary(&pool_core::query::query_fee_state(deps)?),
+        QueryMsg::PoolInfo {} => to_json_binary(&pool_core::query::query_pool_info(deps)?),
+        QueryMsg::Position { position_id } => to_json_binary(&pool_core::query::query_position(deps, position_id)?),
+        QueryMsg::Positions { start_after, limit } => to_json_binary(&pool_core::query::query_positions(deps, start_after, limit)?),
+        QueryMsg::PositionsByOwner { owner, start_after, limit } => to_json_binary(&pool_core::query::query_positions_by_owner(deps, owner, start_after, limit)?),
+        QueryMsg::Config {} => to_json_binary(&pool_core::query::query_config(deps)?),
+        QueryMsg::Simulation { offer_asset } => to_json_binary(&pool_core::query::query_simulation(deps, offer_asset)?),
+        QueryMsg::ReverseSimulation { ask_asset } => to_json_binary(&pool_core::query::query_reverse_simulation(deps, ask_asset)?),
+        QueryMsg::CumulativePrices {} => to_json_binary(&pool_core::query::query_cumulative_prices(deps, env)?),
+        QueryMsg::FeeInfo {} => to_json_binary(&pool_core::query::query_fee_info(deps)?),
+        QueryMsg::GetPoolState { pool_contract_address } => pool_core::query::query_for_factory(deps, env, PoolQueryMsg::GetPoolState { pool_contract_address }),
+        QueryMsg::GetAllPools {} => pool_core::query::query_for_factory(deps, env, PoolQueryMsg::GetAllPools {}),
+        QueryMsg::IsPaused {} => pool_core::query::query_for_factory(deps, env, PoolQueryMsg::IsPaused {}),
+
+        // Commit-only (this crate)
+        QueryMsg::IsFullyCommited {} => to_json_binary(&query_check_threshold_limit(deps)?),
+        QueryMsg::CommittingInfo { wallet } => {
+            let addr = deps.api.addr_validate(&wallet)?;
+            let info = COMMIT_INFO.may_load(deps.storage, &addr)?;
+            to_json_binary(&info)
+        }
+        QueryMsg::LastCommited { wallet } => { /* unchanged inline body */ }
+        QueryMsg::PoolCommits { pool_contract_address, min_payment_usd, after_timestamp, start_after, limit } =>
+            to_json_binary(&query_pool_committers(deps, pool_contract_address, min_payment_usd, after_timestamp, start_after, limit)?),
+        QueryMsg::FactoryNotifyStatus {} => to_json_binary(&query_factory_notify_status(deps)?),
+
+        // Hybrid — wrapper computes creator-only pieces, pool-core assembles response
+        QueryMsg::Analytics {} => to_json_binary(&query_analytics(deps)?),
+    }
+}
+
+// Creator-only handlers + the query_analytics wrapper stay below.
+pub fn query_check_threshold_limit(...) { /* unchanged */ }
+fn threshold_status_from(...) { /* unchanged, private */ }
+pub fn query_pool_committers(...) { /* unchanged */ }
+pub fn query_factory_notify_status(...) { /* unchanged */ }
+pub fn query_analytics(...) { /* wrapper shown above */ }
+```
+
+### Update `pool-core/src/lib.rs`
+
+```rust
+pub mod error;
+pub mod state;
+pub mod asset;
+pub mod swap;
+pub mod msg;
+pub mod generic;
+pub mod liquidity_helpers;
+pub mod liquidity;
+pub mod admin;
+pub mod query;    // 3d — final pool-core module
+```
+
+### Cargo.toml changes
+
+None.
+
+### Expected compile-error patterns after 3d
+
+1. **`CommitStatus` / `PoolAnalyticsResponse` path resolution** — both
+   are in `pool_core::msg` after 2d. The creator-pool wrapper's
+   `use crate::msg::{CommitStatus, PoolAnalyticsResponse};` resolves
+   via the glob re-export. ✓
+
+2. **`threshold_status_from` visibility** — private to `pool/src/query.rs`.
+   Only used by `query_check_threshold_limit` and `query_analytics`,
+   both in the same file. No change. ✓
+
+3. **`query_analytics_core` signature** — takes `Deps` rather than
+   `&Deps`. Trivial, consistent with the rest of pool-core.
+
+4. **QueryResponses derive** — creator-pool's `QueryMsg` uses
+   `#[returns(PoolAnalyticsResponse)]` on the `Analytics` variant.
+   Since the response type is re-exported from pool-core, the derive
+   resolves it through the glob re-export. ✓
+
+5. **Factory forward queries** — factory queries the pool via
+   `PoolQueryMsg::GetPoolState {...}`, `::GetAllPools {}`, `::IsPaused {}`.
+   These are shared (moved to pool-core). Creator-pool's `query` dispatch
+   forwards to `pool_core::query::query_for_factory`. Standard-pool
+   (Step 4b) does the same. ✓
+
+### Verification after 3d
+
+```
+cargo check -p pool-core
+cargo check -p pool
+cargo test -p pool   # includes query_tests.rs
+```
+
+All existing query tests continue to pass — they construct `QueryMsg::X {...}`
+and compare the deserialized response, and neither shape nor values
+change.
+
+### Step 3 is complete after 3d
+
+Full pool-core module layout after Step 3:
+
+```
+packages/pool-core/src/
+├── lib.rs
+├── error.rs           (C1)
+├── state.rs           (2a)
+├── asset.rs           (2b)
+├── swap.rs            (2c)
+├── msg.rs             (2d)
+├── generic.rs         (3b)
+├── liquidity_helpers.rs (3a)
+├── liquidity.rs       (3a)
+├── admin.rs           (3c)
+└── query.rs           (3d)
+```
+
+Creator-pool (`pool/`) at this point contains only:
+- `contract.rs` — execute dispatch (still has `require_commit_pool`
+  guards + tagged-enum `PoolInstantiateMsg` dispatch; Step 4 reverts)
+- `commit.rs` — commit-phase handlers (unchanged)
+- `admin.rs` — `execute_recover_stuck_states` + recovery helpers +
+  `execute_emergency_withdraw` wrapper
+- `generic_helpers.rs` — threshold payout + distribution batching +
+  commit-info + mint_tokens
+- `liquidity_helpers.rs` — `execute_claim_creator_{fees,excess}` only
+- `query.rs` — commit-only queries + dispatch + `query_analytics` wrapper
+- `state.rs` — commit-only Items + structs + (soon-to-be-deleted in 4d)
+  `POOL_KIND`/`load_pool_kind`
+- `msg.rs` — `ExecuteMsg` / `QueryMsg` / `MigrateMsg` / `PoolInstantiateMsg`
+  enum / `CommitPoolInstantiateMsg` / commit-only response types
+- `asset.rs`, `error.rs`, `swap_helper.rs`, `liquidity.rs` — all thin
+  re-export shims at this point
+- `mock_querier.rs` — unchanged
+- `testing/` — tests unchanged, resolving through the re-export shims
+
+### Suggested commit message
+
+```
+H14 split (3d/N): extract shared queries to pool-core
+
+Moves 16 query handlers to pool-core::query:
+  - query_pair_info, query_pool_state, query_fee_state,
+    query_pool_info, query_position, query_positions,
+    query_positions_by_owner, query_config, query_simulation,
+    query_reverse_simulation, query_cumulative_prices,
+    query_fee_info, query_is_paused, query_check_commit,
+    query_for_factory, build_factory_response
+
+Factors query_analytics the same way execute_emergency_withdraw was
+factored in 3c: pool-core exposes query_analytics_core which takes
+the commit-adjacent fields (threshold_status, total_usd_raised,
+total_bluechip_raised) as parameters and assembles the shared response
+body. Creator-pool wraps it with commit-phase computation; standard-
+pool (Step 4b) will wrap it with zero/FullyCommitted constants.
+
+Stays in pool/src/query.rs:
+  - pub fn query (dispatch — per-contract QueryMsg enum)
+  - query_check_threshold_limit + threshold_status_from helper
+  - query_pool_committers, query_factory_notify_status
+  - query_analytics wrapper
+  - inline commit-only variants in the dispatch (CommittingInfo,
+    LastCommited)
+
+Step 3 (pool-core operational modules) is complete after this commit.
+Step 4 (standard-pool crate + factory dual-code_id + creator-pool
+scaffolding revert) comes next.
+
+No behavior change. All existing pool query tests pass unchanged.
+```
