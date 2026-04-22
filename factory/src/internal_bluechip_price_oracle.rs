@@ -888,13 +888,15 @@ pub fn get_bluechip_usd_price(deps: Deps, env: &Env) -> StdResult<Uint128> {
         .load(deps.storage)
         .map_err(|_| StdError::generic_err("Internal oracle not initialized"))?;
 
-    // Bootstrap: when fewer than MIN_ELIGIBLE_POOLS_FOR_TWAP creator pools
-    // have crossed threshold, the oracle cache is effectively a single-pool
-    // price (the anchor ATOM/bluechip pool). We accept that limitation
-    // rather than bricking every commit on day one — without this fallback
-    // the protocol deadlocks on launch, because each commit requires an
-    // oracle price to compute its USD value, but no pool can cross its
-    // threshold until commits succeed.
+    // Bootstrap note: when fewer than MIN_ELIGIBLE_POOLS_FOR_TWAP creator
+    // pools have crossed threshold, `oracle.bluechip_price_cache.last_price`
+    // is derived from the anchor ATOM/bluechip pool alone (plus whichever
+    // creators have crossed, of which there are < 3). We accept that
+    // single-pool-dominated price during bootstrap rather than bricking
+    // every commit on day one — without this fallback the protocol
+    // deadlocks on launch, because each commit requires an oracle price
+    // to compute its USD value, but no pool can cross its threshold
+    // until commits succeed.
     //
     // The trade-off: during bootstrap, a sophisticated attacker who can
     // move the anchor pool's price for a block (see the spot-fallback
@@ -906,17 +908,11 @@ pub fn get_bluechip_usd_price(deps: Deps, env: &Env) -> StdResult<Uint128> {
     // so the worst-case is a temporarily mispriced commit rather than
     // direct theft.
     //
-    // Gated on cfg(not(test)) so unit tests can exercise oracle math in
-    // isolation without being forced to stand up three threshold-crossed
-    // pools.
-    #[cfg(not(test))]
-    let _bootstrap_mode = {
-        let factory_config = FACTORYINSTANTIATEINFO.load(deps.storage)?;
-        let anchor_addr = factory_config.atom_bluechip_anchor_pool_address.to_string();
-        let eligible = get_eligible_creator_pools(deps, &anchor_addr)?;
-        eligible.len() < MIN_ELIGIBLE_POOLS_FOR_TWAP
-    };
-
+    // The staleness check still applies via `last_update` — the pool's
+    // get_oracle_conversion_with_staleness rejects commits if the cached
+    // price is older than MAX_ORACLE_STALENESS_SECONDS. And the zero
+    // guard below catches the pre-first-update case where UpdateOraclePrice
+    // has never been called.
     let bluechip_per_atom_twap = oracle.bluechip_price_cache.last_price;
 
     if bluechip_per_atom_twap.is_zero() {

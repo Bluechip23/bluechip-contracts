@@ -122,15 +122,17 @@ fn execute_commit_logic(
     if usd_value.is_zero() {
         return Err(ContractError::InvalidOraclePrice {});
     }
-    // Apply the pre/post-threshold minimum based on current state.
-    let threshold_hit_for_min_check = IS_THRESHOLD_HIT.load(deps.storage)?;
-    let min_commit = if threshold_hit_for_min_check {
+    // Load IS_THRESHOLD_HIT once and thread it through both the minimum-
+    // commit check here and the main branching below (used later as
+    // `threshold_already_hit`). Previously the load was duplicated.
+    let threshold_already_hit = IS_THRESHOLD_HIT.load(deps.storage)?;
+    let min_commit = if threshold_already_hit {
         MIN_COMMIT_USD_POST_THRESHOLD
     } else {
         MIN_COMMIT_USD_PRE_THRESHOLD
     };
     if usd_value < min_commit {
-        let (phase, dollars) = if threshold_hit_for_min_check {
+        let (phase, dollars) = if threshold_already_hit {
             ("post-threshold", "1")
         } else {
             ("pre-threshold", "5")
@@ -176,8 +178,8 @@ fn execute_commit_logic(
                 commit_fee_creator_amt,
             )?;
 
-            let threshold_already_hit = IS_THRESHOLD_HIT.load(deps.storage)?;
-
+            // `threshold_already_hit` was loaded above alongside the
+            // minimum-commit check — reuse it here instead of re-reading.
             if !threshold_already_hit {
                 let current_usd_raised = USD_RAISED_FROM_COMMIT.load(deps.storage)?;
                 let new_total = current_usd_raised.checked_add(usd_value)?;

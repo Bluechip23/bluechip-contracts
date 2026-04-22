@@ -1,4 +1,4 @@
-use cosmwasm_std::{to_json_binary, Addr, CosmosMsg, DepsMut, StdResult, SubMsgResponse, WasmMsg};
+use cosmwasm_std::{to_json_binary, Addr, CosmosMsg, DepsMut, SubMsgResponse, WasmMsg};
 use cw20::Cw20ExecuteMsg;
 use pool_factory_interfaces::cw721_msgs::{Action, Cw721ExecuteMsg};
 
@@ -47,7 +47,7 @@ pub fn give_pool_ownership_cw20_and_nft(
     token_addr: &Addr,
     nft_addr: &Addr,
     pool_addr: &Addr,
-) -> StdResult<Vec<CosmosMsg>> {
+) -> Result<Vec<CosmosMsg>, ContractError> {
     Ok(vec![
         WasmMsg::Execute {
             contract_addr: token_addr.to_string(),
