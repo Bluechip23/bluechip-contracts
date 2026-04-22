@@ -757,3 +757,201 @@ step to keep 2c self-contained.
 
 No behavior change.
 ```
+
+## Step 2d — `msg.rs` split
+
+Source: `pool/src/msg.rs` (366 lines). Split logic: anything returned by
+a shared query, consumed by a shared handler's input, or used as a wire
+type on the swap/liquidity path is shared (→ pool-core). Commit-phase
+inputs, responses, and the pool's `ExecuteMsg`/`QueryMsg`/`MigrateMsg`
+enums stay in creator-pool (standard-pool will define its own slimmer
+enums in Step 4).
+
+### Items that MOVE to `pool-core/src/msg.rs`
+
+#### Input types used by shared handlers
+
+| Item | Kind | Used by |
+|---|---|---|
+| `CommitFeeInfo` | struct | value type of shared `COMMITFEEINFO` storage Item; consumed by shared `emergency_withdraw` (reads `bluechip_wallet_address` for drain recipient) |
+| `PoolConfigUpdate` | struct | input to shared `execute_update_config_from_factory`; factory's pool-config update path sends it |
+| `Cw20HookMsg` | enum | deserialized by shared `execute_swap_cw20` when CW20 `Receive` hooks fire; today contains a single `Swap {...}` variant |
+
+#### Shared query response types
+
+Every shared query in pool-core needs its response struct on the same side.
+
+| Item | Kind | Returned by |
+|---|---|---|
+| `SimulationResponse` | struct | `query_simulation` |
+| `ReverseSimulationResponse` | struct | `query_reverse_simulation` |
+| `CumulativePricesResponse` | struct | `query_cumulative_prices` |
+| `FeeInfoResponse` | struct | `query_fee_info` (contains `CommitFeeInfo`, hence above) |
+| `ConfigResponse` | struct | `query_config` |
+| `PoolStateResponse` | struct | `query_pool_state` |
+| `PoolFeeStateResponse` | struct | `query_fee_state` |
+| `PositionResponse` | struct | `query_position` |
+| `PositionsResponse` | struct | `query_positions`, `query_positions_by_owner` (vec of `PositionResponse`) |
+| `PoolInfoResponse` | struct | `query_pool_info` |
+| `PoolAnalyticsResponse` | struct | `query_analytics` (contains `threshold_status: CommitStatus`) |
+| `CommitStatus` | enum | returned inside `PoolAnalyticsResponse`; also returned by commit-only `query_check_threshold_limit`. Shared type; both sides use it. |
+
+#### Misc shared
+
+| Item | Kind | Notes |
+|---|---|---|
+| `PoolResponse` | struct | `{ assets: [TokenInfo; 2] }`; if any shared query returns it (grep to verify at execute time), shared. If unused, delete as dead code. |
+
+### Items that STAY in `pool/src/msg.rs` (creator-pool only)
+
+| Item | Kind | Reason |
+|---|---|---|
+| `ExecuteMsg` | enum | contains Commit / ContinueDistribution / ClaimCreatorExcessLiquidity / ClaimCreatorFees / RetryFactoryNotify / RecoverStuckStates variants. Standard-pool defines its own slimmer `ExecuteMsg` in Step 4. |
+| `QueryMsg` | enum | contains `IsFullyCommited`, `CommittingInfo`, `PoolCommits`, `LastCommited`, `FactoryNotifyStatus` — all commit-phase queries. Standard-pool defines its own slimmer `QueryMsg` in Step 4. |
+| `MigrateMsg` | enum | creator-pool's own `UpdateFees` / `UpdateVersion` migration variants. Standard-pool will have its own `MigrateMsg` (likely identical shape — fine to duplicate since migration logic is per-contract anyway). |
+| `Cw20ReceiveMsg` (via `use cw20::Cw20ReceiveMsg`) | external | pass-through import; not owned by pool/src/msg.rs |
+| `PoolInstantiateMsg` | enum | currently `Commit(CommitPoolInstantiateMsg) / Standard(...)`. **Step 4 flattens** back to the struct shape. Leave untouched in 2d. |
+| `CommitPoolInstantiateMsg` | struct | the wrapped-in-Commit-variant payload. Step 4 renames back to `PoolInstantiateMsg`. Leave untouched in 2d. |
+| `FactoryNotifyStatusResponse` | struct | returned by `query_factory_notify_status` (commit-only). |
+| `PoolCommitResponse` | struct | returned by `query_pool_committers` (commit-only, queries COMMIT_INFO ledger). |
+| `CommitterInfo` | struct | entry in `PoolCommitResponse`. Commit-only. |
+| `LastCommittedResponse` | struct | returned by `query_last_committed` (commit-only, queries COMMIT_INFO). |
+
+### `pool/src/msg.rs` after the split
+
+Top of file:
+
+```rust
+// Shared wire-format types live in pool-core::msg. Keep the glob
+// re-export so existing `use crate::msg::X;` imports resolve unchanged.
+pub use pool_core::msg::*;
+
+// ... below: creator-pool-specific ExecuteMsg, QueryMsg, MigrateMsg,
+//          PoolInstantiateMsg enum + CommitPoolInstantiateMsg struct,
+//          FactoryNotifyStatusResponse, PoolCommitResponse,
+//          CommitterInfo, LastCommittedResponse
+```
+
+Note the `#[allow(unused_imports)]` lines at the top of the current
+file can stay verbatim — they silence false positives when a subset of
+the `use crate::asset` / `use crate::state` imports ends up unused
+after the split.
+
+### `packages/pool-core/src/msg.rs` imports
+
+```rust
+use cosmwasm_schema::{cw_serde, QueryResponses};
+use cosmwasm_std::{Addr, Decimal, Timestamp, Uint128};
+use cw20::Cw20ReceiveMsg;
+use crate::asset::{TokenInfo, TokenType};  // shared asset types from 2b
+```
+
+`QueryResponses` derive is kept on response structs for schema
+generation; see note below if you generate schemas per contract.
+
+### Update `pool-core/src/lib.rs`
+
+```rust
+pub mod error;
+pub mod state;  // 2a
+pub mod asset;  // 2b
+pub mod swap;   // 2c
+pub mod msg;    // 2d
+```
+
+### Wire-format invariant
+
+Every struct moving to pool-core keeps its `#[cw_serde]` attribute
+unchanged, which means the JSON shape (field names, nested struct
+layout) is identical to today. Existing clients, deploy scripts, and
+frontend integrations continue to deserialize responses without any
+change. The Rust type lives in a different crate; the bytes on the
+wire do not change.
+
+### Cargo.toml changes
+
+None. pool-core already has `cosmwasm-schema`, `cosmwasm-std`, `cw20`.
+
+### Schema generation note
+
+If the creator-pool crate has a `src/bin/schema.rs` that calls
+`cosmwasm_schema::write_api!` with the types here, some of those types
+now live in pool-core. Update the schema binary to import from the new
+module paths. This is a creator-pool-only concern and doesn't block
+compilation of pool-core itself.
+
+### Expected compile-error patterns after 2d
+
+1. **`CommitFeeInfo` duplicate definition** — if 2a has already landed
+   and left a `use crate::msg::CommitFeeInfo;` in `pool/src/state.rs`,
+   the glob re-export from `pool_core::msg::*` plus the move in 2d
+   means `crate::msg::CommitFeeInfo` now resolves to
+   `pool_core::msg::CommitFeeInfo`. Clean resolution, no duplication.
+
+2. **`CommitStatus` enum** — referenced by `query_check_threshold_limit`
+   (commit-only, stays in creator-pool). After 2d that query imports
+   `CommitStatus` from `pool_core::msg` via the re-export. No change
+   needed at the call site.
+
+3. **Creator-pool's `QueryMsg::Analytics` → `PoolAnalyticsResponse`** —
+   `PoolAnalyticsResponse` now lives in pool-core. The `#[returns(...)]`
+   attribute on the variant must reference the right path. `#[returns(PoolAnalyticsResponse)]`
+   resolves via the glob re-export at top of `pool/src/msg.rs`. Works.
+
+4. **Response-struct public fields** — structs moving to pool-core must
+   keep ALL their fields `pub` (they're `#[cw_serde]` already; cw_serde
+   does not change visibility). Sanity: visibility stays as-written.
+
+5. **`pub enum CommitStatus::InProgress { raised, target }`** — variant
+   fields are `pub` by virtue of being inside a `#[cw_serde]` enum. No
+   change.
+
+### Verification after 2d
+
+```
+cargo check -p pool-core
+cargo check -p pool
+cargo test -p pool
+```
+
+All three must pass. Test behavior unchanged — tests that construct
+`SimulationResponse { ... }` now construct a pool-core type but Rust
+resolves the path through the re-export, so no test file edits are
+required.
+
+### Step 2 is complete after 2d
+
+pool-core now contains: error, state (shared subset), asset, swap (math),
+msg (shared wire types). Step 3 takes care of the operational layer
+(liquidity, helpers, admin, query).
+
+### Suggested commit message
+
+```
+H14 split (2d/N): extract shared wire types to pool-core::msg
+
+Moves the subset of pool/src/msg.rs that is consumed by shared code
+paths into packages/pool-core/src/msg.rs:
+
+  Shared inputs:          CommitFeeInfo, PoolConfigUpdate, Cw20HookMsg
+  Shared query responses: Simulation*, ReverseSimulation*, CumulativePrices*,
+                          FeeInfo*, Config*, PoolState*, PoolFeeState*,
+                          Position*, Positions*, PoolInfo*, PoolAnalytics*,
+                          PoolResponse, CommitStatus
+
+Commit-phase-only types stay in pool/src/msg.rs behind a
+`pub use pool_core::msg::*;` glob re-export: ExecuteMsg, QueryMsg,
+MigrateMsg, PoolInstantiateMsg (enum), CommitPoolInstantiateMsg,
+FactoryNotifyStatusResponse, PoolCommitResponse, CommitterInfo,
+LastCommittedResponse.
+
+Wire format unchanged — every moved struct keeps #[cw_serde] with
+identical field names, so deployed clients / frontends / deploy
+scripts continue to round-trip responses unchanged.
+
+Step 2 (pool-core foundational modules) is complete after this commit.
+Step 3 (operational modules: liquidity, helpers, admin, query) comes
+next.
+
+No behavior change.
+```
