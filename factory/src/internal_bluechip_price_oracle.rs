@@ -12,7 +12,7 @@ use cosmwasm_std::{
     StdResult, Uint128, Uint256,
 };
 use cw_storage_plus::Item;
-use pool_factory_interfaces::{ConversionResponse, PoolQueryMsg, PoolStateResponseForFactory};
+use pool_factory_interfaces::{ConversionResponse, PoolKind, PoolQueryMsg, PoolStateResponseForFactory};
 use sha2::{Digest, Sha256};
 #[cfg(test)]
 pub const MOCK_PYTH_PRICE: Item<Uint128> = Item::new("mock_pyth_price");
@@ -202,18 +202,21 @@ pub fn get_eligible_creator_pools(
     atom_pool_contract_address: &str,
 ) -> StdResult<Vec<String>> {
     // Return every pool eligible for oracle sampling. A pool is eligible iff:
-    //   1. It contains a bluechip token (so we can price it against ATOM).
-    //   2. It has crossed its commit threshold (POOL_THRESHOLD_MINTED == true).
-    //   3. Its current reserves sum to >= MIN_POOL_LIQUIDITY.
+    //   1. It is a commit pool (NOT a standard pool — standard pools can
+    //      hold arbitrary pairs including non-bluechip ones and their price
+    //      isn't meaningful for bluechip/USD derivation).
+    //   2. It contains a bluechip token (so we can price it against ATOM).
+    //   3. It has crossed its commit threshold (POOL_THRESHOLD_MINTED == true).
+    //   4. Its current reserves sum to >= MIN_POOL_LIQUIDITY.
     //
     // The threshold-crossed gate is the important one: pool creation is
     // permissionless, so without this check a spammer could bloat the oracle
     // sample set with pre-threshold pools. The MIN_POOL_LIQUIDITY check is
     // defense-in-depth for pools that crossed threshold but later drained.
     //
-    // Single pass over POOLS_BY_ID: for each candidate we check the two
-    // cheap in-storage gates first and only incur the cross-contract
-    // PoolStateResponseForFactory query when both pass. The older
+    // Single pass over POOLS_BY_ID: for each candidate we check the cheap
+    // in-storage gates first and only incur the cross-contract
+    // PoolStateResponseForFactory query when they all pass. The older
     // implementation did two full range scans plus a HashSet build, which
     // dominated oracle-update gas at scale.
     let mut eligible = Vec::new();
@@ -221,6 +224,10 @@ pub fn get_eligible_creator_pools(
         let (pool_id, pool_details) = row?;
 
         if pool_details.creator_pool_addr.as_str() == atom_pool_contract_address {
+            continue;
+        }
+        // Standard pools are never eligible for TWAP sampling — see gate (1) above.
+        if pool_details.pool_kind == PoolKind::Standard {
             continue;
         }
         let has_bluechip = pool_details

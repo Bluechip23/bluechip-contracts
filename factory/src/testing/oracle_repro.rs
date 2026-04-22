@@ -55,6 +55,7 @@ fn test_repro_token_sort_order_bug() {
             },
         ],
         creator_pool_addr: atom_pool.clone(),
+        pool_kind: pool_factory_interfaces::PoolKind::Commit,
     };
     POOLS_BY_ID
         .save(deps.as_mut().storage, 1, &pool_details)
@@ -99,6 +100,7 @@ fn test_repro_token_sort_order_bug() {
             },
         ],
         creator_pool_addr: atom_pool.clone(),
+        pool_kind: pool_factory_interfaces::PoolKind::Commit,
     };
     POOLS_BY_ID
         .save(deps.as_mut().storage, 1, &inverted_pool_details)

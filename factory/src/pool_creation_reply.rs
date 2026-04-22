@@ -183,6 +183,10 @@ pub fn finalize_pool(
         pool_id,
         pool_token_info: ctx.temp.temp_pool_info.pool_token_info.clone(),
         creator_pool_addr: pool_address.clone(),
+        // This reply handler is specifically for the commit-pool creation
+        // chain (triggered by ExecuteMsg::Create). Standard pools have
+        // their own reply chain that sets pool_kind = Standard.
+        pool_kind: pool_factory_interfaces::PoolKind::Commit,
     };
 
     // Transfer ownership to pool

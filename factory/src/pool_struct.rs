@@ -3,6 +3,7 @@ use cosmwasm_schema::cw_serde;
 use crate::asset::{TokenInfo, TokenType};
 
 use cosmwasm_std::{Addr, Binary, Decimal, QuerierWrapper, StdError, StdResult, Uint128};
+use pool_factory_interfaces::PoolKind;
 
 #[cw_serde]
 pub struct CreatePool {
@@ -69,6 +70,13 @@ pub struct PoolDetails {
     pub pool_id: u64,
     pub pool_token_info: [TokenType; 2],
     pub creator_pool_addr: Addr,
+    /// Distinguishes commit (two-phase) pools from standard (xyk) pools.
+    /// `#[serde(default)]` makes old serialized records — written before
+    /// this field existed — round-trip as `PoolKind::Commit`, which is
+    /// the correct legacy classification since every pool created prior
+    /// to H14 was a commit pool.
+    #[serde(default)]
+    pub pool_kind: PoolKind,
 }
 
 impl PoolDetails {

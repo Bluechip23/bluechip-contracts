@@ -13,8 +13,8 @@ use crate::state::{
     PoolCreationState, PoolUpgrade, ADMIN_TIMELOCK_SECONDS, DISTRIBUTION_BOUNTY_USD,
     FACTORYINSTANTIATEINFO, MAX_DISTRIBUTION_BOUNTY_USD, MAX_ORACLE_UPDATE_BOUNTY_USD,
     ORACLE_BOUNTY_DENOM, ORACLE_UPDATE_BOUNTY_USD, PENDING_CONFIG, PENDING_POOL_CONFIG,
-    PENDING_POOL_UPGRADE, POOLS_BY_CONTRACT_ADDRESS, POOL_COUNTER, POOL_CREATION_CONTEXT,
-    POOL_REGISTRY, POOL_THRESHOLD_MINTED,
+    PENDING_POOL_UPGRADE, POOLS_BY_CONTRACT_ADDRESS, POOLS_BY_ID, POOL_COUNTER,
+    POOL_CREATION_CONTEXT, POOL_REGISTRY, POOL_THRESHOLD_MINTED,
 };
 #[cfg(not(feature = "library"))]
 use cosmwasm_std::entry_point;
@@ -895,6 +895,22 @@ pub fn execute_notify_threshold_crossed(
     if info.sender != pool_addr {
         return Err(ContractError::Std(StdError::generic_err(
             "Only the registered pool contract can notify threshold crossed",
+        )));
+    }
+
+    // Defense-in-depth against a standard pool somehow reaching this code
+    // path (it shouldn't — the pool-side Commit handler is gated on
+    // PoolKind::Commit). Rejecting here too keeps the bluechip mint
+    // schedule cleanly tied to commit-pool threshold events only.
+    let pool_details = POOLS_BY_ID.load(deps.storage, pool_id).map_err(|_| {
+        ContractError::Std(StdError::generic_err(format!(
+            "Pool {} not found in POOLS_BY_ID",
+            pool_id
+        )))
+    })?;
+    if pool_details.pool_kind == pool_factory_interfaces::PoolKind::Standard {
+        return Err(ContractError::Std(StdError::generic_err(
+            "Standard pools do not have a commit threshold to cross",
         )));
     }
 

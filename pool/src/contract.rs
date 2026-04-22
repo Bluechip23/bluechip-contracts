@@ -24,10 +24,10 @@ use crate::msg::{Cw20HookMsg, ExecuteMsg, MigrateMsg, PoolInstantiateMsg};
 use crate::query::query_check_commit;
 use crate::state::{
     CommitLimitInfo, ExpectedFactory, OracleInfo, PoolAnalytics, PoolCtx, PoolDetails,
-    PoolFeeState, PoolInfo, PoolSpecs, Position, ThresholdPayoutAmounts, COMMITFEEINFO,
+    PoolFeeState, PoolInfo, PoolKind, PoolSpecs, Position, ThresholdPayoutAmounts, COMMITFEEINFO,
     COMMIT_LIMIT_INFO, EXPECTED_FACTORY, IS_THRESHOLD_HIT, MINIMUM_LIQUIDITY,
     NATIVE_RAISED_FROM_COMMIT, NEXT_POSITION_ID, ORACLE_INFO, OWNER_POSITIONS, POOL_ANALYTICS,
-    POOL_FEE_STATE, POOL_INFO, POOL_PAUSED, POOL_SPECS, POOL_STATE, REENTRANCY_LOCK,
+    POOL_FEE_STATE, POOL_INFO, POOL_KIND, POOL_PAUSED, POOL_SPECS, POOL_STATE, REENTRANCY_LOCK,
     THRESHOLD_PAYOUT_AMOUNTS, USD_RAISED_FROM_COMMIT,
 };
 use crate::state::{
@@ -215,6 +215,12 @@ pub fn instantiate(
     OWNER_POSITIONS.save(deps.storage, (&env.contract.address, "0"), &true)?;
     ORACLE_INFO.save(deps.storage, &oracle_info)?;
     POOL_ANALYTICS.save(deps.storage, &PoolAnalytics::default())?;
+    // This instantiate path is the commit-pool path (dispatched from
+    // ExecuteMsg::Create in the factory). Standard pools will land in a
+    // separate instantiate branch added in H14 Commit 3 and save
+    // PoolKind::Standard there. Writing it unconditionally here avoids
+    // the may_load-with-default path on every kind check in hot code.
+    POOL_KIND.save(deps.storage, &PoolKind::Commit)?;
 
     Ok(Response::new()
         .add_attribute("action", "instantiate")

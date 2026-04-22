@@ -209,6 +209,7 @@ fn test_oracle_initialization_with_multiple_pools() {
                 },
             ],
             creator_pool_addr: pool_addr.clone(),
+            pool_kind: pool_factory_interfaces::PoolKind::Commit,
         };
         POOLS_BY_ID
             .save(deps.as_mut().storage, i, &pool_details)
@@ -1396,6 +1397,7 @@ fn test_oracle_aggregates_multiple_pool_prices() {
                 },
             ],
             creator_pool_addr: pool_addr,
+            pool_kind: pool_factory_interfaces::PoolKind::Commit,
         };
         POOLS_BY_ID
             .save(&mut deps.storage, pool_id, &pool_details)
@@ -2736,6 +2738,7 @@ fn test_oracle_ignores_pools_without_threshold_crossed() {
                 },
             ],
             creator_pool_addr: pool_addr.clone(),
+            pool_kind: pool_factory_interfaces::PoolKind::Commit,
         };
         POOLS_BY_ID
             .save(&mut deps.storage, 1, &pool_details)
@@ -2774,6 +2777,7 @@ fn test_oracle_ignores_pools_without_threshold_crossed() {
                 },
             ],
             creator_pool_addr: pool_addr.clone(),
+            pool_kind: pool_factory_interfaces::PoolKind::Commit,
         };
         POOLS_BY_ID
             .save(&mut deps.storage, 2, &pool_details)

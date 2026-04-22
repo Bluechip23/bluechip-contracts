@@ -364,6 +364,7 @@ fn test_m_new_3_rotation_skips_pools_without_prior_snapshot() {
             },
         ],
         creator_pool_addr: Addr::unchecked(&creator_addr),
+        pool_kind: pool_factory_interfaces::PoolKind::Commit,
     };
     POOLS_BY_ID
         .save(&mut deps.storage, 1, &pool_details)

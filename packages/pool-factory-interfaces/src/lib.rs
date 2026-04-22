@@ -16,6 +16,34 @@ pub enum PoolQueryMsg {
 pub struct IsPausedResponse {
     pub paused: bool,
 }
+
+/// Distinguishes the two pool flavors registered in the factory:
+///
+/// - `Commit`  — the original two-phase pool. Starts in a commit phase, mints
+///   a fresh creator CW20 at creation, only opens to swaps/liquidity after
+///   USD commits cross the configured threshold. Eligible for oracle
+///   sampling once threshold-crossed.
+///
+/// - `Standard` — a plain xyk pool around two pre-existing assets (any
+///   combination of native-denom and CW20). No threshold, no commit phase,
+///   no distribution; immediately ready for deposits and swaps at pool
+///   creation. Excluded from oracle sampling (its price is not meaningful
+///   for bluechip/USD derivation unless the admin explicitly designates
+///   it as the anchor pool).
+///
+/// Default is `Commit` so that old serialized `PoolDetails` records that
+/// lack a `pool_kind` field round-trip cleanly as commit pools.
+#[cw_serde]
+pub enum PoolKind {
+    Commit,
+    Standard,
+}
+
+impl Default for PoolKind {
+    fn default() -> Self {
+        Self::Commit
+    }
+}
 #[cw_serde]
 #[derive(QueryResponses)]
 pub enum FactoryQueryMsg {
