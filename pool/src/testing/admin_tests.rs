@@ -1,7 +1,7 @@
 use crate::asset::{TokenInfo, TokenType};
 use crate::contract::{execute, instantiate};
 use crate::msg::CommitFeeInfo;
-use crate::msg::{ExecuteMsg, PoolConfigUpdate, PoolInstantiateMsg};
+use crate::msg::{CommitPoolInstantiateMsg, ExecuteMsg, PoolConfigUpdate, PoolInstantiateMsg};
 use crate::state::{ORACLE_INFO, POOL_PAUSED, POOL_SPECS, POOL_STATE};
 use cosmwasm_std::testing::{message_info, mock_dependencies, mock_env, MockApi};
 use cosmwasm_std::{Addr, Coin, Decimal, Uint128};
@@ -13,7 +13,7 @@ fn mock_instantiate_msg() -> PoolInstantiateMsg {
     // MockApi-derived address for both satisfies both.
     let api = MockApi::default();
     let token_addr = api.addr_make("creator_token");
-    PoolInstantiateMsg {
+    PoolInstantiateMsg::Commit(CommitPoolInstantiateMsg {
         pool_id: 1,
         pool_token_info: [
             TokenType::Bluechip {
@@ -39,7 +39,7 @@ fn mock_instantiate_msg() -> PoolInstantiateMsg {
         max_bluechip_lock_per_pool: Uint128::new(10000),
         creator_excess_liquidity_lock_days: 7,
         is_standard_pool: Some(true),
-    }
+    })
 }
 
 #[test]

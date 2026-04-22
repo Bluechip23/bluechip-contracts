@@ -14,7 +14,7 @@ use crate::state::{
 use crate::{
     contract::{execute, execute_swap_cw20, instantiate},
     generic_helpers::trigger_threshold_payout,
-    msg::{CommitFeeInfo, Cw20HookMsg, PoolInstantiateMsg},
+    msg::{CommitFeeInfo, CommitPoolInstantiateMsg, Cw20HookMsg, PoolInstantiateMsg},
     state::{
         DistributionState, COMMITFEEINFO, COMMIT_LIMIT_INFO, DISTRIBUTION_STATE, POOL_INFO,
         THRESHOLD_PAYOUT_AMOUNTS, THRESHOLD_PROCESSING,
@@ -1222,7 +1222,7 @@ fn test_swap_price_accumulator_update() {
 fn test_factory_impersonation_prevented() {
     let mut deps = mock_dependencies();
 
-    let msg = PoolInstantiateMsg {
+    let msg = PoolInstantiateMsg::Commit(CommitPoolInstantiateMsg {
         pool_id: 1u64,
         pool_token_info: [
             TokenType::Bluechip {
@@ -1248,7 +1248,7 @@ fn test_factory_impersonation_prevented() {
         position_nft_address: Addr::unchecked("NFT_contract"),
         token_address: Addr::unchecked("token_contract"),
         is_standard_pool: None,
-    };
+    });
     let info = message_info(&Addr::unchecked("fake_factory"), &[]); // Wrong sender!
     let err = instantiate(deps.as_mut(), mock_env(), info, msg).unwrap_err();
 

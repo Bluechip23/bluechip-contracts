@@ -1,7 +1,7 @@
 use crate::asset::{TokenInfo, TokenType};
 use crate::contract::{execute, instantiate};
 use crate::error::ContractError;
-use crate::msg::{CommitFeeInfo, ExecuteMsg, PoolInstantiateMsg};
+use crate::msg::{CommitFeeInfo, CommitPoolInstantiateMsg, ExecuteMsg, PoolInstantiateMsg};
 use crate::state::IS_THRESHOLD_HIT;
 use cosmwasm_std::{
     testing::{message_info, mock_dependencies, mock_env, MockApi},
@@ -14,7 +14,7 @@ fn test_standard_pool_instantiation() {
     let env = mock_env();
     let info = message_info(&Addr::unchecked("factory"), &[]);
 
-    let msg = PoolInstantiateMsg {
+    let msg = PoolInstantiateMsg::Commit(CommitPoolInstantiateMsg {
         pool_id: 1,
         pool_token_info: [
             TokenType::Bluechip {
@@ -40,7 +40,7 @@ fn test_standard_pool_instantiation() {
         max_bluechip_lock_per_pool: Uint128::new(10_000_000_000),
         creator_excess_liquidity_lock_days: 7,
         is_standard_pool: Some(true),
-    };
+    });
 
     instantiate(deps.as_mut(), env.clone(), info, msg).unwrap();
 
@@ -55,7 +55,7 @@ fn test_standard_pool_immediate_swap_and_deposit() {
     let info = message_info(&Addr::unchecked("factory"), &[]);
 
     // Instantiate as standard pool
-    let msg = PoolInstantiateMsg {
+    let msg = PoolInstantiateMsg::Commit(CommitPoolInstantiateMsg {
         pool_id: 1,
         pool_token_info: [
             TokenType::Bluechip {
@@ -81,7 +81,7 @@ fn test_standard_pool_immediate_swap_and_deposit() {
         max_bluechip_lock_per_pool: Uint128::new(10_000_000_000),
         creator_excess_liquidity_lock_days: 7,
         is_standard_pool: Some(true),
-    };
+    });
 
     instantiate(deps.as_mut(), env.clone(), info, msg).unwrap();
 

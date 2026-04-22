@@ -20,7 +20,10 @@ use crate::liquidity::{
     execute_remove_partial_liquidity_by_percent,
 };
 use crate::liquidity_helpers::{execute_claim_creator_excess, execute_claim_creator_fees};
-use crate::msg::{Cw20HookMsg, ExecuteMsg, MigrateMsg, PoolInstantiateMsg};
+use crate::msg::{
+    CommitPoolInstantiateMsg, Cw20HookMsg, ExecuteMsg, MigrateMsg, PoolInstantiateMsg,
+};
+use pool_factory_interfaces::StandardPoolInstantiateMsg;
 use crate::query::query_check_commit;
 use crate::state::{
     CommitLimitInfo, ExpectedFactory, OracleInfo, PoolAnalytics, PoolCtx, PoolDetails,
@@ -57,6 +60,23 @@ pub fn instantiate(
     env: Env,
     info: MessageInfo,
     msg: PoolInstantiateMsg,
+) -> Result<Response, ContractError> {
+    match msg {
+        PoolInstantiateMsg::Commit(commit_msg) => instantiate_commit_pool(deps, env, info, commit_msg),
+        PoolInstantiateMsg::Standard(standard_msg) => {
+            instantiate_standard_pool(deps, env, info, standard_msg)
+        }
+    }
+}
+
+/// Commit-pool instantiate path (original behavior). Sets up every
+/// commit-phase storage item (threshold payout, commit fees, commit limit,
+/// etc.) and writes `PoolKind::Commit`.
+fn instantiate_commit_pool(
+    deps: DepsMut,
+    env: Env,
+    info: MessageInfo,
+    msg: CommitPoolInstantiateMsg,
 ) -> Result<Response, ContractError> {
     let cfg = ExpectedFactory {
         expected_factory_address: msg.used_factory_addr.clone(),
@@ -216,20 +236,215 @@ pub fn instantiate(
     ORACLE_INFO.save(deps.storage, &oracle_info)?;
     POOL_ANALYTICS.save(deps.storage, &PoolAnalytics::default())?;
     // This instantiate path is the commit-pool path (dispatched from
-    // ExecuteMsg::Create in the factory). Standard pools will land in a
-    // separate instantiate branch added in H14 Commit 3 and save
-    // PoolKind::Standard there. Writing it unconditionally here avoids
-    // the may_load-with-default path on every kind check in hot code.
+    // ExecuteMsg::Create in the factory).
     POOL_KIND.save(deps.storage, &PoolKind::Commit)?;
 
     Ok(Response::new()
         .add_attribute("action", "instantiate")
+        .add_attribute("pool_kind", "commit")
+        .add_attribute("pool", env.contract.address.to_string()))
+}
+
+/// Standard-pool instantiate path (new in H14). Wraps two pre-existing
+/// assets as a plain xyk pool. Skips every commit-phase storage item —
+/// no threshold payout, no commit fees, no commit limit — and writes
+/// `PoolKind::Standard`.
+///
+/// Commit 3 scope restriction: this path only supports pools where the
+/// pair is exactly one `TokenType::Bluechip` + one `TokenType::CreatorToken`,
+/// because the existing deposit/swap/liquidity code paths assume that
+/// layout (asset 0 native, asset 1 CW20). Bluechip/Bluechip (e.g. the
+/// ATOM/bluechip anchor) and CW20/CW20 pairs are deferred to Commit 4,
+/// which generalizes the asset-handling code.
+fn instantiate_standard_pool(
+    deps: DepsMut,
+    env: Env,
+    info: MessageInfo,
+    msg: StandardPoolInstantiateMsg,
+) -> Result<Response, ContractError> {
+    let cfg = ExpectedFactory {
+        expected_factory_address: msg.used_factory_addr.clone(),
+    };
+    EXPECTED_FACTORY.save(deps.storage, &cfg)?;
+    if info.sender != cfg.expected_factory_address {
+        return Err(ContractError::Unauthorized {});
+    }
+
+    msg.pool_token_info[0].check(deps.api)?;
+    msg.pool_token_info[1].check(deps.api)?;
+    if msg.pool_token_info[0] == msg.pool_token_info[1] {
+        return Err(ContractError::DoublingAssets {});
+    }
+
+    // H14 Commit 3 restriction: existing deposit/swap/liquidity code
+    // assumes asset 0 is a native Bluechip denom and asset 1 is a
+    // CreatorToken CW20. Reject any other pair shape until Commit 4
+    // generalizes the asset-handling path. The factory-side validator
+    // allows any shape, so this is the enforcing boundary during the
+    // staged rollout.
+    let bluechip_count = msg
+        .pool_token_info
+        .iter()
+        .filter(|t| matches!(t, TokenType::Bluechip { .. }))
+        .count();
+    let creator_count = msg
+        .pool_token_info
+        .iter()
+        .filter(|t| matches!(t, TokenType::CreatorToken { .. }))
+        .count();
+    if bluechip_count != 1 || creator_count != 1 {
+        return Err(ContractError::Std(StdError::generic_err(format!(
+            "Standard pool (H14 Commit 3 scope): pair must be exactly one Bluechip + one CreatorToken (got {} Bluechip, {} CreatorToken). CW20/CW20 and Bluechip/Bluechip pair support lands in Commit 4.",
+            bluechip_count, creator_count
+        ))));
+    }
+    if !matches!(msg.pool_token_info[0], TokenType::Bluechip { .. }) {
+        return Err(ContractError::Std(StdError::generic_err(
+            "Standard pool (H14 Commit 3 scope): pool_token_info[0] must be the Bluechip side. Commit 4 will lift this ordering requirement.",
+        )));
+    }
+    let creator_token_addr =
+        if let TokenType::CreatorToken { contract_addr } = &msg.pool_token_info[1] {
+            contract_addr.clone()
+        } else {
+            return Err(ContractError::Std(StdError::generic_err(
+                "Standard pool (H14 Commit 3 scope): pool_token_info[1] must be the CreatorToken side.",
+            )));
+        };
+
+    set_contract_version(deps.storage, CONTRACT_NAME, CONTRACT_VERSION)?;
+
+    let pool_info = PoolInfo {
+        pool_id: msg.pool_id,
+        pool_info: PoolDetails {
+            contract_addr: env.contract.address.clone(),
+            asset_infos: msg.pool_token_info.clone(),
+            pool_type: PoolPairType::Xyk {},
+        },
+        factory_addr: msg.used_factory_addr.clone(),
+        token_address: creator_token_addr,
+        position_nft_address: msg.position_nft_address.clone(),
+    };
+
+    let liquidity_position = Position {
+        liquidity: Uint128::zero(),
+        owner: env.contract.address.clone(),
+        fee_growth_inside_0_last: Decimal::zero(),
+        fee_growth_inside_1_last: Decimal::zero(),
+        created_at: env.block.time.seconds(),
+        last_fee_collection: env.block.time.seconds(),
+        fee_size_multiplier: Decimal::one(),
+        unclaimed_fees_0: Uint128::zero(),
+        unclaimed_fees_1: Uint128::zero(),
+    };
+
+    let pool_specs = PoolSpecs {
+        lp_fee: Decimal::permille(3),   // 0.3% LP fee (same default as commit pools)
+        min_commit_interval: 13,        // seconds; used by swap rate limit
+        usd_payment_tolerance_bps: 0,   // unused for standard pools
+    };
+
+    // Standard pools have no creator wallet (no creator token mint, no
+    // commit-fee destinations). We save a zeroed COMMITFEEINFO with the
+    // factory address as a placeholder for both wallet fields so the
+    // storage item exists — downstream code that reads it on the swap
+    // path checks is_zero fees and no-ops. The factory address is a
+    // safe placeholder because: (a) it won't accidentally forward fees
+    // somewhere sensitive, and (b) fees here are always zero anyway.
+    let fee_info = crate::msg::CommitFeeInfo {
+        bluechip_wallet_address: msg.used_factory_addr.clone(),
+        creator_wallet_address: msg.used_factory_addr.clone(),
+        commit_fee_bluechip: Decimal::zero(),
+        commit_fee_creator: Decimal::zero(),
+    };
+
+    let pool_state = PoolState {
+        pool_contract_address: env.contract.address.clone(),
+        total_liquidity: Uint128::zero(),
+        block_time_last: env.block.time.seconds(),
+        reserve0: Uint128::zero(),
+        reserve1: Uint128::zero(),
+        price0_cumulative_last: Uint128::zero(),
+        price1_cumulative_last: Uint128::zero(),
+        nft_ownership_accepted: false,
+    };
+
+    let pool_fee_state = PoolFeeState {
+        fee_growth_global_0: Decimal::zero(),
+        fee_growth_global_1: Decimal::zero(),
+        total_fees_collected_0: Uint128::zero(),
+        total_fees_collected_1: Uint128::zero(),
+        fee_reserve_0: Uint128::zero(),
+        fee_reserve_1: Uint128::zero(),
+    };
+
+    // Zero-valued legacy commit state. Populated so downstream code that
+    // unconditionally loads these items doesn't have to may_load-with-
+    // default on every swap. Standard pools never write to or read the
+    // commit-phase semantics of these values — the commit/continue_
+    // distribution/claim_* handlers reject for standard pools anyway.
+    let zeroed_payout = ThresholdPayoutAmounts {
+        creator_reward_amount: Uint128::zero(),
+        bluechip_reward_amount: Uint128::zero(),
+        pool_seed_amount: Uint128::zero(),
+        commit_return_amount: Uint128::zero(),
+    };
+    let zeroed_commit_config = CommitLimitInfo {
+        commit_amount_for_threshold_usd: Uint128::zero(),
+        commit_amount_for_threshold: Uint128::zero(),
+        max_bluechip_lock_per_pool: Uint128::zero(),
+        creator_excess_liquidity_lock_days: 0,
+    };
+    let oracle_info = OracleInfo {
+        oracle_addr: msg.used_factory_addr.clone(),
+    };
+
+    USD_RAISED_FROM_COMMIT.save(deps.storage, &Uint128::zero())?;
+    COMMITFEEINFO.save(deps.storage, &fee_info)?;
+    NATIVE_RAISED_FROM_COMMIT.save(deps.storage, &Uint128::zero())?;
+    // Standard pools are "threshold-hit" from birth — that's how the
+    // existing IS_THRESHOLD_HIT gate in liquidity/swap handlers permits
+    // deposit and swap immediately.
+    IS_THRESHOLD_HIT.save(deps.storage, &true)?;
+    NEXT_POSITION_ID.save(deps.storage, &0u64)?;
+    POOL_INFO.save(deps.storage, &pool_info)?;
+    POOL_FEE_STATE.save(deps.storage, &pool_fee_state)?;
+    POOL_STATE.save(deps.storage, &pool_state)?;
+    POOL_SPECS.save(deps.storage, &pool_specs)?;
+    THRESHOLD_PAYOUT_AMOUNTS.save(deps.storage, &zeroed_payout)?;
+    COMMIT_LIMIT_INFO.save(deps.storage, &zeroed_commit_config)?;
+    LIQUIDITY_POSITIONS.save(deps.storage, "0", &liquidity_position)?;
+    OWNER_POSITIONS.save(deps.storage, (&env.contract.address, "0"), &true)?;
+    ORACLE_INFO.save(deps.storage, &oracle_info)?;
+    POOL_ANALYTICS.save(deps.storage, &PoolAnalytics::default())?;
+    POOL_KIND.save(deps.storage, &PoolKind::Standard)?;
+
+    Ok(Response::new()
+        .add_attribute("action", "instantiate")
+        .add_attribute("pool_kind", "standard")
         .add_attribute("pool", env.contract.address.to_string()))
 }
 
 // ---------------------------------------------------------------------------
 // Execute dispatch
 // ---------------------------------------------------------------------------
+
+/// Reject execute messages that only make sense on commit pools. Applied
+/// at the dispatch layer — handlers themselves don't have to re-check.
+/// Uses `load_pool_kind` so pre-H14 pools (no POOL_KIND storage key)
+/// correctly classify as commit pools.
+fn require_commit_pool(
+    storage: &dyn cosmwasm_std::Storage,
+    action: &'static str,
+) -> Result<(), ContractError> {
+    if crate::state::load_pool_kind(storage)? != PoolKind::Commit {
+        return Err(ContractError::Std(StdError::generic_err(format!(
+            "{} is only available on commit pools; this is a standard pool",
+            action
+        ))));
+    }
+    Ok(())
+}
 
 #[cfg_attr(not(feature = "library"), entry_point)]
 pub fn execute(
@@ -253,13 +468,14 @@ pub fn execute(
             execute_recover_stuck_states(deps, env, info, recovery_type)
         }
 
-        // --- Commit & Distribution ---
+        // --- Commit & Distribution (commit-pool only) ---
         ExecuteMsg::Commit {
             asset,
             transaction_deadline,
             belief_price,
             max_spread,
         } => {
+            require_commit_pool(deps.storage, "Commit")?;
             // Block ALL commits while paused — pre-threshold AND post-threshold.
             // Previously only process_post_threshold_commit checked POOL_PAUSED,
             // so admin pauses failed to stop pre-threshold deposits, letting
@@ -277,7 +493,10 @@ pub fn execute(
                 max_spread,
             )
         }
-        ExecuteMsg::ContinueDistribution {} => execute_continue_distribution(deps, env, info),
+        ExecuteMsg::ContinueDistribution {} => {
+            require_commit_pool(deps.storage, "ContinueDistribution")?;
+            execute_continue_distribution(deps, env, info)
+        }
 
         // --- Swap ---
         ExecuteMsg::SimpleSwap {
@@ -458,6 +677,11 @@ pub fn execute(
             )
         }
         ExecuteMsg::ClaimCreatorExcessLiquidity { transaction_deadline } => {
+            // Creator excess exists only when a commit-pool threshold is crossed
+            // with more raised-bluechip than `max_bluechip_lock_per_pool`
+            // absorbs. Standard pools have no commit phase and no excess
+            // position, so there's nothing to claim.
+            require_commit_pool(deps.storage, "ClaimCreatorExcessLiquidity")?;
             ensure_not_drained(deps.storage)?;
             if POOL_PAUSED.may_load(deps.storage)?.unwrap_or(false) {
                 return Err(ContractError::PoolPausedLowLiquidity {});
@@ -465,13 +689,22 @@ pub fn execute(
             execute_claim_creator_excess(deps, env, info, transaction_deadline)
         }
         ExecuteMsg::ClaimCreatorFees { transaction_deadline } => {
+            // The creator fee pot is seeded by the fee_size_multiplier
+            // clip on commit-pool LP fees. Standard pools have no creator
+            // concept, so the pot is always empty and this handler is N/A.
+            require_commit_pool(deps.storage, "ClaimCreatorFees")?;
             ensure_not_drained(deps.storage)?;
             if POOL_PAUSED.may_load(deps.storage)?.unwrap_or(false) {
                 return Err(ContractError::PoolPausedLowLiquidity {});
             }
             execute_claim_creator_fees(deps, env, info, transaction_deadline)
         }
-        ExecuteMsg::RetryFactoryNotify {} => execute_retry_factory_notify(deps, env, info),
+        ExecuteMsg::RetryFactoryNotify {} => {
+            // Retries NotifyThresholdCrossed to the factory. Standard
+            // pools never cross a threshold, so there's nothing to retry.
+            require_commit_pool(deps.storage, "RetryFactoryNotify")?;
+            execute_retry_factory_notify(deps, env, info)
+        }
     }
 }
 

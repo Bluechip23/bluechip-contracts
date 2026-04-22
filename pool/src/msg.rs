@@ -183,8 +183,33 @@ pub struct FactoryNotifyStatusResponse {
     pub pending: bool,
 }
 
+/// Instantiate message dispatched by the factory to a freshly created pool
+/// wasm. Tagged enum so the pool's `instantiate` entry point can receive
+/// either the commit-pool or standard-pool wire format and branch on
+/// which variant was sent.
+///
+/// JSON shape (tagged via `cw_serde`'s default `rename_all = "snake_case"`):
+///   - Commit:   `{"commit":   { <CommitPoolInstantiateMsg fields> }}`
+///   - Standard: `{"standard": { <StandardPoolInstantiateMsg fields> }}`
+///
+/// The factory's side has a mirror `PoolInstantiateWire` (in
+/// `factory/src/pool_creation_reply.rs`) that serializes to the same
+/// JSON. The two types are intentionally not a shared crate item
+/// because the commit variant references `CommitFeeInfo` (mirror-typed
+/// between factory and pool), and hoisting all dependent types into
+/// `pool_factory_interfaces` would churn many unrelated call sites.
 #[cw_serde]
-pub struct PoolInstantiateMsg {
+pub enum PoolInstantiateMsg {
+    Commit(CommitPoolInstantiateMsg),
+    Standard(pool_factory_interfaces::StandardPoolInstantiateMsg),
+}
+
+/// Former flat `PoolInstantiateMsg`, renamed so the new enum can reuse
+/// the `PoolInstantiateMsg` name. Same wire layout as before — existing
+/// commit-pool instantiate calls from the factory continue to work as
+/// long as they wrap this struct in `PoolInstantiateMsg::Commit(..)`.
+#[cw_serde]
+pub struct CommitPoolInstantiateMsg {
     pub pool_id: u64,
     pub pool_token_info: [TokenType; 2],
     pub cw20_token_contract_id: u64,

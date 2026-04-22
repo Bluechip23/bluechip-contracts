@@ -15,6 +15,25 @@ use cosmwasm_std::{
 };
 use pool_factory_interfaces::{cw721_msgs::Cw721InstantiateMsg, PoolKind, StandardPoolInstantiateMsg};
 
+/// Factory-side mirror of `pool::msg::PoolInstantiateMsg`. Serializes to
+/// the same tagged-enum JSON shape so the pool can round-trip-deserialize
+/// whichever variant the factory dispatched. Two separate types exist
+/// only because the `Commit` variant references factory-local structs
+/// (`CreatePoolReplyMsg`, `CommitFeeInfo`) whose equivalents in the pool
+/// crate (`CommitPoolInstantiateMsg`, `pool::msg::CommitFeeInfo`) are
+/// structurally identical — cross-crate reuse would require hoisting
+/// several factory-only types into `pool_factory_interfaces`.
+///
+/// Derives only `Serialize` + the `#[serde(rename_all = "snake_case")]`
+/// attribute; no `Deserialize` because the factory never consumes this
+/// wire format — it only emits it.
+#[derive(serde::Serialize)]
+#[serde(rename_all = "snake_case")]
+enum PoolInstantiateWire {
+    Commit(CreatePoolReplyMsg),
+    Standard(StandardPoolInstantiateMsg),
+}
+
 // pool_creation_reply.rs
 //
 // Every step of the pool-creation reply chain uses `SubMsg::reply_on_success`.
@@ -119,28 +138,31 @@ pub fn mint_create_pool(
             }
         }
     }
+    let commit_msg = CreatePoolReplyMsg {
+        pool_id,
+        pool_token_info: updated_asset_infos,
+        used_factory_addr: env.contract.address.clone(),
+        cw20_token_contract_id: factory_config.cw20_token_contract_id,
+        threshold_payout: Some(threshold_binary),
+        commit_fee_info: CommitFeeInfo {
+            bluechip_wallet_address: factory_config.bluechip_wallet_address.clone(),
+            creator_wallet_address: ctx.temp.temp_creator_wallet.clone(),
+            commit_fee_bluechip: factory_config.commit_fee_bluechip,
+            commit_fee_creator: factory_config.commit_fee_creator,
+        },
+        commit_amount_for_threshold: factory_config.commit_amount_for_threshold_bluechip,
+        commit_threshold_limit_usd: factory_config.commit_threshold_limit_usd,
+        token_address,
+        position_nft_address: nft_address.clone(),
+        max_bluechip_lock_per_pool: factory_config.max_bluechip_lock_per_pool,
+        creator_excess_liquidity_lock_days: factory_config.creator_excess_liquidity_lock_days,
+        is_standard_pool: ctx.temp.temp_pool_info.is_standard_pool,
+    };
+    // Wrap in the tagged `Commit` variant of the pool's enum wire format.
+    // Produces JSON `{"commit": { ... }}`, matching pool::msg::PoolInstantiateMsg::Commit.
     let pool_msg = WasmMsg::Instantiate {
         code_id: factory_config.create_pool_wasm_contract_id,
-        msg: to_json_binary(&CreatePoolReplyMsg {
-            pool_id,
-            pool_token_info: updated_asset_infos,
-            used_factory_addr: env.contract.address.clone(),
-            cw20_token_contract_id: factory_config.cw20_token_contract_id,
-            threshold_payout: Some(threshold_binary),
-            commit_fee_info: CommitFeeInfo {
-                bluechip_wallet_address: factory_config.bluechip_wallet_address.clone(),
-                creator_wallet_address: ctx.temp.temp_creator_wallet.clone(),
-                commit_fee_bluechip: factory_config.commit_fee_bluechip,
-                commit_fee_creator: factory_config.commit_fee_creator,
-            },
-            commit_amount_for_threshold: factory_config.commit_amount_for_threshold_bluechip,
-            commit_threshold_limit_usd: factory_config.commit_threshold_limit_usd,
-            token_address,
-            position_nft_address: nft_address.clone(),
-            max_bluechip_lock_per_pool: factory_config.max_bluechip_lock_per_pool,
-            creator_excess_liquidity_lock_days: factory_config.creator_excess_liquidity_lock_days,
-            is_standard_pool: ctx.temp.temp_pool_info.is_standard_pool,
-        })?,
+        msg: to_json_binary(&PoolInstantiateWire::Commit(commit_msg))?,
         funds: vec![],
         admin: Some(env.contract.address.to_string()),
         label: format!("Pool-{}", pool_id),
@@ -248,14 +270,17 @@ pub fn mint_standard_nft(
 
     let factory_config = FACTORYINSTANTIATEINFO.load(deps.storage)?;
 
+    let std_msg = StandardPoolInstantiateMsg {
+        pool_id,
+        pool_token_info: ctx.pool_token_info.clone(),
+        used_factory_addr: env.contract.address.clone(),
+        position_nft_address: nft_address.clone(),
+    };
+    // Wrap in the `Standard` variant of the pool's tagged enum wire
+    // format. Produces JSON `{"standard": { ... }}`.
     let pool_msg = WasmMsg::Instantiate {
         code_id: factory_config.create_pool_wasm_contract_id,
-        msg: to_json_binary(&StandardPoolInstantiateMsg {
-            pool_id,
-            pool_token_info: ctx.pool_token_info.clone(),
-            used_factory_addr: env.contract.address.clone(),
-            position_nft_address: nft_address.clone(),
-        })?,
+        msg: to_json_binary(&PoolInstantiateWire::Standard(std_msg))?,
         funds: vec![],
         admin: Some(env.contract.address.to_string()),
         label: ctx.label.clone(),
