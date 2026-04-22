@@ -571,3 +571,189 @@ call_pool_info consumes.
 
 No behavior change.
 ```
+
+## Step 2c — `swap_helper.rs` split
+
+Source: `pool/src/swap_helper.rs` (300 lines). This is the first file in
+the plan that truly **splits** — half goes to pool-core, half stays in
+creator-pool. The split line is "AMM math" (pair-shape-agnostic,
+stateless-or-state-only) vs. "oracle integration" (calls the factory's
+internal oracle, only ever used by commit flow).
+
+### Items that MOVE to `pool-core/src/swap.rs`
+
+Pure AMM math — shared by simple_swap, post-threshold commit, deposit
+liquidity, remove liquidity, and every simulation/reverse-simulation
+query on both pool kinds.
+
+| Item | Kind | Notes |
+|---|---|---|
+| `DEFAULT_SLIPPAGE` | `pub const &str = "0.005"` | currently lives in `pool/src/contract.rs`; **also moves** to pool-core with the math that consumes it |
+| `compute_swap` | fn | constant-product x·y=k return + spread + commission |
+| `compute_offer_amount` | fn | inverse — required offer for a desired ask |
+| `assert_max_spread` | fn | slippage guard used by every swap path |
+| `update_price_accumulator` | fn | TWAP cumulative updater; mutates a `PoolState` ref |
+
+### Items that STAY in `pool/src/swap_helper.rs` (creator-pool only)
+
+Oracle integration — these make cross-contract queries to the factory's
+internal oracle. Standard pools never call any of these (commit-phase
+USD valuation is meaningless for them).
+
+| Item | Kind | Notes |
+|---|---|---|
+| `MAX_ORACLE_STALENESS_SECONDS` | `pub const u64 = 90` | aligns with factory's own staleness threshold |
+| `ORACLE_PRICE_PRECISION` | `pub const u128 = 1_000_000` | mirrors `factory::internal_bluechip_price_oracle::PRICE_PRECISION` |
+| `get_usd_value_with_staleness_check` | fn | thin wrapper around `get_oracle_conversion_with_staleness` |
+| `get_oracle_conversion_with_staleness` | fn | bluechip → USD conversion via factory query |
+| `usd_to_bluechip_at_rate` | fn | inverse conversion at a pre-captured rate |
+| `get_bluechip_value` | fn | USD → bluechip convenience |
+| `FactoryQueryWrapper` | private enum | serialization wrapper for `FactoryQueryMsg::InternalBlueChipOracleQuery` |
+
+### `pool/src/swap_helper.rs` after the split
+
+```rust
+//! Oracle-integration helpers (commit-phase only). The pure AMM math
+//! that used to live in this file (`compute_swap`, `compute_offer_amount`,
+//! `assert_max_spread`, `update_price_accumulator`, `DEFAULT_SLIPPAGE`)
+//! now lives in `pool_core::swap` and is re-exported below so existing
+//! imports like `use crate::swap_helper::compute_swap;` keep resolving.
+pub use pool_core::swap::*;
+
+use crate::state::POOL_INFO;
+use cosmwasm_schema::cw_serde;
+use cosmwasm_std::{Deps, StdError, StdResult, Uint128};
+use pool_factory_interfaces::{ConversionResponse, FactoryQueryMsg};
+
+#[cw_serde]
+enum FactoryQueryWrapper {
+    InternalBlueChipOracleQuery(FactoryQueryMsg),
+}
+
+pub const MAX_ORACLE_STALENESS_SECONDS: u64 = 90;
+pub const ORACLE_PRICE_PRECISION: u128 = 1_000_000;
+
+// ... existing oracle-helper fn bodies unchanged ...
+```
+
+### `packages/pool-core/src/swap.rs` imports
+
+```rust
+use crate::error::ContractError;
+use crate::state::PoolState;
+use cosmwasm_std::{Decimal, Decimal256, Fraction, StdError, StdResult, Uint128, Uint256};
+use std::str::FromStr;
+
+pub const DEFAULT_SLIPPAGE: &str = "0.005";
+```
+
+### Dependency on `decimal2decimal256` (cross-step gotcha)
+
+`compute_swap`, `compute_offer_amount`, and `assert_max_spread` call
+`decimal2decimal256`, which currently lives in `pool/src/generic_helpers.rs`.
+That helper moves to `pool-core/src/generic.rs` in **Step 3b**, not 2c.
+
+Resolution options, in order of preference:
+
+1. **Inline it into `pool-core/src/swap.rs`** as a private helper.
+   It's ~8 lines of pure math, no state access, no external deps beyond
+   `cosmwasm_std`. Inlining avoids a temporary cross-crate dep and lets
+   2c land as a clean self-contained commit. Step 3b can then move the
+   creator-pool copy and keep (or drop, if unused elsewhere) this
+   pool-core local one.
+
+2. **Co-land 3b with 2c.** Larger diff but removes the temporary
+   duplication. Acceptable if you prefer fewer commits.
+
+3. **Duplicate the helper** in pool-core/src/swap.rs with a TODO comment
+   pointing at Step 3b. Fine but leaves a debt to clean up.
+
+**Default recommendation: option 1.** Inline it.
+
+### Update `pool-core/src/lib.rs`
+
+Module ordering after 2c:
+
+```rust
+pub mod error;
+pub mod state;   // 2a
+pub mod asset;   // 2b
+pub mod swap;    // 2c
+```
+
+### `pool/src/contract.rs` impact
+
+`contract.rs` declares `pub const DEFAULT_SLIPPAGE: &str = "0.005";` at
+module top. Remove that declaration. Existing `use
+crate::contract::DEFAULT_SLIPPAGE;` imports inside the creator-pool
+crate break — but there's only one (`pool/src/swap_helper.rs` line 1),
+which is also being rewritten in this step. If any tests reference
+`crate::contract::DEFAULT_SLIPPAGE`, update them to
+`crate::swap_helper::DEFAULT_SLIPPAGE` (resolves via the re-export) or
+directly to `pool_core::swap::DEFAULT_SLIPPAGE`.
+
+### Cargo.toml changes
+
+None for 2c. All required deps (`cosmwasm-std`) already present in
+pool-core from C1 skeleton.
+
+### Expected compile-error patterns after 2c
+
+1. **`decimal2decimal256` not found in scope** — if you chose option 3
+   (duplicate) or the Step 3b timing slipped. Fix: inline per option 1.
+
+2. **`DEFAULT_SLIPPAGE` unresolved** — removed from `pool::contract`
+   but still referenced somewhere in pool code that hasn't been updated.
+   Search: `grep -rn "DEFAULT_SLIPPAGE\|crate::contract::DEFAULT_SLIPPAGE" pool/src`
+   and either let it resolve through `crate::swap_helper::DEFAULT_SLIPPAGE`
+   (via the re-export) or import directly from `pool_core::swap`.
+
+3. **Private `FactoryQueryWrapper` visibility** — no change needed;
+   it stays `enum FactoryQueryWrapper` (module-private) in
+   `pool/src/swap_helper.rs` and is never referenced outside this file.
+
+4. **`PoolState` mutability** — `update_price_accumulator` takes
+   `&mut PoolState`. Callers pass through a mutable ref loaded from
+   `POOL_STATE.load`. No signature change, no caller change.
+
+### Verification after 2c
+
+```
+cargo check -p pool-core
+cargo check -p pool
+cargo test -p pool
+```
+
+Compare `pool.wasm` byte size before/after (optional) — should be
+~nearly identical; we've moved code between static libraries being
+linked into the same final wasm.
+
+### Suggested commit message
+
+```
+H14 split (2c/N): extract AMM math to pool-core::swap
+
+Splits pool/src/swap_helper.rs between pool-core (pair-shape-agnostic
+constant-product math: compute_swap, compute_offer_amount,
+assert_max_spread, update_price_accumulator, DEFAULT_SLIPPAGE) and
+creator-pool (oracle-integration helpers that query the factory's
+internal bluechip/USD oracle: get_oracle_conversion_with_staleness,
+usd_to_bluechip_at_rate, get_bluechip_value, etc.).
+
+Standard pools have no commit phase and never consume the oracle
+helpers, so those stay in creator-pool. Every swap/deposit/remove
+code path that both pools share uses the pool-core math.
+
+Also moves DEFAULT_SLIPPAGE out of pool/src/contract.rs — it logically
+belongs with assert_max_spread, which now lives in pool-core.
+
+pool/src/swap_helper.rs is now 2 files' worth of content: a
+`pub use pool_core::swap::*;` shim + the oracle helpers. Existing
+imports via `use crate::swap_helper::X;` continue to resolve.
+
+decimal2decimal256 (currently in pool/src/generic_helpers.rs, moving
+in Step 3b) is inlined privately into pool-core/src/swap.rs for this
+step to keep 2c self-contained.
+
+No behavior change.
+```
