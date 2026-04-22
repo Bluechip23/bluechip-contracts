@@ -45,9 +45,10 @@ pub struct PoolCreationStatusResponse {
     pub pool_address: Option<Addr>,
     pub creation_time: Timestamp,
     pub status: CreationStatus,
-    /// Number of cleanup retries observed for this pool's creation flow.
-    /// 0 on the happy path; non-zero values indicate operator attention may
-    /// be required. Increments only when handle_cleanup_reply gets an Err.
+    /// Legacy field retained for storage-schema backwards compatibility.
+    /// Always 0 now that the pool-creation reply chain is fully atomic
+    /// (reply_on_success at every step): any failure rolls the whole tx
+    /// back, so there is no retry counter to advance.
     pub retry_count: u8,
 }
 

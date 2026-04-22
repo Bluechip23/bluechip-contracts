@@ -64,6 +64,7 @@ fn test_propose_and_execute_update_config() {
         creator_excess_liquidity_lock_days: 7,
         atom_bluechip_anchor_pool_address: atom_bluechip_pool_addr(),
         bluechip_mint_contract_address: None,
+        bluechip_denom: "ubluechip".to_string(),
     };
 
     let env = mock_env();
@@ -653,5 +654,6 @@ fn default_factory_instantiate_msg() -> FactoryInstantiate {
         creator_excess_liquidity_lock_days: 7,
         atom_bluechip_anchor_pool_address: atom_bluechip_pool_addr(),
         bluechip_mint_contract_address: None,
+        bluechip_denom: "ubluechip".to_string(),
     }
 }

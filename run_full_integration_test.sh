@@ -132,7 +132,8 @@ FINIT=$(cat <<EOF
   "max_bluechip_lock_per_pool":"25000000000",
   "creator_excess_liquidity_lock_days":7,
   "atom_bluechip_anchor_pool_address":"$ALICE",
-  "bluechip_mint_contract_address":null
+  "bluechip_mint_contract_address":null,
+  "bluechip_denom": "ubluechip"
 }
 EOF
 )
@@ -171,7 +172,8 @@ NEW_CFG=$(cat <<EOF
   "max_bluechip_lock_per_pool":"25000000000",
   "creator_excess_liquidity_lock_days":7,
   "atom_bluechip_anchor_pool_address":"$ALICE",
-  "bluechip_mint_contract_address":null
+  "bluechip_mint_contract_address":null,
+  "bluechip_denom": "ubluechip"
 }
 EOF
 )
@@ -983,7 +985,8 @@ FINIT2=$(cat <<EOF
   "max_bluechip_lock_per_pool":"100",
   "creator_excess_liquidity_lock_days":7,
   "atom_bluechip_anchor_pool_address":"$ALICE",
-  "bluechip_mint_contract_address":null
+  "bluechip_mint_contract_address":null,
+  "bluechip_denom": "ubluechip"
 }
 EOF
 )

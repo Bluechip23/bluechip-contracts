@@ -276,6 +276,7 @@ print(json.dumps({
     'creator_excess_liquidity_lock_days': 7,
     'atom_bluechip_anchor_pool_address':  '$ALICE',
     'bluechip_mint_contract_address':     '$EXP_ADDR',
+    'bluechip_denom':                      'ubluechip',
 }))
 ")
 FACTORY_ADDR=$(inst "$FACTORY_CODE" "$FACTORY_MSG" "Factory")
@@ -589,6 +590,7 @@ print(json.dumps({
     'creator_excess_liquidity_lock_days': 0,
     'atom_bluechip_anchor_pool_address':  '$ALICE',
     'bluechip_mint_contract_address':     '$EXP_ADDR',
+    'bluechip_denom':                      'ubluechip',
 }))
 ")
 FACTORY_B_ADDR=$(inst "$FACTORY_CODE" "$FACTORY_B_MSG" "FactoryB")

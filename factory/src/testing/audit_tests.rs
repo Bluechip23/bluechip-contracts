@@ -65,6 +65,7 @@ fn default_factory_config() -> FactoryInstantiate {
         creator_excess_liquidity_lock_days: 14,
         atom_bluechip_anchor_pool_address: atom_bluechip_pool_addr(),
         bluechip_mint_contract_address: None,
+        bluechip_denom: "ubluechip".to_string(),
     }
 }
 

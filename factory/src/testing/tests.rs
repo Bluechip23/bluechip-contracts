@@ -66,6 +66,7 @@ fn create_default_instantiate_msg() -> FactoryInstantiate {
         creator_excess_liquidity_lock_days: 7,
         atom_bluechip_anchor_pool_address: atom_bluechip_pool_addr(),
         bluechip_mint_contract_address: None,
+        bluechip_denom: "ubluechip".to_string(),
     }
 }
 
@@ -111,6 +112,7 @@ fn proper_initialization() {
         creator_excess_liquidity_lock_days: 7,
         atom_bluechip_anchor_pool_address: atom_bluechip_pool_addr(),
         bluechip_mint_contract_address: None,
+        bluechip_denom: "ubluechip".to_string(),
     };
 
     let env = mock_env();
@@ -263,6 +265,7 @@ fn create_pair() {
         creator_excess_liquidity_lock_days: 7,
         atom_bluechip_anchor_pool_address: atom_bluechip_pool_addr(),
         bluechip_mint_contract_address: None,
+        bluechip_denom: "ubluechip".to_string(),
     };
 
     let env = mock_env();
@@ -346,6 +349,7 @@ fn test_create_pair_with_custom_params() {
         creator_excess_liquidity_lock_days: 7,
         atom_bluechip_anchor_pool_address: atom_bluechip_pool_addr(),
         bluechip_mint_contract_address: None,
+        bluechip_denom: "ubluechip".to_string(),
     };
 
     let env = mock_env();
@@ -579,6 +583,7 @@ fn test_complete_pool_creation_flow() {
         creator_excess_liquidity_lock_days: 7,
         atom_bluechip_anchor_pool_address: atom_bluechip_pool_addr(),
         bluechip_mint_contract_address: None,
+        bluechip_denom: "ubluechip".to_string(),
     };
 
     let env = mock_env();
@@ -733,6 +738,7 @@ fn test_config() {
         creator_excess_liquidity_lock_days: 7,
         atom_bluechip_anchor_pool_address: atom_bluechip_pool_addr(),
         bluechip_mint_contract_address: None,
+        bluechip_denom: "ubluechip".to_string(),
     };
 
     assert_eq!(config.factory_admin_address, Addr::unchecked("admin1..."));
@@ -771,6 +777,7 @@ fn test_reply_handling() {
         creator_excess_liquidity_lock_days: 7,
         atom_bluechip_anchor_pool_address: atom_bluechip_pool_addr(),
         bluechip_mint_contract_address: None,
+        bluechip_denom: "ubluechip".to_string(),
     };
 
     let env = mock_env();
@@ -1625,6 +1632,7 @@ fn test_query_pyth_atom_usd_price_success() {
         creator_excess_liquidity_lock_days: 7,
         atom_bluechip_anchor_pool_address: atom_bluechip_pool_addr(),
         bluechip_mint_contract_address: None,
+        bluechip_denom: "ubluechip".to_string(),
     };
     FACTORYINSTANTIATEINFO
         .save(deps.as_mut().storage, &config)
@@ -1667,6 +1675,7 @@ fn test_query_pyth_atom_usd_price_default() {
         creator_excess_liquidity_lock_days: 7,
         atom_bluechip_anchor_pool_address: atom_bluechip_pool_addr(),
         bluechip_mint_contract_address: None,
+        bluechip_denom: "ubluechip".to_string(),
     };
     FACTORYINSTANTIATEINFO
         .save(deps.as_mut().storage, &config)
@@ -1699,6 +1708,7 @@ fn test_query_pyth_extreme_atom_prices() {
         creator_excess_liquidity_lock_days: 7,
         atom_bluechip_anchor_pool_address: atom_bluechip_pool_addr(),
         bluechip_mint_contract_address: None,
+        bluechip_denom: "ubluechip".to_string(),
     };
     FACTORYINSTANTIATEINFO
         .save(deps.as_mut().storage, &config)
@@ -1750,6 +1760,7 @@ fn test_get_bluechip_usd_price_with_pyth() {
         creator_excess_liquidity_lock_days: 7,
         atom_bluechip_anchor_pool_address: atom_bluechip_pool_addr(),
         bluechip_mint_contract_address: None,
+        bluechip_denom: "ubluechip".to_string(),
     };
     FACTORYINSTANTIATEINFO
         .save(deps.as_mut().storage, &config)
@@ -1817,6 +1828,7 @@ fn test_bluechip_usd_price_with_different_atom_prices() {
         creator_excess_liquidity_lock_days: 7,
         atom_bluechip_anchor_pool_address: atom_bluechip_pool_addr(),
         bluechip_mint_contract_address: None,
+        bluechip_denom: "ubluechip".to_string(),
     };
     FACTORYINSTANTIATEINFO
         .save(deps.as_mut().storage, &config)
@@ -1887,6 +1899,7 @@ fn test_conversion_functions_with_pyth() {
         creator_excess_liquidity_lock_days: 7,
         atom_bluechip_anchor_pool_address: atom_bluechip_pool_addr(),
         bluechip_mint_contract_address: None,
+        bluechip_denom: "ubluechip".to_string(),
     };
     FACTORYINSTANTIATEINFO
         .save(deps.as_mut().storage, &config)
@@ -1967,6 +1980,7 @@ fn test_bluechip_minting_on_threshold_crossing() {
         creator_excess_liquidity_lock_days: 7,
         atom_bluechip_anchor_pool_address: atom_bluechip_pool_addr(),
         bluechip_mint_contract_address: None,
+        bluechip_denom: "ubluechip".to_string(),
     };
 
     let env = mock_env();
@@ -2061,6 +2075,7 @@ fn test_no_mint_when_amount_is_zero() {
         creator_excess_liquidity_lock_days: 7,
         atom_bluechip_anchor_pool_address: atom_bluechip_pool_addr(),
         bluechip_mint_contract_address: None,
+        bluechip_denom: "ubluechip".to_string(),
     };
 
     let env = mock_env();

@@ -36,6 +36,7 @@ fn test_repro_token_sort_order_bug() {
         creator_excess_liquidity_lock_days: 0,
         atom_bluechip_anchor_pool_address: atom_pool.clone(),
         bluechip_mint_contract_address: None,
+        bluechip_denom: "ubluechip".to_string(),
     };
     FACTORYINSTANTIATEINFO
         .save(deps.as_mut().storage, &config)

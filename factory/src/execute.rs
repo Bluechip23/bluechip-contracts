@@ -6,7 +6,6 @@ use crate::internal_bluechip_price_oracle::{
 };
 use crate::mint_bluechips_pool_creation::calculate_and_mint_bluechip;
 use crate::msg::{CreatorTokenInfo, ExecuteMsg, TokenInstantiateMsg};
-use crate::pool_create_cleanup::handle_cleanup_reply;
 use crate::pool_creation_reply::{finalize_pool, mint_create_pool, set_tokens};
 use crate::pool_struct::{CreatePool, PoolConfigUpdate, TempPoolCreation};
 use crate::state::{
@@ -31,8 +30,6 @@ const CONTRACT_VERSION: &str = env!("CARGO_PKG_VERSION");
 pub const SET_TOKENS: u64 = 1;
 pub const MINT_CREATE_POOL: u64 = 2;
 pub const FINALIZE_POOL: u64 = 3;
-pub const CLEANUP_TOKEN_STEP: u64 = 100;
-pub const CLEANUP_NFT_STEP: u64 = 101;
 
 // Encodes a pool_id and a step into a single SubMsg reply ID.
 pub fn encode_reply_id(pool_id: u64, step: u64) -> u64 {
@@ -60,6 +57,11 @@ pub fn instantiate(
         .addr_validate(msg.atom_bluechip_anchor_pool_address.as_str())?;
     if let Some(ref mint_addr) = msg.bluechip_mint_contract_address {
         deps.api.addr_validate(mint_addr.as_str())?;
+    }
+    if msg.bluechip_denom.trim().is_empty() {
+        return Err(ContractError::Std(StdError::generic_err(
+            "bluechip_denom must be non-empty at factory instantiate",
+        )));
     }
 
     FACTORYINSTANTIATEINFO.save(deps.storage, &msg)?;
@@ -190,6 +192,14 @@ pub fn execute_propose_factory_config_update(
     if let Some(ref mint_addr) = config.bluechip_mint_contract_address {
         deps.api.addr_validate(mint_addr.as_str())?;
     }
+    // Reject empty/whitespace denom at propose time so the mistake surfaces
+    // 48h earlier than it otherwise would (existing pools would immediately
+    // break at their next creation attempt).
+    if config.bluechip_denom.trim().is_empty() {
+        return Err(ContractError::Std(StdError::generic_err(
+            "bluechip_denom must be non-empty",
+        )));
+    }
 
     let pending = PendingConfig {
         new_config: config,
@@ -218,13 +228,17 @@ pub fn execute_cancel_factory_config_update(
 pub const CREATOR_TOKEN_SENTINEL: &str = "WILL_BE_CREATED_BY_FACTORY";
 
 // Validates the pair shape supplied by the pool creator:
-//   - exactly one Bluechip entry
+//   - exactly one Bluechip entry whose denom equals the factory's canonical
+//     `bluechip_denom` (prevents attackers from registering pools under a
+//     fake native denom they control via tokenfactory or similar)
 //   - exactly one CreatorToken entry whose contract_addr equals the sentinel
 // Anything else (duplicate Bluechips with different denoms, two CreatorTokens,
-// a CreatorToken pointing at some pre-existing CW20) is rejected up front so
-// the downstream instantiate doesn't have to untangle a malformed pair.
+// a CreatorToken pointing at some pre-existing CW20, a Bluechip with a wrong
+// denom) is rejected up front so the downstream instantiate doesn't have to
+// untangle a malformed pair.
 pub(crate) fn validate_pool_token_info(
     pool_token_info: &[crate::asset::TokenType; 2],
+    canonical_bluechip_denom: &str,
 ) -> Result<(), ContractError> {
     use crate::asset::TokenType;
 
@@ -237,6 +251,12 @@ pub(crate) fn validate_pool_token_info(
                     return Err(ContractError::Std(StdError::generic_err(
                         "Bluechip denom must be non-empty",
                     )));
+                }
+                if denom != canonical_bluechip_denom {
+                    return Err(ContractError::Std(StdError::generic_err(format!(
+                        "Bluechip denom must match the factory canonical denom \"{}\"; got \"{}\"",
+                        canonical_bluechip_denom, denom
+                    ))));
                 }
                 bluechip_count += 1;
             }
@@ -319,9 +339,8 @@ fn execute_create_creator_pool(
     // writes. These checks must stay at the top of the handler — they
     // guard every later step of pool creation.
     validate_creator_token_info(&token_info)?;
-    validate_pool_token_info(&pool_msg.pool_token_info)?;
-
     let factory_cw20 = FACTORYINSTANTIATEINFO.load(deps.storage)?;
+    validate_pool_token_info(&pool_msg.pool_token_info, &factory_cw20.bluechip_denom)?;
 
     // `is_standard_pool = Some(true)` skips the commit phase entirely and
     // lets the pool enter trading mode at instantiation. That's a powerful
@@ -404,7 +423,6 @@ pub fn pool_creation_reply(deps: DepsMut, env: Env, msg: Reply) -> Result<Respon
         SET_TOKENS => set_tokens(deps, env, msg, pool_id),
         MINT_CREATE_POOL => mint_create_pool(deps, env, msg, pool_id),
         FINALIZE_POOL => finalize_pool(deps, env, msg, pool_id),
-        CLEANUP_TOKEN_STEP | CLEANUP_NFT_STEP => handle_cleanup_reply(deps, env, msg, pool_id),
         _ => Err(ContractError::UnknownReplyId { id: msg.id }),
     }
 }

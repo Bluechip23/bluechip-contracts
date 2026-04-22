@@ -27,9 +27,15 @@ use cw20::Cw20ExecuteMsg;
 
 use crate::asset::{get_bluechip_denom, TokenType};
 
-// Minimum commit value in USD (6 decimals). $1 = 1_000_000.
-// Prevents dust commit griefing that bloats COMMIT_LEDGER and distribution.
-pub const MIN_COMMIT_USD: Uint128 = Uint128::new(1_000_000);
+// Minimum commit value in USD (6 decimals), applied ONLY to pre-threshold
+// commits. $5 = 5_000_000. The floor limits pre-threshold ledger bloat
+// (an attacker can still cross the $25k threshold with their own money, but
+// they can't do it with 25,000 individual $1 entries that balloon the
+// distribution queue). Post-threshold commits are functionally AMM swaps —
+// they don't add to COMMIT_LEDGER and don't feed distribution — so we keep
+// the floor at $1 for them to preserve UX for small-trade users.
+pub const MIN_COMMIT_USD_PRE_THRESHOLD: Uint128 = Uint128::new(5_000_000);
+pub const MIN_COMMIT_USD_POST_THRESHOLD: Uint128 = Uint128::new(1_000_000);
 
 pub fn commit(
     mut deps: DepsMut,
@@ -116,10 +122,22 @@ fn execute_commit_logic(
     if usd_value.is_zero() {
         return Err(ContractError::InvalidOraclePrice {});
     }
-    if usd_value < MIN_COMMIT_USD {
+    // Apply the pre/post-threshold minimum based on current state.
+    let threshold_hit_for_min_check = IS_THRESHOLD_HIT.load(deps.storage)?;
+    let min_commit = if threshold_hit_for_min_check {
+        MIN_COMMIT_USD_POST_THRESHOLD
+    } else {
+        MIN_COMMIT_USD_PRE_THRESHOLD
+    };
+    if usd_value < min_commit {
+        let (phase, dollars) = if threshold_hit_for_min_check {
+            ("post-threshold", "1")
+        } else {
+            ("pre-threshold", "5")
+        };
         return Err(ContractError::Std(StdError::generic_err(format!(
-            "Commit too small: ${} USD (minimum $1 USD)",
-            usd_value
+            "Commit too small: ${} USD (minimum ${} USD {})",
+            usd_value, dollars, phase
         ))));
     }
 
@@ -605,8 +623,14 @@ fn process_threshold_crossing_with_excess(
         env.block.time,
     )?;
 
-    // Process the excess as a swap, capped at 20% of pool reserves to prevent
-    // a single whale from dominating the first trade on a freshly seeded pool.
+    // Process the excess as a swap, capped at 3% of pool reserves to keep
+    // the threshold-crosser from capturing a disproportionate share of the
+    // freshly-seeded pool on a single atomic tx. The cap was previously 20%,
+    // which turned every threshold crossing into a guaranteed MEV bonanza
+    // (~20% of all newly-minted creator tokens at seed price, front-run by
+    // anyone with gas). Dropping to 3% removes the structural free trade
+    // while still letting a modest overshoot settle in the same tx rather
+    // than requiring a full refund + manual re-swap.
     let mut return_amt = Uint128::zero();
     let mut spread_amt = Uint128::zero();
     let mut commission_amt = Uint128::zero();
@@ -621,10 +645,10 @@ fn process_threshold_crossing_with_excess(
         let offer_pool = pool_state.reserve0;
         let ask_pool = pool_state.reserve1;
 
-        // Cap the excess swap at 20% of the freshly seeded bluechip reserve.
+        // Cap the excess swap at 3% of the freshly seeded bluechip reserve.
         // Any remainder is refunded to the sender — they can swap it in
         // subsequent transactions where other participants can also trade.
-        let max_excess_swap = offer_pool.multiply_ratio(20u128, 100u128);
+        let max_excess_swap = offer_pool.multiply_ratio(3u128, 100u128);
         capped_excess = effective_bluechip_excess.min(max_excess_swap);
         refunded_excess = effective_bluechip_excess.checked_sub(capped_excess)?;
 
@@ -642,21 +666,16 @@ fn process_threshold_crossing_with_excess(
             // meant callers who omitted max_spread skipped the check
             // entirely.
             //
-            // The path-aware default (25%) instead of the pool-wide
-            // DEFAULT_SLIPPAGE (0.5%) reflects the structural reality of
-            // this swap: the excess can be up to 20% of the freshly-seeded
-            // pool's reserves, which by x*y=k math produces an inherent
-            // spread of ~15–20% even under honest conditions. A 0.5% cap
-            // would revert virtually every real threshold crossing with
-            // non-trivial excess. 25% gives a small buffer over the 20%
-            // design ceiling: anything worse than that indicates either
-            // a bug, a pathological pool seed, or that the excess cap
-            // wasn't applied — all cases the caller should know about.
+            // With the excess cap now at 3% of the freshly-seeded bluechip
+            // reserve, the maximum honest x*y=k spread on this swap is
+            // ~3% as well. 5% gives a small buffer for rounding / fee
+            // interaction without leaving the previous 25% gaping hole
+            // that let front-runners sandwich the crossing tx.
             //
             // Users who explicitly set a tighter `max_spread` get that
             // stricter bound honored; callers who forgot to specify one
-            // get 25% instead of no protection at all.
-            let effective_max_spread = max_spread.or(Some(Decimal::percent(25)));
+            // get 5% instead of no protection at all.
+            let effective_max_spread = max_spread.or(Some(Decimal::percent(5)));
             assert_max_spread(
                 belief_price,
                 effective_max_spread,

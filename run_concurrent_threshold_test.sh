@@ -713,6 +713,7 @@ print(json.dumps({
     'creator_excess_liquidity_lock_days': 0,
     'atom_bluechip_anchor_pool_address':  '$ALICE',
     'bluechip_mint_contract_address':     '$EXP_ADDR',
+    'bluechip_denom':                      'ubluechip',
 }))
 ")
 

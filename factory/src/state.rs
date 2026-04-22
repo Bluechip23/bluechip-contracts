@@ -123,6 +123,15 @@ pub struct FactoryInstantiate {
     pub creator_excess_liquidity_lock_days: u64,
     pub atom_bluechip_anchor_pool_address: Addr,
     pub bluechip_mint_contract_address: Option<Addr>,
+    /// Canonical native bank denom for the bluechip token on this chain
+    /// (e.g. "ubluechip"). Pinned at factory instantiate time and enforced
+    /// whenever a pool is created: the `TokenType::Bluechip { denom }` entry
+    /// in `pool_token_info` MUST match this value exactly. Prevents an
+    /// attacker from registering a pool with an arbitrary native denom
+    /// (tokenfactory-minted fake bluechip, low-value IBC denom, etc.) and
+    /// having every downstream oracle/commit path treat that denom's
+    /// balance as real bluechip.
+    pub bluechip_denom: String,
 }
 
 #[cw_serde]

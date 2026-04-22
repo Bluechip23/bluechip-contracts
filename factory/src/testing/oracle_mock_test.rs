@@ -38,6 +38,7 @@ fn default_init() -> FactoryInstantiate {
         // Under mock, the anchor pool is not queried during UpdateOraclePrice.
         atom_bluechip_anchor_pool_address: addr("unused_anchor"),
         bluechip_mint_contract_address: None,
+        bluechip_denom: "ubluechip".to_string(),
     }
 }
 

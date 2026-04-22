@@ -888,31 +888,34 @@ pub fn get_bluechip_usd_price(deps: Deps, env: &Env) -> StdResult<Uint128> {
         .load(deps.storage)
         .map_err(|_| StdError::generic_err("Internal oracle not initialized"))?;
 
-    // Bootstrap guard: if fewer than MIN_ELIGIBLE_POOLS_FOR_TWAP creator
-    // pools have crossed threshold, the TWAP is effectively a single-pool
-    // price (the anchor). Refuse to serve it rather than letting an
-    // attacker who can move the anchor pool dictate the bluechip USD price
-    // to every downstream consumer. Eligibility already requires
-    // POOL_THRESHOLD_MINTED == true (see get_eligible_creator_pools), so
-    // we can reuse the same query.
+    // Bootstrap: when fewer than MIN_ELIGIBLE_POOLS_FOR_TWAP creator pools
+    // have crossed threshold, the oracle cache is effectively a single-pool
+    // price (the anchor ATOM/bluechip pool). We accept that limitation
+    // rather than bricking every commit on day one — without this fallback
+    // the protocol deadlocks on launch, because each commit requires an
+    // oracle price to compute its USD value, but no pool can cross its
+    // threshold until commits succeed.
     //
-    // Gated on cfg(not(test)) so unit tests can exercise oracle math
-    // in isolation without being forced to stand up three threshold-
-    // crossed pools. Tests that specifically want to verify the
-    // bootstrap behavior can set it up explicitly.
+    // The trade-off: during bootstrap, a sophisticated attacker who can
+    // move the anchor pool's price for a block (see the spot-fallback
+    // in calculate_weighted_price_with_atom) can also move the derived
+    // bluechip/USD rate. This risk is bounded by the anchor's curated
+    // liquidity and ends as soon as MIN_ELIGIBLE_POOLS_FOR_TWAP creator
+    // pools have crossed threshold. Callers downstream of this function
+    // (commits, swaps) layer their own slippage / spread protections,
+    // so the worst-case is a temporarily mispriced commit rather than
+    // direct theft.
+    //
+    // Gated on cfg(not(test)) so unit tests can exercise oracle math in
+    // isolation without being forced to stand up three threshold-crossed
+    // pools.
     #[cfg(not(test))]
-    {
+    let _bootstrap_mode = {
         let factory_config = FACTORYINSTANTIATEINFO.load(deps.storage)?;
         let anchor_addr = factory_config.atom_bluechip_anchor_pool_address.to_string();
         let eligible = get_eligible_creator_pools(deps, &anchor_addr)?;
-        if eligible.len() < MIN_ELIGIBLE_POOLS_FOR_TWAP {
-            return Err(StdError::generic_err(format!(
-                "Oracle bootstrap: at least {} threshold-crossed creator pools are required before TWAP prices are served (currently {}).",
-                MIN_ELIGIBLE_POOLS_FOR_TWAP,
-                eligible.len()
-            )));
-        }
-    }
+        eligible.len() < MIN_ELIGIBLE_POOLS_FOR_TWAP
+    };
 
     let bluechip_per_atom_twap = oracle.bluechip_price_cache.last_price;
 
