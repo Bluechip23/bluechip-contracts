@@ -2006,3 +2006,178 @@ scaffolding revert) comes next.
 
 No behavior change. All existing pool query tests pass unchanged.
 ```
+
+## Step 4a — `git mv pool/ creator-pool/`
+
+The smallest sub-step in the entire refactor. Rename the directory,
+rename the crate, update the workspace member list. Scope is
+deliberately tight so git history follows via `git mv` rather than
+getting split into a delete+add pair.
+
+### What changes
+
+1. **Rename the directory** via `git mv`:
+   ```
+   git mv pool creator-pool
+   ```
+   Git records this as a rename (as long as the file contents don't
+   also change simultaneously — keep 4a pure), so `git log --follow`
+   continues to work on every source file inside.
+
+2. **Workspace root `Cargo.toml`** — replace `"pool"` with `"creator-pool"`
+   in the `members = [...]` array:
+   ```diff
+   [workspace]
+   members = [
+       "packages/*",
+   -   "pool",
+   +   "creator-pool",
+       "factory",
+       "mockoracle",
+       "expand-economy",
+       "router",
+   ]
+   ```
+
+3. **`creator-pool/Cargo.toml`** (the former `pool/Cargo.toml`) —
+   rename the crate itself:
+   ```diff
+   [package]
+   - name = "pool"
+   + name = "creator-pool"
+   ```
+   Other fields (version, edition, lib config, dependencies,
+   dev-dependencies) stay identical. The crate still depends on
+   `pool-core = { path = "../packages/pool-core" }` and
+   `pool-factory-interfaces = { path = "../packages/pool-factory-interfaces" }`
+   via paths that are unchanged by this rename.
+
+### Tools that reference the artifact filename
+
+The cosmwasm optimizer produces a wasm file named after the crate with
+`-` converted to `_`:
+
+- Before: crate `pool` → `artifacts/pool.wasm`
+- After: crate `creator-pool` → `artifacts/creator_pool.wasm`
+
+Every script that currently references `pool.wasm` needs to update.
+Sweep inventory:
+
+| File | References | Handled in |
+|---|---|---|
+| `Makefile` | 5 references (cp, cosmwasm-check, wasm store) | **4a** — small, predictable, land with the rename |
+| `deploy_full_stack_mock_oracle.sh` | 1 | 5b (script also gains standard_pool.wasm) |
+| `run_comprehensive_test.sh` | 1 | 5b |
+| `run_full_integration_test.sh` | 1 | 5b |
+| `run_full_test.sh` | 1 | 5b |
+| `upload_wasms_and_contracts_plus_starter_pool.sh` | 1 | 5b |
+| `run_threshold_20pct_guard_test.sh` | 1 | 5b |
+| `run_nft_position_transfer_test.sh` | 1 | 5b |
+| `run_local_test.sh` | 1 | 5b |
+| `optimize.sh` | 0 (invokes `cosmwasm/workspace-optimizer` which walks the workspace; the optimizer picks up all member crates with `[lib] crate-type = ["cdylib"]` automatically) | no change needed |
+
+So 4a ships: directory rename + workspace-root Cargo.toml + crate-name
+Cargo.toml + `Makefile` 5 swaps. Shell scripts land in 5b alongside
+their existing re-edit for the standard-pool wasm.
+
+### `Makefile` edits
+
+Open and sweep for `pool.wasm`:
+
+```diff
+- cp target/$(WASM_TARGET)/release/pool.wasm $(ARTIFACTS)/pool.wasm
++ cp target/$(WASM_TARGET)/release/creator_pool.wasm $(ARTIFACTS)/creator_pool.wasm
+
+- cosmwasm-check $(ARTIFACTS)/pool.wasm
++ cosmwasm-check $(ARTIFACTS)/creator_pool.wasm
+
+  # (three occurrences similar)
+```
+
+After 5b the Makefile will gain a parallel set of lines for
+`standard_pool.wasm`. For 4a just swap in place.
+
+### What does NOT change in 4a
+
+- **No Rust source edits.** Every `.rs` file inside the renamed directory
+  keeps its byte content unchanged. `use crate::X` paths still resolve
+  (`crate::` always refers to the enclosing crate regardless of its
+  name). External imports like `factory/src/*.rs` don't import from
+  `pool` by path (the factory never depends on the pool crate at the
+  Rust level — it talks via `pool_factory_interfaces` and sends
+  `WasmMsg::Instantiate` with a code_id).
+
+- **No `pool-factory-interfaces` change.** It references `pool-core`
+  by path (`../pool-core`) and doesn't know about the pool crate(s).
+
+- **No `pool-core` change.** It only depends on `pool-factory-interfaces`
+  by path (`../pool-factory-interfaces`).
+
+- **No factory/mockoracle/expand-economy/router change.** None have a
+  path dep on `pool/`. The only Cargo.toml reference would be a dev-dep,
+  and sweep shows creator-pool itself has `factory = { path = "../factory", ... }`
+  in `[dev-dependencies]`, but the reverse (factory depending on pool)
+  does not exist.
+
+### Expected compile-error patterns after 4a
+
+1. **`cargo build` fails to find crate `pool`** — any tooling that
+   invoked `cargo build -p pool` must now say `cargo build -p creator-pool`.
+   Sweep CI workflows / dev scripts for `-p pool` and update.
+
+2. **`make build` output filename changed** — addressed by the Makefile
+   edits above.
+
+3. **Existing `.wasm` artifact** — `artifacts/pool.wasm` from prior
+   builds will still exist until `cargo clean` or `make clean`. It's
+   stale after the rename. Recommend: `rm -f artifacts/pool.wasm`
+   as a post-rename manual step so nobody accidentally deploys it.
+
+4. **IDE/LSP state** — rust-analyzer caches crate paths. Restart the
+   language server after running `git mv`.
+
+5. **Docker volume caches** — `optimize.sh` mounts per-project
+   `${project_basename}_cache` volumes. The volume name is derived from
+   the REPO-LEVEL directory name (not the crate name), so it stays
+   the same. No cache purge needed.
+
+### Verification after 4a
+
+```
+cargo check --workspace
+cargo test -p creator-pool   # was -p pool
+make build
+ls -la artifacts/
+# Expect: creator_pool.wasm, factory.wasm, oracle.wasm, expand_economy.wasm
+# Should NOT see: pool.wasm
+```
+
+### Suggested commit message
+
+```
+H14 split (4a/N): git mv pool/ creator-pool/
+
+Mechanical directory+crate rename. `pool` becomes `creator-pool` to
+reflect its narrowed scope (two-phase commit-pool only; the shape-
+agnostic xyk logic moved to pool-core in Steps 2–3; the forthcoming
+standard-pool contract lands in 4b).
+
+Diff is deliberately scoped to:
+  - git mv pool creator-pool
+  - Cargo.toml (workspace): "pool" -> "creator-pool" in members
+  - creator-pool/Cargo.toml: name = "pool" -> name = "creator-pool"
+  - Makefile: 5 x pool.wasm -> creator_pool.wasm
+
+No Rust source changes (git treats the move as a rename — file
+history follows). Factory, router, mockoracle, expand-economy, and
+the two packages (pool-core, pool-factory-interfaces) all compile
+unchanged.
+
+Shell-script updates for the renamed wasm artifact are deferred to
+Step 5b, which also rewrites those scripts to upload the new
+standard_pool.wasm alongside. Doing them twice (once in 4a, once in
+5b) would be noisy; the 4a diff stays focused on directory rename.
+
+No behavior change. All existing tests pass with `cargo test -p
+creator-pool`.
+```
