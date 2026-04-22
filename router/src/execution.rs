@@ -77,7 +77,7 @@ pub fn execute_multi_hop(
 ) -> Result<Response, RouterError> {
     let first_op = operations.first().ok_or(RouterError::EmptyRoute)?;
     let offer_amount = match &first_op.offer_asset_info {
-        TokenType::Bluechip { denom } => extract_native_offer(&info, denom)?,
+        TokenType::Native { denom } => extract_native_offer(&info, denom)?,
         TokenType::CreatorToken { .. } => {
             return Err(RouterError::Std(StdError::generic_err(
                 "ExecuteMultiHop is for native offers; use cw20::Send for CW20-offered routes",
@@ -128,7 +128,7 @@ pub fn execute_receive_cw20(
                         ))));
                     }
                 }
-                TokenType::Bluechip { .. } => {
+                TokenType::Native { .. } => {
                     return Err(RouterError::Std(StdError::generic_err(
                         "first hop is native; do not call cw20::Send for native offers",
                     )));
@@ -419,7 +419,7 @@ fn build_pool_swap_msg(
     max_spread: Option<Decimal>,
 ) -> Result<CosmosMsg, RouterError> {
     match &operation.offer_asset_info {
-        TokenType::Bluechip { denom } => {
+        TokenType::Native { denom } => {
             let exec = PoolSwapExecuteMsg::SimpleSwap {
                 offer_asset: TokenInfo {
                     info: operation.offer_asset_info.clone(),

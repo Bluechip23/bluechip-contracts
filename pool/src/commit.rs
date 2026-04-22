@@ -25,7 +25,7 @@ use cosmwasm_std::{
 };
 use cw20::Cw20ExecuteMsg;
 
-use crate::asset::{get_bluechip_denom, TokenType};
+use crate::asset::{get_native_denom, TokenType};
 
 // Minimum commit value in USD (6 decimals), applied ONLY to pre-threshold
 // commits. $5 = 5_000_000. The floor limits pre-threshold ledger bloat
@@ -143,10 +143,10 @@ fn execute_commit_logic(
         ))));
     }
 
-    let bluechip_denom = get_bluechip_denom(&pool_info.pool_info.asset_infos)?;
+    let bluechip_denom = get_native_denom(&pool_info.pool_info.asset_infos)?;
 
     match &asset.info {
-        TokenType::Bluechip { denom } if denom == &bluechip_denom => {
+        TokenType::Native { denom } if denom == &bluechip_denom => {
             // Verify funds were actually sent
             let sent = info
                 .funds
@@ -712,7 +712,7 @@ fn process_threshold_crossing_with_excess(
 
         // Refund the capped portion back to the sender
         if !refunded_excess.is_zero() {
-            let bluechip_denom = get_bluechip_denom(&pool_info.pool_info.asset_infos)?;
+            let bluechip_denom = get_native_denom(&pool_info.pool_info.asset_infos)?;
             messages.push(get_bank_transfer_to_msg(
                 &sender,
                 &bluechip_denom,

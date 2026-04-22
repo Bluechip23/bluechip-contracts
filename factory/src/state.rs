@@ -147,7 +147,7 @@ pub struct FactoryInstantiate {
     pub bluechip_mint_contract_address: Option<Addr>,
     /// Canonical native bank denom for the bluechip token on this chain
     /// (e.g. "ubluechip"). Pinned at factory instantiate time and enforced
-    /// whenever a pool is created: the `TokenType::Bluechip { denom }` entry
+    /// whenever a pool is created: the `TokenType::Native { denom }` entry
     /// in `pool_token_info` MUST match this value exactly. Prevents an
     /// attacker from registering a pool with an arbitrary native denom
     /// (tokenfactory-minted fake bluechip, low-value IBC denom, etc.) and
@@ -265,7 +265,7 @@ pub fn register_pool(
         .pool_token_info
         .iter()
         .map(|t| match t {
-            TokenType::Bluechip { denom } => denom.clone(),
+            TokenType::Native { denom } => denom.clone(),
             TokenType::CreatorToken { contract_addr } => contract_addr.to_string(),
         })
         .collect();

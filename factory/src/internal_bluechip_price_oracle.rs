@@ -233,7 +233,7 @@ pub fn get_eligible_creator_pools(
         let has_bluechip = pool_details
             .pool_token_info
             .iter()
-            .any(|token| matches!(token, TokenType::Bluechip { .. }));
+            .any(|token| matches!(token, TokenType::Native { .. }));
         if !has_bluechip {
             continue;
         }

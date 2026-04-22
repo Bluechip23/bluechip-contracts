@@ -48,7 +48,7 @@ fn test_repro_token_sort_order_bug() {
     let pool_details = PoolDetails {
         pool_id: 1,
         pool_token_info: [
-            TokenType::Bluechip {
+            TokenType::Native {
                 denom: "BC".to_string(),
             },
             TokenType::CreatorToken {
@@ -96,7 +96,7 @@ fn test_repro_token_sort_order_bug() {
             TokenType::CreatorToken {
                 contract_addr: Addr::unchecked("atom_addr_123"),
             },
-            TokenType::Bluechip {
+            TokenType::Native {
                 denom: "BC".to_string(),
             },
         ],

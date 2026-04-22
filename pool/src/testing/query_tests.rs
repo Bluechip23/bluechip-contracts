@@ -37,7 +37,7 @@ fn setup_pool_with_querier() -> OwnedDeps<MockStorage, MockApi, mock_querier::Wa
         pool_id: 1u64,
         pool_info: PoolDetails {
             asset_infos: [
-                TokenType::Bluechip {
+                TokenType::Native {
                     denom: "ubluechip".to_string(),
                 },
                 TokenType::CreatorToken {
@@ -130,7 +130,7 @@ fn test_query_simulation_bluechip_to_token() {
 
     // Simulate swapping 1k bluechip for creator tokens
     let offer = TokenInfo {
-        info: TokenType::Bluechip {
+        info: TokenType::Native {
             denom: "ubluechip".to_string(),
         },
         amount: Uint128::new(1_000_000_000),
@@ -191,7 +191,7 @@ fn test_query_simulation_wrong_asset() {
 
     // Unknown asset should fail
     let offer = TokenInfo {
-        info: TokenType::Bluechip {
+        info: TokenType::Native {
             denom: "uatom".to_string(),
         }, // wrong denom
         amount: Uint128::new(1_000_000_000),

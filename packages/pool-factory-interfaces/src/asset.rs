@@ -19,37 +19,46 @@ impl fmt::Display for TokenInfo {
 }
 
 impl TokenInfo {
-    pub fn is_bluechip_token(&self) -> bool {
-        self.info.is_bluechip_token()
+    pub fn is_native_token(&self) -> bool {
+        self.info.is_native_token()
     }
 }
 
 #[cw_serde]
 pub enum TokenType {
     CreatorToken { contract_addr: Addr },
-    Bluechip { denom: String },
+    /// Any native bank denom on the chain — bluechip itself (`ubluechip`),
+    /// IBC-wrapped remote assets (e.g. `ibc/...` for ATOM), tokenfactory
+    /// denoms, etc. Name was formerly `Bluechip`, which was semantically
+    /// misleading because a `Native { denom: "ibc/..." }` entry represents
+    /// an IBC asset, not bluechip. The wire tag stays `"bluechip"` via
+    /// `#[serde(rename = ...)]` so on-chain serialized state, deploy
+    /// scripts, and frontend integrations continue to round-trip without
+    /// a coordinated migration.
+    #[serde(rename = "bluechip")]
+    Native { denom: String },
 }
 
 impl fmt::Display for TokenType {
     fn fmt(&self, f: &mut fmt::Formatter) -> fmt::Result {
         match self {
-            TokenType::Bluechip { denom } => write!(f, "{}", denom),
+            TokenType::Native { denom } => write!(f, "{}", denom),
             TokenType::CreatorToken { contract_addr } => write!(f, "{}", contract_addr),
         }
     }
 }
 
 impl TokenType {
-    pub fn is_bluechip_token(&self) -> bool {
+    pub fn is_native_token(&self) -> bool {
         match self {
-            TokenType::Bluechip { .. } => true,
+            TokenType::Native { .. } => true,
             TokenType::CreatorToken { .. } => false,
         }
     }
 
     pub fn is_token_an_ibc_token(&self) -> bool {
         match self {
-            TokenType::Bluechip { denom } => denom.to_lowercase().starts_with("ibc/"),
+            TokenType::Native { denom } => denom.to_lowercase().starts_with("ibc/"),
             TokenType::CreatorToken { .. } => false,
         }
     }
@@ -59,7 +68,7 @@ impl TokenType {
             TokenType::CreatorToken { contract_addr, .. } => {
                 query_token_balance(querier, contract_addr.clone(), pool_addr)
             }
-            TokenType::Bluechip { denom, .. } => {
+            TokenType::Native { denom, .. } => {
                 query_balance(querier, pool_addr, denom.to_string())
             }
         }
@@ -71,14 +80,14 @@ impl TokenType {
                 TokenType::CreatorToken { contract_addr: a },
                 TokenType::CreatorToken { contract_addr: b },
             ) => a == b,
-            (TokenType::Bluechip { denom: a }, TokenType::Bluechip { denom: b }) => a == b,
+            (TokenType::Native { denom: a }, TokenType::Native { denom: b }) => a == b,
             _ => false,
         }
     }
 
     pub fn as_bytes(&self) -> &[u8] {
         match self {
-            TokenType::Bluechip { denom } => denom.as_bytes(),
+            TokenType::Native { denom } => denom.as_bytes(),
             TokenType::CreatorToken { contract_addr } => contract_addr.as_bytes(),
         }
     }
@@ -113,9 +122,9 @@ pub fn addr_opt_validate(api: &dyn Api, addr: &Option<String>) -> StdResult<Opti
         .transpose()
 }
 
-pub fn bluechip_asset(denom: String, amount: Uint128) -> TokenInfo {
+pub fn native_asset(denom: String, amount: Uint128) -> TokenInfo {
     TokenInfo {
-        info: TokenType::Bluechip { denom },
+        info: TokenType::Native { denom },
         amount,
     }
 }
@@ -127,8 +136,8 @@ pub fn token_asset(contract_addr: Addr, amount: Uint128) -> TokenInfo {
     }
 }
 
-pub fn bluechip_asset_info(denom: String) -> TokenType {
-    TokenType::Bluechip { denom }
+pub fn native_asset_info(denom: String) -> TokenType {
+    TokenType::Native { denom }
 }
 
 pub fn token_asset_info(contract_addr: Addr) -> TokenType {
@@ -136,9 +145,9 @@ pub fn token_asset_info(contract_addr: Addr) -> TokenType {
 }
 
 // Extracts the native bluechip denom from a pool's asset_infos array.
-pub fn get_bluechip_denom(asset_infos: &[TokenType; 2]) -> StdResult<String> {
+pub fn get_native_denom(asset_infos: &[TokenType; 2]) -> StdResult<String> {
     for asset in asset_infos {
-        if let TokenType::Bluechip { denom } = asset {
+        if let TokenType::Native { denom } = asset {
             return Ok(denom.clone());
         }
     }

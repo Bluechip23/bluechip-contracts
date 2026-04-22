@@ -16,7 +16,7 @@ fn mock_instantiate_msg() -> PoolInstantiateMsg {
     PoolInstantiateMsg::Commit(CommitPoolInstantiateMsg {
         pool_id: 1,
         pool_token_info: [
-            TokenType::Bluechip {
+            TokenType::Native {
                 denom: "ublue".to_string(),
             },
             TokenType::CreatorToken {
@@ -63,7 +63,7 @@ fn test_pause_unpause() {
     // Try to swap (should fail)
     let swap_msg = ExecuteMsg::SimpleSwap {
         offer_asset: TokenInfo {
-            info: TokenType::Bluechip {
+            info: TokenType::Native {
                 denom: "ublue".to_string(),
             },
             amount: Uint128::new(100),

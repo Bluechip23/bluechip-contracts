@@ -105,7 +105,7 @@ fn instantiate_commit_pool(
     let mut creator_count = 0usize;
     for t in msg.pool_token_info.iter() {
         match t {
-            TokenType::Bluechip { denom } => {
+            TokenType::Native { denom } => {
                 if denom.trim().is_empty() {
                     return Err(ContractError::Std(StdError::generic_err(
                         "Bluechip denom must be non-empty",
@@ -251,7 +251,7 @@ fn instantiate_commit_pool(
 /// `PoolKind::Standard`.
 ///
 /// Commit 3 scope restriction: this path only supports pools where the
-/// pair is exactly one `TokenType::Bluechip` + one `TokenType::CreatorToken`,
+/// pair is exactly one `TokenType::Native` + one `TokenType::CreatorToken`,
 /// because the existing deposit/swap/liquidity code paths assume that
 /// layout (asset 0 native, asset 1 CW20). Bluechip/Bluechip (e.g. the
 /// ATOM/bluechip anchor) and CW20/CW20 pairs are deferred to Commit 4,
@@ -285,7 +285,7 @@ fn instantiate_standard_pool(
     let bluechip_count = msg
         .pool_token_info
         .iter()
-        .filter(|t| matches!(t, TokenType::Bluechip { .. }))
+        .filter(|t| matches!(t, TokenType::Native { .. }))
         .count();
     let creator_count = msg
         .pool_token_info
@@ -298,7 +298,7 @@ fn instantiate_standard_pool(
             bluechip_count, creator_count
         ))));
     }
-    if !matches!(msg.pool_token_info[0], TokenType::Bluechip { .. }) {
+    if !matches!(msg.pool_token_info[0], TokenType::Native { .. }) {
         return Err(ContractError::Std(StdError::generic_err(
             "Standard pool (H14 Commit 3 scope): pool_token_info[0] must be the Bluechip side. Commit 4 will lift this ordering requirement.",
         )));
@@ -509,7 +509,7 @@ pub fn execute(
             if !query_check_commit(deps.as_ref())? {
                 return Err(ContractError::ShortOfThreshold {});
             }
-            offer_asset.confirm_sent_bluechip_token_balance(&info)?;
+            offer_asset.confirm_sent_native_balance(&info)?;
             let sender_addr = info.sender.clone();
             let to_addr: Option<Addr> = to
                 .map(|to_str| deps.api.addr_validate(&to_str))

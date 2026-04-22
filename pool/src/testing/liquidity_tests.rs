@@ -617,7 +617,7 @@ fn test_zero_liquidity_fee_collection() {
 
     let msg = ExecuteMsg::SimpleSwap {
         offer_asset: TokenInfo {
-            info: TokenType::Bluechip {
+            info: TokenType::Native {
                 denom: "ubluechip".to_string(),
             },
             amount: Uint128::new(1_000_000),
@@ -755,7 +755,7 @@ pub fn setup_pool_storage(deps: &mut OwnedDeps<MockStorage, MockApi, MockQuerier
         pool_id: 1u64,
         pool_info: PoolDetails {
             asset_infos: [
-                TokenType::Bluechip {
+                TokenType::Native {
                     denom: "ubluechip".to_string(),
                 },
                 TokenType::CreatorToken {

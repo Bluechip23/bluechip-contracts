@@ -261,7 +261,7 @@ pub(crate) fn validate_pool_token_info(
     let mut creator_count = 0usize;
     for t in pool_token_info.iter() {
         match t {
-            TokenType::Bluechip { denom } => {
+            TokenType::Native { denom } => {
                 if denom.trim().is_empty() {
                     return Err(ContractError::Std(StdError::generic_err(
                         "Bluechip denom must be non-empty",
@@ -1139,7 +1139,7 @@ fn validate_standard_pool_token_info(
 
     // Self-pair check.
     match (&pair[0], &pair[1]) {
-        (TokenType::Bluechip { denom: a }, TokenType::Bluechip { denom: b }) if a == b => {
+        (TokenType::Native { denom: a }, TokenType::Native { denom: b }) if a == b => {
             return Err(ContractError::Std(StdError::generic_err(
                 "Standard pool pair cannot use the same Bluechip denom on both sides",
             )));
@@ -1157,7 +1157,7 @@ fn validate_standard_pool_token_info(
 
     for entry in pair.iter() {
         match entry {
-            TokenType::Bluechip { denom } => {
+            TokenType::Native { denom } => {
                 if denom.trim().is_empty() {
                     return Err(ContractError::Std(StdError::generic_err(
                         "Standard pool: Bluechip denom must be non-empty",
@@ -1367,7 +1367,7 @@ fn execute_set_anchor_pool(
     let factory_config = FACTORYINSTANTIATEINFO.load(deps.storage)?;
     let canonical = &factory_config.bluechip_denom;
     let has_canonical_bluechip = pool_details.pool_token_info.iter().any(|t| {
-        matches!(t, crate::asset::TokenType::Bluechip { denom } if denom == canonical)
+        matches!(t, crate::asset::TokenType::Native { denom } if denom == canonical)
     });
     if !has_canonical_bluechip {
         return Err(ContractError::Std(StdError::generic_err(format!(

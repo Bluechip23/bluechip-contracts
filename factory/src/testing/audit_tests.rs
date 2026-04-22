@@ -357,7 +357,7 @@ fn test_m_new_3_rotation_skips_pools_without_prior_snapshot() {
     let pool_details = PoolDetails {
         pool_id: 1,
         pool_token_info: [
-            TokenType::Bluechip {
+            TokenType::Native {
                 denom: "ubluechip".to_string(),
             },
             TokenType::CreatorToken {
@@ -521,7 +521,7 @@ fn test_m_new_5_multi_pool_creator_no_registry_collision() {
     let create_msg_1 = ExecuteMsg::Create {
         pool_msg: CreatePool {
             pool_token_info: [
-                TokenType::Bluechip {
+                TokenType::Native {
                     denom: "ubluechip".to_string(),
                 },
                 TokenType::CreatorToken {
@@ -581,7 +581,7 @@ fn test_m_new_5_multi_pool_creator_no_registry_collision() {
     let create_msg_2 = ExecuteMsg::Create {
         pool_msg: CreatePool {
             pool_token_info: [
-                TokenType::Bluechip {
+                TokenType::Native {
                     denom: "ubluechip".to_string(),
                 },
                 TokenType::CreatorToken {

@@ -203,7 +203,7 @@ fn test_oracle_initialization_with_multiple_pools() {
         let pool_details = PoolDetails {
             pool_id: i,
             pool_token_info: [
-                TokenType::Bluechip {
+                TokenType::Native {
                     denom: "ubluechip".to_string(),
                 },
                 TokenType::CreatorToken {
@@ -278,7 +278,7 @@ fn create_pair() {
     let _res = instantiate(deps.as_mut(), env, info, msg.clone()).unwrap();
 
     let pool_token_info = [
-        TokenType::Bluechip {
+        TokenType::Native {
             denom: "ubluechip".to_string(),
         },
         TokenType::CreatorToken {
@@ -366,7 +366,7 @@ fn test_create_pair_with_custom_params() {
     let create_msg = ExecuteMsg::Create {
         pool_msg: CreatePool {
             pool_token_info: [
-                TokenType::Bluechip {
+                TokenType::Native {
                     denom: "ubluechip".to_string(),
                 },
                 TokenType::CreatorToken {
@@ -413,7 +413,7 @@ fn create_pool_msg(name: &str) -> ExecuteMsg {
     ExecuteMsg::Create {
         pool_msg: CreatePool {
             pool_token_info: [
-                TokenType::Bluechip {
+                TokenType::Native {
                     denom: "ubluechip".to_string(),
                 },
                 TokenType::CreatorToken {
@@ -472,17 +472,17 @@ fn simulate_complete_reply_chain(
 
 #[test]
 fn test_asset_info() {
-    let bluechip_info = TokenType::Bluechip {
+    let bluechip_info = TokenType::Native {
         denom: "ubluechip".to_string(),
     };
-    assert!(bluechip_info.is_bluechip_token());
+    assert!(bluechip_info.is_native_token());
 
     let token_info = TokenType::CreatorToken {
         contract_addr: Addr::unchecked("bluechip..."),
     };
-    assert!(!token_info.is_bluechip_token());
+    assert!(!token_info.is_native_token());
 
-    assert!(bluechip_info.equal(&TokenType::Bluechip {
+    assert!(bluechip_info.equal(&TokenType::Native {
         denom: "ubluechip".to_string(),
     }));
     assert!(!bluechip_info.equal(&token_info));
@@ -599,7 +599,7 @@ fn test_complete_pool_creation_flow() {
     // Create the pool message
     let pool_msg = CreatePool {
         pool_token_info: [
-            TokenType::Bluechip {
+            TokenType::Native {
                 denom: "ubluechip".to_string(),
             },
             TokenType::CreatorToken {
@@ -708,8 +708,8 @@ fn test_complete_pool_creation_flow() {
 
 #[test]
 fn test_asset() {
-    let bluechip_asset = TokenInfo {
-        info: TokenType::Bluechip {
+    let native_asset = TokenInfo {
+        info: TokenType::Native {
             denom: "ubluechip".to_string(),
         },
         amount: Uint128::new(100),
@@ -722,8 +722,8 @@ fn test_asset() {
         amount: Uint128::new(100),
     };
 
-    assert!(bluechip_asset.is_bluechip_token());
-    assert!(!token_asset.is_bluechip_token());
+    assert!(native_asset.is_native_token());
+    assert!(!token_asset.is_native_token());
 }
 
 #[test]
@@ -798,7 +798,7 @@ fn test_reply_handling() {
     // Create the pool message
     let pool_msg = CreatePool {
         pool_token_info: [
-            TokenType::Bluechip {
+            TokenType::Native {
                 denom: "ubluechip".to_string(),
             },
             TokenType::CreatorToken {
@@ -1396,7 +1396,7 @@ fn test_oracle_aggregates_multiple_pool_prices() {
         let pool_details = PoolDetails {
             pool_id,
             pool_token_info: [
-                TokenType::Bluechip {
+                TokenType::Native {
                     denom: "ubluechip".to_string(),
                 },
                 TokenType::CreatorToken {
@@ -2136,7 +2136,7 @@ fn test_no_mint_when_amount_is_zero() {
 fn create_test_pool_msg() -> CreatePool {
     CreatePool {
         pool_token_info: [
-            TokenType::Bluechip {
+            TokenType::Native {
                 denom: "ubluechip".to_string(),
             },
             TokenType::CreatorToken {
@@ -2745,7 +2745,7 @@ fn test_oracle_ignores_pools_without_threshold_crossed() {
         let pool_details = PoolDetails {
             pool_id: 1,
             pool_token_info: [
-                TokenType::Bluechip {
+                TokenType::Native {
                     denom: "ubluechip".to_string(),
                 },
                 TokenType::CreatorToken {
@@ -2784,7 +2784,7 @@ fn test_oracle_ignores_pools_without_threshold_crossed() {
         let pool_details = PoolDetails {
             pool_id: 2,
             pool_token_info: [
-                TokenType::Bluechip {
+                TokenType::Native {
                     denom: "ubluechip".to_string(),
                 },
                 TokenType::CreatorToken {

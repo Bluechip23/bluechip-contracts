@@ -1,4 +1,4 @@
-use crate::asset::get_bluechip_denom;
+use crate::asset::get_native_denom;
 use crate::error::ContractError;
 use crate::generic_helpers::{check_rate_limit, enforce_transaction_deadline};
 use crate::liquidity_helpers::{
@@ -38,7 +38,7 @@ fn prepare_deposit(
     min_amount1: Option<Uint128>,
 ) -> Result<DepositPrep, ContractError> {
     let pool_info = POOL_INFO.load(deps.storage)?;
-    let native_denom = get_bluechip_denom(&pool_info.pool_info.asset_infos)?;
+    let native_denom = get_native_denom(&pool_info.pool_info.asset_infos)?;
     let paid_bluechip = info
         .funds
         .iter()

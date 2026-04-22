@@ -161,7 +161,7 @@ fn test_commit_pre_threshold_basic() {
 
     let msg = ExecuteMsg::Commit {
         asset: TokenInfo {
-            info: TokenType::Bluechip {
+            info: TokenType::Native {
                 denom: "ubluechip".to_string(),
             },
             amount: commit_amount,
@@ -219,7 +219,7 @@ fn test_race_condition_commits_crossing_threshold() {
     );
     let msg1 = ExecuteMsg::Commit {
         asset: TokenInfo {
-            info: TokenType::Bluechip {
+            info: TokenType::Native {
                 denom: "ubluechip".to_string(),
             },
             amount: commit_amount,
@@ -259,7 +259,7 @@ fn test_race_condition_commits_crossing_threshold() {
     );
     let msg2 = ExecuteMsg::Commit {
         asset: TokenInfo {
-            info: TokenType::Bluechip {
+            info: TokenType::Native {
                 denom: "ubluechip".to_string(),
             },
             amount: commit_amount,
@@ -327,7 +327,7 @@ fn test_commit_crosses_threshold() {
 
     let msg = ExecuteMsg::Commit {
         asset: TokenInfo {
-            info: TokenType::Bluechip {
+            info: TokenType::Native {
                 denom: "ubluechip".to_string(),
             },
             amount: commit_amount,
@@ -390,7 +390,7 @@ fn test_commit_post_threshold_swap() {
 
     let msg = ExecuteMsg::Commit {
         asset: TokenInfo {
-            info: TokenType::Bluechip {
+            info: TokenType::Native {
                 denom: "ubluechip".to_string(),
             },
             amount: commit_amount,
@@ -890,7 +890,7 @@ fn test_commit_reentrancy_protection() {
 
     let msg = ExecuteMsg::Commit {
         asset: TokenInfo {
-            info: TokenType::Bluechip {
+            info: TokenType::Native {
                 denom: "ubluechip".to_string(),
             },
             amount: Uint128::new(1_000_000),
@@ -930,7 +930,7 @@ fn test_commit_rate_limiting() {
 
     let msg = ExecuteMsg::Commit {
         asset: TokenInfo {
-            info: TokenType::Bluechip {
+            info: TokenType::Native {
                 denom: "ubluechip".to_string(),
             },
             amount: Uint128::new(1_000_000),
@@ -974,7 +974,7 @@ fn test_commit_with_deadline() {
 
     let msg = ExecuteMsg::Commit {
         asset: TokenInfo {
-            info: TokenType::Bluechip {
+            info: TokenType::Native {
                 denom: "ubluechip".to_string(),
             },
             amount: Uint128::new(1_000_000),
@@ -1012,7 +1012,7 @@ fn test_simple_swap_bluechip_to_cw20() {
 
     let msg = ExecuteMsg::SimpleSwap {
         offer_asset: TokenInfo {
-            info: TokenType::Bluechip {
+            info: TokenType::Native {
                 denom: "ubluechip".to_string(),
             },
             amount: swap_amount,
@@ -1060,7 +1060,7 @@ fn test_swap_with_max_spread() {
 
     let msg = ExecuteMsg::SimpleSwap {
         offer_asset: TokenInfo {
-            info: TokenType::Bluechip {
+            info: TokenType::Native {
                 denom: "ubluechip".to_string(),
             },
             amount: swap_amount,
@@ -1161,7 +1161,7 @@ fn test_swap_wrong_asset() {
 
     let msg = ExecuteMsg::SimpleSwap {
         offer_asset: TokenInfo {
-            info: TokenType::Bluechip {
+            info: TokenType::Native {
                 denom: "wrong_token".to_string(),
             },
             amount: Uint128::new(1_000_000),
@@ -1200,7 +1200,7 @@ fn test_swap_price_accumulator_update() {
 
     let msg = ExecuteMsg::SimpleSwap {
         offer_asset: TokenInfo {
-            info: TokenType::Bluechip {
+            info: TokenType::Native {
                 denom: "ubluechip".to_string(),
             },
             amount: Uint128::new(1_000_000),
@@ -1225,7 +1225,7 @@ fn test_factory_impersonation_prevented() {
     let msg = PoolInstantiateMsg::Commit(CommitPoolInstantiateMsg {
         pool_id: 1u64,
         pool_token_info: [
-            TokenType::Bluechip {
+            TokenType::Native {
                 denom: "ubluechip".to_string(),
             },
             TokenType::CreatorToken {
@@ -1279,7 +1279,7 @@ fn test_commit_with_changing_oracle_prices() {
 
     let msg1 = ExecuteMsg::Commit {
         asset: TokenInfo {
-            info: TokenType::Bluechip {
+            info: TokenType::Native {
                 denom: "ubluechip".to_string(),
             },
             amount: Uint128::new(5_000_000),
@@ -1306,7 +1306,7 @@ fn test_commit_with_changing_oracle_prices() {
 
     let msg2 = ExecuteMsg::Commit {
         asset: TokenInfo {
-            info: TokenType::Bluechip {
+            info: TokenType::Native {
                 denom: "ubluechip".to_string(),
             },
             amount: Uint128::new(5_000_000),
@@ -1354,7 +1354,7 @@ fn test_threshold_crossing_depends_on_oracle_price() {
 
     let msg1 = ExecuteMsg::Commit {
         asset: TokenInfo {
-            info: TokenType::Bluechip {
+            info: TokenType::Native {
                 denom: "ubluechip".to_string(),
             },
             amount: Uint128::new(100_000_000),
@@ -1391,7 +1391,7 @@ fn test_threshold_crossing_depends_on_oracle_price() {
 
     let msg2 = ExecuteMsg::Commit {
         asset: TokenInfo {
-            info: TokenType::Bluechip {
+            info: TokenType::Native {
                 denom: "ubluechip".to_string(),
             },
             amount: Uint128::new(100_000_000),
@@ -1470,7 +1470,7 @@ fn test_oracle_conversion_precision_various_prices() {
 
         let msg = ExecuteMsg::Commit {
             asset: TokenInfo {
-                info: TokenType::Bluechip {
+                info: TokenType::Native {
                     denom: "ubluechip".to_string(),
                 },
                 amount: test.token_amount,
@@ -1517,7 +1517,7 @@ fn test_extreme_oracle_prices() {
 
     let msg_low = ExecuteMsg::Commit {
         asset: TokenInfo {
-            info: TokenType::Bluechip {
+            info: TokenType::Native {
                 denom: "ubluechip".to_string(),
             },
             amount: Uint128::new(1_000_000_000),
@@ -1551,7 +1551,7 @@ fn test_extreme_oracle_prices() {
 
     let msg_high = ExecuteMsg::Commit {
         asset: TokenInfo {
-            info: TokenType::Bluechip {
+            info: TokenType::Native {
                 denom: "ubluechip".to_string(),
             },
             amount: Uint128::new(1_000_000),
@@ -1600,7 +1600,7 @@ fn test_usd_tracking_consistency_across_commits() {
 
         let msg = ExecuteMsg::Commit {
             asset: TokenInfo {
-                info: TokenType::Bluechip {
+                info: TokenType::Native {
                     denom: "ubluechip".to_string(),
                 },
                 amount: Uint128::new(amount),
@@ -1655,7 +1655,7 @@ fn test_commit_with_zero_oracle_price() {
 
     let msg = ExecuteMsg::Commit {
         asset: TokenInfo {
-            info: TokenType::Bluechip {
+            info: TokenType::Native {
                 denom: "ubluechip".to_string(),
             },
             amount: Uint128::new(1_000_000),
@@ -1695,7 +1695,7 @@ fn test_usd_calculation_overflow() {
 
     let msg = ExecuteMsg::Commit {
         asset: TokenInfo {
-            info: TokenType::Bluechip {
+            info: TokenType::Native {
                 denom: "ubluechip".to_string(),
             },
             amount: Uint128::new(u128::MAX / 1000),
@@ -1754,7 +1754,7 @@ fn test_rounding_error_accumulation() {
 
         let msg = ExecuteMsg::Commit {
             asset: TokenInfo {
-                info: TokenType::Bluechip {
+                info: TokenType::Native {
                     denom: "ubluechip".to_string(),
                 },
                 amount,
@@ -1809,7 +1809,7 @@ fn test_swap_with_belief_price_protection() {
 
     let msg = ExecuteMsg::SimpleSwap {
         offer_asset: TokenInfo {
-            info: TokenType::Bluechip {
+            info: TokenType::Native {
                 denom: "ubluechip".to_string(),
             },
             amount: swap_amount,
@@ -1856,7 +1856,7 @@ fn test_swap_belief_price_rejects_bad_price_corrected() {
 
     let msg = ExecuteMsg::SimpleSwap {
         offer_asset: TokenInfo {
-            info: TokenType::Bluechip {
+            info: TokenType::Native {
                 denom: "ubluechip".to_string(),
             },
             amount: swap_amount,
@@ -1890,7 +1890,7 @@ fn test_belief_price_with_zero_price() {
 
     let msg = ExecuteMsg::SimpleSwap {
         offer_asset: TokenInfo {
-            info: TokenType::Bluechip {
+            info: TokenType::Native {
                 denom: "ubluechip".to_string(),
             },
             amount: Uint128::new(1_000_000),
@@ -2126,7 +2126,7 @@ fn test_race_condition_not_manually_set() {
 
     let alice_msg = ExecuteMsg::Commit {
         asset: TokenInfo {
-            info: TokenType::Bluechip {
+            info: TokenType::Native {
                 denom: "ubluechip".to_string(),
             },
             amount: Uint128::new(200_000_000),
@@ -2164,7 +2164,7 @@ fn test_race_condition_not_manually_set() {
 
     let bob_msg = ExecuteMsg::Commit {
         asset: TokenInfo {
-            info: TokenType::Bluechip {
+            info: TokenType::Native {
                 denom: "ubluechip".to_string(),
             },
             amount: Uint128::new(200_000_000),
@@ -2236,7 +2236,7 @@ fn test_concurrent_commits_both_recorded() {
 
     let alice_msg = ExecuteMsg::Commit {
         asset: TokenInfo {
-            info: TokenType::Bluechip {
+            info: TokenType::Native {
                 denom: "ubluechip".to_string(),
             },
             amount: Uint128::new(200_000_000),
@@ -2282,7 +2282,7 @@ fn test_concurrent_commits_both_recorded() {
 
     let bob_msg = ExecuteMsg::Commit {
         asset: TokenInfo {
-            info: TokenType::Bluechip {
+            info: TokenType::Native {
                 denom: "ubluechip".to_string(),
             },
             amount: bob_amount,
@@ -2327,7 +2327,7 @@ pub fn setup_pool_with_reserves(
         pool_id: 1u64,
         pool_info: PoolDetails {
             asset_infos: [
-                TokenType::Bluechip {
+                TokenType::Native {
                     denom: "ubluechip".to_string(),
                 },
                 TokenType::CreatorToken {
@@ -2429,7 +2429,7 @@ fn test_swap_fails_when_reserves_below_pause_threshold() {
     setup_pool_with_reserves(&mut deps, Uint128::new(9), Uint128::new(100_000));
 
     let offer = TokenInfo {
-        info: TokenType::Bluechip {
+        info: TokenType::Native {
             denom: "ubluechip".to_string(),
         },
         amount: Uint128::new(100),
@@ -2469,7 +2469,7 @@ fn test_swap_fails_when_pool_already_paused() {
     POOL_PAUSED.save(&mut deps.storage, &true).unwrap();
 
     let offer = TokenInfo {
-        info: TokenType::Bluechip {
+        info: TokenType::Native {
             denom: "ubluechip".to_string(),
         },
 
@@ -2512,7 +2512,7 @@ fn test_swap_prevented_if_would_deplete_below_minimum() {
     );
 
     let offer = TokenInfo {
-        info: TokenType::Bluechip {
+        info: TokenType::Native {
             denom: "ubluechip".to_string(),
         },
         amount: swap_amount,
@@ -2558,7 +2558,7 @@ fn test_swap_triggers_pause_at_threshold() {
     );
 
     let offer = TokenInfo {
-        info: TokenType::Bluechip {
+        info: TokenType::Native {
             denom: "ubluechip".to_string(),
         },
         amount: swap_amount,
@@ -2681,7 +2681,7 @@ fn test_both_reserves_checked() {
         message_info(&Addr::unchecked("user"), &[]),
         Addr::unchecked("user"),
         TokenInfo {
-            info: TokenType::Bluechip {
+            info: TokenType::Native {
                 denom: "ubluechip".to_string(),
             },
 
@@ -2707,7 +2707,7 @@ fn test_both_reserves_checked() {
         message_info(&Addr::unchecked("user"), &[]),
         Addr::unchecked("user"),
         TokenInfo {
-            info: TokenType::Bluechip {
+            info: TokenType::Native {
                 denom: "ubluechip".to_string(),
             },
 
@@ -2739,7 +2739,7 @@ fn test_pause_state_persistence() {
         message_info(&Addr::unchecked("user1"), &[]),
         Addr::unchecked("user1"),
         TokenInfo {
-            info: TokenType::Bluechip {
+            info: TokenType::Native {
                 denom: "ubluechip".to_string(),
             },
             amount: Uint128::new(100),
@@ -2756,7 +2756,7 @@ fn test_pause_state_persistence() {
         message_info(&Addr::unchecked("user2"), &[]),
         Addr::unchecked("user2"),
         TokenInfo {
-            info: TokenType::Bluechip {
+            info: TokenType::Native {
                 denom: "ubluechip".to_string(),
             },
             amount: Uint128::new(100),
@@ -2803,7 +2803,7 @@ fn test_swap_lopsided_pool_after_threshold() {
 
     let msg = ExecuteMsg::SimpleSwap {
         offer_asset: TokenInfo {
-            info: TokenType::Bluechip {
+            info: TokenType::Native {
                 denom: "ubluechip".to_string(),
             },
             amount: swap_amount,
@@ -2858,7 +2858,7 @@ fn test_swap_slippage_lopsided() {
     );
     let msg = ExecuteMsg::SimpleSwap {
         offer_asset: TokenInfo {
-            info: TokenType::Bluechip {
+            info: TokenType::Native {
                 denom: "ubluechip".to_string(),
             },
             amount: swap_amount,
@@ -2899,7 +2899,7 @@ fn test_commit_and_swap_with_price_change() {
     // User1 commits 1000 bluechip at $1.00 = $1000 USD
     let commit_msg = ExecuteMsg::Commit {
         asset: TokenInfo {
-            info: TokenType::Bluechip {
+            info: TokenType::Native {
                 denom: "ubluechip".to_string(),
             },
             amount: Uint128::new(1_000_000_000),
@@ -2934,7 +2934,7 @@ fn test_commit_and_swap_with_price_change() {
     // User2 commits 1000 bluechip at $1.50 = $1500 USD
     let commit_msg_2 = ExecuteMsg::Commit {
         asset: TokenInfo {
-            info: TokenType::Bluechip {
+            info: TokenType::Native {
                 denom: "ubluechip".to_string(),
             },
             amount: Uint128::new(1_000_000_000),
@@ -2973,7 +2973,7 @@ fn test_commit_and_swap_with_price_change() {
     // User3 commits at crashed price - verify they need more bluechip for same USD value
     let commit_msg_3 = ExecuteMsg::Commit {
         asset: TokenInfo {
-            info: TokenType::Bluechip {
+            info: TokenType::Native {
                 denom: "ubluechip".to_string(),
             },
             amount: Uint128::new(1_250_000_000), // 1250 bluechip

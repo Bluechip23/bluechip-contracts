@@ -1,4 +1,4 @@
-use crate::asset::get_bluechip_denom;
+use crate::asset::get_native_denom;
 use crate::state::{
     CreatorFeePot, PoolFeeState, PoolInfo, Position, COMMITFEEINFO, CREATOR_FEE_POT,
     LIQUIDITY_POSITIONS, MINIMUM_LIQUIDITY, OWNER_POSITIONS, POOL_INFO, POOL_STATE,
@@ -138,7 +138,7 @@ pub fn build_fee_transfer_msgs(
 ) -> Result<Vec<CosmosMsg>, ContractError> {
     let mut msgs = Vec::new();
     if !amount_0.is_zero() {
-        let native_denom = get_bluechip_denom(&pool_info.pool_info.asset_infos)?;
+        let native_denom = get_native_denom(&pool_info.pool_info.asset_infos)?;
         msgs.push(CosmosMsg::Bank(cosmwasm_std::BankMsg::Send {
             to_address: recipient.to_string(),
             amount: vec![cosmwasm_std::Coin {
@@ -420,7 +420,7 @@ pub fn execute_claim_creator_fees(
     let mut messages: Vec<CosmosMsg> = vec![];
 
     if !pot.amount_0.is_zero() {
-        let native_denom = get_bluechip_denom(&pool_info.pool_info.asset_infos)?;
+        let native_denom = get_native_denom(&pool_info.pool_info.asset_infos)?;
         messages.push(CosmosMsg::Bank(cosmwasm_std::BankMsg::Send {
             to_address: fee_info.creator_wallet_address.to_string(),
             amount: vec![cosmwasm_std::Coin {
@@ -493,7 +493,7 @@ pub fn execute_claim_creator_excess(
     let mut messages: Vec<CosmosMsg> = vec![];
 
     if !excess_position.bluechip_amount.is_zero() {
-        let native_denom = get_bluechip_denom(&pool_info.pool_info.asset_infos)?;
+        let native_denom = get_native_denom(&pool_info.pool_info.asset_infos)?;
         messages.push(CosmosMsg::Bank(cosmwasm_std::BankMsg::Send {
             to_address: excess_position.creator.to_string(),
             amount: vec![cosmwasm_std::Coin {

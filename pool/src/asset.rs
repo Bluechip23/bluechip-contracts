@@ -19,13 +19,13 @@ pub const UBLUECHIP_DENOM: &str = "ubluechip";
 pub trait TokenInfoPoolExt {
     fn deduct_tax(&self, querier: &QuerierWrapper) -> StdResult<Coin>;
     fn into_msg(self, querier: &QuerierWrapper, recipient: Addr) -> StdResult<CosmosMsg>;
-    fn confirm_sent_bluechip_token_balance(&self, message_info: &MessageInfo) -> StdResult<()>;
+    fn confirm_sent_native_balance(&self, message_info: &MessageInfo) -> StdResult<()>;
 }
 
 impl TokenInfoPoolExt for TokenInfo {
     fn deduct_tax(&self, _querier: &QuerierWrapper) -> StdResult<Coin> {
         let amount = self.amount;
-        if let TokenType::Bluechip { denom } = &self.info {
+        if let TokenType::Native { denom } = &self.info {
             Ok(Coin {
                 denom: denom.to_string(),
                 amount,
@@ -47,15 +47,15 @@ impl TokenInfoPoolExt for TokenInfo {
                 })?,
                 funds: vec![],
             })),
-            TokenType::Bluechip { .. } => Ok(CosmosMsg::Bank(BankMsg::Send {
+            TokenType::Native { .. } => Ok(CosmosMsg::Bank(BankMsg::Send {
                 to_address: recipient.to_string(),
                 amount: vec![self.deduct_tax(querier)?],
             })),
         }
     }
 
-    fn confirm_sent_bluechip_token_balance(&self, message_info: &MessageInfo) -> StdResult<()> {
-        if let TokenType::Bluechip { denom } = &self.info {
+    fn confirm_sent_native_balance(&self, message_info: &MessageInfo) -> StdResult<()> {
+        if let TokenType::Native { denom } = &self.info {
             let amount = must_pay(message_info, denom)
                 .map_err(|err| StdError::generic_err(err.to_string()))?;
             if self.amount == amount {

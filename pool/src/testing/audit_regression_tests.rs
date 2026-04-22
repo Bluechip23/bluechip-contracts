@@ -63,7 +63,7 @@ fn test_swap_reserve_deducts_return_and_commission() {
         ),
         user.clone(),
         TokenInfo {
-            info: TokenType::Bluechip {
+            info: TokenType::Native {
                 denom: "ubluechip".to_string(),
             },
             amount: swap_amount,

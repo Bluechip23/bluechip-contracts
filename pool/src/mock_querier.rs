@@ -158,7 +158,7 @@ impl WasmMockQuerier {
                     let cw20_amount = raw.balance;
                     let resp = PoolResponse {
                         assets: [
-                            crate::asset::bluechip_asset("ubluechip".to_string(), bluechip.amount),
+                            crate::asset::native_asset("ubluechip".to_string(), bluechip.amount),
                             crate::asset::token_asset(
                                 Addr::unchecked(contract_addr.clone()),
                                 cw20_amount,

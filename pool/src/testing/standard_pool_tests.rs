@@ -17,7 +17,7 @@ fn test_standard_pool_instantiation() {
     let msg = PoolInstantiateMsg::Commit(CommitPoolInstantiateMsg {
         pool_id: 1,
         pool_token_info: [
-            TokenType::Bluechip {
+            TokenType::Native {
                 denom: "ubluechip".to_string(),
             },
             TokenType::CreatorToken {
@@ -58,7 +58,7 @@ fn test_standard_pool_immediate_swap_and_deposit() {
     let msg = PoolInstantiateMsg::Commit(CommitPoolInstantiateMsg {
         pool_id: 1,
         pool_token_info: [
-            TokenType::Bluechip {
+            TokenType::Native {
                 denom: "ubluechip".to_string(),
             },
             TokenType::CreatorToken {
@@ -95,7 +95,7 @@ fn test_standard_pool_immediate_swap_and_deposit() {
     );
     let swap_msg = ExecuteMsg::SimpleSwap {
         offer_asset: TokenInfo {
-            info: TokenType::Bluechip {
+            info: TokenType::Native {
                 denom: "ubluechip".to_string(),
             },
             amount: Uint128::new(1000),

@@ -236,7 +236,7 @@ fn test_update_specific_pool_from_registry() {
     let pool_details = PoolDetails {
         pool_id,
         pool_token_info: [
-            TokenType::Bluechip {
+            TokenType::Native {
                 denom: "ubluechip".to_string(),
             },
             TokenType::CreatorToken {

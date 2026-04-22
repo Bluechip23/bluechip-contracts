@@ -98,7 +98,7 @@ fn test_threshold_with_excess_creates_position() {
 
     let msg = ExecuteMsg::Commit {
         asset: TokenInfo {
-            info: TokenType::Bluechip {
+            info: TokenType::Native {
                 denom: "ubluechip".to_string(),
             },
             amount: Uint128::new(100_000_000_000_000),
@@ -313,7 +313,7 @@ fn test_no_excess_when_under_cap() {
 
     let msg = ExecuteMsg::Commit {
         asset: TokenInfo {
-            info: TokenType::Bluechip {
+            info: TokenType::Native {
                 denom: "ubluechip".to_string(),
             },
             amount: Uint128::new(100_000_000),
@@ -374,7 +374,7 @@ fn test_commit_threshold_overshoot_split() {
 
     let msg = ExecuteMsg::Commit {
         asset: TokenInfo {
-            info: TokenType::Bluechip {
+            info: TokenType::Native {
                 denom: "ubluechip".to_string(),
             },
             amount: commit_amount,
@@ -556,7 +556,7 @@ fn test_commit_exact_threshold() {
 
     let msg = ExecuteMsg::Commit {
         asset: TokenInfo {
-            info: TokenType::Bluechip {
+            info: TokenType::Native {
                 denom: "ubluechip".to_string(),
             },
             amount: commit_amount,
@@ -657,7 +657,7 @@ fn test_concurrent_threshold_crossing_attempts() {
 
     let msg = ExecuteMsg::Commit {
         asset: TokenInfo {
-            info: TokenType::Bluechip {
+            info: TokenType::Native {
                 denom: "ubluechip".to_string(),
             },
             amount: Uint128::new(2_000_000),
@@ -854,7 +854,7 @@ fn test_accumulated_bluechips_respected() {
 
     let msg = ExecuteMsg::Commit {
         asset: TokenInfo {
-            info: TokenType::Bluechip {
+            info: TokenType::Native {
                 denom: "ubluechip".to_string(),
             },
             amount: Uint128::new(2_000_000_000),
@@ -923,7 +923,7 @@ fn test_concurrent_threshold_crossing_race_condition() {
     );
     let msg1 = ExecuteMsg::Commit {
         asset: TokenInfo {
-            info: TokenType::Bluechip {
+            info: TokenType::Native {
                 denom: "ubluechip".to_string(),
             },
             amount: Uint128::new(2_000_000),
@@ -994,7 +994,7 @@ fn test_paused_pool_rejects_pre_threshold_commit() {
 
     let msg = ExecuteMsg::Commit {
         asset: TokenInfo {
-            info: TokenType::Bluechip {
+            info: TokenType::Native {
                 denom: "ubluechip".to_string(),
             },
             amount: Uint128::new(100_000_000),
@@ -1042,7 +1042,7 @@ fn test_paused_pool_rejects_post_threshold_commit() {
 
     let msg = ExecuteMsg::Commit {
         asset: TokenInfo {
-            info: TokenType::Bluechip {
+            info: TokenType::Native {
                 denom: "ubluechip".to_string(),
             },
             amount: Uint128::new(100_000_000),
@@ -1079,7 +1079,7 @@ fn test_unpaused_pool_accepts_commit_after_previously_paused() {
     );
     let msg = ExecuteMsg::Commit {
         asset: TokenInfo {
-            info: TokenType::Bluechip {
+            info: TokenType::Native {
                 denom: "ubluechip".to_string(),
             },
             amount: Uint128::new(100_000_000),
