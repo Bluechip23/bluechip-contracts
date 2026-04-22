@@ -1,4 +1,4 @@
-use crate::asset::get_native_denom;
+use crate::asset::TokenType;
 use crate::error::ContractError;
 use crate::generic_helpers::{check_rate_limit, enforce_transaction_deadline};
 use crate::liquidity_helpers::{
@@ -20,13 +20,89 @@ use cosmwasm_std::{
 };
 use pool_factory_interfaces::cw721_msgs::{Action, Cw721ExecuteMsg};
 
+/// Everything prepare_deposit discovers up front: how much liquidity the
+/// deposit will produce, how much of each side was actually used (vs the
+/// offered `amount0`/`amount1` — ratio-matching may clamp one side), and
+/// the exact list of CosmosMsgs needed to move tokens into position
+/// (TransferFrom for CW20 sides, BankMsg refunds for over-paid native
+/// sides).
+///
+/// `collect_msgs` is pair-shape agnostic: for each of the two asset
+/// positions we dispatch on `TokenType` and emit the appropriate
+/// collection/refund message. Native/CW20, Native/Native, and CW20/CW20
+/// pools all produce a correct list.
 struct DepositPrep {
     pool_info: PoolInfo,
-    native_denom: String,
     liquidity: Uint128,
     actual_amount0: Uint128,
     actual_amount1: Uint128,
-    refund_amount: Uint128,
+    collect_msgs: Vec<CosmosMsg>,
+    /// Over-payment on the asset-0 side (always 0 unless asset 0 is
+    /// `Native` AND the caller attached more of that denom than
+    /// `actual_amount0` needed). Preserved for the `refunded_amount0`
+    /// response attribute existing external tooling (logs, tests) parses.
+    refund_amount0: Uint128,
+    /// Same for asset-1. New in H14 Commit 4b — prior to the refactor
+    /// asset 1 was always CW20, so refund semantics didn't apply.
+    refund_amount1: Uint128,
+}
+
+/// For a single asset position, emit the CosmosMsgs needed to pull
+/// `amount` into the pool contract and return the over-payment refund:
+///   - `Native`: verify `info.funds` covers at least `amount` of the
+///     denom; emit a BankMsg refund for the overpayment (if any) back
+///     to the sender; returns the refunded amount.
+///   - `CreatorToken`: emit a `Cw20ExecuteMsg::TransferFrom` so the pool
+///     pulls exactly `amount` from the sender (requires prior allowance);
+///     always returns 0 (no refund concept for CW20 TransferFrom).
+fn collect_deposit_side(
+    asset_info: &TokenType,
+    amount: Uint128,
+    info: &MessageInfo,
+    pool_contract: &Addr,
+    out_msgs: &mut Vec<CosmosMsg>,
+) -> Result<Uint128, ContractError> {
+    match asset_info {
+        TokenType::Native { denom } => {
+            let paid = info
+                .funds
+                .iter()
+                .find(|c| c.denom == *denom)
+                .map(|c| c.amount)
+                .unwrap_or_default();
+            if paid < amount {
+                return Err(ContractError::InvalidNativeAmount {
+                    expected: amount,
+                    actual: paid,
+                });
+            }
+            let refund = paid.checked_sub(amount).unwrap_or(Uint128::zero());
+            if !refund.is_zero() {
+                out_msgs.push(CosmosMsg::Bank(BankMsg::Send {
+                    to_address: info.sender.to_string(),
+                    amount: vec![Coin {
+                        denom: denom.clone(),
+                        amount: refund,
+                    }],
+                }));
+            }
+            Ok(refund)
+        }
+        TokenType::CreatorToken { contract_addr } => {
+            if !amount.is_zero() {
+                out_msgs.push(CosmosMsg::Wasm(WasmMsg::Execute {
+                    contract_addr: contract_addr.to_string(),
+                    msg: to_json_binary(&cw20::Cw20ExecuteMsg::TransferFrom {
+                        owner: info.sender.to_string(),
+                        recipient: pool_contract.to_string(),
+                        amount,
+                    })?,
+                    funds: vec![],
+                }));
+            }
+            Ok(Uint128::zero())
+        }
+    }
 }
 
 fn prepare_deposit(
@@ -38,78 +114,38 @@ fn prepare_deposit(
     min_amount1: Option<Uint128>,
 ) -> Result<DepositPrep, ContractError> {
     let pool_info = POOL_INFO.load(deps.storage)?;
-    let native_denom = get_native_denom(&pool_info.pool_info.asset_infos)?;
-    let paid_bluechip = info
-        .funds
-        .iter()
-        .find(|c| c.denom == native_denom)
-        .map(|c| c.amount)
-        .unwrap_or_default();
 
     let (liquidity, actual_amount0, actual_amount1) =
         calc_liquidity_for_deposit(deps, amount0, amount1)?;
 
-    if paid_bluechip < actual_amount0 {
-        return Err(ContractError::InvalidNativeAmount {
-            expected: actual_amount0,
-            actual: paid_bluechip,
-        });
-    }
+    check_slippage(actual_amount0, min_amount0, "asset0")?;
+    check_slippage(actual_amount1, min_amount1, "asset1")?;
 
-    check_slippage(actual_amount0, min_amount0, "bluechip")?;
-    check_slippage(actual_amount1, min_amount1, "cw20")?;
-
-    let refund_amount = if paid_bluechip > actual_amount0 {
-        paid_bluechip - actual_amount0
-    } else {
-        Uint128::zero()
-    };
+    let mut collect_msgs: Vec<CosmosMsg> = Vec::new();
+    let refund_amount0 = collect_deposit_side(
+        &pool_info.pool_info.asset_infos[0],
+        actual_amount0,
+        info,
+        &pool_info.pool_info.contract_addr,
+        &mut collect_msgs,
+    )?;
+    let refund_amount1 = collect_deposit_side(
+        &pool_info.pool_info.asset_infos[1],
+        actual_amount1,
+        info,
+        &pool_info.pool_info.contract_addr,
+        &mut collect_msgs,
+    )?;
 
     Ok(DepositPrep {
         pool_info,
-        native_denom,
         liquidity,
         actual_amount0,
         actual_amount1,
-        refund_amount,
+        collect_msgs,
+        refund_amount0,
+        refund_amount1,
     })
-}
-
-fn build_deposit_transfer_msgs(
-    pool_info: &PoolInfo,
-    sender: &Addr,
-    contract_addr: &Addr,
-    native_denom: &str,
-    actual_amount1: Uint128,
-    refund_amount: Uint128,
-) -> Result<Vec<CosmosMsg>, ContractError> {
-    let mut messages = vec![];
-
-    if !actual_amount1.is_zero() {
-        let transfer_cw20_msg = WasmMsg::Execute {
-            contract_addr: pool_info.token_address.to_string(),
-            msg: to_json_binary(&cw20::Cw20ExecuteMsg::TransferFrom {
-                owner: sender.to_string(),
-                recipient: contract_addr.to_string(),
-                amount: actual_amount1,
-            })?,
-            funds: vec![],
-        };
-        messages.push(CosmosMsg::Wasm(transfer_cw20_msg));
-    }
-
-    if !refund_amount.is_zero() {
-        let refund_msg = BankMsg::Send {
-            to_address: sender.to_string(),
-            amount: vec![Coin {
-                denom: native_denom.to_string(),
-                amount: refund_amount,
-            }],
-        };
-        messages.push(CosmosMsg::Bank(refund_msg));
-    }
-
-    Ok(messages)
 }
 
 #[allow(clippy::too_many_arguments)]
@@ -151,15 +187,10 @@ pub fn execute_deposit_liquidity(
         pool_state.nft_ownership_accepted = true;
     }
 
-    let transfer_msgs = build_deposit_transfer_msgs(
-        &prep.pool_info,
-        &info.sender,
-        &env.contract.address,
-        &prep.native_denom,
-        prep.actual_amount1,
-        prep.refund_amount,
-    )?;
-    messages.extend(transfer_msgs);
+    // prepare_deposit already dispatched per-asset and built the collection
+    // messages (TransferFrom for CW20 sides, BankMsg refunds for over-paid
+    // native sides). Splice them into the response list.
+    messages.extend(prep.collect_msgs.clone());
 
     let mut pos_id = NEXT_POSITION_ID.load(deps.storage)?;
     pos_id = pos_id
@@ -236,7 +267,8 @@ pub fn execute_deposit_liquidity(
         .add_attribute("liquidity", prep.liquidity.to_string())
         .add_attribute("actual_amount0", prep.actual_amount0.to_string())
         .add_attribute("actual_amount1", prep.actual_amount1.to_string())
-        .add_attribute("refunded_amount0", prep.refund_amount.to_string())
+        .add_attribute("refunded_amount0", prep.refund_amount0.to_string())
+        .add_attribute("refunded_amount1", prep.refund_amount1.to_string())
         .add_attribute("offered_amount0", amount0.to_string())
         .add_attribute("offered_amount1", amount1.to_string())
         .add_attribute("reserve0_after", pool_state.reserve0.to_string())
@@ -387,14 +419,7 @@ pub fn add_to_position(
     let ((fees_owed_0, fees_owed_1), _, (clipped_0, clipped_1)) =
         calc_capped_fees_with_clip(&liquidity_position, &pool_fee_state)?;
 
-    let mut messages = build_deposit_transfer_msgs(
-        &prep.pool_info,
-        &info.sender,
-        &env.contract.address,
-        &prep.native_denom,
-        prep.actual_amount1,
-        prep.refund_amount,
-    )?;
+    let mut messages: Vec<CosmosMsg> = prep.collect_msgs.clone();
 
     liquidity_position.liquidity = liquidity_position.liquidity.checked_add(prep.liquidity)?;
     liquidity_position.fee_growth_inside_0_last = pool_fee_state.fee_growth_global_0;
@@ -446,7 +471,8 @@ pub fn add_to_position(
         .add_attribute("amount1_requested", amount1)
         .add_attribute("actual_amount0_added", prep.actual_amount0.to_string())
         .add_attribute("actual_amount1_added", prep.actual_amount1.to_string())
-        .add_attribute("refunded_amount0", prep.refund_amount.to_string())
+        .add_attribute("refunded_amount0", prep.refund_amount0.to_string())
+        .add_attribute("refunded_amount1", prep.refund_amount1.to_string())
         .add_attribute("fees_collected_0", fees_owed_0)
         .add_attribute("fees_collected_1", fees_owed_1)
         .add_attribute("reserve0_after", pool_state.reserve0.to_string())

@@ -130,6 +130,12 @@ pub fn calc_capped_fees_with_clip(
     Ok(((lp_0, lp_1), (adj_0, adj_1), (clip_0, clip_1)))
 }
 
+/// Build transfer messages for the two fee amounts, dispatching per-asset
+/// on the pair's actual `TokenType` rather than the old
+/// "asset 0 = native, asset 1 = CW20" assumption. Works for every pair
+/// shape — commit pools (native/CW20), standard native/CW20,
+/// standard native/native (e.g. the ATOM/bluechip anchor),
+/// standard CW20/CW20.
 pub fn build_fee_transfer_msgs(
     pool_info: &PoolInfo,
     recipient: &Addr,
@@ -137,27 +143,46 @@ pub fn build_fee_transfer_msgs(
     amount_1: Uint128,
 ) -> Result<Vec<CosmosMsg>, ContractError> {
     let mut msgs = Vec::new();
-    if !amount_0.is_zero() {
-        let native_denom = get_native_denom(&pool_info.pool_info.asset_infos)?;
-        msgs.push(CosmosMsg::Bank(cosmwasm_std::BankMsg::Send {
-            to_address: recipient.to_string(),
-            amount: vec![cosmwasm_std::Coin {
-                denom: native_denom,
-                amount: amount_0,
-            }],
-        }));
-    }
-    if !amount_1.is_zero() {
-        msgs.push(CosmosMsg::Wasm(cosmwasm_std::WasmMsg::Execute {
-            contract_addr: pool_info.token_address.to_string(),
-            msg: cosmwasm_std::to_json_binary(&cw20::Cw20ExecuteMsg::Transfer {
-                recipient: recipient.to_string(),
-                amount: amount_1,
-            })?,
-            funds: vec![],
-        }));
+    for (asset_info, amount) in [
+        (&pool_info.pool_info.asset_infos[0], amount_0),
+        (&pool_info.pool_info.asset_infos[1], amount_1),
+    ] {
+        if amount.is_zero() {
+            continue;
+        }
+        msgs.push(build_transfer_msg(asset_info, recipient, amount)?);
     }
     Ok(msgs)
+}
+
+/// Builds a single outgoing transfer message for `amount` of `asset_info`
+/// going to `recipient`. Used by `build_fee_transfer_msgs` (fee payouts,
+/// liquidity removal) and anywhere else the pool pushes assets out.
+pub fn build_transfer_msg(
+    asset_info: &crate::asset::TokenType,
+    recipient: &Addr,
+    amount: Uint128,
+) -> Result<CosmosMsg, ContractError> {
+    use crate::asset::TokenType;
+    match asset_info {
+        TokenType::Native { denom } => Ok(CosmosMsg::Bank(cosmwasm_std::BankMsg::Send {
+            to_address: recipient.to_string(),
+            amount: vec![cosmwasm_std::Coin {
+                denom: denom.clone(),
+                amount,
+            }],
+        })),
+        TokenType::CreatorToken { contract_addr } => {
+            Ok(CosmosMsg::Wasm(cosmwasm_std::WasmMsg::Execute {
+                contract_addr: contract_addr.to_string(),
+                msg: cosmwasm_std::to_json_binary(&cw20::Cw20ExecuteMsg::Transfer {
+                    recipient: recipient.to_string(),
+                    amount,
+                })?,
+                funds: vec![],
+            }))
+        }
+    }
 }
 
 pub fn check_slippage(

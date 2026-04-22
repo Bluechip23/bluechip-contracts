@@ -254,8 +254,9 @@ fn instantiate_commit_pool(
 /// pair is exactly one `TokenType::Native` + one `TokenType::CreatorToken`,
 /// because the existing deposit/swap/liquidity code paths assume that
 /// layout (asset 0 native, asset 1 CW20). Bluechip/Bluechip (e.g. the
-/// ATOM/bluechip anchor) and CW20/CW20 pairs are deferred to Commit 4,
-/// which generalizes the asset-handling code.
+/// ATOM/bluechip anchor) and CW20/CW20 pairs as well. The deposit/swap
+/// hot paths were generalized in Commit 4b to dispatch per-asset on
+/// `TokenType` so ordering no longer matters.
 fn instantiate_standard_pool(
     deps: DepsMut,
     env: Env,
@@ -276,41 +277,40 @@ fn instantiate_standard_pool(
         return Err(ContractError::DoublingAssets {});
     }
 
-    // H14 Commit 3 restriction: existing deposit/swap/liquidity code
-    // assumes asset 0 is a native Bluechip denom and asset 1 is a
-    // CreatorToken CW20. Reject any other pair shape until Commit 4
-    // generalizes the asset-handling path. The factory-side validator
-    // allows any shape, so this is the enforcing boundary during the
-    // staged rollout.
-    let bluechip_count = msg
+    // Defense-in-depth: reject non-empty denoms on the Native sides.
+    // The factory validator already does this, but repeating here keeps
+    // the pool self-defending against a buggy factory migration or a
+    // directly-instantiated pool.
+    for t in msg.pool_token_info.iter() {
+        if let TokenType::Native { denom } = t {
+            if denom.trim().is_empty() {
+                return Err(ContractError::Std(StdError::generic_err(
+                    "Standard pool: Native denom must be non-empty",
+                )));
+            }
+        }
+    }
+
+    // `PoolInfo.token_address` originally pointed at the single CW20 in
+    // a commit-pool pair. Standard pools can hold zero, one, or two
+    // CW20 entries, so the field's old semantics don't apply cleanly.
+    // We populate it with:
+    //   - the sole CreatorToken side, if the pair has exactly one
+    //   - msg.used_factory_addr as a harmless placeholder, if zero or two
+    // Commit-phase helpers (`trigger_threshold_payout`, etc.) that rely
+    // on this field are guarded to commit pools only via
+    // `require_commit_pool` and never observe this value on standard
+    // pools. The generalized deposit/swap/fee paths in Commit 4b iterate
+    // `pool_info.pool_info.asset_infos` directly instead of reading
+    // `token_address`.
+    let token_address_placeholder = msg
         .pool_token_info
         .iter()
-        .filter(|t| matches!(t, TokenType::Native { .. }))
-        .count();
-    let creator_count = msg
-        .pool_token_info
-        .iter()
-        .filter(|t| matches!(t, TokenType::CreatorToken { .. }))
-        .count();
-    if bluechip_count != 1 || creator_count != 1 {
-        return Err(ContractError::Std(StdError::generic_err(format!(
-            "Standard pool (H14 Commit 3 scope): pair must be exactly one Bluechip + one CreatorToken (got {} Bluechip, {} CreatorToken). CW20/CW20 and Bluechip/Bluechip pair support lands in Commit 4.",
-            bluechip_count, creator_count
-        ))));
-    }
-    if !matches!(msg.pool_token_info[0], TokenType::Native { .. }) {
-        return Err(ContractError::Std(StdError::generic_err(
-            "Standard pool (H14 Commit 3 scope): pool_token_info[0] must be the Bluechip side. Commit 4 will lift this ordering requirement.",
-        )));
-    }
-    let creator_token_addr =
-        if let TokenType::CreatorToken { contract_addr } = &msg.pool_token_info[1] {
-            contract_addr.clone()
-        } else {
-            return Err(ContractError::Std(StdError::generic_err(
-                "Standard pool (H14 Commit 3 scope): pool_token_info[1] must be the CreatorToken side.",
-            )));
-        };
+        .find_map(|t| match t {
+            TokenType::CreatorToken { contract_addr } => Some(contract_addr.clone()),
+            _ => None,
+        })
+        .unwrap_or_else(|| msg.used_factory_addr.clone());
 
     set_contract_version(deps.storage, CONTRACT_NAME, CONTRACT_VERSION)?;
 
@@ -322,7 +322,7 @@ fn instantiate_standard_pool(
             pool_type: PoolPairType::Xyk {},
         },
         factory_addr: msg.used_factory_addr.clone(),
-        token_address: creator_token_addr,
+        token_address: token_address_placeholder,
         position_nft_address: msg.position_nft_address.clone(),
     };
 
