@@ -25,7 +25,7 @@ build:
 	RUSTFLAGS="-C link-arg=-s" cargo build --release --target $(WASM_TARGET)
 	RUSTFLAGS="-C link-arg=-s" cargo build --release --target $(WASM_TARGET) -p oracle --features testing
 	RUSTFLAGS="-C link-arg=-s" cargo build --release --target $(WASM_TARGET) -p factory --features mock
-	cp target/$(WASM_TARGET)/release/pool.wasm $(ARTIFACTS)/pool.wasm
+	cp target/$(WASM_TARGET)/release/creator_pool.wasm $(ARTIFACTS)/creator_pool.wasm
 	cp target/$(WASM_TARGET)/release/factory.wasm $(ARTIFACTS)/factory.wasm
 	cp target/$(WASM_TARGET)/release/expand_economy.wasm $(ARTIFACTS)/expand_economy.wasm
 	cp target/$(WASM_TARGET)/release/oracle.wasm $(ARTIFACTS)/oracle.wasm
@@ -69,13 +69,13 @@ optimize-all: optimize-pool optimize-factory optimize-expand-economy optimize-mo
 
 # ─── Cosmwasm Check ──────────────────────────────────────────────────────────
 check:
-	cosmwasm-check $(ARTIFACTS)/pool.wasm
+	cosmwasm-check $(ARTIFACTS)/creator_pool.wasm
 	cosmwasm-check $(ARTIFACTS)/factory.wasm
 	cosmwasm-check $(ARTIFACTS)/expand_economy.wasm
 	cosmwasm-check $(ARTIFACTS)/oracle.wasm
 
 check-pool:
-	cosmwasm-check $(ARTIFACTS)/pool.wasm
+	cosmwasm-check $(ARTIFACTS)/creator_pool.wasm
 
 check-factory:
 	cosmwasm-check $(ARTIFACTS)/factory.wasm
@@ -89,7 +89,7 @@ check-mockoracle:
 # ─── Local Chain Deploy (store wasm on local chain) ──────────────────────────
 deploy-pool-local: build
 	@echo "Deploying pool contract to local chain..."
-	$(LOCAL_CHAIN_BIN) tx wasm store $(ARTIFACTS)/pool.wasm \
+	$(LOCAL_CHAIN_BIN) tx wasm store $(ARTIFACTS)/creator_pool.wasm \
 		--from $(LOCAL_FROM) \
 		--chain-id $(LOCAL_CHAIN_ID) \
 		--gas $(LOCAL_GAS) --gas-adjustment $(LOCAL_GAS_ADJ) \
@@ -131,7 +131,7 @@ deploy-all-local:
 # ─── Sei Testnet Deploy ─────────────────────────────────────────────────────
 deploy-pool: optimize-pool
 	@echo "Deploying pool contract to Sei testnet..."
-	seid tx wasm store artifacts/pool.wasm \
+	seid tx wasm store artifacts/creator_pool.wasm \
 		--from $(SEI_FROM) \
 		--node $(SEI_NODE) \
 		--chain-id $(SEI_CHAIN_ID) \
