@@ -2443,3 +2443,225 @@ avoid an interim non-buildable state.
 No factory, router, mockoracle, or expand-economy changes.
 No behavior change on creator-pool. cargo check --workspace passes.
 ```
+
+## Step 4b-ii-a — `standard-pool/src/msg.rs`
+
+Defines the three per-contract enums: `ExecuteMsg`, `QueryMsg`,
+`MigrateMsg`. Every variant that standard-pool supports maps to a
+handler already present in `pool-core`; every commit-phase variant
+from creator-pool is omitted.
+
+### `ExecuteMsg`
+
+Drop from creator-pool's version: `Commit`, `ContinueDistribution`,
+`ClaimCreatorExcessLiquidity`, `ClaimCreatorFees`, `RetryFactoryNotify`,
+`RecoverStuckStates`.
+
+```rust
+use cosmwasm_schema::cw_serde;
+use cosmwasm_std::{Decimal, Timestamp, Uint128};
+use cw20::Cw20ReceiveMsg;
+use pool_core::asset::TokenInfo;
+use pool_core::msg::PoolConfigUpdate;
+
+#[cw_serde]
+pub enum ExecuteMsg {
+    Receive(Cw20ReceiveMsg),
+    SimpleSwap {
+        offer_asset: TokenInfo,
+        belief_price: Option<Decimal>,
+        max_spread: Option<Decimal>,
+        to: Option<String>,
+        transaction_deadline: Option<Timestamp>,
+    },
+    UpdateConfigFromFactory { update: PoolConfigUpdate },
+    Pause {},
+    Unpause {},
+    EmergencyWithdraw {},
+    CancelEmergencyWithdraw {},
+    DepositLiquidity {
+        amount0: Uint128,
+        amount1: Uint128,
+        min_amount0: Option<Uint128>,
+        min_amount1: Option<Uint128>,
+        transaction_deadline: Option<Timestamp>,
+    },
+    AddToPosition {
+        position_id: String,
+        amount0: Uint128,
+        amount1: Uint128,
+        min_amount0: Option<Uint128>,
+        min_amount1: Option<Uint128>,
+        transaction_deadline: Option<Timestamp>,
+    },
+    CollectFees { position_id: String },
+    RemovePartialLiquidity {
+        position_id: String,
+        liquidity_to_remove: Uint128,
+        transaction_deadline: Option<Timestamp>,
+        min_amount0: Option<Uint128>,
+        min_amount1: Option<Uint128>,
+        max_ratio_deviation_bps: Option<u16>,
+    },
+    RemovePartialLiquidityByPercent {
+        position_id: String,
+        percentage: u64,
+        transaction_deadline: Option<Timestamp>,
+        min_amount0: Option<Uint128>,
+        min_amount1: Option<Uint128>,
+        max_ratio_deviation_bps: Option<u16>,
+    },
+    RemoveAllLiquidity {
+        position_id: String,
+        transaction_deadline: Option<Timestamp>,
+        min_amount0: Option<Uint128>,
+        min_amount1: Option<Uint128>,
+        max_ratio_deviation_bps: Option<u16>,
+    },
+}
+```
+
+### `QueryMsg`
+
+Drop from creator-pool's version: `IsFullyCommited`, `CommittingInfo`,
+`LastCommited`, `PoolCommits`, `FactoryNotifyStatus`.
+
+```rust
+use cosmwasm_schema::{cw_serde, QueryResponses};
+use cosmwasm_std::{Addr, Uint128};
+use pool_core::asset::{PoolPairInfo, TokenInfo};
+use pool_core::msg::{
+    ConfigResponse, CumulativePricesResponse, FeeInfoResponse,
+    PoolAnalyticsResponse, PoolFeeStateResponse, PoolInfoResponse,
+    PoolStateResponse, PositionResponse, PositionsResponse,
+    ReverseSimulationResponse, SimulationResponse,
+};
+use pool_factory_interfaces::{AllPoolsResponse, IsPausedResponse, PoolStateResponseForFactory};
+
+#[cw_serde]
+#[derive(QueryResponses)]
+pub enum QueryMsg {
+    #[returns(PoolPairInfo)]
+    Pair {},
+    #[returns(ConfigResponse)]
+    Config {},
+    #[returns(SimulationResponse)]
+    Simulation { offer_asset: TokenInfo },
+    #[returns(ReverseSimulationResponse)]
+    ReverseSimulation { ask_asset: TokenInfo },
+    #[returns(CumulativePricesResponse)]
+    CumulativePrices {},
+    #[returns(FeeInfoResponse)]
+    FeeInfo {},
+    #[returns(PoolStateResponse)]
+    PoolState {},
+    #[returns(PoolFeeStateResponse)]
+    FeeState {},
+    #[returns(PositionResponse)]
+    Position { position_id: String },
+    #[returns(PositionsResponse)]
+    Positions { start_after: Option<String>, limit: Option<u32> },
+    #[returns(PositionsResponse)]
+    PositionsByOwner {
+        owner: String,
+        start_after: Option<String>,
+        limit: Option<u32>,
+    },
+    #[returns(PoolInfoResponse)]
+    PoolInfo {},
+    #[returns(PoolAnalyticsResponse)]
+    Analytics {},
+    #[returns(PoolStateResponseForFactory)]
+    GetPoolState { pool_contract_address: String },
+    #[returns(AllPoolsResponse)]
+    GetAllPools {},
+    #[returns(IsPausedResponse)]
+    IsPaused {},
+}
+```
+
+### `MigrateMsg`
+
+Same shape as creator-pool's migrate (fee update + version bump), just
+re-declared per-crate since each contract has its own migration
+semantics. Identical body but lives here so migrations can diverge
+in the future without re-coupling the crates.
+
+```rust
+use cosmwasm_schema::cw_serde;
+use cosmwasm_std::Decimal;
+
+#[cw_serde]
+pub enum MigrateMsg {
+    UpdateFees { new_fees: Decimal },
+    UpdateVersion {},
+}
+```
+
+### Nothing else in `standard-pool/src/msg.rs`
+
+All response structs (`SimulationResponse`, `PoolStateResponse`, etc.)
+are re-exported from `pool_core::msg` and imported at the top of the
+file. No local response struct definitions. Keeps the wire-format
+response shapes bit-for-bit identical between the two contracts for
+every shared query, so off-chain tooling sees the same JSON regardless
+of which code_id the pool was instantiated from.
+
+### Expected compile-error patterns after 4b-ii-a
+
+1. **`PoolPairInfo` path** — lives in `pool_core::asset` (re-exported
+   from `pool_factory_interfaces::asset::*` via the pool-core asset
+   module from Step 2b). Import path: `pool_core::asset::PoolPairInfo`.
+
+2. **`TokenInfo` path** — lives in `pool_factory_interfaces::asset`,
+   re-exported through `pool_core::asset`. Import path:
+   `pool_core::asset::TokenInfo`.
+
+3. **`PoolConfigUpdate` path** — moved to `pool_core::msg` in Step 2d.
+
+4. **`QueryResponses` derive** — requires every variant to have a
+   `#[returns(T)]` attribute. Omitting any causes a macro error. Sweep
+   the QueryMsg above and confirm each variant has one.
+
+5. **`Cw20ReceiveMsg` import** — from `cw20` crate directly, not from
+   pool_core. standard-pool/Cargo.toml already has `cw20` as a dep
+   (from 4b-i).
+
+### Verification after 4b-ii-a
+
+```
+cargo check -p standard-pool
+```
+
+Should pass. `msg.rs` now defines types but nothing dispatches on them
+yet — `contract.rs` is still the placeholder file from 4b-i. The
+crate compiles as an "unused types" library; no `#[entry_point]` code
+exists yet, so no `cdylib` is produced (or a zero-size one is).
+
+### Suggested commit message
+
+```
+H14 split (4b-ii-a/N): define standard-pool ExecuteMsg/QueryMsg/MigrateMsg
+
+Adds standard-pool/src/msg.rs with the three per-contract enums.
+
+ExecuteMsg drops 6 commit-only variants relative to creator-pool:
+Commit, ContinueDistribution, ClaimCreatorExcessLiquidity,
+ClaimCreatorFees, RetryFactoryNotify, RecoverStuckStates. Keeps
+Receive, SimpleSwap, UpdateConfigFromFactory, Pause, Unpause,
+EmergencyWithdraw, CancelEmergencyWithdraw, and the 6
+liquidity-mutation variants.
+
+QueryMsg drops 5 commit-only variants: IsFullyCommited, CommittingInfo,
+LastCommited, PoolCommits, FactoryNotifyStatus. Every response type
+is re-exported from pool_core::msg, so wire-format shapes for every
+shared query are identical between the two contracts.
+
+MigrateMsg defined locally with UpdateFees + UpdateVersion — same
+shape as creator-pool's, but owned per-contract so future migrations
+can diverge without cross-crate coupling.
+
+contract.rs still the placeholder from 4b-i; execute/query/
+instantiate dispatch lands in 4b-ii-b/c/d. cargo check -p standard-
+pool passes (unused-types library state).
+```
