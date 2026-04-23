@@ -1,94 +1,67 @@
-//! Administrative operations: pause/unpause, emergency withdraw, config
-//! updates, and stuck-state recovery.
+//! Creator-pool admin handlers.
 //!
-//! All functions in this module are privileged and require the caller to be
-//! the factory admin (or, for recovery, the factory contract itself).
+//! Shared handlers — pause, unpause, cancel-emergency-withdraw,
+//! update-config-from-factory, ensure_not_drained — live in
+//! `pool_core::admin` and are re-exported below so existing
+//! `use crate::admin::X;` imports resolve unchanged.
+//!
+//! The creator-pool crate keeps:
+//!   - `execute_emergency_withdraw` — a wrapper around pool-core's
+//!     two-phase initiate/core_drain that adds the commit-only
+//!     pre-threshold rejection, CREATOR_EXCESS_POSITION sweep, and
+//!     DISTRIBUTION_STATE halt.
+//!   - `execute_recover_stuck_states` + private recovery helpers —
+//!     all three failure modes (stuck threshold, stalled distribution,
+//!     jammed reentrancy guard) only ever occur inside the commit
+//!     flow, so standard-pool doesn't need them.
 
-use crate::asset::{TokenInfo, TokenInfoPoolExt};
+pub use pool_core::admin::{
+    ensure_not_drained, execute_cancel_emergency_withdraw,
+    execute_emergency_withdraw_core_drain, execute_emergency_withdraw_initiate, execute_pause,
+    execute_unpause, execute_update_config_from_factory, CoreDrainResult,
+};
+
 use crate::error::ContractError;
-use crate::msg::PoolConfigUpdate;
 use crate::state::{
-    DistributionState, EmergencyWithdrawalInfo, RecoveryType, COMMITFEEINFO, COMMIT_LEDGER,
-    CREATOR_EXCESS_POSITION, DEFAULT_ESTIMATED_GAS_PER_DISTRIBUTION, DEFAULT_MAX_GAS_PER_TX,
-    DISTRIBUTION_STATE, EMERGENCY_DRAINED, EMERGENCY_WITHDRAWAL, EMERGENCY_WITHDRAW_DELAY_SECONDS,
-    EXPECTED_FACTORY, LAST_THRESHOLD_ATTEMPT, ORACLE_INFO, PENDING_EMERGENCY_WITHDRAW,
-    POOL_FEE_STATE, POOL_INFO, POOL_PAUSED, POOL_SPECS, POOL_STATE, REENTRANCY_LOCK,
-    THRESHOLD_PROCESSING,
+    DistributionState, RecoveryType, COMMIT_LEDGER, CREATOR_EXCESS_POSITION,
+    DEFAULT_ESTIMATED_GAS_PER_DISTRIBUTION, DEFAULT_MAX_GAS_PER_TX, DISTRIBUTION_STATE,
+    EXPECTED_FACTORY, IS_THRESHOLD_HIT, LAST_THRESHOLD_ATTEMPT, PENDING_EMERGENCY_WITHDRAW,
+    POOL_INFO, REENTRANCY_LOCK, THRESHOLD_PROCESSING,
 };
 use cosmwasm_std::{
-    Decimal, DepsMut, Env, MessageInfo, Order, Response, StdError, StdResult, Storage, Timestamp,
-    Uint128,
+    DepsMut, Env, MessageInfo, Order, Response, StdError, StdResult, Storage, Timestamp, Uint128,
 };
 
-/// Checks that the pool has not been permanently drained. Returns
-/// `ContractError::EmergencyDrained` if it has.
-pub fn ensure_not_drained(storage: &dyn Storage) -> Result<(), ContractError> {
-    if EMERGENCY_DRAINED.may_load(storage)?.unwrap_or(false) {
-        return Err(ContractError::EmergencyDrained {});
-    }
-    Ok(())
-}
-
 // ---------------------------------------------------------------------------
-// Pause / Unpause
+// Emergency Withdraw — creator-pool wrapper
 // ---------------------------------------------------------------------------
 
-pub fn execute_pause(
-    deps: DepsMut,
-    env: Env,
-    info: MessageInfo,
-) -> Result<Response, ContractError> {
-    let pool_info = POOL_INFO.load(deps.storage)?;
-    if info.sender != pool_info.factory_addr {
-        return Err(ContractError::Unauthorized {});
-    }
-    let pool_contract = pool_info.pool_info.contract_addr.to_string();
-    POOL_PAUSED.save(deps.storage, &true)?;
-    Ok(Response::new()
-        .add_attribute("action", "pause")
-        .add_attribute("pool_contract", pool_contract)
-        .add_attribute("paused_by", info.sender.to_string())
-        .add_attribute("block_height", env.block.height.to_string())
-        .add_attribute("block_time", env.block.time.seconds().to_string()))
-}
-
-pub fn execute_unpause(
-    deps: DepsMut,
-    env: Env,
-    info: MessageInfo,
-) -> Result<Response, ContractError> {
-    let pool_info = POOL_INFO.load(deps.storage)?;
-    if info.sender != pool_info.factory_addr {
-        return Err(ContractError::Unauthorized {});
-    }
-    let pool_contract = pool_info.pool_info.contract_addr.to_string();
-    POOL_PAUSED.save(deps.storage, &false)?;
-    Ok(Response::new()
-        .add_attribute("action", "unpause")
-        .add_attribute("pool_contract", pool_contract)
-        .add_attribute("unpaused_by", info.sender.to_string())
-        .add_attribute("block_height", env.block.height.to_string())
-        .add_attribute("block_time", env.block.time.seconds().to_string()))
-}
-
-// ---------------------------------------------------------------------------
-// Emergency Withdraw (two-phase: initiate → execute after 24h timelock)
-// ---------------------------------------------------------------------------
-
+/// Wraps pool-core's two-phase emergency withdraw with commit-only
+/// bookkeeping:
+///   - Pre-threshold rejection (committed funds are untracked in
+///     reserves; draining would strand them).
+///   - CREATOR_EXCESS_POSITION sweep on Phase 2 — fold its amounts into
+///     `accumulation_drain_{0,1}` so pool-core's single audit record
+///     captures the grand total and the two transfer messages carry it.
+///   - DISTRIBUTION_STATE halt on Phase 2 so future
+///     ContinueDistribution calls reject cleanly.
+///
+/// Phase 1/2 dispatch matches pre-split behavior: if
+/// `PENDING_EMERGENCY_WITHDRAW` is unset we run Phase 1 (pause + set
+/// timelock); otherwise Phase 2 (drain after the timelock has elapsed).
 pub fn execute_emergency_withdraw(
     deps: DepsMut,
     env: Env,
     info: MessageInfo,
 ) -> Result<Response, ContractError> {
+    // Duplicate auth + drained checks here so the pre-threshold error
+    // below doesn't mask unauthorized access. Pool-core's initiate /
+    // core_drain do their own checks too — cheap loads, worth it to
+    // preserve the pre-split error ordering.
     let pool_info = POOL_INFO.load(deps.storage)?;
     if info.sender != pool_info.factory_addr {
         return Err(ContractError::Unauthorized {});
     }
-
-    // Once a pool has been drained the EMERGENCY_WITHDRAWAL audit record
-    // is final. Re-entering the phase-1/phase-2 flow would let an admin
-    // overwrite it with all-zero amounts (since reserves are already zero)
-    // and silently rewrite the recorded recipient. Reject re-entries.
     ensure_not_drained(deps.storage)?;
 
     // Disable emergency withdraw pre-threshold. Pre-threshold, reserve0/1
@@ -100,7 +73,7 @@ pub fn execute_emergency_withdraw(
     // stranded forever. The correct recovery path for a pre-threshold
     // pool is a future cancel/refund flow; until that exists, refuse to
     // run emergency withdraw at all before the threshold has crossed.
-    if !crate::state::IS_THRESHOLD_HIT
+    if !IS_THRESHOLD_HIT
         .may_load(deps.storage)?
         .unwrap_or(false)
     {
@@ -109,233 +82,60 @@ pub fn execute_emergency_withdraw(
         )));
     }
 
-    let now = env.block.time;
-
-    // Phase 2: execute if timelock has elapsed
-    if let Some(effective_after) = PENDING_EMERGENCY_WITHDRAW.may_load(deps.storage)? {
-        if now < effective_after {
-            return Err(ContractError::EmergencyTimelockPending { effective_after });
-        }
-
-        PENDING_EMERGENCY_WITHDRAW.remove(deps.storage);
-
-        let mut pool_state = POOL_STATE.load(deps.storage)?;
-        let mut pool_fee_state = POOL_FEE_STATE.load(deps.storage)?;
-
-        let mut total0 = pool_state
-            .reserve0
-            .checked_add(pool_fee_state.fee_reserve_0)?;
-        let mut total1 = pool_state
-            .reserve1
-            .checked_add(pool_fee_state.fee_reserve_1)?;
-
-        if let Ok(excess) = CREATOR_EXCESS_POSITION.load(deps.storage) {
-            total0 = total0.checked_add(excess.bluechip_amount)?;
-            total1 = total1.checked_add(excess.token_amount)?;
-            CREATOR_EXCESS_POSITION.remove(deps.storage);
-        }
-
-        // Sweep the creator fee pot too — it's a pool-held balance that
-        // would otherwise remain undrained on emergency and leave a
-        // dangling claim with no legitimate settlement path once the
-        // pool is marked drained.
-        if let Some(pot) = crate::state::CREATOR_FEE_POT.may_load(deps.storage)? {
-            total0 = total0.checked_add(pot.amount_0)?;
-            total1 = total1.checked_add(pot.amount_1)?;
-            crate::state::CREATOR_FEE_POT.remove(deps.storage);
-        }
-
-        let fee_info = COMMITFEEINFO.load(deps.storage)?;
-        let recipient = fee_info.bluechip_wallet_address.clone();
-
-        let withdrawal_info = EmergencyWithdrawalInfo {
-            withdrawn_at: now.seconds(),
-            recipient: recipient.clone(),
-            amount0: total0,
-            amount1: total1,
-            total_liquidity_at_withdrawal: pool_state.total_liquidity,
-        };
-        EMERGENCY_WITHDRAWAL.save(deps.storage, &withdrawal_info)?;
-
-        pool_state.reserve0 = Uint128::zero();
-        pool_state.reserve1 = Uint128::zero();
-        pool_state.total_liquidity = Uint128::zero();
-        POOL_STATE.save(deps.storage, &pool_state)?;
-
-        pool_fee_state.fee_reserve_0 = Uint128::zero();
-        pool_fee_state.fee_reserve_1 = Uint128::zero();
-        POOL_FEE_STATE.save(deps.storage, &pool_fee_state)?;
-
-        EMERGENCY_DRAINED.save(deps.storage, &true)?;
-
-        // The pool no longer holds a bounty reserve; distribution bounties
-        // are paid by the factory. Halt any in-flight distribution so
-        // future ContinueDistribution calls reject cleanly.
-        if let Ok(mut dist_state) = DISTRIBUTION_STATE.load(deps.storage) {
-            dist_state.is_distributing = false;
-            dist_state.distributions_remaining = 0;
-            DISTRIBUTION_STATE.save(deps.storage, &dist_state)?;
-        }
-
-        let mut messages = vec![];
-        if !total0.is_zero() {
-            messages.push(
-                TokenInfo {
-                    info: pool_info.pool_info.asset_infos[0].clone(),
-                    amount: total0,
-                }
-                .into_msg(&deps.querier, recipient.clone())?,
-            );
-        }
-        if !total1.is_zero() {
-            messages.push(
-                TokenInfo {
-                    info: pool_info.pool_info.asset_infos[1].clone(),
-                    amount: total1,
-                }
-                .into_msg(&deps.querier, recipient.clone())?,
-            );
-        }
-
-        return Ok(Response::new()
-            .add_messages(messages)
-            .add_attribute("action", "emergency_withdraw")
-            .add_attribute("recipient", recipient)
-            .add_attribute("amount0", total0)
-            .add_attribute("amount1", total1)
-            .add_attribute(
-                "total_liquidity",
-                withdrawal_info.total_liquidity_at_withdrawal,
-            )
-            .add_attribute("pool_contract", env.contract.address.to_string())
-            .add_attribute("block_height", env.block.height.to_string())
-            .add_attribute("block_time", env.block.time.seconds().to_string()));
-    }
-
-    // Phase 1: initiate — pause pool and set timelock
-    POOL_PAUSED.save(deps.storage, &true)?;
-    let effective_after = now.plus_seconds(EMERGENCY_WITHDRAW_DELAY_SECONDS);
-    PENDING_EMERGENCY_WITHDRAW.save(deps.storage, &effective_after)?;
-
-    Ok(Response::new()
-        .add_attribute("action", "emergency_withdraw_initiated")
-        .add_attribute("effective_after", effective_after.to_string())
-        .add_attribute("pool_contract", env.contract.address.to_string())
-        .add_attribute("initiated_by", info.sender.to_string())
-        .add_attribute("block_height", env.block.height.to_string())
-        .add_attribute("block_time", env.block.time.seconds().to_string()))
-}
-
-pub fn execute_cancel_emergency_withdraw(
-    deps: DepsMut,
-    env: Env,
-    info: MessageInfo,
-) -> Result<Response, ContractError> {
-    let pool_info = POOL_INFO.load(deps.storage)?;
-    if info.sender != pool_info.factory_addr {
-        return Err(ContractError::Unauthorized {});
-    }
+    // Phase 1: initiate
     if PENDING_EMERGENCY_WITHDRAW.may_load(deps.storage)?.is_none() {
-        return Err(ContractError::NoPendingEmergencyWithdraw {});
+        return execute_emergency_withdraw_initiate(deps, env, info);
     }
-    PENDING_EMERGENCY_WITHDRAW.remove(deps.storage);
-    POOL_PAUSED.save(deps.storage, &false)?;
+
+    // Phase 2: layer commit-only bookkeeping around the core drain.
+    //
+    // Capture CREATOR_EXCESS_POSITION amounts up front, remove the
+    // storage item, and halt DISTRIBUTION_STATE — all before handing
+    // control to the core drain. CosmWasm tx semantics are atomic:
+    // if core_drain errors, every storage write above reverts with it,
+    // so there's no half-drained state to worry about.
+    let mut deps = deps;
+
+    let excess = CREATOR_EXCESS_POSITION.may_load(deps.storage)?;
+    let (acc_0, acc_1) = excess
+        .as_ref()
+        .map(|e| (e.bluechip_amount, e.token_amount))
+        .unwrap_or((Uint128::zero(), Uint128::zero()));
+    if excess.is_some() {
+        CREATOR_EXCESS_POSITION.remove(deps.storage);
+    }
+
+    // The pool no longer holds a bounty reserve; distribution bounties
+    // are paid by the factory. Halt any in-flight distribution so
+    // future ContinueDistribution calls reject cleanly.
+    if let Ok(mut dist_state) = DISTRIBUTION_STATE.load(deps.storage) {
+        dist_state.is_distributing = false;
+        dist_state.distributions_remaining = 0;
+        DISTRIBUTION_STATE.save(deps.storage, &dist_state)?;
+    }
+
+    let drain = execute_emergency_withdraw_core_drain(
+        deps.branch(),
+        env.clone(),
+        info.clone(),
+        acc_0,
+        acc_1,
+    )?;
+
     Ok(Response::new()
-        .add_attribute("action", "emergency_withdraw_cancelled")
-        .add_attribute(
-            "pool_contract",
-            pool_info.pool_info.contract_addr.to_string(),
-        )
-        .add_attribute("cancelled_by", info.sender.to_string())
+        .add_messages(drain.messages)
+        .add_attribute("action", "emergency_withdraw")
+        .add_attribute("recipient", drain.recipient)
+        .add_attribute("amount0", drain.total_0)
+        .add_attribute("amount1", drain.total_1)
+        .add_attribute("total_liquidity", drain.total_liquidity_at_withdrawal)
+        .add_attribute("pool_contract", env.contract.address.to_string())
         .add_attribute("block_height", env.block.height.to_string())
         .add_attribute("block_time", env.block.time.seconds().to_string()))
 }
 
 // ---------------------------------------------------------------------------
-// Config update (factory-only)
-// ---------------------------------------------------------------------------
-
-pub fn execute_update_config_from_factory(
-    deps: DepsMut,
-    env: Env,
-    info: MessageInfo,
-    update: PoolConfigUpdate,
-) -> Result<Response, ContractError> {
-    let pool_info = POOL_INFO.load(deps.storage)?;
-    if info.sender != pool_info.factory_addr {
-        return Err(ContractError::Unauthorized {});
-    }
-
-    let mut attributes = vec![("action", "update_config")];
-    let mut specs = POOL_SPECS.load(deps.storage)?;
-    let mut specs_changed = false;
-
-    if let Some(fee) = update.lp_fee {
-        let max_lp_fee = Decimal::percent(10);
-        let min_lp_fee = Decimal::permille(1); // 0.1%
-        if fee > max_lp_fee {
-            return Err(ContractError::Std(StdError::generic_err(
-                "lp_fee must not exceed 10% (0.1)",
-            )));
-        }
-        if fee < min_lp_fee {
-            return Err(ContractError::Std(StdError::generic_err(
-                "lp_fee must be at least 0.1% (0.001)",
-            )));
-        }
-        specs.lp_fee = fee;
-        specs_changed = true;
-        attributes.push(("lp_fee", "updated"));
-    }
-
-    if let Some(interval) = update.min_commit_interval {
-        const MAX_COMMIT_INTERVAL: u64 = 86_400; // 24 hours
-        if interval > MAX_COMMIT_INTERVAL {
-            return Err(ContractError::Std(StdError::generic_err(
-                "min_commit_interval must not exceed 86400 seconds (1 day)",
-            )));
-        }
-        specs.min_commit_interval = interval;
-        specs_changed = true;
-        attributes.push(("min_commit_interval", "updated"));
-    }
-
-    if let Some(tolerance) = update.usd_payment_tolerance_bps {
-        if tolerance > 1000 {
-            return Err(ContractError::Std(StdError::generic_err(
-                "usd_payment_tolerance_bps must not exceed 1000 (10%)",
-            )));
-        }
-        specs.usd_payment_tolerance_bps = tolerance;
-        specs_changed = true;
-        attributes.push(("usd_payment_tolerance_bps", "updated"));
-    }
-
-    if specs_changed {
-        POOL_SPECS.save(deps.storage, &specs)?;
-    }
-
-    if let Some(oracle_addr) = update.oracle_address {
-        ORACLE_INFO.update(deps.storage, |mut info| -> StdResult<_> {
-            info.oracle_addr = deps.api.addr_validate(&oracle_addr)?;
-            Ok(info)
-        })?;
-        attributes.push(("oracle_address", "updated"));
-    }
-
-    Ok(Response::new()
-        .add_attributes(attributes)
-        .add_attribute(
-            "pool_contract",
-            pool_info.pool_info.contract_addr.to_string(),
-        )
-        .add_attribute("updated_by", info.sender.to_string())
-        .add_attribute("block_height", env.block.height.to_string())
-        .add_attribute("block_time", env.block.time.seconds().to_string()))
-}
-
-// ---------------------------------------------------------------------------
-// Stuck-state recovery (factory-only)
+// Stuck-state recovery (factory-only; commit-phase only)
 // ---------------------------------------------------------------------------
 
 pub fn execute_recover_stuck_states(

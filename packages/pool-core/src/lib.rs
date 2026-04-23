@@ -41,3 +41,4 @@ pub mod msg;
 pub mod generic;
 pub mod liquidity_helpers;
 pub mod liquidity;
+pub mod admin;
