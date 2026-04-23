@@ -1,3 +1,17 @@
+//! Creator-pool (commit-phase) wire-format types.
+//!
+//! Shared types (response structs, CommitFeeInfo, PoolConfigUpdate,
+//! Cw20HookMsg, CommitStatus) live in `pool_core::msg` and are
+//! re-exported below so every existing `use crate::msg::X;` import in
+//! the creator-pool crate resolves unchanged.
+//!
+//! Per-contract types — the ExecuteMsg / QueryMsg / MigrateMsg /
+//! PoolInstantiateMsg enums and the commit-only response types
+//! (FactoryNotifyStatusResponse, PoolCommitResponse, CommitterInfo,
+//! LastCommittedResponse) — stay here. Standard-pool (Step 4b) defines
+//! its own slimmer versions in its own `msg.rs`.
+pub use pool_core::msg::*;
+
 #[allow(unused_imports)]
 use crate::asset::{PoolPairInfo, TokenInfo, TokenType};
 #[allow(unused_imports)]
@@ -103,16 +117,6 @@ pub enum ExecuteMsg {
 pub enum MigrateMsg {
     UpdateFees { new_fees: Decimal },
     UpdateVersion {},
-}
-
-#[cw_serde]
-pub enum Cw20HookMsg {
-    Swap {
-        belief_price: Option<Decimal>,
-        max_spread: Option<Decimal>,
-        to: Option<String>,
-        transaction_deadline: Option<Timestamp>,
-    },
 }
 
 #[cw_serde]
@@ -232,14 +236,6 @@ pub struct PoolCommitResponse {
 }
 
 #[cw_serde]
-pub struct PoolConfigUpdate {
-    pub lp_fee: Option<Decimal>,
-    pub min_commit_interval: Option<u64>,
-    pub usd_payment_tolerance_bps: Option<u16>,
-    pub oracle_address: Option<String>,
-}
-
-#[cw_serde]
 pub struct CommitterInfo {
     pub wallet: String,
     pub last_payment_bluechip: Uint128,
@@ -249,116 +245,10 @@ pub struct CommitterInfo {
     pub total_paid_bluechip: Uint128,
 }
 
-// CommitFeeInfo lives in `pool_core::msg` so the shared `COMMITFEEINFO`
-// storage Item can reference it without creating a pool-core → pool
-// dependency. Re-exported here so existing `crate::msg::CommitFeeInfo`
-// imports resolve unchanged.
-pub use pool_core::msg::CommitFeeInfo;
-
-#[cw_serde]
-pub struct PoolResponse {
-    pub assets: [TokenInfo; 2],
-}
-
-#[cw_serde]
-pub struct ConfigResponse {
-    pub block_time_last: u64,
-    pub params: Option<Binary>,
-}
-
 #[cw_serde]
 pub struct LastCommittedResponse {
     pub has_committed: bool,
     pub last_committed: Option<Timestamp>,
     pub last_payment_bluechip: Option<Uint128>,
     pub last_payment_usd: Option<Uint128>,
-}
-
-#[cw_serde]
-pub struct SimulationResponse {
-    pub return_amount: Uint128,
-    pub spread_amount: Uint128,
-    pub commission_amount: Uint128,
-}
-
-#[cw_serde]
-pub struct ReverseSimulationResponse {
-    pub offer_amount: Uint128,
-    pub spread_amount: Uint128,
-    pub commission_amount: Uint128,
-}
-
-#[cw_serde]
-pub struct CumulativePricesResponse {
-    pub assets: [TokenInfo; 2],
-    pub price0_cumulative_last: Uint128,
-    pub price1_cumulative_last: Uint128,
-}
-
-#[cw_serde]
-pub struct FeeInfoResponse {
-    pub fee_info: CommitFeeInfo,
-}
-
-#[cw_serde]
-pub enum CommitStatus {
-    InProgress { raised: Uint128, target: Uint128 },
-    FullyCommitted,
-}
-
-#[cw_serde]
-pub struct PoolStateResponse {
-    pub nft_ownership_accepted: bool,
-    pub reserve0: Uint128,
-    pub reserve1: Uint128,
-    pub total_liquidity: Uint128,
-    pub block_time_last: u64,
-}
-
-#[cw_serde]
-pub struct PoolFeeStateResponse {
-    pub fee_growth_global_0: Decimal,
-    pub fee_growth_global_1: Decimal,
-    pub total_fees_collected_0: Uint128,
-    pub total_fees_collected_1: Uint128,
-}
-
-#[cw_serde]
-pub struct PositionResponse {
-    pub position_id: String,
-    pub liquidity: Uint128,
-    pub owner: Addr,
-    pub fee_growth_inside_0_last: Decimal,
-    pub fee_growth_inside_1_last: Decimal,
-    pub created_at: u64,
-    pub last_fee_collection: u64,
-    pub unclaimed_fees_0: Uint128,
-    pub unclaimed_fees_1: Uint128,
-}
-
-#[cw_serde]
-pub struct PositionsResponse {
-    pub positions: Vec<PositionResponse>,
-}
-
-#[cw_serde]
-pub struct PoolInfoResponse {
-    pub pool_state: PoolStateResponse,
-    pub fee_state: PoolFeeStateResponse,
-    pub total_positions: u64,
-}
-
-#[cw_serde]
-pub struct PoolAnalyticsResponse {
-    pub analytics: PoolAnalytics,
-    pub current_price_0_to_1: String,
-    pub current_price_1_to_0: String,
-    pub total_value_locked_0: Uint128,
-    pub total_value_locked_1: Uint128,
-    pub fee_reserve_0: Uint128,
-    pub fee_reserve_1: Uint128,
-    pub threshold_status: CommitStatus,
-    pub total_usd_raised: Uint128,
-    pub total_bluechip_raised: Uint128,
-    pub total_positions: u64,
 }
