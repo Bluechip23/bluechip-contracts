@@ -5,9 +5,7 @@ use crate::state::{
     POOL_STATE,
 };
 use cosmwasm_std::Storage;
-use cosmwasm_std::{
-    to_json_binary, Addr, CosmosMsg, Decimal, Deps, StdError, StdResult, Uint128, WasmMsg,
-};
+use cosmwasm_std::{Addr, CosmosMsg, Decimal, Deps, StdError, StdResult, Uint128};
 
 pub const OPTIMAL_LIQUIDITY: Uint128 = Uint128::new(1_000_000);
 const MIN_MULTIPLIER: Decimal = Decimal::percent(10);

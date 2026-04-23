@@ -10,24 +10,12 @@
 //! `creator-pool::swap_helper`.
 
 use crate::error::ContractError;
+use crate::generic::decimal2decimal256;
 use crate::state::PoolState;
 use cosmwasm_std::{Decimal, Decimal256, Fraction, StdError, StdResult, Uint128, Uint256};
 use std::str::FromStr;
 
 pub const DEFAULT_SLIPPAGE: &str = "0.005";
-
-/// Local copy of `pool_core::generic::decimal2decimal256`. Step 3b
-/// extracts the creator-pool copy into `pool_core::generic` and this
-/// inline can be deleted in favor of an import; for now it keeps 2c
-/// self-contained.
-fn decimal2decimal256(dec_value: Decimal) -> StdResult<Decimal256> {
-    Decimal256::from_atomics(dec_value.atomics(), dec_value.decimal_places()).map_err(|_| {
-        StdError::generic_err(format!(
-            "Failed to convert Decimal {} to Decimal256",
-            dec_value
-        ))
-    })
-}
 
 /// Constant product swap (x * y = k). Returns (return_amount, spread, commission).
 pub fn compute_swap(

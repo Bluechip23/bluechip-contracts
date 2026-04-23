@@ -1,94 +1,30 @@
+//! Commit-phase-specific helpers. Shared primitives (`check_rate_limit`,
+//! `enforce_transaction_deadline`, `update_pool_fee_growth`,
+//! `decimal2decimal256`, `get_bank_transfer_to_msg`) live in
+//! `pool_core::generic` and are re-exported below so every existing
+//! `use crate::generic_helpers::X;` import resolves unchanged.
+pub use pool_core::generic::*;
+
 use crate::error::ContractError;
-use crate::liquidity_helpers::integer_sqrt;
 use crate::msg::CommitFeeInfo;
 use crate::state::{
-    CommitLimitInfo, Committing, PoolFeeState, PoolInfo, PoolSpecs, ThresholdPayoutAmounts,
-    COMMIT_INFO, COMMIT_LEDGER, DEFAULT_ESTIMATED_GAS_PER_DISTRIBUTION, DEFAULT_MAX_GAS_PER_TX,
-    DISTRIBUTION_STALL_TIMEOUT_SECONDS, MAX_DISTRIBUTIONS_PER_TX, POOL_FEE_STATE, POOL_STATE,
-    USER_LAST_COMMIT,
+    CommitLimitInfo, Committing, PoolFeeState, PoolInfo, ThresholdPayoutAmounts, COMMIT_INFO,
+    COMMIT_LEDGER, DEFAULT_ESTIMATED_GAS_PER_DISTRIBUTION, DEFAULT_MAX_GAS_PER_TX,
+    DISTRIBUTION_STALL_TIMEOUT_SECONDS, MAX_DISTRIBUTIONS_PER_TX,
 };
 use crate::state::{
     CreatorExcessLiquidity, DistributionState, PoolState, CREATOR_EXCESS_POSITION,
-    DISTRIBUTION_STATE,
+    DISTRIBUTION_STATE, POOL_FEE_STATE, POOL_STATE,
 };
+use pool_core::liquidity_helpers::integer_sqrt;
 use cosmwasm_std::{
-    to_json_binary, Addr, Coin, CosmosMsg, Decimal, Decimal256, DepsMut, Env, Order, StdError,
-    StdResult, Storage, SubMsg, Timestamp, Uint128, Uint256, WasmMsg,
+    to_json_binary, Addr, CosmosMsg, Decimal, Env, Order, StdError, StdResult, Storage, SubMsg,
+    Timestamp, Uint128, Uint256, WasmMsg,
 };
 use cw20::Cw20ExecuteMsg;
 use cw_storage_plus::Bound;
 
-// Update fee growth based on which token was offered
-pub fn update_pool_fee_growth(
-    pool_fee_state: &mut PoolFeeState,
-    pool_state: &PoolState,
-    offer_index: usize,
-    commission_amt: Uint128,
-) -> Result<(), ContractError> {
-    if pool_state.total_liquidity.is_zero() || commission_amt.is_zero() {
-        return Ok(());
-    }
 
-    let fee_growth = Decimal::from_ratio(commission_amt, pool_state.total_liquidity);
-
-    if offer_index == 0 {
-        // Token0 offered → Token1 is ask → fees in token1
-        pool_fee_state.fee_growth_global_1 = pool_fee_state
-            .fee_growth_global_1
-            .checked_add(fee_growth)
-            .map_err(|_| ContractError::Std(StdError::generic_err("Fee growth overflow")))?;
-        pool_fee_state.total_fees_collected_1 = pool_fee_state
-            .total_fees_collected_1
-            .checked_add(commission_amt)?;
-        pool_fee_state.fee_reserve_1 = pool_fee_state.fee_reserve_1.checked_add(commission_amt)?;
-    } else {
-        // Token1 offered → Token0 is ask → fees in token0
-        pool_fee_state.fee_growth_global_0 = pool_fee_state
-            .fee_growth_global_0
-            .checked_add(fee_growth)
-            .map_err(|_| ContractError::Std(StdError::generic_err("Fee growth overflow")))?;
-        pool_fee_state.total_fees_collected_0 = pool_fee_state
-            .total_fees_collected_0
-            .checked_add(commission_amt)?;
-        pool_fee_state.fee_reserve_0 = pool_fee_state.fee_reserve_0.checked_add(commission_amt)?;
-    }
-
-    Ok(())
-}
-
-pub fn check_rate_limit(
-    deps: &mut DepsMut,
-    env: &Env,
-    pool_specs: &PoolSpecs,
-    sender: &Addr,
-) -> Result<(), ContractError> {
-    if let Some(last_commit_time) = USER_LAST_COMMIT.may_load(deps.storage, sender)? {
-        let time_since_last = env.block.time.seconds().saturating_sub(last_commit_time);
-
-        if time_since_last < pool_specs.min_commit_interval {
-            let wait_time = pool_specs
-                .min_commit_interval
-                .saturating_sub(time_since_last);
-            return Err(ContractError::TooFrequentCommits { wait_time });
-        }
-    }
-
-    USER_LAST_COMMIT.save(deps.storage, sender, &env.block.time.seconds())?;
-
-    Ok(())
-}
-
-pub fn enforce_transaction_deadline(
-    current: Timestamp,
-    transaction_deadline: Option<Timestamp>,
-) -> Result<(), ContractError> {
-    if let Some(dl) = transaction_deadline {
-        if current > dl {
-            return Err(ContractError::TransactionExpired {});
-        }
-    }
-    Ok(())
-}
 
 pub fn validate_pool_threshold_payments(
     params: &ThresholdPayoutAmounts,
@@ -483,30 +419,7 @@ fn calculate_committer_reward(
     Ok(reward)
 }
 
-pub fn decimal2decimal256(dec_value: Decimal) -> StdResult<Decimal256> {
-    Decimal256::from_atomics(dec_value.atomics(), dec_value.decimal_places()).map_err(|_| {
-        StdError::generic_err(format!(
-            "Failed to convert Decimal {} to Decimal256",
-            dec_value
-        ))
-    })
-}
 
-pub fn get_bank_transfer_to_msg(
-    recipient: &Addr,
-    denom: &str,
-    amount: Uint128,
-) -> StdResult<CosmosMsg> {
-    let transfer_bank_msg = cosmwasm_std::BankMsg::Send {
-        to_address: recipient.into(),
-        amount: vec![Coin {
-            denom: denom.to_string(),
-            amount,
-        }],
-    };
-    let transfer_bank_cosmos_msg: CosmosMsg = transfer_bank_msg.into();
-    Ok(transfer_bank_cosmos_msg)
-}
 
 pub fn mint_tokens(token_addr: &Addr, recipient: &Addr, amount: Uint128) -> StdResult<CosmosMsg> {
     let mint_msg = Cw20ExecuteMsg::Mint {
