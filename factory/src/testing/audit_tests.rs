@@ -58,6 +58,7 @@ fn default_factory_config() -> FactoryInstantiate {
         pyth_atom_usd_price_feed_id: "ORCL".to_string(),
         cw20_token_contract_id: 10,
         create_pool_wasm_contract_id: 11,
+        standard_pool_wasm_contract_id: 0,
         bluechip_wallet_address: make_addr("ubluechip"),
         commit_fee_bluechip: Decimal::percent(1),
         commit_fee_creator: Decimal::percent(5),

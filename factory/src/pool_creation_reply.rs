@@ -15,23 +15,25 @@ use cosmwasm_std::{
 };
 use pool_factory_interfaces::{cw721_msgs::Cw721InstantiateMsg, PoolKind, StandardPoolInstantiateMsg};
 
-/// Factory-side mirror of `pool::msg::PoolInstantiateMsg`. Serializes to
-/// the same tagged-enum JSON shape so the pool can round-trip-deserialize
-/// whichever variant the factory dispatched. Two separate types exist
-/// only because the `Commit` variant references factory-local structs
-/// (`CreatePoolReplyMsg`, `CommitFeeInfo`) whose equivalents in the pool
-/// crate (`CommitPoolInstantiateMsg`, `pool::msg::CommitFeeInfo`) are
-/// structurally identical — cross-crate reuse would require hoisting
-/// several factory-only types into `pool_factory_interfaces`.
+/// Factory-side mirror of `creator_pool::msg::PoolInstantiateMsg` for the
+/// commit-pool wire format. Serializes to `{"commit": {...}}`, matching
+/// what creator-pool's tagged-enum instantiate expects. Kept as a
+/// single-variant enum (rather than flattening to a raw struct) so
+/// creator-pool can continue receiving tagged JSON until Step 4d drops
+/// the enum on both sides.
 ///
-/// Derives only `Serialize` + the `#[serde(rename_all = "snake_case")]`
-/// attribute; no `Deserialize` because the factory never consumes this
-/// wire format — it only emits it.
+/// Standard pools no longer use this wrapper — with the dual-code_id
+/// split, standard pools dispatch to `standard_pool_wasm_contract_id`
+/// and the factory sends a bare `StandardPoolInstantiateMsg` (flat struct)
+/// that standard-pool's `instantiate` entry point accepts directly.
+///
+/// Derives only `Serialize` + `#[serde(rename_all = "snake_case")]`; no
+/// `Deserialize` because the factory emits this wire format and never
+/// consumes it.
 #[derive(serde::Serialize)]
 #[serde(rename_all = "snake_case")]
 enum PoolInstantiateWire {
     Commit(CreatePoolReplyMsg),
-    Standard(StandardPoolInstantiateMsg),
 }
 
 // pool_creation_reply.rs
@@ -276,11 +278,20 @@ pub fn mint_standard_nft(
         used_factory_addr: env.contract.address.clone(),
         position_nft_address: nft_address.clone(),
     };
-    // Wrap in the `Standard` variant of the pool's tagged enum wire
-    // format. Produces JSON `{"standard": { ... }}`.
+    // Dual-code_id routing (H14 4c): standard pools instantiate
+    // against the separate standard-pool wasm, sending a flat
+    // StandardPoolInstantiateMsg (standard-pool's `instantiate` takes
+    // that type directly — no tagged-enum wrapper).
+    if factory_config.standard_pool_wasm_contract_id == 0 {
+        return Err(ContractError::Std(StdError::generic_err(
+            "standard_pool_wasm_contract_id is not configured; \
+             propose a factory config update that sets it before \
+             creating standard pools",
+        )));
+    }
     let pool_msg = WasmMsg::Instantiate {
-        code_id: factory_config.create_pool_wasm_contract_id,
-        msg: to_json_binary(&PoolInstantiateWire::Standard(std_msg))?,
+        code_id: factory_config.standard_pool_wasm_contract_id,
+        msg: to_json_binary(&std_msg)?,
         funds: vec![],
         admin: Some(env.contract.address.to_string()),
         label: ctx.label.clone(),

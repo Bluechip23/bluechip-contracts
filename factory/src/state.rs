@@ -138,6 +138,14 @@ pub struct FactoryInstantiate {
     pub cw20_token_contract_id: u64,
     pub cw721_nft_contract_id: u64,
     pub create_pool_wasm_contract_id: u64,
+    /// Code ID for the standard-pool wasm (split out of creator-pool in
+    /// H14). Defaults to `0` on old serialized records so factories
+    /// deployed pre-split continue to deserialize; operators must propose
+    /// a config update that sets this field before `CreateStandardPool`
+    /// can succeed. Standard pools instantiate against THIS code_id,
+    /// not `create_pool_wasm_contract_id`.
+    #[serde(default)]
+    pub standard_pool_wasm_contract_id: u64,
     pub bluechip_wallet_address: Addr,
     pub commit_fee_bluechip: Decimal,
     pub commit_fee_creator: Decimal,
