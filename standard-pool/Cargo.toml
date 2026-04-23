@@ -11,20 +11,19 @@ exclude = [
   "artifacts/*",
 ]
 
-# 4b-i ships rlib-only — there are no `#[entry_point]`s yet, so a cdylib
-# would produce an empty wasm that fails `cosmwasm-check` for missing
-# `instantiate` / `execute` / `query` exports. Step 4b-ii adds the
-# entry-point wrappers and switches this to `["cdylib", "rlib"]`.
+# Both cdylib (for the wasm artifact) and rlib (so other crates can
+# depend on standard-pool as a plain library in integration tests).
+
 [lib]
-crate-type = ["rlib"]
+crate-type = ["cdylib", "rlib"]
 
 [features]
 # for more explicit tests, cargo test --features=backtraces
 backtraces = []
-# Once 4b-ii lands, enabling this feature strips the `#[entry_point]`
-# exports so this crate can be used as a plain Rust library in other
-# crates' integration tests (e.g. `cw-multi-test` setups that need to
-# instantiate a standard-pool without duplicating contract logic).
+# When enabled, strips the `#[entry_point]` exports so this crate can
+# be used as a plain Rust library in other crates' integration tests
+# (e.g. `cw-multi-test` setups that need to instantiate a standard-pool
+# without duplicating contract logic).
 library = []
 
 [package.metadata.scripts]

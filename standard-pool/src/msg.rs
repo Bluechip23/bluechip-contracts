@@ -16,12 +16,20 @@ use cosmwasm_schema::{cw_serde, QueryResponses};
 use cosmwasm_std::{Decimal, Timestamp, Uint128};
 use cw20::Cw20ReceiveMsg;
 use pool_core::asset::TokenInfo;
+// Response types referenced only by `#[returns(T)]` annotations on QueryMsg
+// variants. cosmwasm-schema's QueryResponses derive needs them in scope
+// when the schema feature is active; the wasm release build drops the
+// derive and sees them as unused. `#[allow(unused_imports)]` matches
+// creator-pool's convention for the same pattern.
+#[allow(unused_imports)]
 use pool_core::state::PoolDetails;
+#[allow(unused_imports)]
 use pool_core::msg::{
     ConfigResponse, CumulativePricesResponse, FeeInfoResponse, PoolAnalyticsResponse,
     PoolConfigUpdate, PoolFeeStateResponse, PoolInfoResponse, PoolStateResponse, PositionResponse,
     PositionsResponse, ReverseSimulationResponse, SimulationResponse,
 };
+#[allow(unused_imports)]
 use pool_factory_interfaces::{AllPoolsResponse, IsPausedResponse, PoolStateResponseForFactory};
 
 #[cw_serde]
