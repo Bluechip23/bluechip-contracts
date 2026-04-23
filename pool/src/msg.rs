@@ -249,13 +249,11 @@ pub struct CommitterInfo {
     pub total_paid_bluechip: Uint128,
 }
 
-#[cw_serde]
-pub struct CommitFeeInfo {
-    pub bluechip_wallet_address: Addr,
-    pub creator_wallet_address: Addr,
-    pub commit_fee_bluechip: Decimal,
-    pub commit_fee_creator: Decimal,
-}
+// CommitFeeInfo lives in `pool_core::msg` so the shared `COMMITFEEINFO`
+// storage Item can reference it without creating a pool-core → pool
+// dependency. Re-exported here so existing `crate::msg::CommitFeeInfo`
+// imports resolve unchanged.
+pub use pool_core::msg::CommitFeeInfo;
 
 #[cw_serde]
 pub struct PoolResponse {

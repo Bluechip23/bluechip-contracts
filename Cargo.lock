@@ -926,8 +926,26 @@ dependencies = [
  "easy-addr",
  "factory",
  "oracle",
+ "pool-core",
  "pool-factory-interfaces",
  "proptest",
+ "thiserror 2.0.12",
+]
+
+[[package]]
+name = "pool-core"
+version = "1.0.0"
+dependencies = [
+ "cosmwasm-schema",
+ "cosmwasm-std",
+ "cw-multi-test",
+ "cw-storage-plus",
+ "cw-utils",
+ "cw2",
+ "cw20",
+ "cw20-base",
+ "easy-addr",
+ "pool-factory-interfaces",
  "thiserror 2.0.12",
 ]
 
