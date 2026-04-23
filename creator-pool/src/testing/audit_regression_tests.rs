@@ -6,7 +6,8 @@ use cosmwasm_std::{
 use std::str::FromStr;
 
 use crate::asset::{TokenInfo, TokenType};
-use crate::contract::{execute, execute_simple_swap, migrate};
+use crate::contract::{execute, migrate};
+use crate::swap_helper::execute_simple_swap;
 use crate::error::ContractError;
 use crate::liquidity::execute_deposit_liquidity;
 use crate::liquidity_helpers::sync_position_on_transfer;

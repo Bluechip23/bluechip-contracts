@@ -1,5 +1,5 @@
 use crate::asset::{PoolPairType, TokenInfo, TokenType};
-use crate::contract::execute_simple_swap;
+use crate::swap_helper::execute_simple_swap;
 use crate::error::ContractError;
 use crate::generic_helpers::calculate_effective_batch_size;
 use crate::liquidity::execute_deposit_liquidity;
@@ -12,7 +12,8 @@ use crate::state::{
     USD_RAISED_FROM_COMMIT,
 };
 use crate::{
-    contract::{execute, execute_swap_cw20, instantiate},
+    contract::{execute, instantiate},
+    swap_helper::execute_swap_cw20,
     generic_helpers::trigger_threshold_payout,
     msg::{CommitFeeInfo, CommitPoolInstantiateMsg, Cw20HookMsg, PoolInstantiateMsg},
     state::{
