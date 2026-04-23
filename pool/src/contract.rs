@@ -45,8 +45,6 @@ use cosmwasm_std::{
 use cw2::set_contract_version;
 use cw20::Cw20ReceiveMsg;
 
-pub const DEFAULT_SLIPPAGE: &str = "0.005";
-
 const CONTRACT_NAME: &str = "bluechip-contracts-pool";
 const CONTRACT_VERSION: &str = env!("CARGO_PKG_VERSION");
 
