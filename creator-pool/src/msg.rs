@@ -13,7 +13,8 @@
 pub use pool_core::msg::*;
 
 #[allow(unused_imports)]
-use crate::asset::{PoolPairInfo, TokenInfo, TokenType};
+use crate::asset::{TokenInfo, TokenType};
+use crate::state::PoolDetails;
 #[allow(unused_imports)]
 use crate::state::{Committing, PoolAnalytics, RecoveryType};
 use cosmwasm_schema::{cw_serde, QueryResponses};
@@ -122,7 +123,7 @@ pub enum MigrateMsg {
 #[cw_serde]
 #[derive(QueryResponses)]
 pub enum QueryMsg {
-    #[returns(PoolPairInfo)]
+    #[returns(PoolDetails)]
     Pair {},
     #[returns(ConfigResponse)]
     Config {},

@@ -81,26 +81,6 @@ impl TokenInfoPoolExt for TokenInfo {
     }
 }
 
-// Pool-specific: PoolPairInfo includes current balances alongside pair config.
-// Renamed from PoolDetails to PoolPairInfo to avoid collision with state::PoolDetails.
-#[cosmwasm_schema::cw_serde]
-pub struct PoolPairInfo {
-    pub asset_infos: [TokenType; 2],
-    pub contract_addr: Addr,
-    pub pair_type: PoolPairType,
-    pub assets: [TokenInfo; 2],
-}
-
-impl PoolPairInfo {
-    pub fn query_pools(
-        &self,
-        querier: &QuerierWrapper,
-        contract_addr: Addr,
-    ) -> StdResult<[TokenInfo; 2]> {
-        pool_factory_interfaces::asset::query_pools(&self.asset_infos, querier, contract_addr)
-    }
-}
-
 pub fn call_pool_info(deps: Deps, pool_info: PoolInfo) -> StdResult<[TokenInfo; 2]> {
     let contract_addr = pool_info.pool_info.contract_addr.clone();
     pool_factory_interfaces::asset::query_pools(

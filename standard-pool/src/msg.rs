@@ -15,7 +15,8 @@
 use cosmwasm_schema::{cw_serde, QueryResponses};
 use cosmwasm_std::{Decimal, Timestamp, Uint128};
 use cw20::Cw20ReceiveMsg;
-use pool_core::asset::{PoolPairInfo, TokenInfo};
+use pool_core::asset::TokenInfo;
+use pool_core::state::PoolDetails;
 use pool_core::msg::{
     ConfigResponse, CumulativePricesResponse, FeeInfoResponse, PoolAnalyticsResponse,
     PoolConfigUpdate, PoolFeeStateResponse, PoolInfoResponse, PoolStateResponse, PositionResponse,
@@ -86,13 +87,7 @@ pub enum ExecuteMsg {
 #[cw_serde]
 #[derive(QueryResponses)]
 pub enum QueryMsg {
-    // The `#[returns(PoolPairInfo)]` annotation mirrors creator-pool's
-    // declaration for cross-pool schema consistency. The handler
-    // (`pool_core::query::query_pair_info`) actually returns
-    // `PoolDetails`; this is a pre-existing schema quirk in creator-pool
-    // that we intentionally preserve on standard-pool rather than
-    // introducing an asymmetry.
-    #[returns(PoolPairInfo)]
+    #[returns(PoolDetails)]
     Pair {},
     #[returns(ConfigResponse)]
     Config {},
