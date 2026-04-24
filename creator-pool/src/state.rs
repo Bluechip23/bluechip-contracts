@@ -9,7 +9,7 @@
 pub use pool_core::state::*;
 
 use cosmwasm_schema::cw_serde;
-use cosmwasm_std::{Addr, StdResult, Timestamp, Uint128};
+use cosmwasm_std::{Addr, Timestamp, Uint128};
 use cw_storage_plus::{Item, Map};
 
 // -- Commit-phase-only storage -------------------------------------------
@@ -44,22 +44,12 @@ pub const PENDING_FACTORY_NOTIFY: Item<bool> = Item::new("pending_factory_notify
 pub const REPLY_ID_FACTORY_NOTIFY_INITIAL: u64 = 1;
 pub const REPLY_ID_FACTORY_NOTIFY_RETRY: u64 = 2;
 
-// Distinguishes between the two pool flavors registered with the factory.
-// Re-exports the shared enum from pool_factory_interfaces (Commit / Standard).
-// Callers should use `load_pool_kind` below instead of reading directly —
-// that helper applies the legacy-default behavior so pools instantiated
-// before H14 (no POOL_KIND key in storage) are correctly classified as
-// `PoolKind::Commit` rather than erroring on a missing-key load.
-pub use pool_factory_interfaces::PoolKind;
-pub const POOL_KIND: Item<PoolKind> = Item::new("pool_kind");
-
-/// Reads `POOL_KIND`, falling back to `PoolKind::Commit` when the key is
-/// absent. The fallback exists for backwards compatibility with pools
-/// that were instantiated before H14 added the storage item — those pools
-/// are all commit pools by definition (standard pools didn't exist yet).
-pub fn load_pool_kind(storage: &dyn cosmwasm_std::Storage) -> StdResult<PoolKind> {
-    Ok(POOL_KIND.may_load(storage)?.unwrap_or(PoolKind::Commit))
-}
+// Note: `POOL_KIND` / `load_pool_kind` / `require_commit_pool` were
+// removed in 4d. Now that standard pools run their own wasm
+// (`standard-pool` crate), the kind is determined by which binary is
+// executing — the runtime discriminator is gone. The factory still
+// tracks `pool_kind` on `PoolDetails` for its own routing (e.g.,
+// oracle sample filtering) but the pool side doesn't need it.
 
 // -- Commit-phase-only constants -----------------------------------------
 

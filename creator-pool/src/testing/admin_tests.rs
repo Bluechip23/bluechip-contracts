@@ -1,10 +1,10 @@
 use crate::asset::{TokenInfo, TokenType};
 use crate::contract::{execute, instantiate};
 use crate::msg::CommitFeeInfo;
-use crate::msg::{CommitPoolInstantiateMsg, ExecuteMsg, PoolConfigUpdate, PoolInstantiateMsg};
-use crate::state::{ORACLE_INFO, POOL_PAUSED, POOL_SPECS, POOL_STATE};
+use crate::msg::{ExecuteMsg, PoolConfigUpdate, PoolInstantiateMsg};
+use crate::state::{ThresholdPayoutAmounts, ORACLE_INFO, POOL_PAUSED, POOL_SPECS, POOL_STATE};
 use cosmwasm_std::testing::{message_info, mock_dependencies, mock_env, MockApi};
-use cosmwasm_std::{Addr, Coin, Decimal, Uint128};
+use cosmwasm_std::{to_json_binary, Addr, Coin, Decimal, Uint128};
 
 fn mock_instantiate_msg() -> PoolInstantiateMsg {
     // Both the CreatorToken entry and `token_address` must be bech32-valid
@@ -13,7 +13,19 @@ fn mock_instantiate_msg() -> PoolInstantiateMsg {
     // MockApi-derived address for both satisfies both.
     let api = MockApi::default();
     let token_addr = api.addr_make("creator_token");
-    PoolInstantiateMsg::Commit(CommitPoolInstantiateMsg {
+    // Pre-4d this test used is_standard_pool: Some(true) to skip
+    // threshold_payout validation. Now that flag is gone; supply the
+    // fixed threshold_payout shape `validate_pool_threshold_payments`
+    // accepts (creator=325B, bluechip=25B, pool=350B, commit=500B,
+    // total=1.2T).
+    let threshold_payout = to_json_binary(&ThresholdPayoutAmounts {
+        creator_reward_amount: Uint128::new(325_000_000_000),
+        bluechip_reward_amount: Uint128::new(25_000_000_000),
+        pool_seed_amount: Uint128::new(350_000_000_000),
+        commit_return_amount: Uint128::new(500_000_000_000),
+    })
+    .unwrap();
+    PoolInstantiateMsg {
         pool_id: 1,
         pool_token_info: [
             TokenType::Native {
@@ -25,7 +37,7 @@ fn mock_instantiate_msg() -> PoolInstantiateMsg {
         ],
         cw20_token_contract_id: 123,
         used_factory_addr: Addr::unchecked("factory_addr"),
-        threshold_payout: None,
+        threshold_payout: Some(threshold_payout),
         commit_fee_info: CommitFeeInfo {
             bluechip_wallet_address: Addr::unchecked("bluechip_wallet"),
             creator_wallet_address: Addr::unchecked("creator_wallet"),
@@ -38,8 +50,7 @@ fn mock_instantiate_msg() -> PoolInstantiateMsg {
         token_address: token_addr,
         max_bluechip_lock_per_pool: Uint128::new(10000),
         creator_excess_liquidity_lock_days: 7,
-        is_standard_pool: Some(true),
-    })
+    }
 }
 
 #[test]
@@ -48,6 +59,12 @@ fn test_pause_unpause() {
     let msg = mock_instantiate_msg();
     let info = message_info(&Addr::unchecked("factory_addr"), &[]);
     instantiate(deps.as_mut(), mock_env(), info.clone(), msg).unwrap();
+    // Simulate post-threshold state: admin tests exercise swap/emergency_
+    // withdraw flows that used to rely on is_standard_pool: Some(true) to
+    // force IS_THRESHOLD_HIT=true at instantiate. With that flag gone in 4d,
+    // creator-pool starts pre-threshold; tests that want post-threshold
+    // behavior seed it explicitly.
+    crate::state::IS_THRESHOLD_HIT.save(&mut deps.storage, &true).unwrap();
 
     // Verify initial state (not paused)
     let is_paused = POOL_PAUSED.load(&deps.storage).unwrap_or(false);
@@ -99,6 +116,10 @@ fn test_emergency_withdraw() {
     let info = message_info(&Addr::unchecked("factory_addr"), &[]);
     let base_env = mock_env();
     instantiate(deps.as_mut(), base_env.clone(), info.clone(), msg).unwrap();
+    // Simulate post-threshold state (see mock_instantiate_msg's comment).
+    crate::state::IS_THRESHOLD_HIT
+        .save(&mut deps.storage, &true)
+        .unwrap();
 
     // Inject some liquidity mock manually for testing.
     let mut pool_state = POOL_STATE.load(&deps.storage).unwrap();
@@ -183,6 +204,12 @@ fn test_cancel_emergency_withdraw() {
     let msg = mock_instantiate_msg();
     let info = message_info(&Addr::unchecked("factory_addr"), &[]);
     instantiate(deps.as_mut(), mock_env(), info.clone(), msg).unwrap();
+    // Simulate post-threshold state: admin tests exercise swap/emergency_
+    // withdraw flows that used to rely on is_standard_pool: Some(true) to
+    // force IS_THRESHOLD_HIT=true at instantiate. With that flag gone in 4d,
+    // creator-pool starts pre-threshold; tests that want post-threshold
+    // behavior seed it explicitly.
+    crate::state::IS_THRESHOLD_HIT.save(&mut deps.storage, &true).unwrap();
 
     // Inject reserves.
     let mut pool_state = POOL_STATE.load(&deps.storage).unwrap();
@@ -231,6 +258,12 @@ fn test_update_config_all() {
     let new_oracle = api.addr_make("new_oracle");
     let info = message_info(&Addr::unchecked("factory_addr"), &[]);
     instantiate(deps.as_mut(), mock_env(), info.clone(), msg).unwrap();
+    // Simulate post-threshold state: admin tests exercise swap/emergency_
+    // withdraw flows that used to rely on is_standard_pool: Some(true) to
+    // force IS_THRESHOLD_HIT=true at instantiate. With that flag gone in 4d,
+    // creator-pool starts pre-threshold; tests that want post-threshold
+    // behavior seed it explicitly.
+    crate::state::IS_THRESHOLD_HIT.save(&mut deps.storage, &true).unwrap();
 
     let update = PoolConfigUpdate {
         lp_fee: Some(Decimal::percent(5)),    // was 0.3%
@@ -258,6 +291,12 @@ fn test_unauthorized_admin_actions() {
     let msg = mock_instantiate_msg();
     let info = message_info(&Addr::unchecked("factory_addr"), &[]);
     instantiate(deps.as_mut(), mock_env(), info.clone(), msg).unwrap();
+    // Simulate post-threshold state: admin tests exercise swap/emergency_
+    // withdraw flows that used to rely on is_standard_pool: Some(true) to
+    // force IS_THRESHOLD_HIT=true at instantiate. With that flag gone in 4d,
+    // creator-pool starts pre-threshold; tests that want post-threshold
+    // behavior seed it explicitly.
+    crate::state::IS_THRESHOLD_HIT.save(&mut deps.storage, &true).unwrap();
 
     let hacker = message_info(&Addr::unchecked("hacker"), &[]);
 

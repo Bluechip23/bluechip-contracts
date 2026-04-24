@@ -17,15 +17,14 @@ use crate::liquidity::{
     execute_remove_partial_liquidity_by_percent,
 };
 use crate::liquidity_helpers::{execute_claim_creator_excess, execute_claim_creator_fees};
-use crate::msg::{CommitPoolInstantiateMsg, ExecuteMsg, MigrateMsg, PoolInstantiateMsg};
+use crate::msg::{ExecuteMsg, MigrateMsg, PoolInstantiateMsg};
 use crate::query::query_check_commit;
 use crate::state::{
     CommitLimitInfo, ExpectedFactory, OracleInfo, PoolAnalytics, PoolDetails, PoolFeeState,
-    PoolInfo, PoolKind, PoolSpecs, Position, ThresholdPayoutAmounts, COMMITFEEINFO,
-    COMMIT_LIMIT_INFO, EXPECTED_FACTORY, IS_THRESHOLD_HIT, NATIVE_RAISED_FROM_COMMIT,
-    NEXT_POSITION_ID, ORACLE_INFO, OWNER_POSITIONS, POOL_ANALYTICS, POOL_FEE_STATE, POOL_INFO,
-    POOL_KIND, POOL_PAUSED, POOL_SPECS, POOL_STATE, THRESHOLD_PAYOUT_AMOUNTS,
-    USD_RAISED_FROM_COMMIT,
+    PoolInfo, PoolSpecs, Position, ThresholdPayoutAmounts, COMMITFEEINFO, COMMIT_LIMIT_INFO,
+    EXPECTED_FACTORY, IS_THRESHOLD_HIT, NATIVE_RAISED_FROM_COMMIT, NEXT_POSITION_ID, ORACLE_INFO,
+    OWNER_POSITIONS, POOL_ANALYTICS, POOL_FEE_STATE, POOL_INFO, POOL_PAUSED, POOL_SPECS,
+    POOL_STATE, THRESHOLD_PAYOUT_AMOUNTS, USD_RAISED_FROM_COMMIT,
 };
 use crate::state::{
     PoolState, LIQUIDITY_POSITIONS, PENDING_FACTORY_NOTIFY, REPLY_ID_FACTORY_NOTIFY_INITIAL,
@@ -38,7 +37,6 @@ use cosmwasm_std::{
     Reply, Response, StdError, StdResult, SubMsg, SubMsgResult, Uint128, WasmMsg,
 };
 use cw2::set_contract_version;
-use pool_factory_interfaces::StandardPoolInstantiateMsg;
 
 const CONTRACT_NAME: &str = "bluechip-contracts-pool";
 const CONTRACT_VERSION: &str = env!("CARGO_PKG_VERSION");
@@ -53,23 +51,6 @@ pub fn instantiate(
     env: Env,
     info: MessageInfo,
     msg: PoolInstantiateMsg,
-) -> Result<Response, ContractError> {
-    match msg {
-        PoolInstantiateMsg::Commit(commit_msg) => instantiate_commit_pool(deps, env, info, commit_msg),
-        PoolInstantiateMsg::Standard(standard_msg) => {
-            instantiate_standard_pool(deps, env, info, standard_msg)
-        }
-    }
-}
-
-/// Commit-pool instantiate path (original behavior). Sets up every
-/// commit-phase storage item (threshold payout, commit fees, commit limit,
-/// etc.) and writes `PoolKind::Commit`.
-fn instantiate_commit_pool(
-    deps: DepsMut,
-    env: Env,
-    info: MessageInfo,
-    msg: CommitPoolInstantiateMsg,
 ) -> Result<Response, ContractError> {
     let cfg = ExpectedFactory {
         expected_factory_address: msg.used_factory_addr.clone(),
@@ -131,16 +112,7 @@ fn instantiate_commit_pool(
         return Err(ContractError::InvalidFee {});
     }
 
-    let is_standard_pool = msg.is_standard_pool.unwrap_or(false);
-
-    let threshold_payout_amounts = if is_standard_pool {
-        ThresholdPayoutAmounts {
-            creator_reward_amount: Uint128::zero(),
-            bluechip_reward_amount: Uint128::zero(),
-            pool_seed_amount: Uint128::zero(),
-            commit_return_amount: Uint128::zero(),
-        }
-    } else if let Some(params_binary) = msg.threshold_payout {
+    let threshold_payout_amounts = if let Some(params_binary) = msg.threshold_payout {
         let params: ThresholdPayoutAmounts = from_json(params_binary)?;
         validate_pool_threshold_payments(&params)?;
         params
@@ -216,7 +188,10 @@ fn instantiate_commit_pool(
     USD_RAISED_FROM_COMMIT.save(deps.storage, &Uint128::zero())?;
     COMMITFEEINFO.save(deps.storage, &msg.commit_fee_info)?;
     NATIVE_RAISED_FROM_COMMIT.save(deps.storage, &Uint128::zero())?;
-    IS_THRESHOLD_HIT.save(deps.storage, &is_standard_pool)?;
+    // Creator pools start pre-threshold — swap / liquidity entry points
+    // gate on this until `process_threshold_crossing_with_excess` flips
+    // it to `true` during the threshold-crossing commit.
+    IS_THRESHOLD_HIT.save(deps.storage, &false)?;
     NEXT_POSITION_ID.save(deps.storage, &0u64)?;
     POOL_INFO.save(deps.storage, &pool_info)?;
     POOL_FEE_STATE.save(deps.storage, &pool_fee_state)?;
@@ -228,9 +203,6 @@ fn instantiate_commit_pool(
     OWNER_POSITIONS.save(deps.storage, (&env.contract.address, "0"), &true)?;
     ORACLE_INFO.save(deps.storage, &oracle_info)?;
     POOL_ANALYTICS.save(deps.storage, &PoolAnalytics::default())?;
-    // This instantiate path is the commit-pool path (dispatched from
-    // ExecuteMsg::Create in the factory).
-    POOL_KIND.save(deps.storage, &PoolKind::Commit)?;
 
     Ok(Response::new()
         .add_attribute("action", "instantiate")
@@ -238,206 +210,10 @@ fn instantiate_commit_pool(
         .add_attribute("pool", env.contract.address.to_string()))
 }
 
-/// Standard-pool instantiate path (new in H14). Wraps two pre-existing
-/// assets as a plain xyk pool. Skips every commit-phase storage item —
-/// no threshold payout, no commit fees, no commit limit — and writes
-/// `PoolKind::Standard`.
-///
-/// Commit 3 scope restriction: this path only supports pools where the
-/// pair is exactly one `TokenType::Native` + one `TokenType::CreatorToken`,
-/// because the existing deposit/swap/liquidity code paths assume that
-/// layout (asset 0 native, asset 1 CW20). Bluechip/Bluechip (e.g. the
-/// ATOM/bluechip anchor) and CW20/CW20 pairs as well. The deposit/swap
-/// hot paths were generalized in Commit 4b to dispatch per-asset on
-/// `TokenType` so ordering no longer matters.
-fn instantiate_standard_pool(
-    deps: DepsMut,
-    env: Env,
-    info: MessageInfo,
-    msg: StandardPoolInstantiateMsg,
-) -> Result<Response, ContractError> {
-    let cfg = ExpectedFactory {
-        expected_factory_address: msg.used_factory_addr.clone(),
-    };
-    EXPECTED_FACTORY.save(deps.storage, &cfg)?;
-    if info.sender != cfg.expected_factory_address {
-        return Err(ContractError::Unauthorized {});
-    }
-
-    msg.pool_token_info[0].check(deps.api)?;
-    msg.pool_token_info[1].check(deps.api)?;
-    if msg.pool_token_info[0] == msg.pool_token_info[1] {
-        return Err(ContractError::DoublingAssets {});
-    }
-
-    // Defense-in-depth: reject non-empty denoms on the Native sides.
-    // The factory validator already does this, but repeating here keeps
-    // the pool self-defending against a buggy factory migration or a
-    // directly-instantiated pool.
-    for t in msg.pool_token_info.iter() {
-        if let TokenType::Native { denom } = t {
-            if denom.trim().is_empty() {
-                return Err(ContractError::Std(StdError::generic_err(
-                    "Standard pool: Native denom must be non-empty",
-                )));
-            }
-        }
-    }
-
-    // `PoolInfo.token_address` originally pointed at the single CW20 in
-    // a commit-pool pair. Standard pools can hold zero, one, or two
-    // CW20 entries, so the field's old semantics don't apply cleanly.
-    // We populate it with:
-    //   - the sole CreatorToken side, if the pair has exactly one
-    //   - msg.used_factory_addr as a harmless placeholder, if zero or two
-    // Commit-phase helpers (`trigger_threshold_payout`, etc.) that rely
-    // on this field are guarded to commit pools only via
-    // `require_commit_pool` and never observe this value on standard
-    // pools. The generalized deposit/swap/fee paths in Commit 4b iterate
-    // `pool_info.pool_info.asset_infos` directly instead of reading
-    // `token_address`.
-    let token_address_placeholder = msg
-        .pool_token_info
-        .iter()
-        .find_map(|t| match t {
-            TokenType::CreatorToken { contract_addr } => Some(contract_addr.clone()),
-            _ => None,
-        })
-        .unwrap_or_else(|| msg.used_factory_addr.clone());
-
-    set_contract_version(deps.storage, CONTRACT_NAME, CONTRACT_VERSION)?;
-
-    let pool_info = PoolInfo {
-        pool_id: msg.pool_id,
-        pool_info: PoolDetails {
-            contract_addr: env.contract.address.clone(),
-            asset_infos: msg.pool_token_info.clone(),
-            pool_type: PoolPairType::Xyk {},
-        },
-        factory_addr: msg.used_factory_addr.clone(),
-        token_address: token_address_placeholder,
-        position_nft_address: msg.position_nft_address.clone(),
-    };
-
-    let liquidity_position = Position {
-        liquidity: Uint128::zero(),
-        owner: env.contract.address.clone(),
-        fee_growth_inside_0_last: Decimal::zero(),
-        fee_growth_inside_1_last: Decimal::zero(),
-        created_at: env.block.time.seconds(),
-        last_fee_collection: env.block.time.seconds(),
-        fee_size_multiplier: Decimal::one(),
-        unclaimed_fees_0: Uint128::zero(),
-        unclaimed_fees_1: Uint128::zero(),
-    };
-
-    let pool_specs = PoolSpecs {
-        lp_fee: Decimal::permille(3),   // 0.3% LP fee (same default as commit pools)
-        min_commit_interval: 13,        // seconds; used by swap rate limit
-        usd_payment_tolerance_bps: 0,   // unused for standard pools
-    };
-
-    // Standard pools have no creator wallet (no creator token mint, no
-    // commit-fee destinations). We save a zeroed COMMITFEEINFO with the
-    // factory address as a placeholder for both wallet fields so the
-    // storage item exists — downstream code that reads it on the swap
-    // path checks is_zero fees and no-ops. The factory address is a
-    // safe placeholder because: (a) it won't accidentally forward fees
-    // somewhere sensitive, and (b) fees here are always zero anyway.
-    let fee_info = crate::msg::CommitFeeInfo {
-        bluechip_wallet_address: msg.used_factory_addr.clone(),
-        creator_wallet_address: msg.used_factory_addr.clone(),
-        commit_fee_bluechip: Decimal::zero(),
-        commit_fee_creator: Decimal::zero(),
-    };
-
-    let pool_state = PoolState {
-        pool_contract_address: env.contract.address.clone(),
-        total_liquidity: Uint128::zero(),
-        block_time_last: env.block.time.seconds(),
-        reserve0: Uint128::zero(),
-        reserve1: Uint128::zero(),
-        price0_cumulative_last: Uint128::zero(),
-        price1_cumulative_last: Uint128::zero(),
-        nft_ownership_accepted: false,
-    };
-
-    let pool_fee_state = PoolFeeState {
-        fee_growth_global_0: Decimal::zero(),
-        fee_growth_global_1: Decimal::zero(),
-        total_fees_collected_0: Uint128::zero(),
-        total_fees_collected_1: Uint128::zero(),
-        fee_reserve_0: Uint128::zero(),
-        fee_reserve_1: Uint128::zero(),
-    };
-
-    // Zero-valued legacy commit state. Populated so downstream code that
-    // unconditionally loads these items doesn't have to may_load-with-
-    // default on every swap. Standard pools never write to or read the
-    // commit-phase semantics of these values — the commit/continue_
-    // distribution/claim_* handlers reject for standard pools anyway.
-    let zeroed_payout = ThresholdPayoutAmounts {
-        creator_reward_amount: Uint128::zero(),
-        bluechip_reward_amount: Uint128::zero(),
-        pool_seed_amount: Uint128::zero(),
-        commit_return_amount: Uint128::zero(),
-    };
-    let zeroed_commit_config = CommitLimitInfo {
-        commit_amount_for_threshold_usd: Uint128::zero(),
-        commit_amount_for_threshold: Uint128::zero(),
-        max_bluechip_lock_per_pool: Uint128::zero(),
-        creator_excess_liquidity_lock_days: 0,
-    };
-    let oracle_info = OracleInfo {
-        oracle_addr: msg.used_factory_addr.clone(),
-    };
-
-    USD_RAISED_FROM_COMMIT.save(deps.storage, &Uint128::zero())?;
-    COMMITFEEINFO.save(deps.storage, &fee_info)?;
-    NATIVE_RAISED_FROM_COMMIT.save(deps.storage, &Uint128::zero())?;
-    // Standard pools are "threshold-hit" from birth — that's how the
-    // existing IS_THRESHOLD_HIT gate in liquidity/swap handlers permits
-    // deposit and swap immediately.
-    IS_THRESHOLD_HIT.save(deps.storage, &true)?;
-    NEXT_POSITION_ID.save(deps.storage, &0u64)?;
-    POOL_INFO.save(deps.storage, &pool_info)?;
-    POOL_FEE_STATE.save(deps.storage, &pool_fee_state)?;
-    POOL_STATE.save(deps.storage, &pool_state)?;
-    POOL_SPECS.save(deps.storage, &pool_specs)?;
-    THRESHOLD_PAYOUT_AMOUNTS.save(deps.storage, &zeroed_payout)?;
-    COMMIT_LIMIT_INFO.save(deps.storage, &zeroed_commit_config)?;
-    LIQUIDITY_POSITIONS.save(deps.storage, "0", &liquidity_position)?;
-    OWNER_POSITIONS.save(deps.storage, (&env.contract.address, "0"), &true)?;
-    ORACLE_INFO.save(deps.storage, &oracle_info)?;
-    POOL_ANALYTICS.save(deps.storage, &PoolAnalytics::default())?;
-    POOL_KIND.save(deps.storage, &PoolKind::Standard)?;
-
-    Ok(Response::new()
-        .add_attribute("action", "instantiate")
-        .add_attribute("pool_kind", "standard")
-        .add_attribute("pool", env.contract.address.to_string()))
-}
 
 // ---------------------------------------------------------------------------
 // Execute dispatch
 // ---------------------------------------------------------------------------
-
-/// Reject execute messages that only make sense on commit pools. Applied
-/// at the dispatch layer — handlers themselves don't have to re-check.
-/// Uses `load_pool_kind` so pre-H14 pools (no POOL_KIND storage key)
-/// correctly classify as commit pools.
-fn require_commit_pool(
-    storage: &dyn cosmwasm_std::Storage,
-    action: &'static str,
-) -> Result<(), ContractError> {
-    if crate::state::load_pool_kind(storage)? != PoolKind::Commit {
-        return Err(ContractError::Std(StdError::generic_err(format!(
-            "{} is only available on commit pools; this is a standard pool",
-            action
-        ))));
-    }
-    Ok(())
-}
 
 #[cfg_attr(not(feature = "library"), entry_point)]
 pub fn execute(
@@ -468,7 +244,6 @@ pub fn execute(
             belief_price,
             max_spread,
         } => {
-            require_commit_pool(deps.storage, "Commit")?;
             // Block ALL commits while paused — pre-threshold AND post-threshold.
             // Previously only process_post_threshold_commit checked POOL_PAUSED,
             // so admin pauses failed to stop pre-threshold deposits, letting
@@ -487,7 +262,6 @@ pub fn execute(
             )
         }
         ExecuteMsg::ContinueDistribution {} => {
-            require_commit_pool(deps.storage, "ContinueDistribution")?;
             execute_continue_distribution(deps, env, info)
         }
 
@@ -674,7 +448,6 @@ pub fn execute(
             // with more raised-bluechip than `max_bluechip_lock_per_pool`
             // absorbs. Standard pools have no commit phase and no excess
             // position, so there's nothing to claim.
-            require_commit_pool(deps.storage, "ClaimCreatorExcessLiquidity")?;
             ensure_not_drained(deps.storage)?;
             if POOL_PAUSED.may_load(deps.storage)?.unwrap_or(false) {
                 return Err(ContractError::PoolPausedLowLiquidity {});
@@ -685,7 +458,6 @@ pub fn execute(
             // The creator fee pot is seeded by the fee_size_multiplier
             // clip on commit-pool LP fees. Standard pools have no creator
             // concept, so the pot is always empty and this handler is N/A.
-            require_commit_pool(deps.storage, "ClaimCreatorFees")?;
             ensure_not_drained(deps.storage)?;
             if POOL_PAUSED.may_load(deps.storage)?.unwrap_or(false) {
                 return Err(ContractError::PoolPausedLowLiquidity {});
@@ -695,7 +467,6 @@ pub fn execute(
         ExecuteMsg::RetryFactoryNotify {} => {
             // Retries NotifyThresholdCrossed to the factory. Standard
             // pools never cross a threshold, so there's nothing to retry.
-            require_commit_pool(deps.storage, "RetryFactoryNotify")?;
             execute_retry_factory_notify(deps, env, info)
         }
     }

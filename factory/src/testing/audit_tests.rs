@@ -545,7 +545,6 @@ fn test_m_new_5_multi_pool_creator_no_registry_collision() {
             creator_token_address: Addr::unchecked("token0000"),
             max_bluechip_lock_per_pool: Uint128::new(10_000_000_000),
             creator_excess_liquidity_lock_days: 7,
-            is_standard_pool: None,
         },
         token_info: CreatorTokenInfo {
             name: "TokenA".to_string(),
@@ -605,7 +604,6 @@ fn test_m_new_5_multi_pool_creator_no_registry_collision() {
             creator_token_address: Addr::unchecked("token0000"),
             max_bluechip_lock_per_pool: Uint128::new(10_000_000_000),
             creator_excess_liquidity_lock_days: 7,
-            is_standard_pool: None,
         },
         token_info: CreatorTokenInfo {
             name: "TokenB".to_string(),

@@ -15,27 +15,6 @@ use cosmwasm_std::{
 };
 use pool_factory_interfaces::{cw721_msgs::Cw721InstantiateMsg, PoolKind, StandardPoolInstantiateMsg};
 
-/// Factory-side mirror of `creator_pool::msg::PoolInstantiateMsg` for the
-/// commit-pool wire format. Serializes to `{"commit": {...}}`, matching
-/// what creator-pool's tagged-enum instantiate expects. Kept as a
-/// single-variant enum (rather than flattening to a raw struct) so
-/// creator-pool can continue receiving tagged JSON until Step 4d drops
-/// the enum on both sides.
-///
-/// Standard pools no longer use this wrapper — with the dual-code_id
-/// split, standard pools dispatch to `standard_pool_wasm_contract_id`
-/// and the factory sends a bare `StandardPoolInstantiateMsg` (flat struct)
-/// that standard-pool's `instantiate` entry point accepts directly.
-///
-/// Derives only `Serialize` + `#[serde(rename_all = "snake_case")]`; no
-/// `Deserialize` because the factory emits this wire format and never
-/// consumes it.
-#[derive(serde::Serialize)]
-#[serde(rename_all = "snake_case")]
-enum PoolInstantiateWire {
-    Commit(CreatePoolReplyMsg),
-}
-
 // pool_creation_reply.rs
 //
 // Every step of the pool-creation reply chain uses `SubMsg::reply_on_success`.
@@ -158,13 +137,14 @@ pub fn mint_create_pool(
         position_nft_address: nft_address.clone(),
         max_bluechip_lock_per_pool: factory_config.max_bluechip_lock_per_pool,
         creator_excess_liquidity_lock_days: factory_config.creator_excess_liquidity_lock_days,
-        is_standard_pool: ctx.temp.temp_pool_info.is_standard_pool,
     };
-    // Wrap in the tagged `Commit` variant of the pool's enum wire format.
-    // Produces JSON `{"commit": { ... }}`, matching pool::msg::PoolInstantiateMsg::Commit.
+    // Flat struct after 4d — creator-pool's `instantiate` now accepts
+    // `PoolInstantiateMsg` (a struct, not a tagged enum) directly. JSON
+    // shape matches what CommitPoolInstantiateMsg used to round-trip to
+    // inside the removed `Commit(...)` variant.
     let pool_msg = WasmMsg::Instantiate {
         code_id: factory_config.create_pool_wasm_contract_id,
-        msg: to_json_binary(&PoolInstantiateWire::Commit(commit_msg))?,
+        msg: to_json_binary(&commit_msg)?,
         funds: vec![],
         admin: Some(env.contract.address.to_string()),
         label: format!("Pool-{}", pool_id),

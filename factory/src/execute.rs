@@ -357,17 +357,10 @@ fn execute_create_creator_pool(
     let factory_cw20 = FACTORYINSTANTIATEINFO.load(deps.storage)?;
     validate_pool_token_info(&pool_msg.pool_token_info, &factory_cw20.bluechip_denom)?;
 
-    // `is_standard_pool = Some(true)` skips the commit phase entirely and
-    // lets the pool enter trading mode at instantiation. That's a powerful
-    // bypass of the whole two-phase model, so only the factory admin may
-    // request it. Unspecified or `Some(false)` is permissionless.
-    if matches!(pool_msg.is_standard_pool, Some(true))
-        && info.sender != factory_cw20.factory_admin_address
-    {
-        return Err(ContractError::Std(StdError::generic_err(
-            "Only the factory admin can create a standard pool (is_standard_pool=true)",
-        )));
-    }
+    // Standard pools now go through `ExecuteMsg::CreateStandardPool`
+    // (dispatched to the new standard-pool wasm via the
+    // `standard_pool_wasm_contract_id` code_id added in 4c). The old
+    // `is_standard_pool: Some(true)` bypass on `CreatePool` is gone.
 
     let sender = info.sender.clone();
     let pool_counter = POOL_COUNTER.load(deps.storage).unwrap_or(0);

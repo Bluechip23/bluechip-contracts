@@ -14,6 +14,9 @@ pub use pool_core::msg::*;
 
 #[allow(unused_imports)]
 use crate::asset::{TokenInfo, TokenType};
+// Referenced only by `#[returns(PoolDetails)]` on QueryMsg::Pair; the
+// QueryResponses derive drops these refs in wasm release builds.
+#[allow(unused_imports)]
 use crate::state::PoolDetails;
 #[allow(unused_imports)]
 use crate::state::{Committing, PoolAnalytics, RecoveryType};
@@ -193,28 +196,12 @@ pub struct FactoryNotifyStatusResponse {
 /// either the commit-pool or standard-pool wire format and branch on
 /// which variant was sent.
 ///
-/// JSON shape (tagged via `cw_serde`'s default `rename_all = "snake_case"`):
-///   - Commit:   `{"commit":   { <CommitPoolInstantiateMsg fields> }}`
-///   - Standard: `{"standard": { <StandardPoolInstantiateMsg fields> }}`
-///
-/// The factory's side has a mirror `PoolInstantiateWire` (in
-/// `factory/src/pool_creation_reply.rs`) that serializes to the same
-/// JSON. The two types are intentionally not a shared crate item
-/// because the commit variant references `CommitFeeInfo` (mirror-typed
-/// between factory and pool), and hoisting all dependent types into
-/// `pool_factory_interfaces` would churn many unrelated call sites.
+/// Flat struct — standard pools live in their own wasm now (see
+/// `standard-pool` crate) so creator-pool's instantiate only ever
+/// receives this shape. The factory sends it directly via
+/// `WasmMsg::Instantiate { code_id: create_pool_wasm_contract_id, ... }`.
 #[cw_serde]
-pub enum PoolInstantiateMsg {
-    Commit(CommitPoolInstantiateMsg),
-    Standard(pool_factory_interfaces::StandardPoolInstantiateMsg),
-}
-
-/// Former flat `PoolInstantiateMsg`, renamed so the new enum can reuse
-/// the `PoolInstantiateMsg` name. Same wire layout as before — existing
-/// commit-pool instantiate calls from the factory continue to work as
-/// long as they wrap this struct in `PoolInstantiateMsg::Commit(..)`.
-#[cw_serde]
-pub struct CommitPoolInstantiateMsg {
+pub struct PoolInstantiateMsg {
     pub pool_id: u64,
     pub pool_token_info: [TokenType; 2],
     pub cw20_token_contract_id: u64,
@@ -227,7 +214,6 @@ pub struct CommitPoolInstantiateMsg {
     pub token_address: Addr,
     pub max_bluechip_lock_per_pool: Uint128,
     pub creator_excess_liquidity_lock_days: u64,
-    pub is_standard_pool: Option<bool>,
 }
 
 #[cw_serde]
