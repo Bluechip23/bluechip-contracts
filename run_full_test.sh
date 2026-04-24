@@ -293,8 +293,10 @@ log_step "cw721_base.wasm"
 CW721_CODE=$(store_wasm "cw721_base.wasm")
 echo "  → code $CW721_CODE"
 
-log_step "pool.wasm"
-POOL_CODE=$(store_wasm "pool.wasm")
+log_step "creator_pool.wasm"
+log_step "standard_pool.wasm"
+STANDARD_POOL_CODE=$(store_wasm "standard_pool.wasm")
+POOL_CODE=$(store_wasm "creator_pool.wasm")
 echo "  → code $POOL_CODE"
 
 log_step "oracle.wasm (mock)"
@@ -364,6 +366,7 @@ print(json.dumps({
     'cw20_token_contract_id':             int('$CW20_CODE'),
     'cw721_nft_contract_id':              int('$CW721_CODE'),
     'create_pool_wasm_contract_id':       int('$POOL_CODE'),
+    'standard_pool_wasm_contract_id':    int('$STANDARD_POOL_CODE'),
     'bluechip_wallet_address':            '$ALICE',
     'commit_fee_bluechip':                '0.01',
     'commit_fee_creator':                 '0.05',

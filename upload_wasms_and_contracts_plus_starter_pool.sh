@@ -97,7 +97,8 @@ echo ""
 echo "Uploading contracts..."
 CW20_CODE_ID=$(store_contract "cw20_base.wasm")
 CW721_CODE_ID=$(store_contract "cw721_base.wasm")
-POOL_CODE_ID=$(store_contract "pool.wasm")
+POOL_CODE_ID=$(store_contract "creator_pool.wasm")
+STANDARD_POOL_CODE_ID=$(store_contract "standard_pool.wasm")
 ORACLE_CODE_ID=$(store_contract "oracle.wasm")
 ECON_CODE_ID=$(store_contract "expand_economy.wasm")
 FACTORY_CODE_ID=$(store_contract "factory.wasm")
@@ -149,6 +150,7 @@ FACTORY_INIT=$(cat <<EOF
   "cw721_nft_contract_id": $CW721_CODE_ID,
   "cw20_token_contract_id": $CW20_CODE_ID,
   "create_pool_wasm_contract_id": $POOL_CODE_ID,
+  "standard_pool_wasm_contract_id": $STANDARD_POOL_CODE_ID,
   "bluechip_wallet_address": "$ALICE_ADDR",
   "commit_fee_bluechip": "0.01",
   "commit_fee_creator": "0.05",
