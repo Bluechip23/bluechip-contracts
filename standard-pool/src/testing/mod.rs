@@ -1,1 +1,8 @@
-//! Integration tests for standard-pool land in H14 split Step 5a.
+//! Integration tests for standard-pool.
+//!
+//! Exercises pool-core's shared handlers end-to-end through standard-
+//! pool's thin dispatch, with no commit-phase layer in the way.
+//! Organized by handler area — one file per concern.
+
+mod fixtures;
+mod instantiation;
