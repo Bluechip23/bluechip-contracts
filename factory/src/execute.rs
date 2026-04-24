@@ -54,19 +54,7 @@ pub fn instantiate(
 ) -> Result<Response, ContractError> {
     cw2::set_contract_version(deps.storage, CONTRACT_NAME, CONTRACT_VERSION)?;
 
-    deps.api.addr_validate(msg.factory_admin_address.as_str())?;
-    deps.api
-        .addr_validate(msg.bluechip_wallet_address.as_str())?;
-    deps.api
-        .addr_validate(msg.atom_bluechip_anchor_pool_address.as_str())?;
-    if let Some(ref mint_addr) = msg.bluechip_mint_contract_address {
-        deps.api.addr_validate(mint_addr.as_str())?;
-    }
-    if msg.bluechip_denom.trim().is_empty() {
-        return Err(ContractError::Std(StdError::generic_err(
-            "bluechip_denom must be non-empty at factory instantiate",
-        )));
-    }
+    validate_factory_config(deps.as_ref(), &msg)?;
 
     FACTORYINSTANTIATEINFO.save(deps.storage, &msg)?;
     // Anchor address starts as whatever the deployer passes (typically a
@@ -172,6 +160,29 @@ pub fn assert_correct_factory_address(deps: Deps, info: MessageInfo) -> StdResul
     Ok(true)
 }
 
+/// Validates every caller-supplied address + the bluechip_denom on a
+/// `FactoryInstantiate` payload. Shared between `instantiate` and
+/// `execute_propose_factory_config_update` so the same rules apply to
+/// the initial config and any subsequent config proposal.
+fn validate_factory_config(
+    deps: Deps,
+    config: &FactoryInstantiate,
+) -> Result<(), ContractError> {
+    deps.api.addr_validate(config.factory_admin_address.as_str())?;
+    deps.api.addr_validate(config.bluechip_wallet_address.as_str())?;
+    deps.api
+        .addr_validate(config.atom_bluechip_anchor_pool_address.as_str())?;
+    if let Some(ref mint_addr) = config.bluechip_mint_contract_address {
+        deps.api.addr_validate(mint_addr.as_str())?;
+    }
+    if config.bluechip_denom.trim().is_empty() {
+        return Err(ContractError::Std(StdError::generic_err(
+            "bluechip_denom must be non-empty",
+        )));
+    }
+    Ok(())
+}
+
 pub fn execute_update_factory_config(
     deps: DepsMut,
     env: Env,
@@ -198,23 +209,11 @@ pub fn execute_propose_factory_config_update(
     config: FactoryInstantiate,
 ) -> Result<Response, ContractError> {
     assert_correct_factory_address(deps.as_ref(), info)?;
-    deps.api
-        .addr_validate(config.factory_admin_address.as_str())?;
-    deps.api
-        .addr_validate(config.bluechip_wallet_address.as_str())?;
-    deps.api
-        .addr_validate(config.atom_bluechip_anchor_pool_address.as_str())?;
-    if let Some(ref mint_addr) = config.bluechip_mint_contract_address {
-        deps.api.addr_validate(mint_addr.as_str())?;
-    }
-    // Reject empty/whitespace denom at propose time so the mistake surfaces
-    // 48h earlier than it otherwise would (existing pools would immediately
-    // break at their next creation attempt).
-    if config.bluechip_denom.trim().is_empty() {
-        return Err(ContractError::Std(StdError::generic_err(
-            "bluechip_denom must be non-empty",
-        )));
-    }
+    // Validate at propose time so any mistake surfaces 48h earlier than it
+    // otherwise would (the existing config keeps flowing until the timelock
+    // elapses and the admin calls UpdateConfig, but a malformed proposal
+    // should fail loudly now, not then).
+    validate_factory_config(deps.as_ref(), &config)?;
 
     let pending = PendingConfig {
         new_config: config,

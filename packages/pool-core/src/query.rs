@@ -11,7 +11,7 @@
 //! `total_usd_raised`, `total_bluechip_raised`). Creator-pool loads
 //! commit ledger state; standard-pool passes `FullyCommitted` and zero.
 
-use crate::asset::{call_pool_info, TokenInfo};
+use crate::asset::TokenInfo;
 use crate::liquidity_helpers::calculate_unclaimed_fees;
 use crate::msg::{
     CommitStatus, ConfigResponse, CumulativePricesResponse, FeeInfoResponse, PoolAnalyticsResponse,
@@ -121,7 +121,10 @@ pub fn query_reverse_simulation(
 pub fn query_cumulative_prices(deps: Deps, env: Env) -> StdResult<CumulativePricesResponse> {
     let pool_info = POOL_INFO.load(deps.storage)?;
     let mut pool_state = POOL_STATE.load(deps.storage)?;
-    let assets = call_pool_info(deps, pool_info.clone())?;
+    let contract_addr = pool_info.pool_info.contract_addr.clone();
+    let assets = pool_info
+        .pool_info
+        .query_pools(&deps.querier, contract_addr)?;
 
     pool_state.reserve0 = assets[0].amount;
     pool_state.reserve1 = assets[1].amount;

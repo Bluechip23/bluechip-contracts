@@ -37,6 +37,27 @@ use crate::asset::{get_native_denom, TokenType};
 pub const MIN_COMMIT_USD_PRE_THRESHOLD: Uint128 = Uint128::new(5_000_000);
 pub const MIN_COMMIT_USD_POST_THRESHOLD: Uint128 = Uint128::new(1_000_000);
 
+/// Base attribute set shared by every commit response (pre-threshold,
+/// post-threshold, threshold_hit_exact, threshold_crossing). Each caller
+/// adds its path-specific attributes on top.
+fn commit_base_attributes(
+    phase: &'static str,
+    sender: &Addr,
+    pool_contract: &Addr,
+    total_commit_count: u64,
+    env: &Env,
+) -> Vec<cosmwasm_std::Attribute> {
+    vec![
+        cosmwasm_std::Attribute::new("action", "commit"),
+        cosmwasm_std::Attribute::new("phase", phase),
+        cosmwasm_std::Attribute::new("committer", sender.as_str()),
+        cosmwasm_std::Attribute::new("total_commit_count", total_commit_count.to_string()),
+        cosmwasm_std::Attribute::new("pool_contract", pool_contract.as_str()),
+        cosmwasm_std::Attribute::new("block_height", env.block.height.to_string()),
+        cosmwasm_std::Attribute::new("block_time", env.block.time.seconds().to_string()),
+    ]
+}
+
 pub fn commit(
     mut deps: DepsMut,
     env: Env,
@@ -209,10 +230,20 @@ fn execute_commit_logic(
                                 messages,
                                 belief_price,
                                 max_spread,
+                                &pool_info,
+                                &pool_specs,
+                                &mut pool_state,
+                                &mut pool_fee_state,
                             );
                         }
                         return process_pre_threshold_commit(
-                            deps, env, sender, &asset, usd_value, messages,
+                            deps,
+                            env,
+                            sender,
+                            &asset,
+                            usd_value,
+                            messages,
+                            &pool_state,
                         );
                     }
 
@@ -288,28 +319,31 @@ fn execute_commit_logic(
                         // `payout.factory_notify` is attached as a SubMsg so a
                         // factory-side failure lands in the pool's reply handler
                         // (see P4-H5) rather than reverting the commit.
+                        let base = commit_base_attributes(
+                            "threshold_hit_exact",
+                            &sender,
+                            &pool_state.pool_contract_address,
+                            analytics.total_commit_count,
+                            &env,
+                        );
                         Ok(Response::new()
                             .add_submessage(payout.factory_notify)
                             .add_messages(messages)
-                            .add_attribute("action", "commit")
-                            .add_attribute("phase", "threshold_hit_exact")
-                            .add_attribute("committer", sender)
+                            .add_attributes(base)
                             .add_attribute("commit_amount_bluechip", asset.amount.to_string())
                             .add_attribute("commit_amount_usd", usd_value.to_string())
-                            .add_attribute("total_usd_raised_after", new_total.to_string())
-                            .add_attribute(
-                                "total_commit_count",
-                                analytics.total_commit_count.to_string(),
-                            )
-                            .add_attribute(
-                                "pool_contract",
-                                pool_state.pool_contract_address.to_string(),
-                            )
-                            .add_attribute("block_height", env.block.height.to_string())
-                            .add_attribute("block_time", env.block.time.seconds().to_string()))
+                            .add_attribute("total_usd_raised_after", new_total.to_string()))
                     }
                 } else {
-                    process_pre_threshold_commit(deps, env, sender, &asset, usd_value, messages)
+                    process_pre_threshold_commit(
+                        deps,
+                        env,
+                        sender,
+                        &asset,
+                        usd_value,
+                        messages,
+                        &pool_state,
+                    )
                 }
             } else {
                 process_post_threshold_commit(
@@ -322,6 +356,10 @@ fn execute_commit_logic(
                     messages,
                     belief_price,
                     max_spread,
+                    &pool_info,
+                    &pool_specs,
+                    &mut pool_state,
+                    &mut pool_fee_state,
                 )
             }
         }
@@ -384,9 +422,8 @@ fn process_pre_threshold_commit(
     asset: &TokenInfo,
     usd_value: Uint128,
     messages: Vec<CosmosMsg>,
+    pool_state: &PoolState,
 ) -> Result<Response, ContractError> {
-    let pool_state = POOL_STATE.load(deps.storage)?;
-
     COMMIT_LEDGER.update::<_, ContractError>(deps.storage, &sender, |v| {
         Ok(v.unwrap_or_default().checked_add(usd_value)?)
     })?;
@@ -412,28 +449,23 @@ fn process_pre_threshold_commit(
     let total_usd_raised = USD_RAISED_FROM_COMMIT.load(deps.storage)?;
     let total_bluechip_raised = NATIVE_RAISED_FROM_COMMIT.load(deps.storage)?;
 
+    let base = commit_base_attributes(
+        "funding",
+        &sender,
+        &pool_state.pool_contract_address,
+        analytics.total_commit_count,
+        &env,
+    );
     Ok(Response::new()
         .add_messages(messages)
-        .add_attribute("action", "commit")
-        .add_attribute("phase", "funding")
-        .add_attribute("committer", sender)
+        .add_attributes(base)
         .add_attribute("commit_amount_bluechip", asset.amount.to_string())
         .add_attribute("commit_amount_usd", usd_value.to_string())
         .add_attribute("total_usd_raised_after", total_usd_raised.to_string())
         .add_attribute(
             "total_bluechip_raised_after",
             total_bluechip_raised.to_string(),
-        )
-        .add_attribute(
-            "total_commit_count",
-            analytics.total_commit_count.to_string(),
-        )
-        .add_attribute(
-            "pool_contract",
-            pool_state.pool_contract_address.to_string(),
-        )
-        .add_attribute("block_height", env.block.height.to_string())
-        .add_attribute("block_time", env.block.time.seconds().to_string()))
+        ))
 }
 
 #[allow(clippy::too_many_arguments)]
@@ -447,15 +479,14 @@ fn process_post_threshold_commit(
     mut messages: Vec<CosmosMsg>,
     belief_price: Option<Decimal>,
     max_spread: Option<Decimal>,
+    pool_info: &crate::state::PoolInfo,
+    pool_specs: &crate::state::PoolSpecs,
+    pool_state: &mut PoolState,
+    pool_fee_state: &mut crate::state::PoolFeeState,
 ) -> Result<Response, ContractError> {
     if POOL_PAUSED.may_load(deps.storage)?.unwrap_or(false) {
         return Err(ContractError::PoolPausedLowLiquidity {});
     }
-
-    let pool_info = POOL_INFO.load(deps.storage)?;
-    let pool_specs = POOL_SPECS.load(deps.storage)?;
-    let mut pool_state = POOL_STATE.load(deps.storage)?;
-    let mut pool_fee_state = POOL_FEE_STATE.load(deps.storage)?;
 
     let offer_pool = pool_state.reserve0;
     let ask_pool = pool_state.reserve1;
@@ -478,14 +509,14 @@ fn process_post_threshold_commit(
         spread_amt,
     )?;
 
-    update_price_accumulator(&mut pool_state, env.block.time.seconds())?;
+    update_price_accumulator(pool_state, env.block.time.seconds())?;
 
     pool_state.reserve0 = offer_pool.checked_add(swap_amount)?;
     pool_state.reserve1 = ask_pool.checked_sub(return_amt.checked_add(commission_amt)?)?;
 
-    update_pool_fee_growth(&mut pool_fee_state, &pool_state, 0, commission_amt)?;
-    POOL_FEE_STATE.save(deps.storage, &pool_fee_state)?;
-    POOL_STATE.save(deps.storage, &pool_state)?;
+    update_pool_fee_growth(pool_fee_state, pool_state, 0, commission_amt)?;
+    POOL_FEE_STATE.save(deps.storage, &*pool_fee_state)?;
+    POOL_STATE.save(deps.storage, &*pool_state)?;
 
     if !return_amt.is_zero() {
         messages.push(
@@ -527,11 +558,16 @@ fn process_post_threshold_commit(
         "0".to_string()
     };
 
+    let base = commit_base_attributes(
+        "active",
+        &sender,
+        &pool_state.pool_contract_address,
+        analytics.total_commit_count,
+        &env,
+    );
     Ok(Response::new()
         .add_messages(messages)
-        .add_attribute("action", "commit")
-        .add_attribute("phase", "active")
-        .add_attribute("committer", sender)
+        .add_attributes(base)
         .add_attribute("commit_amount_bluechip", asset.amount.to_string())
         .add_attribute("commit_amount_usd", usd_value.to_string())
         .add_attribute("swap_amount_bluechip", swap_amount.to_string())
@@ -540,17 +576,7 @@ fn process_post_threshold_commit(
         .add_attribute("commission_amount", commission_amt.to_string())
         .add_attribute("effective_price", effective_price)
         .add_attribute("reserve0_after", pool_state.reserve0.to_string())
-        .add_attribute("reserve1_after", pool_state.reserve1.to_string())
-        .add_attribute(
-            "total_commit_count",
-            analytics.total_commit_count.to_string(),
-        )
-        .add_attribute(
-            "pool_contract",
-            pool_state.pool_contract_address.to_string(),
-        )
-        .add_attribute("block_height", env.block.height.to_string())
-        .add_attribute("block_time", env.block.time.seconds().to_string()))
+        .add_attribute("reserve1_after", pool_state.reserve1.to_string()))
 }
 
 #[allow(clippy::too_many_arguments)]
@@ -748,12 +774,17 @@ fn process_threshold_crossing_with_excess(
     // state after trigger_threshold_payout + the optional excess-swap block
     // above. Previous code reloaded here; the reload was redundant and
     // cost an extra storage read per threshold-crossing tx.
+    let base = commit_base_attributes(
+        "threshold_crossing",
+        &sender,
+        &pool_state.pool_contract_address,
+        analytics.total_commit_count,
+        &env,
+    );
     Ok(Response::new()
         .add_submessage(factory_notify)
         .add_messages(messages)
-        .add_attribute("action", "commit")
-        .add_attribute("phase", "threshold_crossing")
-        .add_attribute("committer", sender)
+        .add_attributes(base)
         .add_attribute("total_amount_bluechip", asset.amount.to_string())
         .add_attribute(
             "threshold_amount_bluechip",
@@ -771,17 +802,7 @@ fn process_threshold_crossing_with_excess(
         .add_attribute("bluechip_excess_commission", commission_amt.to_string())
         .add_attribute("bluechip_excess_refunded", refunded_excess.to_string())
         .add_attribute("reserve0_after", pool_state.reserve0.to_string())
-        .add_attribute("reserve1_after", pool_state.reserve1.to_string())
-        .add_attribute(
-            "total_commit_count",
-            analytics.total_commit_count.to_string(),
-        )
-        .add_attribute(
-            "pool_contract",
-            pool_state.pool_contract_address.to_string(),
-        )
-        .add_attribute("block_height", env.block.height.to_string())
-        .add_attribute("block_time", env.block.time.seconds().to_string()))
+        .add_attribute("reserve1_after", pool_state.reserve1.to_string()))
 }
 
 // ---------------------------------------------------------------------------
