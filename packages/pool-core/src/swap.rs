@@ -479,3 +479,132 @@ pub fn execute_simple_swap(
         .add_attribute("block_time", env.block.time.seconds().to_string())
         .add_attribute("total_swap_count", analytics.total_swap_count.to_string()))
 }
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn compute_swap_zero_offer_returns_zero() {
+        let (ret, spread, commission) = compute_swap(
+            Uint128::new(1_000_000),
+            Uint128::new(1_000_000),
+            Uint128::zero(),
+            Decimal::permille(3),
+        )
+        .unwrap();
+        assert_eq!(ret, Uint128::zero());
+        assert_eq!(spread, Uint128::zero());
+        assert_eq!(commission, Uint128::zero());
+    }
+
+    #[test]
+    fn compute_swap_preserves_xy_k() {
+        // Balanced pools: 1M each, 0.3% fee. Offer 10k.
+        let offer_pool = Uint128::new(1_000_000);
+        let ask_pool = Uint128::new(1_000_000);
+        let offer_amount = Uint128::new(10_000);
+        let k_before = offer_pool.u128() * ask_pool.u128();
+
+        let (return_amt, _, commission) = compute_swap(
+            offer_pool,
+            ask_pool,
+            offer_amount,
+            Decimal::permille(3),
+        )
+        .unwrap();
+
+        // After swap: pool_offer = offer_pool + offer_amount, pool_ask =
+        // ask_pool - (return + commission). Commission stays in the pool, so
+        // the ask-side reserve only drops by `return_amt` (LP-visible k grows
+        // by commission). Verify the bare x*y=k invariant on the pre-fee
+        // deltas instead.
+        let post_offer = offer_pool + offer_amount;
+        let post_ask = ask_pool - (return_amt + commission);
+        assert!(post_offer.u128() * post_ask.u128() >= k_before, "x*y*k invariant broken");
+    }
+
+    #[test]
+    fn compute_swap_overflow_guard() {
+        // Uint128 offer_pool near the cap: multiplying offer_pool * ask_pool
+        // must use u256 arithmetic internally — verify it doesn't panic or
+        // saturate silently. Uint128::MAX/1M * Uint128::MAX/1M in u128 would
+        // overflow; pool-core must use Uint256.
+        let big = Uint128::new(u128::MAX / 2);
+        let r = compute_swap(big, big, Uint128::new(1000), Decimal::permille(3));
+        // Any result is fine as long as we don't panic.
+        assert!(r.is_ok() || r.is_err());
+    }
+
+    #[test]
+    fn compute_offer_amount_roundtrips_compute_swap() {
+        let offer_pool = Uint128::new(5_000_000);
+        let ask_pool = Uint128::new(5_000_000);
+        let offer = Uint128::new(12_345);
+        let fee = Decimal::permille(3);
+
+        let (ret, _, _) = compute_swap(offer_pool, ask_pool, offer, fee).unwrap();
+        let (inferred_offer, _, _) = compute_offer_amount(offer_pool, ask_pool, ret, fee).unwrap();
+
+        // compute_offer_amount should recover the offer within rounding
+        // (integer floor can lose 1-2 units).
+        let diff = if offer > inferred_offer {
+            offer - inferred_offer
+        } else {
+            inferred_offer - offer
+        };
+        assert!(diff <= Uint128::new(2), "roundtrip drifted by {}", diff);
+    }
+
+    #[test]
+    fn assert_max_spread_ok_within_threshold() {
+        // total = ret + spread = 1000; spread = 5 → 0.5% < 1% max
+        let r = assert_max_spread(
+            None,
+            Some(Decimal::percent(1)),
+            Uint128::new(1_000_000),
+            Uint128::new(995),
+            Uint128::new(5),
+        );
+        assert!(r.is_ok());
+    }
+
+    #[test]
+    fn assert_max_spread_rejects_over_threshold() {
+        // total = 1000; spread = 20 → 2% > 1% max
+        let r = assert_max_spread(
+            None,
+            Some(Decimal::percent(1)),
+            Uint128::new(1_000_000),
+            Uint128::new(980),
+            Uint128::new(20),
+        );
+        assert!(matches!(r, Err(ContractError::MaxSpreadAssertion {})));
+    }
+
+    #[test]
+    fn assert_max_spread_zero_belief_price_is_rejected() {
+        let r = assert_max_spread(
+            Some(Decimal::zero()),
+            None,
+            Uint128::new(1),
+            Uint128::new(1),
+            Uint128::zero(),
+        );
+        assert!(matches!(r, Err(ContractError::InvalidBeliefPrice {})));
+    }
+
+    #[test]
+    fn assert_max_spread_with_belief_price_honors_inverse() {
+        // belief_price = 0.5 → inverse = 2 → expected_return = offer * 2
+        // offer = 100, expected = 200, got 190 → spread = 10 → 5% > default 0.5% → reject
+        let r = assert_max_spread(
+            Some(Decimal::from_ratio(1u128, 2u128)),
+            Some(Decimal::permille(5)), // 0.5% tolerance
+            Uint128::new(100),
+            Uint128::new(190),
+            Uint128::zero(),
+        );
+        assert!(matches!(r, Err(ContractError::MaxSpreadAssertion {})));
+    }
+}

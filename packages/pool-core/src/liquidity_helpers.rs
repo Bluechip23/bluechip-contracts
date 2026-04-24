@@ -415,3 +415,144 @@ pub fn sync_position_on_transfer(
     Ok(true)
 }
 
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn integer_sqrt_basics() {
+        assert_eq!(integer_sqrt(Uint128::zero()), Uint128::zero());
+        assert_eq!(integer_sqrt(Uint128::new(1)), Uint128::new(1));
+        assert_eq!(integer_sqrt(Uint128::new(4)), Uint128::new(2));
+        assert_eq!(integer_sqrt(Uint128::new(100)), Uint128::new(10));
+        // Non-perfect square floors.
+        assert_eq!(integer_sqrt(Uint128::new(10)), Uint128::new(3));
+        assert_eq!(integer_sqrt(Uint128::new(99)), Uint128::new(9));
+        // Large value — must not overflow.
+        let sq = integer_sqrt(Uint128::new(1_000_000_000_000_000_000));
+        assert_eq!(sq, Uint128::new(1_000_000_000));
+    }
+
+    #[test]
+    fn calculate_fees_owed_split_no_growth_is_zero() {
+        let (owed, clipped) = calculate_fees_owed_split(
+            Uint128::new(1_000_000),
+            Decimal::zero(),
+            Decimal::zero(),
+            Decimal::one(),
+        )
+        .unwrap();
+        assert_eq!(owed, Uint128::zero());
+        assert_eq!(clipped, Uint128::zero());
+    }
+
+    #[test]
+    fn calculate_fees_owed_split_full_multiplier_zero_clip() {
+        // multiplier = 1.0 → nothing clipped
+        let (owed, clipped) = calculate_fees_owed_split(
+            Uint128::new(1_000_000),
+            Decimal::percent(10),       // fee_growth_global
+            Decimal::zero(),             // fee_growth_last
+            Decimal::one(),              // multiplier
+        )
+        .unwrap();
+        assert_eq!(owed, Uint128::new(100_000));
+        assert_eq!(clipped, Uint128::zero());
+    }
+
+    #[test]
+    fn calculate_fees_owed_split_with_clip() {
+        // multiplier = 0.3 → 70% clipped
+        let (owed, clipped) = calculate_fees_owed_split(
+            Uint128::new(1_000_000),
+            Decimal::percent(10),
+            Decimal::zero(),
+            Decimal::percent(30),
+        )
+        .unwrap();
+        assert_eq!(owed, Uint128::new(30_000));
+        assert_eq!(clipped, Uint128::new(70_000));
+    }
+
+    #[test]
+    fn calculate_fee_size_multiplier_scales_linearly() {
+        // At OPTIMAL_LIQUIDITY (1_000_000), multiplier is 1.0.
+        assert_eq!(
+            calculate_fee_size_multiplier(OPTIMAL_LIQUIDITY),
+            Decimal::one()
+        );
+        // At zero, multiplier is MIN_MULTIPLIER (10%).
+        assert_eq!(
+            calculate_fee_size_multiplier(Uint128::zero()),
+            Decimal::percent(10)
+        );
+        // At OPTIMAL/2, multiplier is MIN + (1 - MIN) * 0.5 = 0.1 + 0.45 = 0.55.
+        let half = calculate_fee_size_multiplier(Uint128::new(500_000));
+        assert_eq!(half, Decimal::percent(55));
+        // Above OPTIMAL stays at 1.0.
+        assert_eq!(
+            calculate_fee_size_multiplier(Uint128::new(10_000_000)),
+            Decimal::one()
+        );
+    }
+
+    #[test]
+    fn check_slippage_ok_when_at_or_above_min() {
+        assert!(check_slippage(Uint128::new(100), Some(Uint128::new(100)), "asset0").is_ok());
+        assert!(check_slippage(Uint128::new(101), Some(Uint128::new(100)), "asset0").is_ok());
+        // No min means no check.
+        assert!(check_slippage(Uint128::zero(), None, "asset0").is_ok());
+    }
+
+    #[test]
+    fn check_slippage_rejects_below_min() {
+        let r = check_slippage(Uint128::new(99), Some(Uint128::new(100)), "asset0");
+        assert!(matches!(
+            r,
+            Err(ContractError::SlippageExceeded { .. })
+        ));
+    }
+
+    #[test]
+    fn check_ratio_deviation_ok_when_exact_ratio() {
+        // 10:20 == 100:200 → 0 bps deviation → any tolerance passes
+        let r = check_ratio_deviation(
+            Uint128::new(100),
+            Uint128::new(200),
+            Some(Uint128::new(10)),
+            Some(Uint128::new(20)),
+            Some(50), // 50 bps = 0.5%
+        );
+        assert!(r.is_ok());
+    }
+
+    #[test]
+    fn check_ratio_deviation_rejects_over_tolerance() {
+        // 10:20 expected, got 100:50 → 4:1 vs 0.5:1 → way over any tolerance.
+        let r = check_ratio_deviation(
+            Uint128::new(100),
+            Uint128::new(50),
+            Some(Uint128::new(10)),
+            Some(Uint128::new(20)),
+            Some(100), // 1%
+        );
+        assert!(matches!(
+            r,
+            Err(ContractError::RatioDeviationExceeded { .. })
+        ));
+    }
+
+    #[test]
+    fn check_ratio_deviation_skipped_when_no_tolerance() {
+        // Any ratio is ok when max_ratio_deviation_bps is None.
+        let r = check_ratio_deviation(
+            Uint128::new(1),
+            Uint128::new(1_000_000),
+            Some(Uint128::new(100)),
+            Some(Uint128::new(100)),
+            None,
+        );
+        assert!(r.is_ok());
+    }
+}

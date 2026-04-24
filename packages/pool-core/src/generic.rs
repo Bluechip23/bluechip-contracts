@@ -110,3 +110,57 @@ pub fn get_bank_transfer_to_msg(
     let transfer_bank_cosmos_msg: CosmosMsg = transfer_bank_msg.into();
     Ok(transfer_bank_cosmos_msg)
 }
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use cosmwasm_std::Timestamp;
+
+    #[test]
+    fn decimal2decimal256_preserves_value() {
+        let d = Decimal::percent(37);
+        let d256 = decimal2decimal256(d).unwrap();
+        // Round-trip through string: the "0.37" output should match.
+        assert_eq!(d.to_string(), d256.to_string());
+    }
+
+    #[test]
+    fn decimal2decimal256_zero() {
+        let d256 = decimal2decimal256(Decimal::zero()).unwrap();
+        assert_eq!(d256.to_string(), "0");
+    }
+
+    #[test]
+    fn decimal2decimal256_one() {
+        let d256 = decimal2decimal256(Decimal::one()).unwrap();
+        assert_eq!(d256.to_string(), "1");
+    }
+
+    #[test]
+    fn enforce_transaction_deadline_no_deadline_always_ok() {
+        let current = Timestamp::from_seconds(1_000_000);
+        assert!(enforce_transaction_deadline(current, None).is_ok());
+    }
+
+    #[test]
+    fn enforce_transaction_deadline_future_is_ok() {
+        let current = Timestamp::from_seconds(1_000_000);
+        let future = Timestamp::from_seconds(1_000_100);
+        assert!(enforce_transaction_deadline(current, Some(future)).is_ok());
+    }
+
+    #[test]
+    fn enforce_transaction_deadline_equal_is_ok() {
+        // Equal is NOT expired: the check is `current > dl`.
+        let current = Timestamp::from_seconds(1_000_000);
+        assert!(enforce_transaction_deadline(current, Some(current)).is_ok());
+    }
+
+    #[test]
+    fn enforce_transaction_deadline_past_rejects() {
+        let current = Timestamp::from_seconds(1_000_000);
+        let past = Timestamp::from_seconds(999_999);
+        let r = enforce_transaction_deadline(current, Some(past));
+        assert!(matches!(r, Err(ContractError::TransactionExpired {})));
+    }
+}
