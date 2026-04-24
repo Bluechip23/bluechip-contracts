@@ -624,8 +624,14 @@ pub fn execute_propose_pool_config_update(
 ) -> Result<Response, ContractError> {
     assert_correct_factory_address(deps.as_ref(), info)?;
 
-    // Verify pool exists (load-for-error; we only need the existence check).
-    POOLS_BY_ID.load(deps.storage, pool_id)?;
+    // Verify pool exists. `.has()` skips deserializing PoolDetails since
+    // we only need the existence check, not the value.
+    if !POOLS_BY_ID.has(deps.storage, pool_id) {
+        return Err(ContractError::Std(StdError::generic_err(format!(
+            "Pool {} not found in registry",
+            pool_id
+        ))));
+    }
 
     if PENDING_POOL_CONFIG
         .may_load(deps.storage, pool_id)?
@@ -1318,7 +1324,7 @@ fn execute_create_standard_pool(
 /// new anchor immediately and clears the cached price so downstream reads
 /// see "needs update" rather than the placeholder-derived (zero) value.
 fn execute_set_anchor_pool(
-    deps: DepsMut,
+    mut deps: DepsMut,
     env: Env,
     info: MessageInfo,
     pool_id: u64,
@@ -1376,7 +1382,7 @@ fn execute_set_anchor_pool(
     // placeholder — last_price was zero anyway, but defense-in-depth.
     let mut oracle = crate::internal_bluechip_price_oracle::INTERNAL_ORACLE.load(deps.storage)?;
     let new_pools = crate::internal_bluechip_price_oracle::select_random_pools_with_atom(
-        deps.as_ref(),
+        deps.branch(),
         env.clone(),
         crate::internal_bluechip_price_oracle::ORACLE_POOL_COUNT,
     )?;

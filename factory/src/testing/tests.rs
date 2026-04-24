@@ -259,15 +259,18 @@ fn test_oracle_initialization_with_multiple_pools() {
 
     instantiate(deps.as_mut(), env.clone(), info, msg).unwrap();
 
-    // Verify oracle selected multiple pools (ATOM + up to 3 random = 4 total max)
+    // Verify oracle selected multiple pools. With 5 eligible creator pools
+    // seeded above plus the ATOM anchor, selection fits entirely within the
+    // ORACLE_POOL_COUNT target, so the output should be exactly 6 (5 + ATOM).
     let oracle = INTERNAL_ORACLE.load(&deps.storage).unwrap();
     assert!(
         !oracle.selected_pools.is_empty(),
         "Should have at least ATOM pool"
     );
     assert!(
-        oracle.selected_pools.len() <= 5,
-        "Should not exceed ORACLE_POOL_COUNT (5)"
+        oracle.selected_pools.len()
+            <= crate::internal_bluechip_price_oracle::ORACLE_POOL_COUNT,
+        "Should not exceed ORACLE_POOL_COUNT"
     );
     assert!(
         oracle
@@ -691,11 +694,12 @@ fn test_complete_pool_creation_flow() {
         create_instantiate_reply(encode_reply_id(pool_id, SET_TOKENS), token_addr.as_str());
     let res = pool_creation_reply(deps.as_mut(), env.clone(), token_reply).unwrap();
 
-    // Reload context and check token was set
+    // Reload context and check token was set. ctx.state.creator_token_address
+    // is no longer written to; ctx.temp is the single source of truth and the
+    // query handler derives the state response from it.
     let ctx = POOL_CREATION_CONTEXT.load(&deps.storage, pool_id).unwrap();
     assert_eq!(ctx.temp.creator_token_addr, Some(token_addr.clone()));
     assert_eq!(ctx.state.status, CreationStatus::TokenCreated);
-    assert_eq!(ctx.state.creator_token_address, Some(token_addr.clone()));
     assert_eq!(res.messages.len(), 1);
 
     // Step 2: NFT Creation Reply
@@ -709,10 +713,8 @@ fn test_complete_pool_creation_flow() {
     let ctx = POOL_CREATION_CONTEXT.load(&deps.storage, pool_id).unwrap();
     assert_eq!(ctx.temp.nft_addr, Some(nft_addr.clone()));
     assert_eq!(ctx.state.status, CreationStatus::NftCreated);
-    assert_eq!(
-        ctx.state.mint_new_position_nft_address,
-        Some(nft_addr.clone())
-    );
+    // ctx.state.mint_new_position_nft_address is no longer written; the
+    // ctx.temp.nft_addr check above is the single source of truth.
     assert_eq!(res.messages.len(), 1);
 
     // Step 3: Pool Finalization Reply
@@ -903,10 +905,8 @@ fn test_reply_handling() {
         .load(deps.as_ref().storage, pool_id)
         .unwrap();
     assert_eq!(updated_ctx.state.status, CreationStatus::TokenCreated);
-    assert_eq!(
-        updated_ctx.state.creator_token_address,
-        Some(Addr::unchecked(contract_addr))
-    );
+    // ctx.state.creator_token_address is no longer written; ctx.temp is
+    // the single source of truth.
     assert_eq!(
         updated_ctx.temp.creator_token_addr,
         Some(Addr::unchecked(contract_addr))

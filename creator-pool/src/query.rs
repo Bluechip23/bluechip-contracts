@@ -161,40 +161,38 @@ pub fn query_pool_committers(
         .transpose()?;
     let start = start_addr.as_ref().map(Bound::exclusive);
 
-    let mut committers = vec![];
-
-    for item in COMMIT_INFO.range(deps.storage, start, None, Order::Ascending) {
-        let (committer_addr, committing) = item?;
-
-        if committing.pool_contract_address != pool_contract_address {
-            continue;
-        }
-
-        if let Some(min_usd) = min_payment_usd {
-            if committing.last_payment_usd < min_usd {
-                continue;
+    let committers: StdResult<Vec<CommitterInfo>> = COMMIT_INFO
+        .range(deps.storage, start, None, Order::Ascending)
+        .filter_map(|item| {
+            let (committer_addr, committing) = match item {
+                Ok(kv) => kv,
+                Err(e) => return Some(Err(e)),
+            };
+            if committing.pool_contract_address != pool_contract_address {
+                return None;
             }
-        }
-
-        if let Some(after_ts) = after_timestamp {
-            if committing.last_committed.seconds() < after_ts {
-                continue;
+            if let Some(min_usd) = min_payment_usd {
+                if committing.last_payment_usd < min_usd {
+                    return None;
+                }
             }
-        }
-
-        committers.push(CommitterInfo {
-            wallet: committer_addr.to_string(),
-            last_payment_bluechip: committing.last_payment_bluechip,
-            last_payment_usd: committing.last_payment_usd,
-            last_committed: committing.last_committed,
-            total_paid_usd: committing.total_paid_usd,
-            total_paid_bluechip: committing.total_paid_bluechip,
-        });
-
-        if committers.len() >= limit {
-            break;
-        }
-    }
+            if let Some(after_ts) = after_timestamp {
+                if committing.last_committed.seconds() < after_ts {
+                    return None;
+                }
+            }
+            Some(Ok(CommitterInfo {
+                wallet: committer_addr.to_string(),
+                last_payment_bluechip: committing.last_payment_bluechip,
+                last_payment_usd: committing.last_payment_usd,
+                last_committed: committing.last_committed,
+                total_paid_usd: committing.total_paid_usd,
+                total_paid_bluechip: committing.total_paid_bluechip,
+            }))
+        })
+        .take(limit)
+        .collect();
+    let committers = committers?;
 
     Ok(PoolCommitResponse {
         total_count: committers.len() as u32,

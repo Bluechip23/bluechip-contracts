@@ -304,7 +304,7 @@ fn execute_commit_logic(
                         update_commit_info(
                             deps.storage,
                             &sender,
-                            pool_state.pool_contract_address.clone(),
+                            &pool_state.pool_contract_address,
                             asset.amount,
                             usd_value,
                             env.block.time,
@@ -427,15 +427,17 @@ fn process_pre_threshold_commit(
     COMMIT_LEDGER.update::<_, ContractError>(deps.storage, &sender, |v| {
         Ok(v.unwrap_or_default().checked_add(usd_value)?)
     })?;
-    USD_RAISED_FROM_COMMIT
+    // Capture the update return values so we don't re-read USD_RAISED /
+    // NATIVE_RAISED after the writes. `Item::update` returns the new value.
+    let total_usd_raised = USD_RAISED_FROM_COMMIT
         .update::<_, ContractError>(deps.storage, |r| Ok(r.checked_add(usd_value)?))?;
-    NATIVE_RAISED_FROM_COMMIT
+    let total_bluechip_raised = NATIVE_RAISED_FROM_COMMIT
         .update::<_, ContractError>(deps.storage, |r| Ok(r.checked_add(asset.amount)?))?;
 
     update_commit_info(
         deps.storage,
         &sender,
-        pool_state.pool_contract_address.clone(),
+        &pool_state.pool_contract_address,
         asset.amount,
         usd_value,
         env.block.time,
@@ -445,9 +447,6 @@ fn process_pre_threshold_commit(
     let mut analytics = POOL_ANALYTICS.load(deps.storage).unwrap_or_default();
     analytics.total_commit_count += 1;
     POOL_ANALYTICS.save(deps.storage, &analytics)?;
-
-    let total_usd_raised = USD_RAISED_FROM_COMMIT.load(deps.storage)?;
-    let total_bluechip_raised = NATIVE_RAISED_FROM_COMMIT.load(deps.storage)?;
 
     let base = commit_base_attributes(
         "funding",
@@ -535,7 +534,7 @@ fn process_post_threshold_commit(
     update_commit_info(
         deps.storage,
         &sender,
-        pool_state.pool_contract_address.clone(),
+        &pool_state.pool_contract_address,
         asset.amount,
         usd_value,
         env.block.time,
@@ -645,7 +644,7 @@ fn process_threshold_crossing_with_excess(
     update_commit_info(
         deps.storage,
         &sender,
-        pool_state.pool_contract_address.clone(),
+        &pool_state.pool_contract_address,
         bluechip_to_threshold,
         usd_to_threshold,
         env.block.time,
@@ -749,7 +748,7 @@ fn process_threshold_crossing_with_excess(
         update_commit_info(
             deps.storage,
             &sender,
-            pool_state.pool_contract_address.clone(),
+            &pool_state.pool_contract_address,
             bluechip_excess.checked_sub(refunded_excess)?,
             usd_excess,
             env.block.time,

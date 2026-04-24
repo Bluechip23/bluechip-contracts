@@ -438,7 +438,7 @@ pub fn mint_tokens(token_addr: &Addr, recipient: &Addr, amount: Uint128) -> StdR
 pub fn update_commit_info(
     storage: &mut dyn Storage,
     sender: &Addr,
-    pool_contract_address: Addr,
+    pool_contract_address: &Addr,
     bluechip_amount: Uint128,
     usd_amount: Uint128,
     timestamp: Timestamp,
@@ -459,8 +459,11 @@ pub fn update_commit_info(
                     committing.last_committed = timestamp;
                     Ok(committing)
                 }
+                // First-commit for this sender: clone only here, where the
+                // owned Addr is actually stored. Repeat committers (the
+                // common path) pass through zero Addr allocations.
                 None => Ok(Committing {
-                    pool_contract_address,
+                    pool_contract_address: pool_contract_address.clone(),
                     committer: sender.clone(),
                     total_paid_bluechip: bluechip_amount,
                     total_paid_usd: usd_amount,

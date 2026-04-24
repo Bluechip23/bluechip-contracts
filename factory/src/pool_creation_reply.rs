@@ -42,8 +42,10 @@ pub fn set_tokens(
     let mut ctx = POOL_CREATION_CONTEXT.load(deps.storage, pool_id)?;
     let token_address = extract_contract_address(&deps, &result)?;
 
+    // Store only in ctx.temp; ctx.state.creator_token_address is now
+    // derived at query time from ctx.temp. Saves one Addr clone per
+    // pool creation.
     ctx.temp.creator_token_addr = Some(token_address.clone());
-    ctx.state.creator_token_address = Some(token_address.clone());
     ctx.state.status = CreationStatus::TokenCreated;
     POOL_CREATION_CONTEXT.save(deps.storage, pool_id, &ctx)?;
 
@@ -87,8 +89,10 @@ pub fn mint_create_pool(
     let mut ctx = POOL_CREATION_CONTEXT.load(deps.storage, pool_id)?;
     let nft_address = extract_contract_address(&deps, &result)?;
 
+    // Store only in ctx.temp; ctx.state.mint_new_position_nft_address is
+    // now derived at query time from ctx.temp. Saves one Addr clone per
+    // pool creation.
     ctx.temp.nft_addr = Some(nft_address.clone());
-    ctx.state.mint_new_position_nft_address = Some(nft_address.clone());
     ctx.state.status = CreationStatus::NftCreated;
     POOL_CREATION_CONTEXT.save(deps.storage, pool_id, &ctx)?;
 

@@ -225,6 +225,31 @@ pub struct StandardPoolCreationContext {
 pub const STANDARD_POOL_CREATION_CONTEXT: Map<u64, StandardPoolCreationContext> =
     Map::new("std_pool_ctx");
 
+/// Cached list of pool contract addresses eligible for oracle TWAP sampling.
+/// Rebuilt by a full O(N) scan of `POOLS_BY_ID` at most once per
+/// `ELIGIBLE_POOL_REFRESH_BLOCKS` blocks (≈5 days at 6s blocks); between
+/// refreshes the oracle samples directly from the snapshot without touching
+/// POOLS_BY_ID. The cross-contract liquidity / paused check still runs
+/// per-sample at oracle-update time, so freshly-drained pools are dropped
+/// from the sample set immediately; they stay in the snapshot's `pool_addresses`
+/// until the next 5-day refresh but have no observable effect on the TWAP.
+///
+/// A newly-threshold-crossed pool is NOT visible to the oracle until the
+/// next refresh (up to 5 days). This is an intentional tradeoff: an explicit
+/// admin force-refresh was considered and rejected.
+#[cw_serde]
+pub struct EligiblePoolSnapshot {
+    pub pool_addresses: Vec<String>,
+    pub captured_at_block: u64,
+}
+
+pub const ELIGIBLE_POOL_SNAPSHOT: Item<EligiblePoolSnapshot> =
+    Item::new("eligible_pool_snap");
+
+/// How stale the snapshot is allowed to get before `select_random_pools_with_atom`
+/// rebuilds it. 72_000 blocks at 6s per block ≈ 5 days.
+pub const ELIGIBLE_POOL_REFRESH_BLOCKS: u64 = 72_000;
+
 #[cw_serde]
 pub enum CreationStatus {
     Started,

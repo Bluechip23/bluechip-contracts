@@ -92,12 +92,19 @@ pub fn query_pool_creation_status(
         Some(c) => c,
         None => return Ok(None),
     };
-    let state = ctx.state;
+    let crate::state::PoolCreationContext { temp, state } = ctx;
     Ok(Some(PoolCreationStatusResponse {
         pool_id: state.pool_id,
         creator: state.creator,
-        creator_token_address: state.creator_token_address,
-        mint_new_position_nft_address: state.mint_new_position_nft_address,
+        // Prefer ctx.temp (the single source of truth for new contexts);
+        // fall back to ctx.state for pre-consolidation records that still
+        // carry the mirror field.
+        creator_token_address: temp
+            .creator_token_addr
+            .or(state.creator_token_address),
+        mint_new_position_nft_address: temp
+            .nft_addr
+            .or(state.mint_new_position_nft_address),
         pool_address: state.pool_address,
         creation_time: state.creation_time,
         status: state.status,
