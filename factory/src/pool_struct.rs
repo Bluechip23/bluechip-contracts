@@ -1,8 +1,8 @@
 use cosmwasm_schema::cw_serde;
 
-use crate::asset::{TokenInfo, TokenType};
+use crate::asset::TokenType;
 
-use cosmwasm_std::{Addr, Binary, Decimal, QuerierWrapper, StdError, StdResult, Uint128};
+use cosmwasm_std::{Addr, Binary, Decimal, StdError, StdResult, Uint128};
 use pool_factory_interfaces::PoolKind;
 
 #[cw_serde]
@@ -76,16 +76,6 @@ pub struct PoolDetails {
     /// to H14 was a commit pool.
     #[serde(default)]
     pub pool_kind: PoolKind,
-}
-
-impl PoolDetails {
-    pub fn query_pools(
-        &self,
-        querier: &QuerierWrapper,
-        contract_addr: Addr,
-    ) -> StdResult<[TokenInfo; 2]> {
-        pool_factory_interfaces::asset::query_pools(&self.pool_token_info, querier, contract_addr)
-    }
 }
 
 impl ThresholdPayoutAmounts {

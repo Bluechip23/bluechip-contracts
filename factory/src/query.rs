@@ -45,11 +45,6 @@ pub struct PoolCreationStatusResponse {
     pub pool_address: Option<Addr>,
     pub creation_time: Timestamp,
     pub status: CreationStatus,
-    /// Legacy field retained for storage-schema backwards compatibility.
-    /// Always 0 now that the pool-creation reply chain is fully atomic
-    /// (reply_on_success at every step): any failure rolls the whole tx
-    /// back, so there is no retry counter to advance.
-    pub retry_count: u8,
 }
 
 #[cw_serde]
@@ -106,7 +101,6 @@ pub fn query_pool_creation_status(
         pool_address: state.pool_address,
         creation_time: state.creation_time,
         status: state.status,
-        retry_count: state.retry_count,
     }))
 }
 

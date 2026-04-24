@@ -14,7 +14,7 @@ use crate::state::{
     FACTORYINSTANTIATEINFO, MAX_DISTRIBUTION_BOUNTY_USD, MAX_ORACLE_UPDATE_BOUNTY_USD,
     ORACLE_BOUNTY_DENOM, ORACLE_UPDATE_BOUNTY_USD, PENDING_CONFIG, PENDING_POOL_CONFIG,
     PENDING_POOL_UPGRADE, POOLS_BY_CONTRACT_ADDRESS, POOLS_BY_ID, POOL_COUNTER,
-    POOL_CREATION_CONTEXT, POOL_REGISTRY, POOL_THRESHOLD_MINTED,
+    POOL_CREATION_CONTEXT, POOL_THRESHOLD_MINTED,
 };
 #[cfg(not(feature = "library"))]
 use cosmwasm_std::entry_point;
@@ -404,7 +404,6 @@ fn execute_create_creator_pool(
                 pool_address: None,
                 creation_time: env.block.time,
                 status: CreationStatus::Started,
-                retry_count: 0,
             },
         },
     )?;
@@ -461,7 +460,7 @@ pub fn execute_propose_pool_upgrade(
     let pools_to_upgrade = if let Some(ids) = pool_ids {
         ids
     } else {
-        POOL_REGISTRY
+        POOLS_BY_ID
             .keys(deps.storage, None, None, Order::Ascending)
             .collect::<StdResult<Vec<_>>>()?
     };
@@ -502,7 +501,7 @@ fn build_upgrade_batch(
     let processed: u32 = pool_ids.len() as u32;
 
     for pool_id in pool_ids.iter() {
-        let pool_addr = POOL_REGISTRY.load(deps.storage, *pool_id)?;
+        let pool_addr = POOLS_BY_ID.load(deps.storage, *pool_id)?.creator_pool_addr;
 
         // Query pause state; if the pool is paused, skip it. A paused pool
         // may be in the middle of a 24h emergency-withdraw timelock or other
@@ -626,8 +625,8 @@ pub fn execute_propose_pool_config_update(
 ) -> Result<Response, ContractError> {
     assert_correct_factory_address(deps.as_ref(), info)?;
 
-    // Verify pool exists
-    let _pool_addr = POOL_REGISTRY.load(deps.storage, pool_id)?;
+    // Verify pool exists (load-for-error; we only need the existence check).
+    POOLS_BY_ID.load(deps.storage, pool_id)?;
 
     if PENDING_POOL_CONFIG
         .may_load(deps.storage, pool_id)?
@@ -678,7 +677,7 @@ pub fn execute_apply_pool_config_update(
         });
     }
 
-    let pool_addr = POOL_REGISTRY.load(deps.storage, pool_id)?;
+    let pool_addr = POOLS_BY_ID.load(deps.storage, pool_id)?.creator_pool_addr;
 
     #[derive(serde::Serialize)]
     #[serde(rename_all = "snake_case")]
@@ -750,12 +749,15 @@ fn forward_pool_admin(
     pool_msg: PoolAdminMsg,
 ) -> Result<Response, ContractError> {
     assert_correct_factory_address(deps, info)?;
-    let pool_addr = POOL_REGISTRY.load(deps.storage, pool_id).map_err(|_| {
-        ContractError::Std(StdError::generic_err(format!(
-            "Pool {} not found in registry",
-            pool_id
-        )))
-    })?;
+    let pool_addr = POOLS_BY_ID
+        .load(deps.storage, pool_id)
+        .map_err(|_| {
+            ContractError::Std(StdError::generic_err(format!(
+                "Pool {} not found in registry",
+                pool_id
+            )))
+        })?
+        .creator_pool_addr;
     let msg = CosmosMsg::Wasm(WasmMsg::Execute {
         contract_addr: pool_addr.to_string(),
         msg: to_json_binary(&pool_msg)?,
@@ -898,15 +900,16 @@ pub fn execute_notify_threshold_crossed(
     info: MessageInfo,
     pool_id: u64,
 ) -> Result<Response, ContractError> {
-    // Verify the caller is the registered pool contract for this pool_id
-    let pool_addr = POOL_REGISTRY.load(deps.storage, pool_id).map_err(|_| {
+    // Single load covers both the caller-address check and the standard-pool
+    // defense-in-depth gate below.
+    let pool_details = POOLS_BY_ID.load(deps.storage, pool_id).map_err(|_| {
         ContractError::Std(StdError::generic_err(format!(
             "Pool {} not found in registry",
             pool_id
         )))
     })?;
 
-    if info.sender != pool_addr {
+    if info.sender != pool_details.creator_pool_addr {
         return Err(ContractError::Std(StdError::generic_err(
             "Only the registered pool contract can notify threshold crossed",
         )));
@@ -916,12 +919,6 @@ pub fn execute_notify_threshold_crossed(
     // path (it shouldn't — the pool-side Commit handler is gated on
     // PoolKind::Commit). Rejecting here too keeps the bluechip mint
     // schedule cleanly tied to commit-pool threshold events only.
-    let pool_details = POOLS_BY_ID.load(deps.storage, pool_id).map_err(|_| {
-        ContractError::Std(StdError::generic_err(format!(
-            "Pool {} not found in POOLS_BY_ID",
-            pool_id
-        )))
-    })?;
     if pool_details.pool_kind == pool_factory_interfaces::PoolKind::Standard {
         return Err(ContractError::Std(StdError::generic_err(
             "Standard pools do not have a commit threshold to cross",
@@ -1338,18 +1335,13 @@ fn execute_set_anchor_pool(
         )));
     }
 
-    let pool_addr = POOL_REGISTRY.load(deps.storage, pool_id).map_err(|_| {
+    let pool_details = POOLS_BY_ID.load(deps.storage, pool_id).map_err(|_| {
         ContractError::Std(StdError::generic_err(format!(
             "Pool {} not found in registry",
             pool_id
         )))
     })?;
-    let pool_details = POOLS_BY_ID.load(deps.storage, pool_id).map_err(|_| {
-        ContractError::Std(StdError::generic_err(format!(
-            "Pool {} not found in POOLS_BY_ID",
-            pool_id
-        )))
-    })?;
+    let pool_addr = pool_details.creator_pool_addr.clone();
 
     if pool_details.pool_kind != pool_factory_interfaces::PoolKind::Standard {
         return Err(ContractError::Std(StdError::generic_err(

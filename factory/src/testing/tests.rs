@@ -1,8 +1,8 @@
 use crate::mint_bluechips_pool_creation::calculate_mint_amount;
 use crate::state::{
     CreationStatus, FactoryInstantiate, PoolCreationContext, PoolCreationState,
-    FACTORYINSTANTIATEINFO, FIRST_POOL_TIMESTAMP, POOLS_BY_CONTRACT_ADDRESS, POOLS_BY_ID,
-    POOL_COUNTER, POOL_CREATION_CONTEXT, POOL_REGISTRY,
+    FACTORYINSTANTIATEINFO, FIRST_THRESHOLD_TIMESTAMP, POOLS_BY_CONTRACT_ADDRESS, POOLS_BY_ID,
+    POOL_COUNTER, POOL_CREATION_CONTEXT,
 };
 use cosmwasm_std::{
     Addr, BankMsg, Binary, CosmosMsg, Decimal, Env, Event, OwnedDeps, Reply, SubMsgResponse,
@@ -70,6 +70,36 @@ fn create_default_instantiate_msg() -> FactoryInstantiate {
         bluechip_denom: "ubluechip".to_string(),
         standard_pool_creation_fee_usd: cosmwasm_std::Uint128::new(1_000_000),
     }
+}
+
+/// Save a minimal `PoolDetails` for `pool_id` so production code that looks
+/// up a pool address via `POOLS_BY_ID.load(..).creator_pool_addr` works in
+/// tests. Mirrors the pre-consolidation `POOL_REGISTRY.save(..., &addr)`
+/// convenience; the extra fields default to values no test cares about.
+pub fn register_test_pool_addr(
+    storage: &mut dyn cosmwasm_std::Storage,
+    pool_id: u64,
+    pool_addr: &Addr,
+) {
+    POOLS_BY_ID
+        .save(
+            storage,
+            pool_id,
+            &PoolDetails {
+                pool_id,
+                pool_token_info: [
+                    TokenType::Native {
+                        denom: "ubluechip".to_string(),
+                    },
+                    TokenType::CreatorToken {
+                        contract_addr: Addr::unchecked("token"),
+                    },
+                ],
+                creator_pool_addr: pool_addr.clone(),
+                pool_kind: pool_factory_interfaces::PoolKind::Commit,
+            },
+        )
+        .unwrap();
 }
 
 pub fn setup_atom_pool(deps: &mut OwnedDeps<MockStorage, MockApi, WasmMockQuerier>) {
@@ -695,9 +725,6 @@ fn test_complete_pool_creation_flow() {
     assert_eq!(pool_by_id.pool_id, pool_id);
     assert_eq!(pool_by_id.creator_pool_addr, pool_addr.clone());
 
-    let registered_addr = POOL_REGISTRY.load(&deps.storage, pool_id).unwrap();
-    assert_eq!(registered_addr, pool_addr.clone());
-
     // Creation context is cleared on success to avoid permanent bloat.
     assert!(
         POOL_CREATION_CONTEXT.load(&deps.storage, pool_id).is_err(),
@@ -842,7 +869,6 @@ fn test_reply_handling() {
             pool_address: None,
             creation_time: env.block.time,
             status: CreationStatus::Started,
-            retry_count: 0,
         },
     };
     POOL_CREATION_CONTEXT
@@ -2036,11 +2062,9 @@ fn test_bluechip_minting_on_threshold_crossing() {
         "Pool creation should NOT mint bluechip tokens (moved to threshold crossing)"
     );
 
-    // Register pool 1 in POOL_REGISTRY so NotifyThresholdCrossed can verify caller
+    // Register pool 1 in the registry so NotifyThresholdCrossed can verify caller
     let pool_addr = Addr::unchecked("pool_contract_1");
-    crate::state::POOL_REGISTRY
-        .save(deps.as_mut().storage, 1, &pool_addr)
-        .unwrap();
+    register_test_pool_addr(deps.as_mut().storage, 1, &pool_addr);
 
     // Now simulate the pool notifying threshold crossed
     let notify_msg = ExecuteMsg::NotifyThresholdCrossed { pool_id: 1 };
