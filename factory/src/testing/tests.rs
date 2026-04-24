@@ -59,6 +59,7 @@ fn create_default_instantiate_msg() -> FactoryInstantiate {
         pyth_atom_usd_price_feed_id: "ubluechip".to_string(),
         cw20_token_contract_id: 10,
         create_pool_wasm_contract_id: 11,
+        standard_pool_wasm_contract_id: 0,
         bluechip_wallet_address: ubluechip_addr(),
         commit_fee_bluechip: Decimal::percent(1),
         commit_fee_creator: Decimal::percent(5),
@@ -106,6 +107,7 @@ fn proper_initialization() {
         pyth_atom_usd_price_feed_id: "ORCL".to_string(),
         cw20_token_contract_id: 10,
         create_pool_wasm_contract_id: 11,
+        standard_pool_wasm_contract_id: 0,
         bluechip_wallet_address: ubluechip_addr(),
         commit_fee_bluechip: Decimal::percent(10),
         commit_fee_creator: Decimal::percent(10),
@@ -261,6 +263,7 @@ fn create_pair() {
         pyth_atom_usd_price_feed_id: "BLUECHIP".to_string(),
         cw20_token_contract_id: 10,
         create_pool_wasm_contract_id: 11,
+        standard_pool_wasm_contract_id: 0,
         bluechip_wallet_address: ubluechip_addr(),
         commit_fee_bluechip: Decimal::percent(1),
         commit_fee_creator: Decimal::percent(5),
@@ -312,7 +315,6 @@ fn create_pair() {
                 creator_token_address: Addr::unchecked("WILL_BE_CREATED_BY_FACTORY"),
                 max_bluechip_lock_per_pool: Uint128::new(10_000_000_000),
                 creator_excess_liquidity_lock_days: 7,
-                is_standard_pool: None,
             },
             token_info: CreatorTokenInfo {
                 name: "Test Token".to_string(),
@@ -346,6 +348,7 @@ fn test_create_pair_with_custom_params() {
         pyth_atom_usd_price_feed_id: "BLUECHIP".to_string(),
         cw20_token_contract_id: 10,
         create_pool_wasm_contract_id: 11,
+        standard_pool_wasm_contract_id: 0,
         bluechip_wallet_address: ubluechip_addr(),
         commit_fee_bluechip: Decimal::percent(1),
         commit_fee_creator: Decimal::percent(5),
@@ -389,7 +392,6 @@ fn test_create_pair_with_custom_params() {
             creator_token_address: Addr::unchecked("WILL_BE_CREATED_BY_FACTORY"),
             max_bluechip_lock_per_pool: Uint128::new(10_000_000_000),
             creator_excess_liquidity_lock_days: 7,
-            is_standard_pool: None,
         },
         token_info: CreatorTokenInfo {
             name: "Custom Token".to_string(),
@@ -436,7 +438,6 @@ fn create_pool_msg(name: &str) -> ExecuteMsg {
             creator_token_address: Addr::unchecked("WILL_BE_CREATED_BY_FACTORY"),
             max_bluechip_lock_per_pool: Uint128::new(10_000_000_000),
             creator_excess_liquidity_lock_days: 7,
-            is_standard_pool: None,
         },
         token_info: CreatorTokenInfo {
             name: name.to_string(),
@@ -581,6 +582,7 @@ fn test_complete_pool_creation_flow() {
         pyth_atom_usd_price_feed_id: "BLUECHIP".to_string(),
         cw20_token_contract_id: 10,
         create_pool_wasm_contract_id: 11,
+        standard_pool_wasm_contract_id: 0,
         bluechip_wallet_address: ubluechip_addr(),
         commit_fee_bluechip: Decimal::percent(1),
         commit_fee_creator: Decimal::percent(5),
@@ -622,7 +624,6 @@ fn test_complete_pool_creation_flow() {
         creator_token_address: Addr::unchecked("token0000"),
         max_bluechip_lock_per_pool: Uint128::new(10_000_000_000),
         creator_excess_liquidity_lock_days: 7,
-        is_standard_pool: None,
     };
 
     let create_msg = ExecuteMsg::Create {
@@ -737,6 +738,7 @@ fn test_config() {
         pyth_atom_usd_price_feed_id: "ORCL".to_string(),
         cw20_token_contract_id: 1,
         create_pool_wasm_contract_id: 1,
+        standard_pool_wasm_contract_id: 0,
         bluechip_wallet_address: Addr::unchecked("bluechip1..."),
         commit_fee_bluechip: Decimal::percent(10),
         commit_fee_creator: Decimal::percent(10),
@@ -777,6 +779,7 @@ fn test_reply_handling() {
         pyth_atom_usd_price_feed_id: "ORCL".to_string(),
         cw20_token_contract_id: 10,
         create_pool_wasm_contract_id: 11,
+        standard_pool_wasm_contract_id: 0,
         bluechip_wallet_address: ubluechip_addr(),
         commit_fee_bluechip: Decimal::from_ratio(10u128, 100u128),
         commit_fee_creator: Decimal::from_ratio(10u128, 100u128),
@@ -821,7 +824,6 @@ fn test_reply_handling() {
         creator_token_address: Addr::unchecked("token0000"),
         max_bluechip_lock_per_pool: Uint128::new(10_000_000_000),
         creator_excess_liquidity_lock_days: 7,
-        is_standard_pool: None,
     };
 
     let ctx = PoolCreationContext {
@@ -1634,6 +1636,7 @@ fn test_query_pyth_atom_usd_price_success() {
         pyth_atom_usd_price_feed_id: "ATOM_USD".to_string(),
         cw20_token_contract_id: 10,
         create_pool_wasm_contract_id: 11,
+        standard_pool_wasm_contract_id: 0,
         bluechip_wallet_address: ubluechip_addr(),
         commit_fee_bluechip: Decimal::percent(10),
         commit_fee_creator: Decimal::percent(10),
@@ -1678,6 +1681,7 @@ fn test_query_pyth_atom_usd_price_default() {
         pyth_atom_usd_price_feed_id: "ATOM_USD".to_string(),
         cw20_token_contract_id: 10,
         create_pool_wasm_contract_id: 11,
+        standard_pool_wasm_contract_id: 0,
         bluechip_wallet_address: ubluechip_addr(),
         commit_fee_bluechip: Decimal::percent(10),
         commit_fee_creator: Decimal::percent(10),
@@ -1712,6 +1716,7 @@ fn test_query_pyth_extreme_atom_prices() {
         pyth_atom_usd_price_feed_id: "ATOM_USD".to_string(),
         cw20_token_contract_id: 10,
         create_pool_wasm_contract_id: 11,
+        standard_pool_wasm_contract_id: 0,
         bluechip_wallet_address: ubluechip_addr(),
         commit_fee_bluechip: Decimal::percent(10),
         commit_fee_creator: Decimal::percent(10),
@@ -1765,6 +1770,7 @@ fn test_get_bluechip_usd_price_with_pyth() {
         pyth_atom_usd_price_feed_id: "ATOM_USD".to_string(),
         cw20_token_contract_id: 10,
         create_pool_wasm_contract_id: 11,
+        standard_pool_wasm_contract_id: 0,
         bluechip_wallet_address: ubluechip_addr(),
         commit_fee_bluechip: Decimal::percent(10),
         commit_fee_creator: Decimal::percent(10),
@@ -1834,6 +1840,7 @@ fn test_bluechip_usd_price_with_different_atom_prices() {
         pyth_atom_usd_price_feed_id: "ATOM_USD".to_string(),
         cw20_token_contract_id: 10,
         create_pool_wasm_contract_id: 11,
+        standard_pool_wasm_contract_id: 0,
         bluechip_wallet_address: ubluechip_addr(),
         commit_fee_bluechip: Decimal::percent(10),
         commit_fee_creator: Decimal::percent(10),
@@ -1906,6 +1913,7 @@ fn test_conversion_functions_with_pyth() {
         pyth_atom_usd_price_feed_id: "ATOM_USD".to_string(),
         cw20_token_contract_id: 10,
         create_pool_wasm_contract_id: 11,
+        standard_pool_wasm_contract_id: 0,
         bluechip_wallet_address: ubluechip_addr(),
         commit_fee_bluechip: Decimal::percent(10),
         commit_fee_creator: Decimal::percent(10),
@@ -1988,6 +1996,7 @@ fn test_bluechip_minting_on_threshold_crossing() {
         pyth_atom_usd_price_feed_id: "BLUECHIP".to_string(),
         cw20_token_contract_id: 10,
         create_pool_wasm_contract_id: 11,
+        standard_pool_wasm_contract_id: 0,
         bluechip_wallet_address: bluechip_wallet_addr(),
         commit_fee_bluechip: Decimal::percent(1),
         commit_fee_creator: Decimal::percent(5),
@@ -2084,6 +2093,7 @@ fn test_no_mint_when_amount_is_zero() {
         pyth_atom_usd_price_feed_id: "BLUECHIP".to_string(),
         cw20_token_contract_id: 10,
         create_pool_wasm_contract_id: 11,
+        standard_pool_wasm_contract_id: 0,
         bluechip_wallet_address: bluechip_wallet_addr(),
         commit_fee_bluechip: Decimal::percent(1),
         commit_fee_creator: Decimal::percent(5),
@@ -2159,7 +2169,6 @@ fn create_test_pool_msg() -> CreatePool {
         creator_token_address: Addr::unchecked("WILL_BE_CREATED_BY_FACTORY"),
         max_bluechip_lock_per_pool: Uint128::new(10_000_000_000),
         creator_excess_liquidity_lock_days: 7,
-        is_standard_pool: None,
     }
 }
 

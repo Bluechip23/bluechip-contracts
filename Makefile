@@ -25,7 +25,8 @@ build:
 	RUSTFLAGS="-C link-arg=-s" cargo build --release --target $(WASM_TARGET)
 	RUSTFLAGS="-C link-arg=-s" cargo build --release --target $(WASM_TARGET) -p oracle --features testing
 	RUSTFLAGS="-C link-arg=-s" cargo build --release --target $(WASM_TARGET) -p factory --features mock
-	cp target/$(WASM_TARGET)/release/pool.wasm $(ARTIFACTS)/pool.wasm
+	cp target/$(WASM_TARGET)/release/creator_pool.wasm $(ARTIFACTS)/creator_pool.wasm
+	cp target/$(WASM_TARGET)/release/standard_pool.wasm $(ARTIFACTS)/standard_pool.wasm
 	cp target/$(WASM_TARGET)/release/factory.wasm $(ARTIFACTS)/factory.wasm
 	cp target/$(WASM_TARGET)/release/expand_economy.wasm $(ARTIFACTS)/expand_economy.wasm
 	cp target/$(WASM_TARGET)/release/oracle.wasm $(ARTIFACTS)/oracle.wasm
@@ -69,13 +70,15 @@ optimize-all: optimize-pool optimize-factory optimize-expand-economy optimize-mo
 
 # ─── Cosmwasm Check ──────────────────────────────────────────────────────────
 check:
-	cosmwasm-check $(ARTIFACTS)/pool.wasm
+	cosmwasm-check $(ARTIFACTS)/creator_pool.wasm
+	cosmwasm-check $(ARTIFACTS)/standard_pool.wasm
 	cosmwasm-check $(ARTIFACTS)/factory.wasm
 	cosmwasm-check $(ARTIFACTS)/expand_economy.wasm
 	cosmwasm-check $(ARTIFACTS)/oracle.wasm
 
 check-pool:
-	cosmwasm-check $(ARTIFACTS)/pool.wasm
+	cosmwasm-check $(ARTIFACTS)/creator_pool.wasm
+	cosmwasm-check $(ARTIFACTS)/standard_pool.wasm
 
 check-factory:
 	cosmwasm-check $(ARTIFACTS)/factory.wasm
@@ -88,8 +91,17 @@ check-mockoracle:
 
 # ─── Local Chain Deploy (store wasm on local chain) ──────────────────────────
 deploy-pool-local: build
-	@echo "Deploying pool contract to local chain..."
-	$(LOCAL_CHAIN_BIN) tx wasm store $(ARTIFACTS)/pool.wasm \
+	@echo "Deploying creator-pool contract to local chain..."
+	$(LOCAL_CHAIN_BIN) tx wasm store $(ARTIFACTS)/creator_pool.wasm \
+		--from $(LOCAL_FROM) \
+		--chain-id $(LOCAL_CHAIN_ID) \
+		--gas $(LOCAL_GAS) --gas-adjustment $(LOCAL_GAS_ADJ) \
+		--keyring-backend $(LOCAL_KEYRING) \
+		-y --output json
+
+deploy-standard-pool-local: build
+	@echo "Deploying standard-pool contract to local chain..."
+	$(LOCAL_CHAIN_BIN) tx wasm store $(ARTIFACTS)/standard_pool.wasm \
 		--from $(LOCAL_FROM) \
 		--chain-id $(LOCAL_CHAIN_ID) \
 		--gas $(LOCAL_GAS) --gas-adjustment $(LOCAL_GAS_ADJ) \
@@ -130,8 +142,8 @@ deploy-all-local:
 
 # ─── Sei Testnet Deploy ─────────────────────────────────────────────────────
 deploy-pool: optimize-pool
-	@echo "Deploying pool contract to Sei testnet..."
-	seid tx wasm store artifacts/pool.wasm \
+	@echo "Deploying creator-pool contract to Sei testnet..."
+	seid tx wasm store artifacts/creator_pool.wasm \
 		--from $(SEI_FROM) \
 		--node $(SEI_NODE) \
 		--chain-id $(SEI_CHAIN_ID) \
@@ -139,6 +151,17 @@ deploy-pool: optimize-pool
 		--gas 5000000 \
 		--fees 300000usei \
 		-y | tee ./config/pool_deploy_result.txt
+
+deploy-standard-pool: optimize-pool
+	@echo "Deploying standard-pool contract to Sei testnet..."
+	seid tx wasm store artifacts/standard_pool.wasm \
+		--from $(SEI_FROM) \
+		--node $(SEI_NODE) \
+		--chain-id $(SEI_CHAIN_ID) \
+		-b block \
+		--gas 5000000 \
+		--fees 300000usei \
+		-y | tee ./config/standard_pool_deploy_result.txt
 
 deploy-factory: optimize-factory
 	@echo "Deploying factory contract to Sei testnet..."

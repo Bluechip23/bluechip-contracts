@@ -330,6 +330,27 @@ dependencies = [
 ]
 
 [[package]]
+name = "creator-pool"
+version = "1.0.0"
+dependencies = [
+ "cosmwasm-schema",
+ "cosmwasm-std",
+ "cw-multi-test",
+ "cw-storage-plus",
+ "cw-utils",
+ "cw2",
+ "cw20",
+ "cw20-base",
+ "easy-addr",
+ "factory",
+ "oracle",
+ "pool-core",
+ "pool-factory-interfaces",
+ "proptest",
+ "thiserror 2.0.12",
+]
+
+[[package]]
 name = "crossbeam-deque"
 version = "0.8.6"
 source = "registry+https://github.com/rust-lang/crates.io-index"
@@ -912,7 +933,7 @@ source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "57c0d7b74b563b49d38dae00a0c37d4d6de9b432382b2892f0574ddcae73fd0a"
 
 [[package]]
-name = "pool"
+name = "pool-core"
 version = "1.0.0"
 dependencies = [
  "cosmwasm-schema",
@@ -924,10 +945,7 @@ dependencies = [
  "cw20",
  "cw20-base",
  "easy-addr",
- "factory",
- "oracle",
  "pool-factory-interfaces",
- "proptest",
  "thiserror 2.0.12",
 ]
 
@@ -1299,6 +1317,26 @@ checksum = "77549399552de45a898a580c1b41d445bf730df867cc44e6c0233bbc4b8329de"
 dependencies = [
  "digest",
  "rand_core",
+]
+
+[[package]]
+name = "standard-pool"
+version = "1.0.0"
+dependencies = [
+ "cosmwasm-schema",
+ "cosmwasm-std",
+ "cw-multi-test",
+ "cw-storage-plus",
+ "cw-utils",
+ "cw2",
+ "cw20",
+ "cw20-base",
+ "easy-addr",
+ "factory",
+ "oracle",
+ "pool-core",
+ "pool-factory-interfaces",
+ "thiserror 2.0.12",
 ]
 
 [[package]]

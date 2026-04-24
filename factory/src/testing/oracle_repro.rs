@@ -29,6 +29,7 @@ fn test_repro_token_sort_order_bug() {
         pyth_atom_usd_price_feed_id: "id".to_string(),
         cw20_token_contract_id: 1,
         create_pool_wasm_contract_id: 1,
+        standard_pool_wasm_contract_id: 0,
         bluechip_wallet_address: make_addr("wallet"),
         commit_fee_bluechip: Decimal::percent(1),
         commit_fee_creator: Decimal::percent(1),

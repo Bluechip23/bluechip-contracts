@@ -58,6 +58,7 @@ fn default_factory_config() -> FactoryInstantiate {
         pyth_atom_usd_price_feed_id: "ORCL".to_string(),
         cw20_token_contract_id: 10,
         create_pool_wasm_contract_id: 11,
+        standard_pool_wasm_contract_id: 0,
         bluechip_wallet_address: make_addr("ubluechip"),
         commit_fee_bluechip: Decimal::percent(1),
         commit_fee_creator: Decimal::percent(5),
@@ -544,7 +545,6 @@ fn test_m_new_5_multi_pool_creator_no_registry_collision() {
             creator_token_address: Addr::unchecked("token0000"),
             max_bluechip_lock_per_pool: Uint128::new(10_000_000_000),
             creator_excess_liquidity_lock_days: 7,
-            is_standard_pool: None,
         },
         token_info: CreatorTokenInfo {
             name: "TokenA".to_string(),
@@ -604,7 +604,6 @@ fn test_m_new_5_multi_pool_creator_no_registry_collision() {
             creator_token_address: Addr::unchecked("token0000"),
             max_bluechip_lock_per_pool: Uint128::new(10_000_000_000),
             creator_excess_liquidity_lock_days: 7,
-            is_standard_pool: None,
         },
         token_info: CreatorTokenInfo {
             name: "TokenB".to_string(),

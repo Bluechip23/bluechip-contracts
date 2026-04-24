@@ -64,7 +64,8 @@ store_and_get_code_id() {
 }
 
 # ─── Step 1: Upload contracts ────────────────────────────────────────────────
-POOL_CODE_ID=$(store_and_get_code_id "pool.wasm" "Pool")
+POOL_CODE_ID=$(store_and_get_code_id "creator_pool.wasm" "Creator Pool")
+STANDARD_POOL_CODE_ID=$(store_and_get_code_id "standard_pool.wasm" "Standard Pool")
 ORACLE_CODE_ID=$(store_and_get_code_id "oracle.wasm" "Mock Oracle")
 ECON_CODE_ID=$(store_and_get_code_id "expand_economy.wasm" "Expand Economy")
 
@@ -160,6 +161,7 @@ FACTORY_INIT=$(cat <<EOF
   "cw721_nft_contract_id": $CW721_CODE_ID,
   "cw20_token_contract_id": $CW20_CODE_ID,
   "create_pool_wasm_contract_id": $POOL_CODE_ID,
+  "standard_pool_wasm_contract_id": $STANDARD_POOL_CODE_ID,
   "bluechip_wallet_address": "$ALICE_ADDR",
   "commit_fee_bluechip": "0.01",
   "commit_fee_creator": "0.05",
