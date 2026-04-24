@@ -919,11 +919,13 @@ fn test_commit_rate_limiting() {
     let mut env = mock_env();
     let user = Addr::unchecked("user");
 
+    // $5 = MIN_COMMIT_USD_PRE_THRESHOLD; the test is about rate-limiting,
+    // not commit sizing. 5 bluechip atoms @ $1/bluechip = $5 USD.
     let info = message_info(
         &user,
         &[Coin {
             denom: "ubluechip".to_string(),
-            amount: Uint128::new(1_000_000),
+            amount: Uint128::new(5_000_000),
         }],
     );
 
@@ -934,7 +936,7 @@ fn test_commit_rate_limiting() {
             info: TokenType::Native {
                 denom: "ubluechip".to_string(),
             },
-            amount: Uint128::new(1_000_000),
+            amount: Uint128::new(5_000_000),
         },
         transaction_deadline: None,
         belief_price: None,
@@ -1417,35 +1419,39 @@ fn test_oracle_conversion_precision_various_prices() {
         description: &'static str,
     }
 
+    // Every case targets $5 USD — MIN_COMMIT_USD_PRE_THRESHOLD is $5,
+    // so $1 test cases from pre-audit wouldn't reach the validator any
+    // more. Scaling token_amounts by 5x preserves the cross-price
+    // equivalence the test is really checking.
     let test_cases = vec![
         TestCase {
             oracle_price: Uint128::new(1_000_000), // $1
-            token_amount: Uint128::new(1_000_000), // 1 token
-            expected_usd: Uint128::new(1_000_000), // $1
-            description: "$1 per token, 1 token",
+            token_amount: Uint128::new(5_000_000), // 5 tokens
+            expected_usd: Uint128::new(5_000_000), // $5
+            description: "$1 per token, 5 tokens",
         },
         TestCase {
-            oracle_price: Uint128::new(500_000),   // $0.50
-            token_amount: Uint128::new(2_000_000), // 2 tokens
-            expected_usd: Uint128::new(1_000_000), // $1
-            description: "$0.50 per token, 2 tokens",
+            oracle_price: Uint128::new(500_000),    // $0.50
+            token_amount: Uint128::new(10_000_000), // 10 tokens
+            expected_usd: Uint128::new(5_000_000),  // $5
+            description: "$0.50 per token, 10 tokens",
         },
         TestCase {
             oracle_price: Uint128::new(10_000_000), // $10
-            token_amount: Uint128::new(100_000),    // 0.1 tokens
-            expected_usd: Uint128::new(1_000_000),  // $1
-            description: "$10 per token, 0.1 tokens",
+            token_amount: Uint128::new(500_000),    // 0.5 tokens
+            expected_usd: Uint128::new(5_000_000),  // $5
+            description: "$10 per token, 0.5 tokens",
         },
         TestCase {
             oracle_price: Uint128::new(100_000),    // $0.10
-            token_amount: Uint128::new(10_000_000), // 10 tokens
-            expected_usd: Uint128::new(1_000_000),  // $1
-            description: "$0.10 per token, 10 tokens",
+            token_amount: Uint128::new(50_000_000), // 50 tokens
+            expected_usd: Uint128::new(5_000_000),  // $5
+            description: "$0.10 per token, 50 tokens",
         },
         TestCase {
             oracle_price: Uint128::new(3_333_333), // $3.33...
             token_amount: Uint128::new(3_000_000), // 3 tokens
-            expected_usd: Uint128::new(9_999_999), // ~$10
+            expected_usd: Uint128::new(9_999_999), // ~$10 (already over $5)
             description: "$3.33 per token, 3 tokens",
         },
     ];
@@ -1507,11 +1513,15 @@ fn test_extreme_oracle_prices() {
     with_factory_oracle(&mut deps_low, Uint128::new(1_000)); // $0.001
 
     let env = mock_env();
+    // 5B bluechip atoms @ $0.001/bluechip = $5 USD (atomics 5_000_000)
+    // — exactly MIN_COMMIT_USD_PRE_THRESHOLD. Below the threshold the
+    // $5 min commit guard would reject; this test is about the math at
+    // a very low rate, not the guard.
     let info_low = message_info(
         &Addr::unchecked("user"),
         &[Coin {
             denom: "ubluechip".to_string(),
-            amount: Uint128::new(1_000_000_000),
+            amount: Uint128::new(5_000_000_000),
         }],
     );
 
@@ -1520,7 +1530,7 @@ fn test_extreme_oracle_prices() {
             info: TokenType::Native {
                 denom: "ubluechip".to_string(),
             },
-            amount: Uint128::new(1_000_000_000),
+            amount: Uint128::new(5_000_000_000),
         },
         transaction_deadline: None,
         belief_price: None,
@@ -1531,7 +1541,7 @@ fn test_extreme_oracle_prices() {
     assert!(res_low.is_ok(), "Should handle very low prices");
 
     let usd_low = USD_RAISED_FROM_COMMIT.load(&deps_low.storage).unwrap();
-    assert_eq!(usd_low, Uint128::new(1_000_000));
+    assert_eq!(usd_low, Uint128::new(5_000_000));
 
     let mut deps_high = mock_dependencies_with_balance(&[Coin {
         denom: "ubluechip".to_string(),
@@ -1738,7 +1748,12 @@ fn test_rounding_error_accumulation() {
 
     for i in 0..1000 {
         let user = format!("user{}", i);
-        let amount = Uint128::new(4_000_000); // ~$1.33 USD, above $1 minimum
+        // 16M bluechip atoms @ $0.333333/bluechip ≈ $5.33 — above
+        // MIN_COMMIT_USD_PRE_THRESHOLD ($5). 1000 commits at ~$5.33
+        // accumulate to ~$5,333, well under the $25k threshold so
+        // every commit stays pre-threshold (which is what this test
+        // exercises: rounding drift in the ledger USD accumulator).
+        let amount = Uint128::new(16_000_000);
 
         // Manual calculation
         let expected_usd = amount * Uint128::new(333_333) / Uint128::new(1_000_000);

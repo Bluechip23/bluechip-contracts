@@ -292,8 +292,11 @@ fn test_no_excess_when_under_cap() {
 
     deps.querier.update_wasm(move |query| match query {
         WasmQuery::Smart { msg: _, .. } => {
+            // Return $5 USD regardless of input so the pre-threshold
+            // minimum commit check ($5) passes. Tests below don't
+            // depend on the exact USD_RAISED delta.
             let response = ConversionResponse {
-                amount: Uint128::new(1_000_000),
+                amount: Uint128::new(5_000_000),
                 rate_used: Uint128::new(1_000_000),
                 timestamp: 1571797419u64, // matches mock_env block time
             };
@@ -527,8 +530,13 @@ fn test_commit_exact_threshold() {
     THRESHOLD_PROCESSING
         .save(&mut deps.storage, &false)
         .unwrap();
+    // Pre-test USD_RAISED is $5 below the $25k threshold so that a
+    // minimum-size ($5) commit lands exactly at $25k. The $5 minimum
+    // commit (MIN_COMMIT_USD_PRE_THRESHOLD) was added post-audit; this
+    // test was originally written with a $1 commit hitting the threshold
+    // from $24,999. Updated to respect the current minimum.
     USD_RAISED_FROM_COMMIT
-        .save(&mut deps.storage, &Uint128::new(24_999_000_000))
+        .save(&mut deps.storage, &Uint128::new(24_995_000_000))
         .unwrap();
 
     let previous_user = Addr::unchecked("previous_user");
@@ -536,7 +544,7 @@ fn test_commit_exact_threshold() {
         .save(
             &mut deps.storage,
             &previous_user,
-            &Uint128::new(24_999_000_000),
+            &Uint128::new(24_995_000_000),
         )
         .unwrap();
 
@@ -544,7 +552,7 @@ fn test_commit_exact_threshold() {
 
     with_factory_oracle(&mut deps, Uint128::new(1_000_000)); // $1 per bluechip
 
-    let commit_amount = Uint128::new(1_000_000);
+    let commit_amount = Uint128::new(5_000_000);
 
     let info = message_info(
         &Addr::unchecked("user"),
@@ -646,12 +654,15 @@ fn test_concurrent_threshold_crossing_attempts() {
         .save(&mut deps.storage, &env.block.time)
         .unwrap();
 
-    // Second user tries to commit while first is processing
+    // Second user tries to commit while first is processing.
+    // Using $5 = MIN_COMMIT_USD_PRE_THRESHOLD so the commit passes
+    // the size guard; the test itself is about the THRESHOLD_PROCESSING
+    // lock, not about commit sizing.
     let info2 = message_info(
         &Addr::unchecked("user2"),
         &[Coin {
             denom: "ubluechip".to_string(),
-            amount: Uint128::new(2_000_000),
+            amount: Uint128::new(5_000_000),
         }],
     );
 
@@ -660,7 +671,7 @@ fn test_concurrent_threshold_crossing_attempts() {
             info: TokenType::Native {
                 denom: "ubluechip".to_string(),
             },
-            amount: Uint128::new(2_000_000),
+            amount: Uint128::new(5_000_000),
         },
         transaction_deadline: None,
         belief_price: None,
@@ -901,24 +912,28 @@ fn test_concurrent_threshold_crossing_race_condition() {
     setup_pool_storage(&mut deps);
     check_correct_factory(&mut deps);
 
-    // Setup pool just below threshold
+    // Setup pool just below threshold. $5 below (not $1) so that the
+    // minimum commit ($5 MIN_COMMIT_USD_PRE_THRESHOLD) crosses.
     USD_RAISED_FROM_COMMIT
-        .save(&mut deps.storage, &Uint128::new(24_999_000_000))
+        .save(&mut deps.storage, &Uint128::new(24_995_000_000))
         .unwrap();
-    // At $1/bluechip, $24,999 worth of bluechip was raised
+    // At $1/bluechip, $24,995 worth of bluechip was raised
     crate::state::NATIVE_RAISED_FROM_COMMIT
-        .save(&mut deps.storage, &Uint128::new(24_999_000_000))
+        .save(&mut deps.storage, &Uint128::new(24_995_000_000))
         .unwrap();
 
     let env = mock_env();
     with_factory_oracle(&mut deps, Uint128::new(1_000_000));
 
-    // User 1 commits enough to cross
+    // User 1 commits enough to OVERSHOOT the threshold. The
+    // "threshold_crossing" phase (vs "threshold_hit_exact") requires
+    // USD_RAISED to strictly exceed the threshold after the commit.
+    // Pre: $24,995. Commit: $10. Post: $25,005 → overshoot by $5.
     let info1 = message_info(
         &Addr::unchecked("user1"),
         &[Coin {
             denom: "ubluechip".to_string(),
-            amount: Uint128::new(2_000_000),
+            amount: Uint128::new(10_000_000),
         }],
     );
     let msg1 = ExecuteMsg::Commit {
@@ -926,7 +941,7 @@ fn test_concurrent_threshold_crossing_race_condition() {
             info: TokenType::Native {
                 denom: "ubluechip".to_string(),
             },
-            amount: Uint128::new(2_000_000),
+            amount: Uint128::new(10_000_000),
         },
         transaction_deadline: None,
         belief_price: None,
@@ -938,7 +953,7 @@ fn test_concurrent_threshold_crossing_race_condition() {
         &Addr::unchecked("user2"),
         &[Coin {
             denom: "ubluechip".to_string(),
-            amount: Uint128::new(2_000_000),
+            amount: Uint128::new(5_000_000),
         }],
     );
     let msg2 = msg1.clone();
@@ -1098,8 +1113,11 @@ fn test_unpaused_pool_accepts_commit_after_previously_paused() {
     // Needs oracle query; wire the conversion mock.
     deps.querier.update_wasm(move |query| match query {
         WasmQuery::Smart { msg: _, .. } => {
+            // Return $5 USD regardless of input so the pre-threshold
+            // minimum commit check ($5) passes. Tests below don't
+            // depend on the exact USD_RAISED delta.
             let response = ConversionResponse {
-                amount: Uint128::new(1_000_000),
+                amount: Uint128::new(5_000_000),
                 rate_used: Uint128::new(1_000_000),
                 timestamp: 1571797419u64, // matches mock_env block time
             };
