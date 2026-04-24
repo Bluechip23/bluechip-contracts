@@ -148,7 +148,7 @@ pub fn execute(
     }
 }
 
-pub fn assert_correct_factory_address(deps: Deps, info: MessageInfo) -> StdResult<bool> {
+pub fn ensure_admin(deps: Deps, info: &MessageInfo) -> StdResult<()> {
     let config = FACTORYINSTANTIATEINFO.load(deps.storage)?;
 
     if info.sender != config.factory_admin_address {
@@ -157,7 +157,7 @@ pub fn assert_correct_factory_address(deps: Deps, info: MessageInfo) -> StdResul
             config.factory_admin_address, info.sender
         )));
     }
-    Ok(true)
+    Ok(())
 }
 
 /// Validates every caller-supplied address + the bluechip_denom on a
@@ -188,7 +188,7 @@ pub fn execute_update_factory_config(
     env: Env,
     info: MessageInfo,
 ) -> Result<Response, ContractError> {
-    assert_correct_factory_address(deps.as_ref(), info)?;
+    ensure_admin(deps.as_ref(), &info)?;
 
     let pending = PENDING_CONFIG.load(deps.storage)?;
 
@@ -208,7 +208,7 @@ pub fn execute_propose_factory_config_update(
     info: MessageInfo,
     config: FactoryInstantiate,
 ) -> Result<Response, ContractError> {
-    assert_correct_factory_address(deps.as_ref(), info)?;
+    ensure_admin(deps.as_ref(), &info)?;
     // Validate at propose time so any mistake surfaces 48h earlier than it
     // otherwise would (the existing config keeps flowing until the timelock
     // elapses and the admin calls UpdateConfig, but a malformed proposal
@@ -229,7 +229,7 @@ pub fn execute_cancel_factory_config_update(
     deps: DepsMut,
     info: MessageInfo,
 ) -> Result<Response, ContractError> {
-    assert_correct_factory_address(deps.as_ref(), info)?;
+    ensure_admin(deps.as_ref(), &info)?;
     PENDING_CONFIG.remove(deps.storage);
     Ok(Response::new().add_attribute("action", "cancel_config_update"))
 }
@@ -448,7 +448,7 @@ pub fn execute_propose_pool_upgrade(
     pool_ids: Option<Vec<u64>>,
     migrate_msg: Binary,
 ) -> Result<Response, ContractError> {
-    assert_correct_factory_address(deps.as_ref(), info)?;
+    ensure_admin(deps.as_ref(), &info)?;
 
     if PENDING_POOL_UPGRADE.may_load(deps.storage)?.is_some() {
         return Err(ContractError::Std(StdError::generic_err(
@@ -534,7 +534,7 @@ pub fn execute_apply_pool_upgrade(
     env: Env,
     info: MessageInfo,
 ) -> Result<Response, ContractError> {
-    assert_correct_factory_address(deps.as_ref(), info)?;
+    ensure_admin(deps.as_ref(), &info)?;
 
     let upgrade = PENDING_POOL_UPGRADE.load(deps.storage)?;
 
@@ -602,7 +602,7 @@ pub fn execute_cancel_pool_upgrade(
     deps: DepsMut,
     info: MessageInfo,
 ) -> Result<Response, ContractError> {
-    assert_correct_factory_address(deps.as_ref(), info)?;
+    ensure_admin(deps.as_ref(), &info)?;
 
     let upgrade = PENDING_POOL_UPGRADE.may_load(deps.storage)?;
     if upgrade.is_none() {
@@ -622,7 +622,7 @@ pub fn execute_propose_pool_config_update(
     pool_id: u64,
     update_msg: PoolConfigUpdate,
 ) -> Result<Response, ContractError> {
-    assert_correct_factory_address(deps.as_ref(), info)?;
+    ensure_admin(deps.as_ref(), &info)?;
 
     // Verify pool exists. `.has()` skips deserializing PoolDetails since
     // we only need the existence check, not the value.
@@ -666,7 +666,7 @@ pub fn execute_apply_pool_config_update(
     info: MessageInfo,
     pool_id: u64,
 ) -> Result<Response, ContractError> {
-    assert_correct_factory_address(deps.as_ref(), info)?;
+    ensure_admin(deps.as_ref(), &info)?;
 
     let pending = PENDING_POOL_CONFIG
         .load(deps.storage, pool_id)
@@ -710,7 +710,7 @@ pub fn execute_cancel_pool_config_update(
     info: MessageInfo,
     pool_id: u64,
 ) -> Result<Response, ContractError> {
-    assert_correct_factory_address(deps.as_ref(), info)?;
+    ensure_admin(deps.as_ref(), &info)?;
 
     if PENDING_POOL_CONFIG
         .may_load(deps.storage, pool_id)?
@@ -753,7 +753,7 @@ fn forward_pool_admin(
     action: &'static str,
     pool_msg: PoolAdminMsg,
 ) -> Result<Response, ContractError> {
-    assert_correct_factory_address(deps, info)?;
+    ensure_admin(deps, &info)?;
     let pool_addr = POOLS_BY_ID
         .load(deps.storage, pool_id)
         .map_err(|_| {
@@ -844,7 +844,7 @@ pub fn execute_continue_pool_upgrade(
     // large enough that the chained execute messages exceeded block gas
     // limits in a single tx. Making this admin-only forces batches to be
     // submitted as separate transactions, each with its own gas budget.
-    assert_correct_factory_address(deps.as_ref(), info)?;
+    ensure_admin(deps.as_ref(), &info)?;
 
     let mut upgrade = PENDING_POOL_UPGRADE.load(deps.storage)?;
 
@@ -977,7 +977,7 @@ pub fn execute_set_oracle_update_bounty(
     info: MessageInfo,
     new_bounty: Uint128,
 ) -> Result<Response, ContractError> {
-    assert_correct_factory_address(deps.as_ref(), info)?;
+    ensure_admin(deps.as_ref(), &info)?;
 
     if new_bounty > MAX_ORACLE_UPDATE_BOUNTY_USD {
         return Err(ContractError::Std(StdError::generic_err(format!(
@@ -1001,7 +1001,7 @@ pub fn execute_set_distribution_bounty(
     info: MessageInfo,
     new_bounty: Uint128,
 ) -> Result<Response, ContractError> {
-    assert_correct_factory_address(deps.as_ref(), info)?;
+    ensure_admin(deps.as_ref(), &info)?;
 
     if new_bounty > MAX_DISTRIBUTION_BOUNTY_USD {
         return Err(ContractError::Std(StdError::generic_err(format!(
@@ -1329,7 +1329,7 @@ fn execute_set_anchor_pool(
     info: MessageInfo,
     pool_id: u64,
 ) -> Result<Response, ContractError> {
-    assert_correct_factory_address(deps.as_ref(), info.clone())?;
+    ensure_admin(deps.as_ref(), &info)?;
 
     if crate::state::INITIAL_ANCHOR_SET
         .may_load(deps.storage)?
