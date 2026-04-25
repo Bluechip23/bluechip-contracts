@@ -40,6 +40,7 @@ fn default_init() -> FactoryInstantiate {
         atom_bluechip_anchor_pool_address: addr("unused_anchor"),
         bluechip_mint_contract_address: None,
         bluechip_denom: "ubluechip".to_string(),
+        atom_denom: "uatom".to_string(),
         standard_pool_creation_fee_usd: cosmwasm_std::Uint128::new(1_000_000),
     }
 }

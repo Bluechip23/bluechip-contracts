@@ -225,13 +225,44 @@ pub fn execute_set_anchor_pool(
 
     let factory_config = FACTORYINSTANTIATEINFO.load(deps.storage)?;
     let canonical = &factory_config.bluechip_denom;
-    let has_canonical_bluechip = pool_details.pool_token_info.iter().any(|t| {
-        matches!(t, crate::asset::TokenType::Native { denom } if denom == canonical)
-    });
-    if !has_canonical_bluechip {
+    let atom_denom = &factory_config.atom_denom;
+
+    // Defense for old serialized records that round-trip with an empty
+    // `atom_denom` via the field's `#[serde(default)]`. New deployments
+    // get this checked at instantiate (`validate_factory_config`); the
+    // gate here covers the migration window.
+    if atom_denom.trim().is_empty() {
+        return Err(ContractError::Std(StdError::generic_err(
+            "atom_denom is not configured; propose a factory config update setting \
+             `atom_denom` (e.g. \"uatom\" or your chain's IBC-wrapped atom denom) \
+             before calling SetAnchorPool.",
+        )));
+    }
+
+    // Strict shape: the anchor MUST be a Native/Native pair of exactly
+    // (bluechip_denom, atom_denom) — order doesn't matter. Anything
+    // else (bluechip + arbitrary IBC denom, bluechip + CW20, atom +
+    // CW20, etc.) is rejected so a compromised admin key can't point
+    // the anchor at a pool whose price has no relation to the Pyth
+    // ATOM/USD feed the rest of the oracle math depends on.
+    use crate::asset::TokenType;
+    let denoms: Vec<&str> = pool_details
+        .pool_token_info
+        .iter()
+        .filter_map(|t| match t {
+            TokenType::Native { denom } => Some(denom.as_str()),
+            TokenType::CreatorToken { .. } => None,
+        })
+        .collect();
+
+    let valid_pair = denoms.len() == 2
+        && ((denoms[0] == canonical && denoms[1] == atom_denom)
+            || (denoms[0] == atom_denom && denoms[1] == canonical));
+    if !valid_pair {
         return Err(ContractError::Std(StdError::generic_err(format!(
-            "Anchor pool must include the canonical bluechip denom \"{}\" on one side",
-            canonical
+            "Anchor pool must be a Native/Native pair of exactly (bluechip \"{}\", \
+             atom \"{}\") in either order; got pool with assets {:?}",
+            canonical, atom_denom, pool_details.pool_token_info
         ))));
     }
 
