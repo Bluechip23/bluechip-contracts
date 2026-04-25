@@ -99,7 +99,7 @@ pub(super) fn process_post_threshold_commit(
     )?;
 
     // Update analytics
-    let mut analytics = POOL_ANALYTICS.load(deps.storage).unwrap_or_default();
+    let mut analytics = POOL_ANALYTICS.may_load(deps.storage)?.unwrap_or_default();
     analytics.total_commit_count += 1;
     analytics.total_swap_count += 1;
     analytics.total_volume_0 = analytics.total_volume_0.saturating_add(swap_amount);

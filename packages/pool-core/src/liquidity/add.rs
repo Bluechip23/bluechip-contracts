@@ -111,7 +111,7 @@ pub fn add_to_position(
     POOL_FEE_STATE.save(deps.storage, &pool_fee_state)?;
 
     // Update analytics
-    let mut analytics = POOL_ANALYTICS.load(deps.storage).unwrap_or_default();
+    let mut analytics = POOL_ANALYTICS.may_load(deps.storage)?.unwrap_or_default();
     analytics.total_lp_deposit_count += 1;
     POOL_ANALYTICS.save(deps.storage, &analytics)?;
 

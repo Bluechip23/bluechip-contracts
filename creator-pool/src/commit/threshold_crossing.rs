@@ -220,7 +220,7 @@ pub(super) fn process_threshold_crossing_with_excess(
     THRESHOLD_PROCESSING.save(deps.storage, &false)?;
 
     // Update analytics
-    let mut analytics = POOL_ANALYTICS.load(deps.storage).unwrap_or_default();
+    let mut analytics = POOL_ANALYTICS.may_load(deps.storage)?.unwrap_or_default();
     analytics.total_commit_count += 1;
     if !capped_excess.is_zero() && !return_amt.is_zero() {
         analytics.total_swap_count += 1;

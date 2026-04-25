@@ -151,7 +151,7 @@ pub(crate) fn execute_create_creator_pool(
     // `is_standard_pool: Some(true)` bypass on `CreatePool` is gone.
 
     let sender = info.sender.clone();
-    let pool_counter = POOL_COUNTER.load(deps.storage).unwrap_or(0);
+    let pool_counter = POOL_COUNTER.may_load(deps.storage)?.unwrap_or(0);
     let pool_id = pool_counter + 1;
     POOL_COUNTER.save(deps.storage, &pool_id)?;
     let msg = WasmMsg::Instantiate {
@@ -354,7 +354,7 @@ pub(crate) fn execute_create_standard_pool(
     // doesn't burn a counter slot on revert; it does mean an in-flight
     // parallel commit pool and standard pool can't both reserve the
     // same id, which is intentional (they share POOLS_BY_ID).
-    let pool_counter = POOL_COUNTER.load(deps.storage).unwrap_or(0);
+    let pool_counter = POOL_COUNTER.may_load(deps.storage)?.unwrap_or(0);
     let pool_id = pool_counter + 1;
     POOL_COUNTER.save(deps.storage, &pool_id)?;
 

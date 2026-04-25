@@ -411,7 +411,7 @@ pub fn execute_simple_swap(
     POOL_STATE.save(deps.storage, &pool_state)?;
 
     // Update analytics counters
-    let mut analytics = POOL_ANALYTICS.load(deps.storage).unwrap_or_default();
+    let mut analytics = POOL_ANALYTICS.may_load(deps.storage)?.unwrap_or_default();
     analytics.total_swap_count += 1;
     if offer_index == 0 {
         analytics.total_volume_0 = analytics.total_volume_0.saturating_add(offer_asset.amount);

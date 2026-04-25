@@ -296,7 +296,7 @@ pub fn query_analytics_core(
     total_usd_raised: Uint128,
     total_bluechip_raised: Uint128,
 ) -> StdResult<PoolAnalyticsResponse> {
-    let analytics = POOL_ANALYTICS.load(deps.storage).unwrap_or_default();
+    let analytics = POOL_ANALYTICS.may_load(deps.storage)?.unwrap_or_default();
     let pool_state = POOL_STATE.load(deps.storage)?;
     let pool_fee_state = POOL_FEE_STATE.load(deps.storage)?;
     let next_position_id = NEXT_POSITION_ID.load(deps.storage)?;

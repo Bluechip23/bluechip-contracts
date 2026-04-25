@@ -114,7 +114,7 @@ pub fn remove_all_liquidity(
     POOL_FEE_STATE.save(deps.storage, &pool_fee_state)?;
 
     // Update analytics
-    let mut analytics = POOL_ANALYTICS.load(deps.storage).unwrap_or_default();
+    let mut analytics = POOL_ANALYTICS.may_load(deps.storage)?.unwrap_or_default();
     analytics.total_lp_withdrawal_count += 1;
     POOL_ANALYTICS.save(deps.storage, &analytics)?;
 
@@ -321,7 +321,7 @@ pub fn remove_partial_liquidity(
     LIQUIDITY_POSITIONS.save(deps.storage, &position_id, &liquidity_position)?;
 
     // Update analytics
-    let mut analytics = POOL_ANALYTICS.load(deps.storage).unwrap_or_default();
+    let mut analytics = POOL_ANALYTICS.may_load(deps.storage)?.unwrap_or_default();
     analytics.total_lp_withdrawal_count += 1;
     POOL_ANALYTICS.save(deps.storage, &analytics)?;
 

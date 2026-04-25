@@ -334,7 +334,7 @@ fn execute_commit_logic(
                         THRESHOLD_PROCESSING.save(deps.storage, &false)?;
 
                         // Update analytics
-                        let mut analytics = POOL_ANALYTICS.load(deps.storage).unwrap_or_default();
+                        let mut analytics = POOL_ANALYTICS.may_load(deps.storage)?.unwrap_or_default();
                         analytics.total_commit_count += 1;
                         POOL_ANALYTICS.save(deps.storage, &analytics)?;
 
