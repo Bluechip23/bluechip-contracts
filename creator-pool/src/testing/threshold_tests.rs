@@ -678,18 +678,29 @@ fn test_concurrent_threshold_crossing_attempts() {
         max_spread: None,
     };
 
-    let res = execute(deps.as_mut(), env.clone(), info2, msg);
+    let err = execute(deps.as_mut(), env.clone(), info2, msg).unwrap_err();
 
-    // Should succeed but process as pre-threshold commit
-    assert!(res.is_ok());
-    let res = res.unwrap();
+    // After H14, a stuck `THRESHOLD_PROCESSING = true` (pre-set in this
+    // test to simulate corruption) is reported as an explicit error
+    // pointing at the recovery path, instead of silently downgrading the
+    // user-intended threshold-crossing commit into pre/post-threshold.
+    // The error message references the StuckThreshold recovery so the
+    // operator/keeper has a clear remediation step.
+    let msg = err.to_string();
+    assert!(
+        msg.contains("THRESHOLD_PROCESSING") && msg.contains("StuckThreshold"),
+        "stuck-state commit must point at StuckThreshold recovery, got: {}",
+        msg
+    );
 
-    // Should NOT have threshold_crossing phase since someone else is processing
-    assert!(res
-        .attributes
-        .iter()
-        .find(|a| a.key == "phase")
-        .map_or(true, |a| a.value != "threshold_crossing"));
+    // Storage state must be untouched: the rejection happens before any
+    // commit-side writes, so USD_RAISED_FROM_COMMIT and IS_THRESHOLD_HIT
+    // are exactly as the test set them up.
+    assert_eq!(
+        USD_RAISED_FROM_COMMIT.load(&deps.storage).unwrap(),
+        Uint128::new(24_999_000_000)
+    );
+    assert!(!IS_THRESHOLD_HIT.load(&deps.storage).unwrap());
 }
 
 #[test]

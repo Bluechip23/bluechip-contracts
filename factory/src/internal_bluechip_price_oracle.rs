@@ -33,6 +33,26 @@ pub const TWAP_WINDOW: u64 = 3600;
 pub const UPDATE_INTERVAL: u64 = 300;
 pub const ROTATION_INTERVAL: u64 = 3600;
 
+/// TWAP circuit breaker. Maximum allowed drift between the previously-cached
+/// `bluechip_price_cache.last_price` and the freshly-computed TWAP, in basis
+/// points. Rejects any oracle update where the new TWAP differs from the
+/// prior by more than this threshold.
+///
+/// 3000 bps = 30%. Sized for early-ecosystem volatility on a low-liquidity
+/// token: a real ±30% move per 300s `UPDATE_INTERVAL` is extreme but not
+/// unheard-of around exchange listings, large-cap announcements, or genuine
+/// market shocks. Anything above 30% per 5 minutes is overwhelmingly more
+/// likely to be a manipulation attempt or upstream feed glitch than a real
+/// market move; we'd rather freeze the oracle and force a human to look
+/// than let an obviously-wrong price flow into commit USD valuations.
+///
+/// Skipped on the first update (when prior == 0) so genuine bootstrap
+/// values can land. Recovery from a tripped breaker: wait for the
+/// underlying spot pools to arb back to a sane range, or admin can
+/// `ProposeForceRotateOraclePools` to swap out a manipulated pool from
+/// the sample set.
+pub const MAX_TWAP_DRIFT_BPS: u64 = 3000;
+
 // Minimum number of threshold-crossed creator pools (in addition to the
 // anchor ATOM/bluechip pool) required before the factory is willing to
 // return a TWAP-derived bluechip USD price. Until at least this many
@@ -494,6 +514,46 @@ pub fn update_internal_oracle_price(
         .retain(|obs| obs.timestamp >= cutoff_time);
 
     let twap_price = calculate_twap(&oracle.bluechip_price_cache.twap_observations)?;
+
+    // Circuit breaker. If the freshly-computed TWAP has drifted more than
+    // MAX_TWAP_DRIFT_BPS from the previously-cached `last_price`, reject
+    // this update entirely. The full tx reverts (push to twap_observations,
+    // pyth cache update, etc.) so the next caller sees the prior cached
+    // state and gets to retry against fresh observations. See
+    // `MAX_TWAP_DRIFT_BPS` doc for sizing rationale and recovery path.
+    //
+    // First-update bootstrap (`prior == 0`) bypasses the check so the
+    // very first observation can land. After that, every subsequent
+    // update is rate-limited to the bps threshold per UPDATE_INTERVAL.
+    let prior = oracle.bluechip_price_cache.last_price;
+    if !prior.is_zero() {
+        let (smaller, larger) = if twap_price > prior {
+            (prior, twap_price)
+        } else {
+            (twap_price, prior)
+        };
+        let diff = larger.checked_sub(smaller)?;
+        // Saturate any overflow in the bps ratio to "definitely tripped"
+        // — if `diff * 10_000` overflows u128, the drift is astronomically
+        // larger than MAX_TWAP_DRIFT_BPS and the breaker should fire
+        // unconditionally.
+        let drift_bps_u128 = match diff.checked_mul(Uint128::from(10_000u128)) {
+            Ok(scaled) => scaled
+                .checked_div(smaller)
+                .map(|v| v.u128())
+                .unwrap_or(u128::MAX),
+            Err(_) => u128::MAX,
+        };
+        if drift_bps_u128 > MAX_TWAP_DRIFT_BPS as u128 {
+            return Err(ContractError::TwapCircuitBreaker {
+                prior,
+                new: twap_price,
+                drift_bps: drift_bps_u128,
+                max_bps: MAX_TWAP_DRIFT_BPS,
+            });
+        }
+    }
+
     oracle.bluechip_price_cache.last_price = twap_price;
     oracle.bluechip_price_cache.last_update = current_time;
 

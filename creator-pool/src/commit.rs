@@ -237,44 +237,40 @@ fn execute_commit_logic(
                 if new_total >= commit_config.commit_amount_for_threshold_usd {
                     LAST_THRESHOLD_ATTEMPT.save(deps.storage, &env.block.time)?;
 
-                    let processing = THRESHOLD_PROCESSING
+                    // THRESHOLD_PROCESSING is set to `true` immediately
+                    // below, then cleared at the end of the threshold-
+                    // crossing path (excess or exact-hit branch). If the
+                    // crossing handler errors, the entire tx reverts —
+                    // including this `save(true)` — so the storage
+                    // reverts to whatever it was before this tx (which
+                    // was `false`). REENTRANCY_LOCK separately blocks
+                    // any in-tx reentry. Net: under normal operation,
+                    // `THRESHOLD_PROCESSING == true` at this point is
+                    // structurally unreachable.
+                    //
+                    // The only way to observe a stuck `true` is genuine
+                    // storage corruption (unrecoverable bug) or an
+                    // interrupted prior tx that somehow committed without
+                    // clearing the flag (would also indicate a bug).
+                    // Rather than silently downgrading the user's intended
+                    // threshold-crossing commit into a pre/post-threshold
+                    // commit (the prior fallback behavior, which violated
+                    // user intent and hid the underlying corruption),
+                    // surface the stuck state with an explicit error
+                    // pointing operators at the recovery path.
+                    if THRESHOLD_PROCESSING
                         .may_load(deps.storage)?
-                        .unwrap_or(false);
-                    let can_process = if processing {
-                        false
-                    } else {
-                        THRESHOLD_PROCESSING.save(deps.storage, &true)?;
-                        true
-                    };
-
-                    if !can_process {
-                        if IS_THRESHOLD_HIT.load(deps.storage)? {
-                            return process_post_threshold_commit(
-                                deps,
-                                env,
-                                sender,
-                                asset,
-                                amount_after_fees,
-                                usd_value,
-                                messages,
-                                belief_price,
-                                max_spread,
-                                &pool_info,
-                                &pool_specs,
-                                &mut pool_state,
-                                &mut pool_fee_state,
-                            );
-                        }
-                        return process_pre_threshold_commit(
-                            deps,
-                            env,
-                            sender,
-                            &asset,
-                            usd_value,
-                            messages,
-                            &pool_state,
-                        );
+                        .unwrap_or(false)
+                    {
+                        return Err(ContractError::Std(StdError::generic_err(
+                            "THRESHOLD_PROCESSING is stuck = true; should be \
+                             unreachable in normal operation. Use the factory's \
+                             RecoverPoolStuckStates with StuckThreshold to \
+                             clear it (waits 1 hour from LAST_THRESHOLD_ATTEMPT), \
+                             then retry the commit.",
+                        )));
                     }
+                    THRESHOLD_PROCESSING.save(deps.storage, &true)?;
 
                     // Calculate exact amounts for threshold crossing
                     let usd_to_threshold = commit_config
