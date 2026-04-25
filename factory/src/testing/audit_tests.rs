@@ -17,9 +17,9 @@ use crate::msg::{CreatorTokenInfo, ExecuteMsg};
 use crate::pool_struct::{CommitFeeInfo, CreatePool, PoolConfigUpdate, PoolDetails};
 use crate::state::{
     FactoryInstantiate, PENDING_CONFIG, POOLS_BY_CONTRACT_ADDRESS, POOLS_BY_ID, POOL_COUNTER,
-    POOL_REGISTRY, POOL_THRESHOLD_MINTED,
+    POOL_THRESHOLD_MINTED,
 };
-use crate::testing::tests::{create_instantiate_reply, setup_atom_pool};
+use crate::testing::tests::{create_instantiate_reply, register_test_pool_addr, setup_atom_pool};
 use pool_factory_interfaces::PoolStateResponseForFactory;
 
 fn make_addr(label: &str) -> Addr {
@@ -85,9 +85,7 @@ fn test_notify_threshold_crossed_unauthorized_caller() {
     setup_factory(&mut deps);
 
     // Register pool 1 at a specific address
-    POOL_REGISTRY
-        .save(&mut deps.storage, 1, &Addr::unchecked("pool_contract_1"))
-        .unwrap();
+    register_test_pool_addr(&mut deps.storage, 1, &Addr::unchecked("pool_contract_1"));
 
     let env = mock_env();
 
@@ -113,9 +111,7 @@ fn test_notify_threshold_crossed_double_call_prevention() {
     setup_factory(&mut deps);
 
     // Register pool 1
-    POOL_REGISTRY
-        .save(&mut deps.storage, 1, &Addr::unchecked("pool_contract_1"))
-        .unwrap();
+    register_test_pool_addr(&mut deps.storage, 1, &Addr::unchecked("pool_contract_1"));
 
     // Mark as already minted
     POOL_THRESHOLD_MINTED
@@ -139,7 +135,7 @@ fn test_notify_threshold_crossed_unregistered_pool() {
     let mut deps = mock_deps_with_querier(&[]);
     setup_factory(&mut deps);
 
-    // Don't register any pool in POOL_REGISTRY
+    // Don't register any pool in POOLS_BY_ID
 
     let env = mock_env();
     let pool_info = message_info(&Addr::unchecked("pool_contract_1"), &[]);
@@ -249,9 +245,7 @@ fn test_update_pool_config_sends_message_to_pool() {
     setup_factory(&mut deps);
 
     // Register a pool
-    POOL_REGISTRY
-        .save(&mut deps.storage, 1, &Addr::unchecked("pool_contract_1"))
-        .unwrap();
+    register_test_pool_addr(&mut deps.storage, 1, &Addr::unchecked("pool_contract_1"));
 
     let env = mock_env();
     let admin_info = message_info(&admin_addr(), &[]);
@@ -295,9 +289,7 @@ fn test_update_pool_config_unauthorized() {
     let mut deps = mock_deps_with_querier(&[]);
     setup_factory(&mut deps);
 
-    POOL_REGISTRY
-        .save(&mut deps.storage, 1, &Addr::unchecked("pool_contract_1"))
-        .unwrap();
+    register_test_pool_addr(&mut deps.storage, 1, &Addr::unchecked("pool_contract_1"));
 
     let env = mock_env();
     let hacker_info = message_info(&Addr::unchecked("hacker"), &[]);
@@ -571,11 +563,9 @@ fn test_m_new_5_multi_pool_creator_no_registry_collision() {
     pool_creation_reply(deps.as_mut(), env.clone(), pool_reply).unwrap();
 
     // Verify pool 1 registry info
-    let pool_1_addr = POOL_REGISTRY.load(&deps.storage, pool_id_1).unwrap();
     let pool_1_details = POOLS_BY_ID.load(&deps.storage, pool_id_1).unwrap();
-    assert_eq!(pool_1_addr, pool_1.clone());
-    assert_eq!(pool_1_details.pool_id, pool_id_1);
     assert_eq!(pool_1_details.creator_pool_addr, pool_1.clone());
+    assert_eq!(pool_1_details.pool_id, pool_id_1);
 
     // Create second pool from the SAME creator (admin)
     let create_msg_2 = ExecuteMsg::Create {
@@ -631,22 +621,19 @@ fn test_m_new_5_multi_pool_creator_no_registry_collision() {
     pool_creation_reply(deps.as_mut(), env.clone(), pool_reply).unwrap();
 
     // Verify pool 2 registry info
-    let pool_2_addr = POOL_REGISTRY.load(&deps.storage, pool_id_2).unwrap();
     let pool_2_details = POOLS_BY_ID.load(&deps.storage, pool_id_2).unwrap();
-    assert_eq!(pool_2_addr, pool_2.clone());
+    assert_eq!(pool_2_details.creator_pool_addr, pool_2.clone());
     assert_eq!(pool_2_details.pool_id, pool_id_2);
-    assert_eq!(pool_2_details.creator_pool_addr, pool_2);
 
     // KEY ASSERTION: Pool 1's registry entry should still be intact
     // (This would fail with the old creator-address key, as pool 2 would overwrite pool 1)
-    let pool_1_addr_after = POOL_REGISTRY.load(&deps.storage, pool_id_1).unwrap();
     let pool_1_details_after = POOLS_BY_ID.load(&deps.storage, pool_id_1).unwrap();
     assert_eq!(
         pool_1_details_after.pool_id, pool_id_1,
         "Pool 1 registry entry should not be overwritten by pool 2"
     );
     assert_eq!(
-        pool_1_addr_after, pool_1,
+        pool_1_details_after.creator_pool_addr, pool_1,
         "Pool 1 pool address should still be pool_addr_1, not pool_addr_2"
     );
 }

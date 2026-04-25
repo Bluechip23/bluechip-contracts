@@ -5,12 +5,12 @@ use thiserror::Error;
 ///
 /// Variants cover both shared concerns (swap/liquidity/admin) AND commit-
 /// phase-specific concerns (ShortOfThreshold, InvalidThresholdParams,
-/// TooFrequentCommits, NotStuckYet, MismatchAmount, etc.). Keeping the
-/// commit-phase variants here — even though they are unreachable from the
-/// standard-pool wasm — avoids a split-enum design where creator-pool
-/// would need its own wrapper crate-error that re-exported `pool_core`'s
-/// and added commit variants. A handful of unreachable variants cost
-/// nothing at runtime and keep both contracts using the same type.
+/// TooFrequentCommits, MismatchAmount, etc.). Keeping the commit-phase
+/// variants here — even though they are unreachable from the standard-pool
+/// wasm — avoids a split-enum design where creator-pool would need its own
+/// wrapper crate-error that re-exported `pool_core`'s and added commit
+/// variants. A handful of unreachable variants cost nothing at runtime
+/// and keep both contracts using the same type.
 #[derive(Error, Debug, PartialEq)]
 pub enum ContractError {
     #[error("{0}")]
@@ -87,26 +87,8 @@ pub enum ContractError {
     #[error("Insufficient liquidity minted")]
     InsufficientLiquidityMinted {},
 
-    #[error("Unauthorized: Only creator can perform this action")]
-    UnauthorizedNotCreator {},
-
-    #[error("Invalid payment tiers: cannot be empty")]
-    InvalidPaymentTiers {},
-
-    #[error("CW20 tokens can be swapped via Cw20::Send message only")]
-    Cw20DirectSwap {},
-
-    #[error("Event of zero transfer")]
-    InvalidZeroAmount {},
-
     #[error("Operation exceeds max spread limit")]
     MaxSpreadAssertion {},
-
-    #[error("Provided spread amount exceeds allowed limit")]
-    AllowedSpreadAssertion {},
-
-    #[error("Operation exceeds max slippage tolerance")]
-    MaxSlippageAssertion {},
 
     #[error("Doubling assets in asset infos")]
     DoublingAssets {},
@@ -114,22 +96,8 @@ pub enum ContractError {
     #[error("Asset mismatch between the requested and the stored asset in contract")]
     AssetMismatch {},
 
-    #[error("InsufficientFunds")]
-    InsufficientFunds {},
-
     #[error("pool can not cover reserves")]
     InsufficientReserves {},
-
-    #[error("Incorrect bluechip denom: provided: {provided}, required: {required}")]
-    IncorrectNativeDenom { provided: String, required: String },
-
-    #[error("Invalid payment amount: ${usd_amount} USD. Available tiers: {available:?}")]
-    InvalidUSDPaymentTier {
-        usd_amount: String,
-        available: Vec<String>,
-    },
-    #[error("The threshold lock is not stuck")]
-    NotStuckYet {},
 
     #[error("Pool has been permanently drained via emergency withdrawal")]
     EmergencyDrained {},

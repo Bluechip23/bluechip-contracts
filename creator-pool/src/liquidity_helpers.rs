@@ -68,15 +68,15 @@ pub fn execute_claim_creator_fees(
         },
     )?;
 
-    Ok(Response::new()
-        .add_messages(messages)
-        .add_attribute("action", "claim_creator_fees")
-        .add_attribute("creator", fee_info.creator_wallet_address.to_string())
-        .add_attribute("amount_0", pot.amount_0.to_string())
-        .add_attribute("amount_1", pot.amount_1.to_string())
-        .add_attribute("pool_contract", env.contract.address.to_string())
-        .add_attribute("block_height", env.block.height.to_string())
-        .add_attribute("block_time", env.block.time.seconds().to_string()))
+    Ok(Response::new().add_messages(messages).add_attributes(vec![
+        ("action", "claim_creator_fees".to_string()),
+        ("creator", fee_info.creator_wallet_address.to_string()),
+        ("amount_0", pot.amount_0.to_string()),
+        ("amount_1", pot.amount_1.to_string()),
+        ("pool_contract", env.contract.address.to_string()),
+        ("block_height", env.block.height.to_string()),
+        ("block_time", env.block.time.seconds().to_string()),
+    ]))
 }
 
 pub fn execute_claim_creator_excess(
@@ -132,16 +132,13 @@ pub fn execute_claim_creator_excess(
         }));
     }
 
-    Ok(Response::new()
-        .add_messages(messages)
-        .add_attribute("action", "claim_creator_excess")
-        .add_attribute("creator", excess_position.creator.to_string())
-        .add_attribute(
-            "bluechip_amount",
-            excess_position.bluechip_amount.to_string(),
-        )
-        .add_attribute("token_amount", excess_position.token_amount.to_string())
-        .add_attribute("pool_contract", env.contract.address.to_string())
-        .add_attribute("block_height", env.block.height.to_string())
-        .add_attribute("block_time", env.block.time.seconds().to_string()))
+    Ok(Response::new().add_messages(messages).add_attributes(vec![
+        ("action", "claim_creator_excess".to_string()),
+        ("creator", excess_position.creator.to_string()),
+        ("bluechip_amount", excess_position.bluechip_amount.to_string()),
+        ("token_amount", excess_position.token_amount.to_string()),
+        ("pool_contract", env.contract.address.to_string()),
+        ("block_height", env.block.height.to_string()),
+        ("block_time", env.block.time.seconds().to_string()),
+    ]))
 }

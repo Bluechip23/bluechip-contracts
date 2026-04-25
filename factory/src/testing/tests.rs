@@ -1,8 +1,8 @@
 use crate::mint_bluechips_pool_creation::calculate_mint_amount;
 use crate::state::{
     CreationStatus, FactoryInstantiate, PoolCreationContext, PoolCreationState,
-    FACTORYINSTANTIATEINFO, FIRST_POOL_TIMESTAMP, POOLS_BY_CONTRACT_ADDRESS, POOLS_BY_ID,
-    POOL_COUNTER, POOL_CREATION_CONTEXT, POOL_REGISTRY,
+    FACTORYINSTANTIATEINFO, FIRST_THRESHOLD_TIMESTAMP, POOLS_BY_CONTRACT_ADDRESS, POOLS_BY_ID,
+    POOL_COUNTER, POOL_CREATION_CONTEXT,
 };
 use cosmwasm_std::{
     Addr, BankMsg, Binary, CosmosMsg, Decimal, Env, Event, OwnedDeps, Reply, SubMsgResponse,
@@ -70,6 +70,36 @@ fn create_default_instantiate_msg() -> FactoryInstantiate {
         bluechip_denom: "ubluechip".to_string(),
         standard_pool_creation_fee_usd: cosmwasm_std::Uint128::new(1_000_000),
     }
+}
+
+/// Save a minimal `PoolDetails` for `pool_id` so production code that looks
+/// up a pool address via `POOLS_BY_ID.load(..).creator_pool_addr` works in
+/// tests. Mirrors the pre-consolidation `POOL_REGISTRY.save(..., &addr)`
+/// convenience; the extra fields default to values no test cares about.
+pub fn register_test_pool_addr(
+    storage: &mut dyn cosmwasm_std::Storage,
+    pool_id: u64,
+    pool_addr: &Addr,
+) {
+    POOLS_BY_ID
+        .save(
+            storage,
+            pool_id,
+            &PoolDetails {
+                pool_id,
+                pool_token_info: [
+                    TokenType::Native {
+                        denom: "ubluechip".to_string(),
+                    },
+                    TokenType::CreatorToken {
+                        contract_addr: Addr::unchecked("token"),
+                    },
+                ],
+                creator_pool_addr: pool_addr.clone(),
+                pool_kind: pool_factory_interfaces::PoolKind::Commit,
+            },
+        )
+        .unwrap();
 }
 
 pub fn setup_atom_pool(deps: &mut OwnedDeps<MockStorage, MockApi, WasmMockQuerier>) {
@@ -229,15 +259,18 @@ fn test_oracle_initialization_with_multiple_pools() {
 
     instantiate(deps.as_mut(), env.clone(), info, msg).unwrap();
 
-    // Verify oracle selected multiple pools (ATOM + up to 3 random = 4 total max)
+    // Verify oracle selected multiple pools. With 5 eligible creator pools
+    // seeded above plus the ATOM anchor, selection fits entirely within the
+    // ORACLE_POOL_COUNT target, so the output should be exactly 6 (5 + ATOM).
     let oracle = INTERNAL_ORACLE.load(&deps.storage).unwrap();
     assert!(
         !oracle.selected_pools.is_empty(),
         "Should have at least ATOM pool"
     );
     assert!(
-        oracle.selected_pools.len() <= 5,
-        "Should not exceed ORACLE_POOL_COUNT (5)"
+        oracle.selected_pools.len()
+            <= crate::internal_bluechip_price_oracle::ORACLE_POOL_COUNT,
+        "Should not exceed ORACLE_POOL_COUNT"
     );
     assert!(
         oracle
@@ -661,11 +694,12 @@ fn test_complete_pool_creation_flow() {
         create_instantiate_reply(encode_reply_id(pool_id, SET_TOKENS), token_addr.as_str());
     let res = pool_creation_reply(deps.as_mut(), env.clone(), token_reply).unwrap();
 
-    // Reload context and check token was set
+    // Reload context and check token was set. ctx.state.creator_token_address
+    // is no longer written to; ctx.temp is the single source of truth and the
+    // query handler derives the state response from it.
     let ctx = POOL_CREATION_CONTEXT.load(&deps.storage, pool_id).unwrap();
     assert_eq!(ctx.temp.creator_token_addr, Some(token_addr.clone()));
     assert_eq!(ctx.state.status, CreationStatus::TokenCreated);
-    assert_eq!(ctx.state.creator_token_address, Some(token_addr.clone()));
     assert_eq!(res.messages.len(), 1);
 
     // Step 2: NFT Creation Reply
@@ -679,10 +713,8 @@ fn test_complete_pool_creation_flow() {
     let ctx = POOL_CREATION_CONTEXT.load(&deps.storage, pool_id).unwrap();
     assert_eq!(ctx.temp.nft_addr, Some(nft_addr.clone()));
     assert_eq!(ctx.state.status, CreationStatus::NftCreated);
-    assert_eq!(
-        ctx.state.mint_new_position_nft_address,
-        Some(nft_addr.clone())
-    );
+    // ctx.state.mint_new_position_nft_address is no longer written; the
+    // ctx.temp.nft_addr check above is the single source of truth.
     assert_eq!(res.messages.len(), 1);
 
     // Step 3: Pool Finalization Reply
@@ -694,9 +726,6 @@ fn test_complete_pool_creation_flow() {
     let pool_by_id = POOLS_BY_ID.load(&deps.storage, pool_id).unwrap();
     assert_eq!(pool_by_id.pool_id, pool_id);
     assert_eq!(pool_by_id.creator_pool_addr, pool_addr.clone());
-
-    let registered_addr = POOL_REGISTRY.load(&deps.storage, pool_id).unwrap();
-    assert_eq!(registered_addr, pool_addr.clone());
 
     // Creation context is cleared on success to avoid permanent bloat.
     assert!(
@@ -842,7 +871,6 @@ fn test_reply_handling() {
             pool_address: None,
             creation_time: env.block.time,
             status: CreationStatus::Started,
-            retry_count: 0,
         },
     };
     POOL_CREATION_CONTEXT
@@ -877,10 +905,8 @@ fn test_reply_handling() {
         .load(deps.as_ref().storage, pool_id)
         .unwrap();
     assert_eq!(updated_ctx.state.status, CreationStatus::TokenCreated);
-    assert_eq!(
-        updated_ctx.state.creator_token_address,
-        Some(Addr::unchecked(contract_addr))
-    );
+    // ctx.state.creator_token_address is no longer written; ctx.temp is
+    // the single source of truth.
     assert_eq!(
         updated_ctx.temp.creator_token_addr,
         Some(Addr::unchecked(contract_addr))
@@ -1956,12 +1982,12 @@ fn test_conversion_functions_with_pyth() {
     let env = mock_env();
 
     let bluechip_amount = Uint128::new(5_000_000);
-    let result = bluechip_to_usd(deps.as_ref(), bluechip_amount, env.clone());
+    let result = bluechip_to_usd(deps.as_ref(), bluechip_amount, &env);
     assert!(result.is_ok(), "bluechip_to_usd should succeed");
     println!("5 bluechip = ${}", result.as_ref().unwrap().amount);
 
     let usd_amount = Uint128::new(5_000_000); // $5
-    let result2 = usd_to_bluechip(deps.as_ref(), usd_amount, env.clone());
+    let result2 = usd_to_bluechip(deps.as_ref(), usd_amount, &env);
     assert!(result2.is_ok(), "usd_to_bluechip should succeed");
     println!("$5 = {} bluechip", result2.as_ref().unwrap().amount);
 }
@@ -2036,11 +2062,9 @@ fn test_bluechip_minting_on_threshold_crossing() {
         "Pool creation should NOT mint bluechip tokens (moved to threshold crossing)"
     );
 
-    // Register pool 1 in POOL_REGISTRY so NotifyThresholdCrossed can verify caller
+    // Register pool 1 in the registry so NotifyThresholdCrossed can verify caller
     let pool_addr = Addr::unchecked("pool_contract_1");
-    crate::state::POOL_REGISTRY
-        .save(deps.as_mut().storage, 1, &pool_addr)
-        .unwrap();
+    register_test_pool_addr(deps.as_mut().storage, 1, &pool_addr);
 
     // Now simulate the pool notifying threshold crossed
     let notify_msg = ExecuteMsg::NotifyThresholdCrossed { pool_id: 1 };

@@ -2,6 +2,7 @@
 use crate::pyth_types::{PriceFeedResponse, PythQueryMsg};
 
 use crate::state::{
+    EligiblePoolSnapshot, ELIGIBLE_POOL_REFRESH_BLOCKS, ELIGIBLE_POOL_SNAPSHOT,
     FACTORYINSTANTIATEINFO, ORACLE_BOUNTY_DENOM, ORACLE_UPDATE_BOUNTY_USD,
     POOLS_BY_CONTRACT_ADDRESS, POOLS_BY_ID, POOL_THRESHOLD_MINTED,
 };
@@ -21,7 +22,12 @@ pub const MOCK_PYTH_PRICE: Item<Uint128> = Item::new("mock_pyth_price");
 #[cfg(test)]
 pub const MOCK_PYTH_SHOULD_FAIL: Item<bool> = Item::new("mock_pyth_should_fail");
 
-pub const ORACLE_POOL_COUNT: usize = 5;
+/// Target number of pools sampled per oracle rotation (plus the anchor
+/// ATOM/bluechip pool, for a total of `ORACLE_POOL_COUNT + 1` pools).
+/// Sampling draws from the cached eligible-pool snapshot, so this count
+/// no longer scales cost linearly with the full pool set — only with the
+/// per-sample cross-contract queries inside `calculate_weighted_price_with_atom`.
+pub const ORACLE_POOL_COUNT: usize = 75;
 pub const MIN_POOL_LIQUIDITY: Uint128 = Uint128::new(10_000_000_000);
 pub const TWAP_WINDOW: u64 = 3600;
 pub const UPDATE_INTERVAL: u64 = 300;
@@ -76,8 +82,39 @@ pub struct PoolCumulativeSnapshot {
     pub block_time: u64,
 }
 
+/// Rebuild `ELIGIBLE_POOL_SNAPSHOT` if the current snapshot is missing or
+/// older than `ELIGIBLE_POOL_REFRESH_BLOCKS`. No-op otherwise. Called once
+/// from inside `select_random_pools_with_atom` at the top of each sample
+/// attempt; amortizes the O(N) `POOLS_BY_ID` scan to once per ≈5 days even
+/// if the oracle rotates hourly.
+fn refresh_eligible_pool_snapshot_if_stale(
+    deps: &mut DepsMut,
+    env: &Env,
+    atom_pool_contract_address: &str,
+) -> StdResult<()> {
+    let current_block = env.block.height;
+    let is_stale = match ELIGIBLE_POOL_SNAPSHOT.may_load(deps.storage)? {
+        Some(snap) => current_block.saturating_sub(snap.captured_at_block)
+            >= ELIGIBLE_POOL_REFRESH_BLOCKS,
+        None => true,
+    };
+    if !is_stale {
+        return Ok(());
+    }
+    let pool_addresses =
+        get_eligible_creator_pools(deps.as_ref(), atom_pool_contract_address)?;
+    ELIGIBLE_POOL_SNAPSHOT.save(
+        deps.storage,
+        &EligiblePoolSnapshot {
+            pool_addresses,
+            captured_at_block: current_block,
+        },
+    )?;
+    Ok(())
+}
+
 pub fn select_random_pools_with_atom(
-    deps: Deps,
+    mut deps: DepsMut,
     env: Env,
     num_pools: usize,
 ) -> StdResult<Vec<String>> {
@@ -90,8 +127,17 @@ pub fn select_random_pools_with_atom(
         return Ok(vec![atom_pool_contract_contract_address]);
     }
 
-    // Real Network Logic
-    let eligible_pools = get_eligible_creator_pools(deps, &atom_pool_contract_contract_address)?;
+    // Real Network Logic. Rebuild the eligible-pool snapshot at most once
+    // per ELIGIBLE_POOL_REFRESH_BLOCKS (≈5 days); between refreshes the
+    // sampler reads from the snapshot instead of scanning POOLS_BY_ID.
+    refresh_eligible_pool_snapshot_if_stale(
+        &mut deps,
+        &env,
+        &atom_pool_contract_contract_address,
+    )?;
+    let eligible_pools = ELIGIBLE_POOL_SNAPSHOT
+        .load(deps.storage)?
+        .pool_addresses;
     let random_pools_needed = num_pools.saturating_sub(1);
 
     if eligible_pools.len() <= random_pools_needed {
@@ -165,11 +211,11 @@ pub fn select_random_pools_with_atom(
 }
 
 pub fn initialize_internal_bluechip_oracle(
-    deps: DepsMut,
+    mut deps: DepsMut,
     env: Env,
 ) -> Result<Response, ContractError> {
     let selected_pools =
-        select_random_pools_with_atom(deps.as_ref(), env.clone(), ORACLE_POOL_COUNT)?;
+        select_random_pools_with_atom(deps.branch(), env.clone(), ORACLE_POOL_COUNT)?;
     if selected_pools.is_empty() {
         return Err(ContractError::Std(StdError::generic_err(
             "Cannot initialize oracle: ATOM pool must exist",
@@ -328,7 +374,7 @@ fn apply_oracle_bounty(
 }
 
 pub fn update_internal_oracle_price(
-    deps: DepsMut,
+    mut deps: DepsMut,
     env: Env,
     info: MessageInfo,
 ) -> Result<Response, ContractError> {
@@ -404,7 +450,7 @@ pub fn update_internal_oracle_price(
             .saturating_add(oracle.rotation_interval)
     {
         pools_to_use =
-            select_random_pools_with_atom(deps.as_ref(), env.clone(), ORACLE_POOL_COUNT)?;
+            select_random_pools_with_atom(deps.branch(), env.clone(), ORACLE_POOL_COUNT)?;
         oracle.selected_pools = pools_to_use.clone();
         oracle.last_rotation = current_time;
         // Retain snapshots only for pools that remain in the new selection to preserve TWAP continuity
@@ -462,7 +508,7 @@ pub fn update_internal_oracle_price(
         // Convert USD -> bluechip via the just-updated TWAP. If the
         // conversion errors (Pyth + cache both unavailable), skip the
         // bounty rather than reverting the whole oracle update.
-        match usd_to_bluechip(deps.as_ref(), bounty_usd, env.clone()) {
+        match usd_to_bluechip(deps.as_ref(), bounty_usd, &env) {
             Ok(conv) => {
                 let balance = deps
                     .querier
@@ -994,13 +1040,17 @@ fn convert_with_oracle(
 pub fn bluechip_to_usd(
     deps: Deps,
     bluechip_amount: Uint128,
-    env: Env,
+    env: &Env,
 ) -> StdResult<ConversionResponse> {
-    convert_with_oracle(deps, &env, bluechip_amount, true)
+    convert_with_oracle(deps, env, bluechip_amount, true)
 }
 
-pub fn usd_to_bluechip(deps: Deps, usd_amount: Uint128, env: Env) -> StdResult<ConversionResponse> {
-    convert_with_oracle(deps, &env, usd_amount, false)
+pub fn usd_to_bluechip(
+    deps: Deps,
+    usd_amount: Uint128,
+    env: &Env,
+) -> StdResult<ConversionResponse> {
+    convert_with_oracle(deps, env, usd_amount, false)
 }
 
 pub fn get_price_with_staleness_check(
@@ -1132,7 +1182,7 @@ pub fn execute_cancel_force_rotate_pools(
 }
 
 pub fn execute_force_rotate_pools(
-    deps: DepsMut,
+    mut deps: DepsMut,
     env: Env,
     info: MessageInfo,
 ) -> Result<Response, ContractError> {
@@ -1155,7 +1205,8 @@ pub fn execute_force_rotate_pools(
     }
 
     let mut oracle = INTERNAL_ORACLE.load(deps.storage)?;
-    let new_pools = select_random_pools_with_atom(deps.as_ref(), env.clone(), ORACLE_POOL_COUNT)?;
+    let new_pools =
+        select_random_pools_with_atom(deps.branch(), env.clone(), ORACLE_POOL_COUNT)?;
     oracle.selected_pools = new_pools.clone();
     oracle.last_rotation = env.block.time.seconds();
 

@@ -3,7 +3,7 @@ use cosmwasm_std::{
     to_json_binary, Addr, Api, BalanceResponse, BankQuery, QuerierWrapper, QueryRequest, StdError,
     StdResult, Uint128, WasmQuery,
 };
-use cw20::{BalanceResponse as Cw20BalanceResponse, Cw20QueryMsg, TokenInfoResponse};
+use cw20::{BalanceResponse as Cw20BalanceResponse, Cw20QueryMsg};
 use std::fmt::{self, Display, Formatter, Result};
 
 #[cw_serde]
@@ -52,13 +52,6 @@ impl TokenType {
     pub fn is_native_token(&self) -> bool {
         match self {
             TokenType::Native { .. } => true,
-            TokenType::CreatorToken { .. } => false,
-        }
-    }
-
-    pub fn is_token_an_ibc_token(&self) -> bool {
-        match self {
-            TokenType::Native { denom } => denom.to_lowercase().starts_with("ibc/"),
             TokenType::CreatorToken { .. } => false,
         }
     }
@@ -115,13 +108,6 @@ impl Display for PoolPairType {
     }
 }
 
-// Returns a lowercased, validated address upon success if present.
-pub fn addr_opt_validate(api: &dyn Api, addr: &Option<String>) -> StdResult<Option<Addr>> {
-    addr.as_ref()
-        .map(|addr| api.addr_validate(addr))
-        .transpose()
-}
-
 pub fn native_asset(denom: String, amount: Uint128) -> TokenInfo {
     TokenInfo {
         info: TokenType::Native { denom },
@@ -136,14 +122,6 @@ pub fn token_asset(contract_addr: Addr, amount: Uint128) -> TokenInfo {
     }
 }
 
-pub fn native_asset_info(denom: String) -> TokenType {
-    TokenType::Native { denom }
-}
-
-pub fn token_asset_info(contract_addr: Addr) -> TokenType {
-    TokenType::CreatorToken { contract_addr }
-}
-
 // Extracts the native bluechip denom from a pool's asset_infos array.
 pub fn get_native_denom(asset_infos: &[TokenType; 2]) -> StdResult<String> {
     for asset in asset_infos {
@@ -154,19 +132,6 @@ pub fn get_native_denom(asset_infos: &[TokenType; 2]) -> StdResult<String> {
     Err(StdError::generic_err(
         "No bluechip (native) asset found in pool asset_infos",
     ))
-}
-
-pub trait TokenTypeExt {
-    fn with_balance(&self, balance: impl Into<Uint128>) -> TokenInfo;
-}
-
-impl TokenTypeExt for TokenType {
-    fn with_balance(&self, balance: impl Into<Uint128>) -> TokenInfo {
-        TokenInfo {
-            info: self.clone(),
-            amount: balance.into(),
-        }
-    }
 }
 
 /// Queries a CW20 token balance for a given account.
@@ -186,15 +151,6 @@ pub fn query_token_balance(
             balance: Uint128::zero(),
         });
     Ok(res.balance)
-}
-
-/// Queries a CW20 token's symbol.
-pub fn query_token_symbol(querier: &QuerierWrapper, contract_addr: Addr) -> StdResult<String> {
-    let res: TokenInfoResponse = querier.query(&QueryRequest::Wasm(WasmQuery::Smart {
-        contract_addr: String::from(contract_addr),
-        msg: to_json_binary(&Cw20QueryMsg::TokenInfo {})?,
-    }))?;
-    Ok(res.symbol)
 }
 
 /// Queries a native bank balance for a given account and denom.

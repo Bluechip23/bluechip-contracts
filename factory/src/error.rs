@@ -10,8 +10,6 @@ pub enum ContractError {
     QueryError { msg: String },
     #[error("Unauthorized")]
     Unauthorized {},
-    #[error("Invalid Price")]
-    InvalidPrice {},
 
     #[error("The anchor atom/bluechip pool must exist and be active before generating a new set of pools for price")]
     MissingAtomPool {},
@@ -21,17 +19,9 @@ pub enum ContractError {
 
     #[error("You are missing important times and prices")]
     InsufficientData {},
-    #[error("InsufficientFunds")]
-    InsufficientFunds {},
-
-    #[error("Wrong configuration")]
-    WrongConfiguration {},
 
     #[error("Contract Address Can Not Be Found")]
     ContractAddressNotFound {},
-
-    #[error("Contract Failed Creating Token {}", pool_id)]
-    TokenCreationFailed { pool_id: u64, reason: String },
 
     #[error("Contract Failed Creating {}", id)]
     UnknownReplyId { id: u64 },

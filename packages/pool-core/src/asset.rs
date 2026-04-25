@@ -10,10 +10,8 @@
 
 pub use pool_factory_interfaces::asset::*;
 
-use crate::state::PoolInfo;
-
 use cosmwasm_std::{
-    to_json_binary, Addr, BankMsg, Coin, CosmosMsg, Deps, MessageInfo, QuerierWrapper, StdError,
+    to_json_binary, Addr, BankMsg, Coin, CosmosMsg, MessageInfo, QuerierWrapper, StdError,
     StdResult, WasmMsg,
 };
 use cw20::Cw20ExecuteMsg;
@@ -81,11 +79,3 @@ impl TokenInfoPoolExt for TokenInfo {
     }
 }
 
-pub fn call_pool_info(deps: Deps, pool_info: PoolInfo) -> StdResult<[TokenInfo; 2]> {
-    let contract_addr = pool_info.pool_info.contract_addr.clone();
-    pool_factory_interfaces::asset::query_pools(
-        &pool_info.pool_info.asset_infos,
-        &deps.querier,
-        contract_addr,
-    )
-}

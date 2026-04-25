@@ -8,25 +8,23 @@ use pool_factory_interfaces::PoolStateResponseForFactory;
 pub const FACTORYINSTANTIATEINFO: Item<FactoryInstantiate> = Item::new("config");
 // Single source of truth for every in-flight pool creation. Combines the
 // formerly-split TEMP_POOL_CREATION (pool inputs + discovered addresses)
-// and POOL_CREATION_STATES (lifecycle status + retry count) into one map
-// so the three reply handlers can't leave the two halves out of sync.
+// and lifecycle status into one map so the reply handlers can't leave the
+// two halves out of sync. On any failure the whole tx reverts (every step
+// uses `SubMsg::reply_on_success`), so no retry/cleanup bookkeeping is
+// needed: a failed create leaves no trace in this map.
 pub const POOL_CREATION_CONTEXT: Map<u64, PoolCreationContext> =
     Map::new("pool_creation_ctx_v3");
 pub const PENDING_CONFIG: Item<PendingConfig> = Item::new("pending_config");
 pub const POOL_COUNTER: Item<u64> = Item::new("pool_counter");
 
-// Three coupled pool-registry maps. They MUST stay in sync — every pool
-// that exists must appear in all three. Always go through `register_pool`
+// Two coupled pool-registry maps. They MUST stay in sync — every pool
+// that exists must appear in both. Always go through `register_pool`
 // rather than touching them individually.
 //   - POOLS_BY_ID:               pool_id  -> PoolDetails (token info, addresses)
-//   - POOL_REGISTRY:             pool_id  -> pool contract Addr (lookup shortcut)
 //   - POOLS_BY_CONTRACT_ADDRESS: pool addr -> snapshot used by oracle / queries
 pub const POOLS_BY_ID: Map<u64, PoolDetails> = Map::new("pools_by_id");
 pub const POOLS_BY_CONTRACT_ADDRESS: Map<Addr, PoolStateResponseForFactory> =
     Map::new("pools_by_contract_address");
-pub const POOL_REGISTRY: Map<u64, Addr> = Map::new("pool_registry");
-
-pub const POOL_CREATION_STATES: Map<u64, PoolCreationState> = Map::new("creation_states");
 // Maximum age (seconds) of a Pyth price we are willing to use for USD
 // conversions. Tightened from 300s to 90s: a 5-minute window let an
 // attacker who spotted a favorable price pick-and-choose any moment in
@@ -192,7 +190,6 @@ pub struct PoolCreationState {
     pub pool_address: Option<Addr>,
     pub creation_time: Timestamp,
     pub status: CreationStatus,
-    pub retry_count: u8,
 }
 
 /// Unified view of an in-flight pool creation. `temp` carries the original
@@ -228,6 +225,31 @@ pub struct StandardPoolCreationContext {
 pub const STANDARD_POOL_CREATION_CONTEXT: Map<u64, StandardPoolCreationContext> =
     Map::new("std_pool_ctx");
 
+/// Cached list of pool contract addresses eligible for oracle TWAP sampling.
+/// Rebuilt by a full O(N) scan of `POOLS_BY_ID` at most once per
+/// `ELIGIBLE_POOL_REFRESH_BLOCKS` blocks (≈5 days at 6s blocks); between
+/// refreshes the oracle samples directly from the snapshot without touching
+/// POOLS_BY_ID. The cross-contract liquidity / paused check still runs
+/// per-sample at oracle-update time, so freshly-drained pools are dropped
+/// from the sample set immediately; they stay in the snapshot's `pool_addresses`
+/// until the next 5-day refresh but have no observable effect on the TWAP.
+///
+/// A newly-threshold-crossed pool is NOT visible to the oracle until the
+/// next refresh (up to 5 days). This is an intentional tradeoff: an explicit
+/// admin force-refresh was considered and rejected.
+#[cw_serde]
+pub struct EligiblePoolSnapshot {
+    pub pool_addresses: Vec<String>,
+    pub captured_at_block: u64,
+}
+
+pub const ELIGIBLE_POOL_SNAPSHOT: Item<EligiblePoolSnapshot> =
+    Item::new("eligible_pool_snap");
+
+/// How stale the snapshot is allowed to get before `select_random_pools_with_atom`
+/// rebuilds it. 72_000 blocks at 6s per block ≈ 5 days.
+pub const ELIGIBLE_POOL_REFRESH_BLOCKS: u64 = 72_000;
+
 #[cw_serde]
 pub enum CreationStatus {
     Started,
@@ -251,11 +273,11 @@ pub struct PoolUpgrade {
 // ---------------------------------------------------------------------------
 // Pool registry helpers
 // ---------------------------------------------------------------------------
-// Centralized so the three pool-registry maps cannot drift. Direct writes
-// to POOLS_BY_ID / POOL_REGISTRY / POOLS_BY_CONTRACT_ADDRESS outside this
-// module risk leaving the factory's view of pools internally inconsistent.
+// Centralized so the two pool-registry maps cannot drift. Direct writes to
+// POOLS_BY_ID / POOLS_BY_CONTRACT_ADDRESS outside this module risk leaving
+// the factory's view of pools internally inconsistent.
 
-/// Atomically register a freshly created pool across all three maps.
+/// Atomically register a freshly created pool across both registry maps.
 ///
 /// Initial `PoolStateResponseForFactory` is materialized from `pool_details`
 /// — caller doesn't need to construct it. Reserves and TWAP accumulators
@@ -267,7 +289,6 @@ pub fn register_pool(
     pool_details: &PoolDetails,
 ) -> StdResult<()> {
     POOLS_BY_ID.save(storage, pool_id, pool_details)?;
-    POOL_REGISTRY.save(storage, pool_id, pool_address)?;
 
     let asset_strings: Vec<String> = pool_details
         .pool_token_info
