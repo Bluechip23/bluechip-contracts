@@ -1,24 +1,26 @@
 use cosmwasm_schema::cw_serde;
 
-use crate::asset::{TokenInfo, TokenType};
+use crate::asset::TokenType;
 
-use cosmwasm_std::{Addr, Binary, Decimal, QuerierWrapper, StdError, StdResult, Uint128};
+use cosmwasm_std::{Addr, Decimal, StdError, StdResult, Uint128};
+use pool_factory_interfaces::PoolKind;
 
+/// Caller-supplied portion of the commit-pool create message.
+///
+/// Only `pool_token_info` is honored end-to-end — the factory's stored
+/// config is the authoritative source of truth for every other knob
+/// (commit threshold, commit fee splits, threshold payout amounts, lock
+/// caps, oracle config). The previous version of this struct included
+/// caller-supplied versions of those fields, but `mint_create_pool`
+/// silently overwrote them with `factory_config.*` values, so a caller
+/// thinking they were tuning their pool was just being ignored.
+///
+/// Reduced to the single load-bearing field so the wire format matches
+/// what the contract actually consumes; downstream tooling that used to
+/// supply the dropped fields no longer has to construct sentinel zeros.
 #[cw_serde]
 pub struct CreatePool {
     pub pool_token_info: [TokenType; 2],
-    pub cw20_token_contract_id: u64,
-    pub factory_to_create_pool_addr: Addr,
-    pub threshold_payout: Option<Binary>,
-    pub commit_fee_info: CommitFeeInfo,
-    pub creator_token_address: Addr,
-    pub commit_amount_for_threshold: Uint128,
-    pub commit_limit_usd: Uint128,
-    pub pyth_contract_addr_for_conversions: String,
-    pub pyth_atom_usd_price_feed_id: String,
-    pub max_bluechip_lock_per_pool: Uint128,
-    pub creator_excess_liquidity_lock_days: u64,
-    pub is_standard_pool: Option<bool>,
 }
 
 #[cw_serde]
@@ -69,16 +71,25 @@ pub struct PoolDetails {
     pub pool_id: u64,
     pub pool_token_info: [TokenType; 2],
     pub creator_pool_addr: Addr,
-}
-
-impl PoolDetails {
-    pub fn query_pools(
-        &self,
-        querier: &QuerierWrapper,
-        contract_addr: Addr,
-    ) -> StdResult<[TokenInfo; 2]> {
-        pool_factory_interfaces::asset::query_pools(&self.pool_token_info, querier, contract_addr)
-    }
+    /// Distinguishes commit (two-phase) pools from standard (xyk) pools.
+    /// `#[serde(default)]` makes old serialized records — written before
+    /// this field existed — round-trip as `PoolKind::Commit`, which is
+    /// the correct legacy classification since every pool created prior
+    /// to H14 was a commit pool.
+    #[serde(default)]
+    pub pool_kind: PoolKind,
+    /// 1-indexed ordinal among commit pools at the time this pool was
+    /// created. Always zero for standard pools. Consumed by the bluechip
+    /// mint-decay formula in `calculate_and_mint_bluechip` so that
+    /// permissionless standard-pool creation (which also bumps the
+    /// global `POOL_COUNTER`) cannot inflate `x` in the decay polynomial
+    /// and shrink legitimate commit pools' threshold-mint reward toward
+    /// zero. Legacy commit pools written before this field existed
+    /// deserialize with `commit_pool_ordinal = 0` via `#[serde(default)]`;
+    /// `calculate_and_mint_bluechip` falls back to `pool_id` in that case
+    /// to preserve their original mint amount.
+    #[serde(default)]
+    pub commit_pool_ordinal: u64,
 }
 
 impl ThresholdPayoutAmounts {

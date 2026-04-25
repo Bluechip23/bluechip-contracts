@@ -217,6 +217,7 @@ propose = {
             "cw20_token_contract_id": int(factory.get("cw20_token_contract_id", 1)),
             "cw721_nft_contract_id": int(factory.get("cw721_nft_contract_id", 2)),
             "create_pool_wasm_contract_id": int(factory.get("create_pool_wasm_contract_id", 3)),
+            "standard_pool_wasm_contract_id": int(factory.get("standard_pool_wasm_contract_id", 4)),
             "bluechip_wallet_address": factory.get("bluechip_wallet_address", alice),
             "commit_fee_bluechip": factory.get("commit_fee_bluechip", "0.01"),
             "commit_fee_creator": factory.get("commit_fee_creator", "0.05"),
@@ -224,6 +225,8 @@ propose = {
             "creator_excess_liquidity_lock_days": int(factory.get("creator_excess_liquidity_lock_days", 14)),
             "atom_bluechip_anchor_pool_address": factory.get("atom_bluechip_anchor_pool_address", alice),
             "bluechip_mint_contract_address": factory.get("bluechip_mint_contract_address", None),
+            "bluechip_denom": factory.get("bluechip_denom", "ubluechip"),
+            "standard_pool_creation_fee_usd": factory.get("standard_pool_creation_fee_usd", "1000000"),
         }
     }
 }

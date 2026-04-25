@@ -1,0 +1,50 @@
+[package]
+name = "standard-pool"
+version.workspace = true
+authors = ["bestselection18 <noahsflood908@gmail.com>"]
+edition = "2021"
+description = "Bluechip standard xyk pool (no commit phase)"
+license = "Apache-2.0"
+repository = "https://github.com/bestselection18"
+
+exclude = [
+  "artifacts/*",
+]
+
+# Both cdylib (for the wasm artifact) and rlib (so other crates can
+# depend on standard-pool as a plain library in integration tests).
+
+[lib]
+crate-type = ["cdylib", "rlib"]
+
+[features]
+# for more explicit tests, cargo test --features=backtraces
+backtraces = []
+# When enabled, strips the `#[entry_point]` exports so this crate can
+# be used as a plain Rust library in other crates' integration tests
+# (e.g. `cw-multi-test` setups that need to instantiate a standard-pool
+# without duplicating contract logic).
+library = []
+
+[package.metadata.scripts]
+optimize = { workspace = true }
+
+[dependencies]
+cosmwasm-schema = { workspace = true }
+cw2 = { workspace = true }
+cw20 = { workspace = true }
+
+cosmwasm-std = { workspace = true }
+cw-storage-plus = { workspace = true }
+thiserror = { workspace = true }
+
+pool-factory-interfaces = { path = "../packages/pool-factory-interfaces" }
+pool-core = { path = "../packages/pool-core" }
+cw-utils = { workspace = true }
+
+[dev-dependencies]
+cw-multi-test = { workspace = true }
+easy-addr = { workspace = true }
+factory = { path = "../factory", features = ["library"] }
+oracle = { path = "../mockoracle", features = ["library"] }
+cw20-base = { workspace = true }

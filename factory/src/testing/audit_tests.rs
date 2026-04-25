@@ -17,9 +17,9 @@ use crate::msg::{CreatorTokenInfo, ExecuteMsg};
 use crate::pool_struct::{CommitFeeInfo, CreatePool, PoolConfigUpdate, PoolDetails};
 use crate::state::{
     FactoryInstantiate, PENDING_CONFIG, POOLS_BY_CONTRACT_ADDRESS, POOLS_BY_ID, POOL_COUNTER,
-    POOL_REGISTRY, POOL_THRESHOLD_MINTED,
+    POOL_THRESHOLD_MINTED,
 };
-use crate::testing::tests::{create_instantiate_reply, setup_atom_pool};
+use crate::testing::tests::{create_instantiate_reply, register_test_pool_addr, setup_atom_pool};
 use pool_factory_interfaces::PoolStateResponseForFactory;
 
 fn make_addr(label: &str) -> Addr {
@@ -58,6 +58,7 @@ fn default_factory_config() -> FactoryInstantiate {
         pyth_atom_usd_price_feed_id: "ORCL".to_string(),
         cw20_token_contract_id: 10,
         create_pool_wasm_contract_id: 11,
+        standard_pool_wasm_contract_id: 0,
         bluechip_wallet_address: make_addr("ubluechip"),
         commit_fee_bluechip: Decimal::percent(1),
         commit_fee_creator: Decimal::percent(5),
@@ -65,6 +66,8 @@ fn default_factory_config() -> FactoryInstantiate {
         creator_excess_liquidity_lock_days: 14,
         atom_bluechip_anchor_pool_address: atom_bluechip_pool_addr(),
         bluechip_mint_contract_address: None,
+        bluechip_denom: "ubluechip".to_string(),
+        standard_pool_creation_fee_usd: cosmwasm_std::Uint128::new(1_000_000),
     }
 }
 
@@ -82,9 +85,7 @@ fn test_notify_threshold_crossed_unauthorized_caller() {
     setup_factory(&mut deps);
 
     // Register pool 1 at a specific address
-    POOL_REGISTRY
-        .save(&mut deps.storage, 1, &Addr::unchecked("pool_contract_1"))
-        .unwrap();
+    register_test_pool_addr(&mut deps.storage, 1, &Addr::unchecked("pool_contract_1"));
 
     let env = mock_env();
 
@@ -110,9 +111,7 @@ fn test_notify_threshold_crossed_double_call_prevention() {
     setup_factory(&mut deps);
 
     // Register pool 1
-    POOL_REGISTRY
-        .save(&mut deps.storage, 1, &Addr::unchecked("pool_contract_1"))
-        .unwrap();
+    register_test_pool_addr(&mut deps.storage, 1, &Addr::unchecked("pool_contract_1"));
 
     // Mark as already minted
     POOL_THRESHOLD_MINTED
@@ -136,7 +135,7 @@ fn test_notify_threshold_crossed_unregistered_pool() {
     let mut deps = mock_deps_with_querier(&[]);
     setup_factory(&mut deps);
 
-    // Don't register any pool in POOL_REGISTRY
+    // Don't register any pool in POOLS_BY_ID
 
     let env = mock_env();
     let pool_info = message_info(&Addr::unchecked("pool_contract_1"), &[]);
@@ -246,9 +245,7 @@ fn test_update_pool_config_sends_message_to_pool() {
     setup_factory(&mut deps);
 
     // Register a pool
-    POOL_REGISTRY
-        .save(&mut deps.storage, 1, &Addr::unchecked("pool_contract_1"))
-        .unwrap();
+    register_test_pool_addr(&mut deps.storage, 1, &Addr::unchecked("pool_contract_1"));
 
     let env = mock_env();
     let admin_info = message_info(&admin_addr(), &[]);
@@ -292,9 +289,7 @@ fn test_update_pool_config_unauthorized() {
     let mut deps = mock_deps_with_querier(&[]);
     setup_factory(&mut deps);
 
-    POOL_REGISTRY
-        .save(&mut deps.storage, 1, &Addr::unchecked("pool_contract_1"))
-        .unwrap();
+    register_test_pool_addr(&mut deps.storage, 1, &Addr::unchecked("pool_contract_1"));
 
     let env = mock_env();
     let hacker_info = message_info(&Addr::unchecked("hacker"), &[]);
@@ -355,7 +350,7 @@ fn test_m_new_3_rotation_skips_pools_without_prior_snapshot() {
     let pool_details = PoolDetails {
         pool_id: 1,
         pool_token_info: [
-            TokenType::Bluechip {
+            TokenType::Native {
                 denom: "ubluechip".to_string(),
             },
             TokenType::CreatorToken {
@@ -363,6 +358,8 @@ fn test_m_new_3_rotation_skips_pools_without_prior_snapshot() {
             },
         ],
         creator_pool_addr: Addr::unchecked(&creator_addr),
+        pool_kind: pool_factory_interfaces::PoolKind::Commit,
+        commit_pool_ordinal: 0,
     };
     POOLS_BY_ID
         .save(&mut deps.storage, 1, &pool_details)
@@ -516,33 +513,14 @@ fn test_m_new_5_multi_pool_creator_no_registry_collision() {
 
     // Create first pool
     let create_msg_1 = ExecuteMsg::Create {
-        pool_msg: CreatePool {
-            pool_token_info: [
-                TokenType::Bluechip {
+        pool_msg: CreatePool { pool_token_info: [
+                TokenType::Native {
                     denom: "ubluechip".to_string(),
                 },
                 TokenType::CreatorToken {
                     contract_addr: Addr::unchecked("WILL_BE_CREATED_BY_FACTORY"),
                 },
-            ],
-            factory_to_create_pool_addr: Addr::unchecked("factory"),
-            cw20_token_contract_id: 10,
-            threshold_payout: None,
-            commit_fee_info: CommitFeeInfo {
-                bluechip_wallet_address: Addr::unchecked("ubluechip"),
-                creator_wallet_address: Addr::unchecked("admin"),
-                commit_fee_bluechip: Decimal::percent(1),
-                commit_fee_creator: Decimal::percent(5),
-            },
-            commit_amount_for_threshold: Uint128::zero(),
-            commit_limit_usd: Uint128::new(100),
-            pyth_contract_addr_for_conversions: "oracle0000".to_string(),
-            pyth_atom_usd_price_feed_id: "ORCL".to_string(),
-            creator_token_address: Addr::unchecked("token0000"),
-            max_bluechip_lock_per_pool: Uint128::new(10_000_000_000),
-            creator_excess_liquidity_lock_days: 7,
-            is_standard_pool: None,
-        },
+            ] },
         token_info: CreatorTokenInfo {
             name: "TokenA".to_string(),
             symbol: "TOKA".to_string(),
@@ -568,41 +546,20 @@ fn test_m_new_5_multi_pool_creator_no_registry_collision() {
     pool_creation_reply(deps.as_mut(), env.clone(), pool_reply).unwrap();
 
     // Verify pool 1 registry info
-    let pool_1_addr = POOL_REGISTRY.load(&deps.storage, pool_id_1).unwrap();
     let pool_1_details = POOLS_BY_ID.load(&deps.storage, pool_id_1).unwrap();
-    assert_eq!(pool_1_addr, pool_1.clone());
-    assert_eq!(pool_1_details.pool_id, pool_id_1);
     assert_eq!(pool_1_details.creator_pool_addr, pool_1.clone());
+    assert_eq!(pool_1_details.pool_id, pool_id_1);
 
     // Create second pool from the SAME creator (admin)
     let create_msg_2 = ExecuteMsg::Create {
-        pool_msg: CreatePool {
-            pool_token_info: [
-                TokenType::Bluechip {
+        pool_msg: CreatePool { pool_token_info: [
+                TokenType::Native {
                     denom: "ubluechip".to_string(),
                 },
                 TokenType::CreatorToken {
                     contract_addr: Addr::unchecked("WILL_BE_CREATED_BY_FACTORY"),
                 },
-            ],
-            factory_to_create_pool_addr: Addr::unchecked("factory"),
-            cw20_token_contract_id: 10,
-            threshold_payout: None,
-            commit_fee_info: CommitFeeInfo {
-                bluechip_wallet_address: Addr::unchecked("ubluechip"),
-                creator_wallet_address: Addr::unchecked("admin"),
-                commit_fee_bluechip: Decimal::percent(1),
-                commit_fee_creator: Decimal::percent(5),
-            },
-            commit_amount_for_threshold: Uint128::zero(),
-            commit_limit_usd: Uint128::new(200),
-            pyth_contract_addr_for_conversions: "oracle0000".to_string(),
-            pyth_atom_usd_price_feed_id: "ORCL".to_string(),
-            creator_token_address: Addr::unchecked("token0000"),
-            max_bluechip_lock_per_pool: Uint128::new(10_000_000_000),
-            creator_excess_liquidity_lock_days: 7,
-            is_standard_pool: None,
-        },
+            ] },
         token_info: CreatorTokenInfo {
             name: "TokenB".to_string(),
             symbol: "TOKB".to_string(),
@@ -629,22 +586,19 @@ fn test_m_new_5_multi_pool_creator_no_registry_collision() {
     pool_creation_reply(deps.as_mut(), env.clone(), pool_reply).unwrap();
 
     // Verify pool 2 registry info
-    let pool_2_addr = POOL_REGISTRY.load(&deps.storage, pool_id_2).unwrap();
     let pool_2_details = POOLS_BY_ID.load(&deps.storage, pool_id_2).unwrap();
-    assert_eq!(pool_2_addr, pool_2.clone());
+    assert_eq!(pool_2_details.creator_pool_addr, pool_2.clone());
     assert_eq!(pool_2_details.pool_id, pool_id_2);
-    assert_eq!(pool_2_details.creator_pool_addr, pool_2);
 
     // KEY ASSERTION: Pool 1's registry entry should still be intact
     // (This would fail with the old creator-address key, as pool 2 would overwrite pool 1)
-    let pool_1_addr_after = POOL_REGISTRY.load(&deps.storage, pool_id_1).unwrap();
     let pool_1_details_after = POOLS_BY_ID.load(&deps.storage, pool_id_1).unwrap();
     assert_eq!(
         pool_1_details_after.pool_id, pool_id_1,
         "Pool 1 registry entry should not be overwritten by pool 2"
     );
     assert_eq!(
-        pool_1_addr_after, pool_1,
+        pool_1_details_after.creator_pool_addr, pool_1,
         "Pool 1 pool address should still be pool_addr_1, not pool_addr_2"
     );
 }

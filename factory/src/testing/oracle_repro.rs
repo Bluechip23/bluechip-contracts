@@ -29,6 +29,7 @@ fn test_repro_token_sort_order_bug() {
         pyth_atom_usd_price_feed_id: "id".to_string(),
         cw20_token_contract_id: 1,
         create_pool_wasm_contract_id: 1,
+        standard_pool_wasm_contract_id: 0,
         bluechip_wallet_address: make_addr("wallet"),
         commit_fee_bluechip: Decimal::percent(1),
         commit_fee_creator: Decimal::percent(1),
@@ -36,6 +37,8 @@ fn test_repro_token_sort_order_bug() {
         creator_excess_liquidity_lock_days: 0,
         atom_bluechip_anchor_pool_address: atom_pool.clone(),
         bluechip_mint_contract_address: None,
+        bluechip_denom: "ubluechip".to_string(),
+        standard_pool_creation_fee_usd: cosmwasm_std::Uint128::new(1_000_000),
     };
     FACTORYINSTANTIATEINFO
         .save(deps.as_mut().storage, &config)
@@ -46,7 +49,7 @@ fn test_repro_token_sort_order_bug() {
     let pool_details = PoolDetails {
         pool_id: 1,
         pool_token_info: [
-            TokenType::Bluechip {
+            TokenType::Native {
                 denom: "BC".to_string(),
             },
             TokenType::CreatorToken {
@@ -54,6 +57,8 @@ fn test_repro_token_sort_order_bug() {
             },
         ],
         creator_pool_addr: atom_pool.clone(),
+        pool_kind: pool_factory_interfaces::PoolKind::Commit,
+        commit_pool_ordinal: 0,
     };
     POOLS_BY_ID
         .save(deps.as_mut().storage, 1, &pool_details)
@@ -93,11 +98,13 @@ fn test_repro_token_sort_order_bug() {
             TokenType::CreatorToken {
                 contract_addr: Addr::unchecked("atom_addr_123"),
             },
-            TokenType::Bluechip {
+            TokenType::Native {
                 denom: "BC".to_string(),
             },
         ],
         creator_pool_addr: atom_pool.clone(),
+        pool_kind: pool_factory_interfaces::PoolKind::Commit,
+        commit_pool_ordinal: 0,
     };
     POOLS_BY_ID
         .save(deps.as_mut().storage, 1, &inverted_pool_details)

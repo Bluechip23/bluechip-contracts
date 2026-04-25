@@ -83,7 +83,8 @@ upload() {
   [ -n "$c" ] && pass "$lbl → code $c" >&2 || fail "$lbl upload failed" >&2
   echo "$c"
 }
-POOL_CODE=$(upload pool.wasm "Pool")
+POOL_CODE=$(upload creator_pool.wasm "Creator Pool")
+STANDARD_POOL_CODE=$(upload standard_pool.wasm "Standard Pool")
 ORACLE_CODE=$(upload oracle.wasm "Mock Oracle")
 FACTORY_CODE=$(upload factory.wasm "Factory")
 info "Pool=$POOL_CODE Oracle=$ORACLE_CODE Factory=$FACTORY_CODE"
@@ -108,13 +109,16 @@ FINIT=$(cat <<EOF
   "cw721_nft_contract_id":2,
   "cw20_token_contract_id":1,
   "create_pool_wasm_contract_id":$POOL_CODE,
+  "standard_pool_wasm_contract_id":$STANDARD_POOL_CODE,
   "bluechip_wallet_address":"$ALICE",
   "commit_fee_bluechip":"0.01",
   "commit_fee_creator":"0.05",
   "max_bluechip_lock_per_pool":"25000000000",
   "creator_excess_liquidity_lock_days":7,
   "atom_bluechip_anchor_pool_address":"$ALICE",
-  "bluechip_mint_contract_address":null
+  "bluechip_mint_contract_address":null,
+  "bluechip_denom": "ubluechip",
+  "standard_pool_creation_fee_usd": "1000000"
 }
 EOF
 )

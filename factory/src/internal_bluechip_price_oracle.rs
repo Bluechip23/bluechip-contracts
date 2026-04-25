@@ -2,6 +2,7 @@
 use crate::pyth_types::{PriceFeedResponse, PythQueryMsg};
 
 use crate::state::{
+    EligiblePoolSnapshot, ELIGIBLE_POOL_REFRESH_BLOCKS, ELIGIBLE_POOL_SNAPSHOT,
     FACTORYINSTANTIATEINFO, ORACLE_BOUNTY_DENOM, ORACLE_UPDATE_BOUNTY_USD,
     POOLS_BY_CONTRACT_ADDRESS, POOLS_BY_ID, POOL_THRESHOLD_MINTED,
 };
@@ -12,7 +13,7 @@ use cosmwasm_std::{
     StdResult, Uint128, Uint256,
 };
 use cw_storage_plus::Item;
-use pool_factory_interfaces::{ConversionResponse, PoolQueryMsg, PoolStateResponseForFactory};
+use pool_factory_interfaces::{ConversionResponse, PoolKind, PoolQueryMsg, PoolStateResponseForFactory};
 use sha2::{Digest, Sha256};
 #[cfg(test)]
 pub const MOCK_PYTH_PRICE: Item<Uint128> = Item::new("mock_pyth_price");
@@ -21,11 +22,36 @@ pub const MOCK_PYTH_PRICE: Item<Uint128> = Item::new("mock_pyth_price");
 #[cfg(test)]
 pub const MOCK_PYTH_SHOULD_FAIL: Item<bool> = Item::new("mock_pyth_should_fail");
 
-pub const ORACLE_POOL_COUNT: usize = 5;
+/// Target number of pools sampled per oracle rotation (plus the anchor
+/// ATOM/bluechip pool, for a total of `ORACLE_POOL_COUNT + 1` pools).
+/// Sampling draws from the cached eligible-pool snapshot, so this count
+/// no longer scales cost linearly with the full pool set — only with the
+/// per-sample cross-contract queries inside `calculate_weighted_price_with_atom`.
+pub const ORACLE_POOL_COUNT: usize = 75;
 pub const MIN_POOL_LIQUIDITY: Uint128 = Uint128::new(10_000_000_000);
 pub const TWAP_WINDOW: u64 = 3600;
 pub const UPDATE_INTERVAL: u64 = 300;
 pub const ROTATION_INTERVAL: u64 = 3600;
+
+/// TWAP circuit breaker. Maximum allowed drift between the previously-cached
+/// `bluechip_price_cache.last_price` and the freshly-computed TWAP, in basis
+/// points. Rejects any oracle update where the new TWAP differs from the
+/// prior by more than this threshold.
+///
+/// 3000 bps = 30%. Sized for early-ecosystem volatility on a low-liquidity
+/// token: a real ±30% move per 300s `UPDATE_INTERVAL` is extreme but not
+/// unheard-of around exchange listings, large-cap announcements, or genuine
+/// market shocks. Anything above 30% per 5 minutes is overwhelmingly more
+/// likely to be a manipulation attempt or upstream feed glitch than a real
+/// market move; we'd rather freeze the oracle and force a human to look
+/// than let an obviously-wrong price flow into commit USD valuations.
+///
+/// Skipped on the first update (when prior == 0) so genuine bootstrap
+/// values can land. Recovery from a tripped breaker: wait for the
+/// underlying spot pools to arb back to a sane range, or admin can
+/// `ProposeForceRotateOraclePools` to swap out a manipulated pool from
+/// the sample set.
+pub const MAX_TWAP_DRIFT_BPS: u64 = 3000;
 
 // Minimum number of threshold-crossed creator pools (in addition to the
 // anchor ATOM/bluechip pool) required before the factory is willing to
@@ -76,8 +102,44 @@ pub struct PoolCumulativeSnapshot {
     pub block_time: u64,
 }
 
+/// Rebuild `ELIGIBLE_POOL_SNAPSHOT` if the current snapshot is missing or
+/// older than `ELIGIBLE_POOL_REFRESH_BLOCKS`. No-op otherwise. Called once
+/// from inside `select_random_pools_with_atom` at the top of each sample
+/// attempt; amortizes the O(N) `POOLS_BY_ID` scan to once per ≈5 days even
+/// if the oracle rotates hourly.
+///
+/// Captures `(address, bluechip_index)` pairs so the per-sample lookup at
+/// `calculate_weighted_price_with_atom` time is O(1) instead of O(N) — see
+/// `EligiblePoolSnapshot` doc.
+fn refresh_eligible_pool_snapshot_if_stale(
+    deps: &mut DepsMut,
+    env: &Env,
+    atom_pool_contract_address: &str,
+) -> StdResult<()> {
+    let current_block = env.block.height;
+    let is_stale = match ELIGIBLE_POOL_SNAPSHOT.may_load(deps.storage)? {
+        Some(snap) => current_block.saturating_sub(snap.captured_at_block)
+            >= ELIGIBLE_POOL_REFRESH_BLOCKS,
+        None => true,
+    };
+    if !is_stale {
+        return Ok(());
+    }
+    let (pool_addresses, bluechip_indices) =
+        get_eligible_creator_pools(deps.as_ref(), atom_pool_contract_address)?;
+    ELIGIBLE_POOL_SNAPSHOT.save(
+        deps.storage,
+        &EligiblePoolSnapshot {
+            pool_addresses,
+            bluechip_indices,
+            captured_at_block: current_block,
+        },
+    )?;
+    Ok(())
+}
+
 pub fn select_random_pools_with_atom(
-    deps: Deps,
+    mut deps: DepsMut,
     env: Env,
     num_pools: usize,
 ) -> StdResult<Vec<String>> {
@@ -90,8 +152,17 @@ pub fn select_random_pools_with_atom(
         return Ok(vec![atom_pool_contract_contract_address]);
     }
 
-    // Real Network Logic
-    let eligible_pools = get_eligible_creator_pools(deps, &atom_pool_contract_contract_address)?;
+    // Real Network Logic. Rebuild the eligible-pool snapshot at most once
+    // per ELIGIBLE_POOL_REFRESH_BLOCKS (≈5 days); between refreshes the
+    // sampler reads from the snapshot instead of scanning POOLS_BY_ID.
+    refresh_eligible_pool_snapshot_if_stale(
+        &mut deps,
+        &env,
+        &atom_pool_contract_contract_address,
+    )?;
+    let eligible_pools = ELIGIBLE_POOL_SNAPSHOT
+        .load(deps.storage)?
+        .pool_addresses;
     let random_pools_needed = num_pools.saturating_sub(1);
 
     if eligible_pools.len() <= random_pools_needed {
@@ -165,11 +236,11 @@ pub fn select_random_pools_with_atom(
 }
 
 pub fn initialize_internal_bluechip_oracle(
-    deps: DepsMut,
+    mut deps: DepsMut,
     env: Env,
 ) -> Result<Response, ContractError> {
     let selected_pools =
-        select_random_pools_with_atom(deps.as_ref(), env.clone(), ORACLE_POOL_COUNT)?;
+        select_random_pools_with_atom(deps.branch(), env.clone(), ORACLE_POOL_COUNT)?;
     if selected_pools.is_empty() {
         return Err(ContractError::Std(StdError::generic_err(
             "Cannot initialize oracle: ATOM pool must exist",
@@ -197,39 +268,55 @@ pub fn initialize_internal_bluechip_oracle(
     Ok(Response::new())
 }
 
+/// Returns (eligible_addresses, bluechip_indices). Each address at index
+/// `i` has bluechip on reserve-side `bluechip_indices[i]` (0 or 1).
+/// Hoisting this into the snapshot is what makes oracle updates O(1) per
+/// sampled pool instead of O(N).
 pub fn get_eligible_creator_pools(
     deps: Deps,
     atom_pool_contract_address: &str,
-) -> StdResult<Vec<String>> {
+) -> StdResult<(Vec<String>, Vec<u8>)> {
     // Return every pool eligible for oracle sampling. A pool is eligible iff:
-    //   1. It contains a bluechip token (so we can price it against ATOM).
-    //   2. It has crossed its commit threshold (POOL_THRESHOLD_MINTED == true).
-    //   3. Its current reserves sum to >= MIN_POOL_LIQUIDITY.
+    //   1. It is a commit pool (NOT a standard pool — standard pools can
+    //      hold arbitrary pairs including non-bluechip ones and their price
+    //      isn't meaningful for bluechip/USD derivation).
+    //   2. It contains a bluechip token (so we can price it against ATOM).
+    //   3. It has crossed its commit threshold (POOL_THRESHOLD_MINTED == true).
+    //   4. Its current reserves sum to >= MIN_POOL_LIQUIDITY.
     //
     // The threshold-crossed gate is the important one: pool creation is
     // permissionless, so without this check a spammer could bloat the oracle
     // sample set with pre-threshold pools. The MIN_POOL_LIQUIDITY check is
     // defense-in-depth for pools that crossed threshold but later drained.
     //
-    // Single pass over POOLS_BY_ID: for each candidate we check the two
-    // cheap in-storage gates first and only incur the cross-contract
-    // PoolStateResponseForFactory query when both pass. The older
+    // Single pass over POOLS_BY_ID: for each candidate we check the cheap
+    // in-storage gates first and only incur the cross-contract
+    // PoolStateResponseForFactory query when they all pass. The older
     // implementation did two full range scans plus a HashSet build, which
     // dominated oracle-update gas at scale.
     let mut eligible = Vec::new();
+    let mut indices = Vec::new();
     for row in POOLS_BY_ID.range(deps.storage, None, None, Order::Ascending) {
         let (pool_id, pool_details) = row?;
 
         if pool_details.creator_pool_addr.as_str() == atom_pool_contract_address {
             continue;
         }
-        let has_bluechip = pool_details
-            .pool_token_info
-            .iter()
-            .any(|token| matches!(token, TokenType::Bluechip { .. }));
-        if !has_bluechip {
+        // Standard pools are never eligible for TWAP sampling — see gate (1) above.
+        if pool_details.pool_kind == PoolKind::Standard {
             continue;
         }
+        // Resolve bluechip side once at snapshot capture time. Commit pools
+        // are validated at instantiate to contain exactly one Bluechip and
+        // one CreatorToken, so this find always succeeds for eligible pools.
+        let bluechip_idx = match pool_details
+            .pool_token_info
+            .iter()
+            .position(|t| matches!(t, TokenType::Native { .. }))
+        {
+            Some(i) => i as u8,
+            None => continue, // No bluechip side — gate (2) fails.
+        };
         if !POOL_THRESHOLD_MINTED
             .may_load(deps.storage, pool_id)?
             .unwrap_or(false)
@@ -239,17 +326,16 @@ pub fn get_eligible_creator_pools(
 
         let pool_state: PoolStateResponseForFactory = deps.querier.query_wasm_smart(
             pool_details.creator_pool_addr.to_string(),
-            &PoolQueryMsg::GetPoolState {
-                pool_contract_address: pool_details.creator_pool_addr.to_string(),
-            },
+            &PoolQueryMsg::GetPoolState {},
         )?;
 
         let total_liquidity = pool_state.reserve0.saturating_add(pool_state.reserve1);
         if total_liquidity >= MIN_POOL_LIQUIDITY {
             eligible.push(pool_details.creator_pool_addr.to_string());
+            indices.push(bluechip_idx);
         }
     }
-    Ok(eligible)
+    Ok((eligible, indices))
 }
 
 // MOCK-ONLY: read the bluechip USD price directly from the configured mock
@@ -321,7 +407,7 @@ fn apply_oracle_bounty(
 }
 
 pub fn update_internal_oracle_price(
-    deps: DepsMut,
+    mut deps: DepsMut,
     env: Env,
     info: MessageInfo,
 ) -> Result<Response, ContractError> {
@@ -397,7 +483,7 @@ pub fn update_internal_oracle_price(
             .saturating_add(oracle.rotation_interval)
     {
         pools_to_use =
-            select_random_pools_with_atom(deps.as_ref(), env.clone(), ORACLE_POOL_COUNT)?;
+            select_random_pools_with_atom(deps.branch(), env.clone(), ORACLE_POOL_COUNT)?;
         oracle.selected_pools = pools_to_use.clone();
         oracle.last_rotation = current_time;
         // Retain snapshots only for pools that remain in the new selection to preserve TWAP continuity
@@ -426,6 +512,46 @@ pub fn update_internal_oracle_price(
         .retain(|obs| obs.timestamp >= cutoff_time);
 
     let twap_price = calculate_twap(&oracle.bluechip_price_cache.twap_observations)?;
+
+    // Circuit breaker. If the freshly-computed TWAP has drifted more than
+    // MAX_TWAP_DRIFT_BPS from the previously-cached `last_price`, reject
+    // this update entirely. The full tx reverts (push to twap_observations,
+    // pyth cache update, etc.) so the next caller sees the prior cached
+    // state and gets to retry against fresh observations. See
+    // `MAX_TWAP_DRIFT_BPS` doc for sizing rationale and recovery path.
+    //
+    // First-update bootstrap (`prior == 0`) bypasses the check so the
+    // very first observation can land. After that, every subsequent
+    // update is rate-limited to the bps threshold per UPDATE_INTERVAL.
+    let prior = oracle.bluechip_price_cache.last_price;
+    if !prior.is_zero() {
+        let (smaller, larger) = if twap_price > prior {
+            (prior, twap_price)
+        } else {
+            (twap_price, prior)
+        };
+        let diff = larger.checked_sub(smaller)?;
+        // Saturate any overflow in the bps ratio to "definitely tripped"
+        // — if `diff * 10_000` overflows u128, the drift is astronomically
+        // larger than MAX_TWAP_DRIFT_BPS and the breaker should fire
+        // unconditionally.
+        let drift_bps_u128 = match diff.checked_mul(Uint128::from(10_000u128)) {
+            Ok(scaled) => scaled
+                .checked_div(smaller)
+                .map(|v| v.u128())
+                .unwrap_or(u128::MAX),
+            Err(_) => u128::MAX,
+        };
+        if drift_bps_u128 > MAX_TWAP_DRIFT_BPS as u128 {
+            return Err(ContractError::TwapCircuitBreaker {
+                prior,
+                new: twap_price,
+                drift_bps: drift_bps_u128,
+                max_bps: MAX_TWAP_DRIFT_BPS,
+            });
+        }
+    }
+
     oracle.bluechip_price_cache.last_price = twap_price;
     oracle.bluechip_price_cache.last_update = current_time;
 
@@ -455,7 +581,7 @@ pub fn update_internal_oracle_price(
         // Convert USD -> bluechip via the just-updated TWAP. If the
         // conversion errors (Pyth + cache both unavailable), skip the
         // bounty rather than reverting the whole oracle update.
-        match usd_to_bluechip(deps.as_ref(), bounty_usd, env.clone()) {
+        match usd_to_bluechip(deps.as_ref(), bounty_usd, &env) {
             Ok(conv) => {
                 let balance = deps
                     .querier
@@ -477,6 +603,33 @@ pub fn update_internal_oracle_price(
     }
 
     Ok(response)
+}
+
+/// O(M) lookup of the bluechip-side index for `pool_address` in the
+/// eligible-pool snapshot, where M is the snapshot size (≤ a few thousand).
+/// Returns `None` if the snapshot is missing, the address isn't in the
+/// snapshot (e.g., it's the anchor), or the indices array is shorter than
+/// the addresses array (a snapshot written by pre-cache code).
+///
+/// The linear search is fine here even at large M: it runs once per sampled
+/// pool, vs the prior O(N) full POOLS_BY_ID range scan which deserialized
+/// every pool record. Snapshot entries are just `String + u8`, so a 1000-pool
+/// snapshot scan is ~16 KB of memory comparison vs the storage-deserializing
+/// scan it replaced.
+fn bluechip_index_lookup(deps: Deps, pool_address: &str) -> StdResult<Option<u8>> {
+    let snap = match ELIGIBLE_POOL_SNAPSHOT.may_load(deps.storage)? {
+        Some(s) => s,
+        None => return Ok(None),
+    };
+    if snap.bluechip_indices.len() != snap.pool_addresses.len() {
+        // Pre-cache snapshot — caller should fall back to the scan.
+        return Ok(None);
+    }
+    Ok(snap
+        .pool_addresses
+        .iter()
+        .position(|addr| addr == pool_address)
+        .map(|i| snap.bluechip_indices[i]))
 }
 
 // Calculates a liquidity-weighted price across sampled pools using cumulative
@@ -512,15 +665,31 @@ pub fn calculate_weighted_price_with_atom(
                     continue;
                 }
 
-                // Determine if Bluechip is reserve0 or reserve1 by looking up the
-                let is_bluechip_second = {
+                // Determine if Bluechip is reserve0 or reserve1. Hoisted out
+                // of an O(N) scan of `POOLS_BY_ID` (formerly run per-sample;
+                // amounted to O(N²) per oracle update at scale). The
+                // eligible-pool snapshot now caches the bluechip-side index
+                // alongside each address, populated at capture time in
+                // `get_eligible_creator_pools`.
+                //
+                // Falls back to the old linear scan only on:
+                //   - the anchor pool (which isn't in the snapshot — it's
+                //     always added separately by `select_random_pools_with_atom`)
+                //   - a snapshot written by pre-cache code that had no
+                //     `bluechip_indices` populated (`#[serde(default)]`
+                //     produces an empty Vec; one-time, until next refresh)
+                let is_bluechip_second = if let Some(idx) =
+                    bluechip_index_lookup(deps, pool_address)?
+                {
+                    idx == 1
+                } else {
+                    // Anchor pool or stale snapshot — fall back to scan.
                     let mut found = false;
                     for (_id, pool_details) in POOLS_BY_ID
                         .range(deps.storage, None, None, Order::Ascending)
                         .flatten()
                     {
                         if pool_details.creator_pool_addr.as_str() == pool_address.as_str() {
-                            // asset_infos[0] is CreatorToken => bluechip is second (index 1)
                             found = matches!(
                                 pool_details.pool_token_info[0],
                                 TokenType::CreatorToken { .. }
@@ -805,7 +974,13 @@ pub fn query_pyth_atom_usd_price(deps: Deps, env: &Env) -> StdResult<Uint128> {
             )));
         }
 
-        let price_u128 = price_data.price as u128;
+        // Derive `price_u128` from the already-validated `price_u64` rather
+        // than re-casting `price_data.price` (i64) directly. If a future edit
+        // ever drops or reorders the negative-price guard above, this chain
+        // would still produce a typed runtime error from `try_into::<u64>`
+        // rather than silently sign-extending a negative i64 into the high
+        // bits of u128 and passing every later check vacuously.
+        let price_u128: u128 = price_u64.into();
         let expo = price_data.expo;
 
         // Validate expo is within reasonable range for price feeds
@@ -888,32 +1063,31 @@ pub fn get_bluechip_usd_price(deps: Deps, env: &Env) -> StdResult<Uint128> {
         .load(deps.storage)
         .map_err(|_| StdError::generic_err("Internal oracle not initialized"))?;
 
-    // Bootstrap guard: if fewer than MIN_ELIGIBLE_POOLS_FOR_TWAP creator
-    // pools have crossed threshold, the TWAP is effectively a single-pool
-    // price (the anchor). Refuse to serve it rather than letting an
-    // attacker who can move the anchor pool dictate the bluechip USD price
-    // to every downstream consumer. Eligibility already requires
-    // POOL_THRESHOLD_MINTED == true (see get_eligible_creator_pools), so
-    // we can reuse the same query.
+    // Bootstrap note: when fewer than MIN_ELIGIBLE_POOLS_FOR_TWAP creator
+    // pools have crossed threshold, `oracle.bluechip_price_cache.last_price`
+    // is derived from the anchor ATOM/bluechip pool alone (plus whichever
+    // creators have crossed, of which there are < 3). We accept that
+    // single-pool-dominated price during bootstrap rather than bricking
+    // every commit on day one — without this fallback the protocol
+    // deadlocks on launch, because each commit requires an oracle price
+    // to compute its USD value, but no pool can cross its threshold
+    // until commits succeed.
     //
-    // Gated on cfg(not(test)) so unit tests can exercise oracle math
-    // in isolation without being forced to stand up three threshold-
-    // crossed pools. Tests that specifically want to verify the
-    // bootstrap behavior can set it up explicitly.
-    #[cfg(not(test))]
-    {
-        let factory_config = FACTORYINSTANTIATEINFO.load(deps.storage)?;
-        let anchor_addr = factory_config.atom_bluechip_anchor_pool_address.to_string();
-        let eligible = get_eligible_creator_pools(deps, &anchor_addr)?;
-        if eligible.len() < MIN_ELIGIBLE_POOLS_FOR_TWAP {
-            return Err(StdError::generic_err(format!(
-                "Oracle bootstrap: at least {} threshold-crossed creator pools are required before TWAP prices are served (currently {}).",
-                MIN_ELIGIBLE_POOLS_FOR_TWAP,
-                eligible.len()
-            )));
-        }
-    }
-
+    // The trade-off: during bootstrap, a sophisticated attacker who can
+    // move the anchor pool's price for a block (see the spot-fallback
+    // in calculate_weighted_price_with_atom) can also move the derived
+    // bluechip/USD rate. This risk is bounded by the anchor's curated
+    // liquidity and ends as soon as MIN_ELIGIBLE_POOLS_FOR_TWAP creator
+    // pools have crossed threshold. Callers downstream of this function
+    // (commits, swaps) layer their own slippage / spread protections,
+    // so the worst-case is a temporarily mispriced commit rather than
+    // direct theft.
+    //
+    // The staleness check still applies via `last_update` — the pool's
+    // get_oracle_conversion_with_staleness rejects commits if the cached
+    // price is older than MAX_ORACLE_STALENESS_SECONDS. And the zero
+    // guard below catches the pre-first-update case where UpdateOraclePrice
+    // has never been called.
     let bluechip_per_atom_twap = oracle.bluechip_price_cache.last_price;
 
     if bluechip_per_atom_twap.is_zero() {
@@ -988,13 +1162,17 @@ fn convert_with_oracle(
 pub fn bluechip_to_usd(
     deps: Deps,
     bluechip_amount: Uint128,
-    env: Env,
+    env: &Env,
 ) -> StdResult<ConversionResponse> {
-    convert_with_oracle(deps, &env, bluechip_amount, true)
+    convert_with_oracle(deps, env, bluechip_amount, true)
 }
 
-pub fn usd_to_bluechip(deps: Deps, usd_amount: Uint128, env: Env) -> StdResult<ConversionResponse> {
-    convert_with_oracle(deps, &env, usd_amount, false)
+pub fn usd_to_bluechip(
+    deps: Deps,
+    usd_amount: Uint128,
+    env: &Env,
+) -> StdResult<ConversionResponse> {
+    convert_with_oracle(deps, env, usd_amount, false)
 }
 
 pub fn get_price_with_staleness_check(
@@ -1041,12 +1219,7 @@ fn query_pool_safe(
     #[cfg(not(test))]
     {
         deps.querier
-            .query_wasm_smart(
-                pool_address.to_string(),
-                &PoolQueryMsg::GetPoolState {
-                    pool_contract_address: pool_address.to_string(),
-                },
-            )
+            .query_wasm_smart(pool_address.to_string(), &PoolQueryMsg::GetPoolState {})
             .map_err(|e| ContractError::QueryError {
                 msg: format!("Failed to query pool {}: {}", pool_address, e),
             })
@@ -1126,7 +1299,7 @@ pub fn execute_cancel_force_rotate_pools(
 }
 
 pub fn execute_force_rotate_pools(
-    deps: DepsMut,
+    mut deps: DepsMut,
     env: Env,
     info: MessageInfo,
 ) -> Result<Response, ContractError> {
@@ -1149,7 +1322,8 @@ pub fn execute_force_rotate_pools(
     }
 
     let mut oracle = INTERNAL_ORACLE.load(deps.storage)?;
-    let new_pools = select_random_pools_with_atom(deps.as_ref(), env.clone(), ORACLE_POOL_COUNT)?;
+    let new_pools =
+        select_random_pools_with_atom(deps.branch(), env.clone(), ORACLE_POOL_COUNT)?;
     oracle.selected_pools = new_pools.clone();
     oracle.last_rotation = env.block.time.seconds();
 

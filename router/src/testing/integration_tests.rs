@@ -227,7 +227,7 @@ fn instantiate_pool(
             admin.clone(),
             &mock_pool::InstantiateMsg {
                 asset_infos: [
-                    TokenType::Bluechip {
+                    TokenType::Native {
                         denom: BLUECHIP_DENOM.to_string(),
                     },
                     TokenType::CreatorToken {
@@ -299,7 +299,7 @@ fn op(pool: &Addr, offer: TokenType, ask: TokenType) -> SwapOperation {
 fn happy_path_two_hop_creator_to_creator() {
     let mut world = setup_world();
 
-    let bluechip = TokenType::Bluechip {
+    let bluechip = TokenType::Native {
         denom: BLUECHIP_DENOM.to_string(),
     };
     let creator_a = TokenType::CreatorToken {
@@ -361,7 +361,7 @@ fn happy_path_two_hop_creator_to_creator() {
 fn single_hop_native_passthrough() {
     let mut world = setup_world();
 
-    let bluechip = TokenType::Bluechip {
+    let bluechip = TokenType::Native {
         denom: BLUECHIP_DENOM.to_string(),
     };
     let creator_a = TokenType::CreatorToken {
@@ -405,7 +405,7 @@ fn single_hop_native_passthrough() {
 fn slippage_exceeded_reverts_route() {
     let mut world = setup_world();
 
-    let bluechip = TokenType::Bluechip {
+    let bluechip = TokenType::Native {
         denom: BLUECHIP_DENOM.to_string(),
     };
     let creator_a = TokenType::CreatorToken {
@@ -451,7 +451,7 @@ fn slippage_exceeded_reverts_route() {
 fn max_hops_exceeded_rejected() {
     let mut world = setup_world();
 
-    let bluechip = TokenType::Bluechip {
+    let bluechip = TokenType::Native {
         denom: BLUECHIP_DENOM.to_string(),
     };
     let creator_a = TokenType::CreatorToken {
@@ -497,7 +497,7 @@ fn max_hops_exceeded_rejected() {
 fn deadline_expired_rejected() {
     let mut world = setup_world();
 
-    let bluechip = TokenType::Bluechip {
+    let bluechip = TokenType::Native {
         denom: BLUECHIP_DENOM.to_string(),
     };
     let creator_a = TokenType::CreatorToken {
@@ -531,7 +531,7 @@ fn deadline_expired_rejected() {
 fn same_input_output_rejected() {
     let mut world = setup_world();
 
-    let bluechip = TokenType::Bluechip {
+    let bluechip = TokenType::Native {
         denom: BLUECHIP_DENOM.to_string(),
     };
     let creator_a = TokenType::CreatorToken {
@@ -571,7 +571,7 @@ fn same_input_output_rejected() {
 fn zero_liquidity_pool_in_path_errors_with_hop_context() {
     let mut world = setup_world();
 
-    let bluechip = TokenType::Bluechip {
+    let bluechip = TokenType::Native {
         denom: BLUECHIP_DENOM.to_string(),
     };
     // pool_empty was instantiated with seed_reserves=false, so its
@@ -622,7 +622,7 @@ fn router_holds_zero_after_successful_route() {
     // balance for every involved asset both BEFORE and AFTER the route.
     let mut world = setup_world();
 
-    let bluechip = TokenType::Bluechip {
+    let bluechip = TokenType::Native {
         denom: BLUECHIP_DENOM.to_string(),
     };
     let creator_a = TokenType::CreatorToken {
@@ -682,7 +682,7 @@ fn router_holds_zero_after_successful_route() {
 fn simulate_matches_execute() {
     let mut world = setup_world();
 
-    let bluechip = TokenType::Bluechip {
+    let bluechip = TokenType::Native {
         denom: BLUECHIP_DENOM.to_string(),
     };
     let creator_a = TokenType::CreatorToken {
@@ -741,7 +741,7 @@ fn simulate_matches_execute() {
 fn commit_phase_pool_rejected_in_simulation() {
     let world = setup_world();
 
-    let bluechip = TokenType::Bluechip {
+    let bluechip = TokenType::Native {
         denom: BLUECHIP_DENOM.to_string(),
     };
     let creator_uncommitted_addr: Addr = {
@@ -786,7 +786,7 @@ fn commit_phase_pool_rejected_in_simulation() {
 fn commit_phase_pool_rejected_in_execution() {
     let mut world = setup_world();
 
-    let bluechip = TokenType::Bluechip {
+    let bluechip = TokenType::Native {
         denom: BLUECHIP_DENOM.to_string(),
     };
     let creator_uncommitted_addr: Addr = {

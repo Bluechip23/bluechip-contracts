@@ -194,16 +194,17 @@ for c in codes:
     break
 " 2>/dev/null || echo "ERR")
 
-# We need codes 1-6 based on the order they were uploaded in run_full_test.sh
-# CW20=1, CW721=2, POOL=3, ORACLE=4, EXP=5, FACTORY=6
+# We need codes 1-7 based on the order they were uploaded in run_full_test.sh
+# CW20=1, CW721=2, POOL=3 (creator-pool), STANDARD_POOL=4, ORACLE=5, EXP=6, FACTORY=7
 CW20_CODE="1"
 CW721_CODE="2"
 POOL_CODE="3"
-ORACLE_CODE="4"
-EXP_CODE="5"
-FACTORY_CODE="6"
+STANDARD_POOL_CODE="4"
+ORACLE_CODE="5"
+EXP_CODE="6"
+FACTORY_CODE="7"
 
-echo "  Code IDs: CW20=$CW20_CODE  CW721=$CW721_CODE  POOL=$POOL_CODE"
+echo "  Code IDs: CW20=$CW20_CODE  CW721=$CW721_CODE  POOL=$POOL_CODE  STANDARD_POOL=$STANDARD_POOL_CODE"
 echo "            ORACLE=$ORACLE_CODE  EXP=$EXP_CODE  FACTORY=$FACTORY_CODE"
 
 # Get the existing Oracle contract address (first oracle instantiated)
@@ -706,6 +707,7 @@ print(json.dumps({
     'cw20_token_contract_id':             int('$CW20_CODE'),
     'cw721_nft_contract_id':              int('$CW721_CODE'),
     'create_pool_wasm_contract_id':       int('$POOL_CODE'),
+    'standard_pool_wasm_contract_id':    int('$STANDARD_POOL_CODE'),
     'bluechip_wallet_address':            '$ALICE',
     'commit_fee_bluechip':                '0.01',
     'commit_fee_creator':                 '0.05',
@@ -713,6 +715,8 @@ print(json.dumps({
     'creator_excess_liquidity_lock_days': 0,
     'atom_bluechip_anchor_pool_address':  '$ALICE',
     'bluechip_mint_contract_address':     '$EXP_ADDR',
+    'bluechip_denom':                      'ubluechip',
+    'standard_pool_creation_fee_usd':      '1000000',
 }))
 ")
 

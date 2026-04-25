@@ -20,13 +20,11 @@ pub struct CreatePoolReplyMsg {
     //fees to bluechip and creator
     pub commit_fee_info: CommitFeeInfo,
     pub commit_threshold_limit_usd: Uint128,
-    pub commit_amount_for_threshold: Uint128,
     pub token_address: Addr,
     //address called by the pool to mint new liquidity position NFTs.
     pub position_nft_address: Addr,
     pub max_bluechip_lock_per_pool: Uint128,
     pub creator_excess_liquidity_lock_days: u64,
-    pub is_standard_pool: Option<bool>,
 }
 
 #[cw_serde]
@@ -111,6 +109,38 @@ pub enum ExecuteMsg {
     // verifies info.sender is a registered pool.
     PayDistributionBounty {
         recipient: String,
+    },
+
+    // ---- H14 standard pools ----
+    //
+    // Permissionless creator-of-its-own-pool entry point for plain xyk
+    // pools around two pre-existing assets. Caller pays the configured
+    // `standard_pool_creation_fee_usd` in ubluechip — the handler
+    // converts USD → bluechip via the oracle (with hardcoded fallback
+    // for the bootstrap case where the oracle has no data yet) and
+    // forwards the fee to `bluechip_wallet_address`.
+    //
+    // Pair shape constraints (enforced in the handler): no self-pair;
+    // any `Bluechip { denom }` entry must match the canonical
+    // bluechip_denom; any `CreatorToken { contract_addr }` entry must
+    // resolve as a real CW20 (validated via `TokenInfo {}` query at
+    // creation time).
+    //
+    // `label` is the on-chain label string passed to the pool's
+    // wasm instantiate — used by block explorers and operator tooling.
+    CreateStandardPool {
+        pool_token_info: [TokenType; 2],
+        label: String,
+    },
+    // One-shot bootstrap: admin sets the ATOM/bluechip anchor pool
+    // address to a previously-created standard pool. Only callable
+    // ONCE per factory deployment (gated on the `INITIAL_ANCHOR_SET`
+    // flag). All subsequent anchor changes require the standard 48h
+    // `ProposeConfigUpdate` flow. Exists purely to break the launch-day
+    // chicken-and-egg of "factory needs an anchor pool address at
+    // instantiate but the anchor pool itself is created via the factory".
+    SetAnchorPool {
+        pool_id: u64,
     },
 }
 

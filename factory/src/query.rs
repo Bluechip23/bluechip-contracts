@@ -45,10 +45,6 @@ pub struct PoolCreationStatusResponse {
     pub pool_address: Option<Addr>,
     pub creation_time: Timestamp,
     pub status: CreationStatus,
-    /// Number of cleanup retries observed for this pool's creation flow.
-    /// 0 on the happy path; non-zero values indicate operator attention may
-    /// be required. Increments only when handle_cleanup_reply gets an Err.
-    pub retry_count: u8,
 }
 
 #[cw_serde]
@@ -96,16 +92,26 @@ pub fn query_pool_creation_status(
         Some(c) => c,
         None => return Ok(None),
     };
-    let state = ctx.state;
+    let crate::state::PoolCreationContext {
+        temp,
+        state,
+        commit_pool_ordinal: _,
+    } = ctx;
     Ok(Some(PoolCreationStatusResponse {
         pool_id: state.pool_id,
         creator: state.creator,
-        creator_token_address: state.creator_token_address,
-        mint_new_position_nft_address: state.mint_new_position_nft_address,
+        // Prefer ctx.temp (the single source of truth for new contexts);
+        // fall back to ctx.state for pre-consolidation records that still
+        // carry the mirror field.
+        creator_token_address: temp
+            .creator_token_addr
+            .or(state.creator_token_address),
+        mint_new_position_nft_address: temp
+            .nft_addr
+            .or(state.mint_new_position_nft_address),
         pool_address: state.pool_address,
         creation_time: state.creation_time,
         status: state.status,
-        retry_count: state.retry_count,
     }))
 }
 
@@ -162,10 +168,10 @@ pub fn handle_internal_bluechip_oracle_query(
             to_json_binary(&get_bluechip_usd_price(deps, &env)?)
         }
         FactoryQueryMsg::ConvertBluechipToUsd { amount } => {
-            to_json_binary(&bluechip_to_usd(deps, amount, env)?)
+            to_json_binary(&bluechip_to_usd(deps, amount, &env)?)
         }
         FactoryQueryMsg::ConvertUsdToBluechip { amount } => {
-            to_json_binary(&usd_to_bluechip(deps, amount, env)?)
+            to_json_binary(&usd_to_bluechip(deps, amount, &env)?)
         }
     }
 }

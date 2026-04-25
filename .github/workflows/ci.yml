@@ -62,7 +62,7 @@ jobs:
           targets: wasm32-unknown-unknown
       - uses: Swatinem/rust-cache@v2
       - run: |
-          cargo build --target wasm32-unknown-unknown --release -p pool
+          cargo build --target wasm32-unknown-unknown --release -p creator-pool
           cargo build --target wasm32-unknown-unknown --release -p factory
           cargo build --target wasm32-unknown-unknown --release -p expand-economy
           cargo build --target wasm32-unknown-unknown --release -p router

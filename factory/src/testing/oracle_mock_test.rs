@@ -30,6 +30,7 @@ fn default_init() -> FactoryInstantiate {
         pyth_atom_usd_price_feed_id: "ATOM_USD".to_string(),
         cw20_token_contract_id: 10,
         create_pool_wasm_contract_id: 11,
+        standard_pool_wasm_contract_id: 0,
         bluechip_wallet_address: addr("bluechip_wallet"),
         commit_fee_bluechip: Decimal::percent(1),
         commit_fee_creator: Decimal::percent(5),
@@ -38,6 +39,8 @@ fn default_init() -> FactoryInstantiate {
         // Under mock, the anchor pool is not queried during UpdateOraclePrice.
         atom_bluechip_anchor_pool_address: addr("unused_anchor"),
         bluechip_mint_contract_address: None,
+        bluechip_denom: "ubluechip".to_string(),
+        standard_pool_creation_fee_usd: cosmwasm_std::Uint128::new(1_000_000),
     }
 }
 

@@ -8,25 +8,35 @@ use pool_factory_interfaces::PoolStateResponseForFactory;
 pub const FACTORYINSTANTIATEINFO: Item<FactoryInstantiate> = Item::new("config");
 // Single source of truth for every in-flight pool creation. Combines the
 // formerly-split TEMP_POOL_CREATION (pool inputs + discovered addresses)
-// and POOL_CREATION_STATES (lifecycle status + retry count) into one map
-// so the three reply handlers can't leave the two halves out of sync.
+// and lifecycle status into one map so the reply handlers can't leave the
+// two halves out of sync. On any failure the whole tx reverts (every step
+// uses `SubMsg::reply_on_success`), so no retry/cleanup bookkeeping is
+// needed: a failed create leaves no trace in this map.
 pub const POOL_CREATION_CONTEXT: Map<u64, PoolCreationContext> =
     Map::new("pool_creation_ctx_v3");
 pub const PENDING_CONFIG: Item<PendingConfig> = Item::new("pending_config");
 pub const POOL_COUNTER: Item<u64> = Item::new("pool_counter");
 
-// Three coupled pool-registry maps. They MUST stay in sync — every pool
-// that exists must appear in all three. Always go through `register_pool`
+/// Commit-pool-only ordinal. Bumped exactly once per `execute_create_creator_pool`
+/// and stored on the commit pool's `PoolDetails.commit_pool_ordinal` so the
+/// threshold-mint decay formula can use it as `x` instead of `pool_id`.
+///
+/// This split exists because `POOL_COUNTER` is bumped by both commit and
+/// standard pool creations; using `pool_id` directly in the decay formula
+/// would let permissionless `CreateStandardPool` calls inflate `x` and
+/// shrink (toward zero) the bluechip mint reward for legitimate commit
+/// pools created later. The dedicated counter keeps the decay schedule
+/// anchored to actual commit-pool creation activity.
+pub const COMMIT_POOL_COUNTER: Item<u64> = Item::new("commit_pool_counter");
+
+// Two coupled pool-registry maps. They MUST stay in sync — every pool
+// that exists must appear in both. Always go through `register_pool`
 // rather than touching them individually.
 //   - POOLS_BY_ID:               pool_id  -> PoolDetails (token info, addresses)
-//   - POOL_REGISTRY:             pool_id  -> pool contract Addr (lookup shortcut)
 //   - POOLS_BY_CONTRACT_ADDRESS: pool addr -> snapshot used by oracle / queries
 pub const POOLS_BY_ID: Map<u64, PoolDetails> = Map::new("pools_by_id");
 pub const POOLS_BY_CONTRACT_ADDRESS: Map<Addr, PoolStateResponseForFactory> =
     Map::new("pools_by_contract_address");
-pub const POOL_REGISTRY: Map<u64, Addr> = Map::new("pool_registry");
-
-pub const POOL_CREATION_STATES: Map<u64, PoolCreationState> = Map::new("creation_states");
 // Maximum age (seconds) of a Pyth price we are willing to use for USD
 // conversions. Tightened from 300s to 90s: a 5-minute window let an
 // attacker who spotted a favorable price pick-and-choose any moment in
@@ -99,6 +109,28 @@ pub const MAX_DISTRIBUTION_BOUNTY_USD: Uint128 = Uint128::new(100_000);
 // community to notice and respond.
 pub const PENDING_ORACLE_ROTATION: Item<Timestamp> = Item::new("pending_oracle_rotation");
 
+// One-shot bootstrap flag for the anchor pool. False until the admin
+// invokes `ExecuteMsg::SetAnchorPool { pool_id }` exactly once; flipped
+// to true at that point. After flip, any subsequent change to
+// `atom_bluechip_anchor_pool_address` must go through the standard 48h
+// `ProposeConfigUpdate` → `UpdateConfig` flow. The one-shot exists
+// purely to dodge the launch-day chicken-and-egg: the admin needs to
+// (a) deploy the factory, (b) create the ATOM/bluechip standard pool
+// via CreateStandardPool, then (c) point the factory at it as the
+// anchor — and (c) needs to be immediate, not 48h after deploy. After
+// the one-shot fires, normal change-control resumes.
+pub const INITIAL_ANCHOR_SET: Item<bool> = Item::new("initial_anchor_set");
+
+// Hardcoded fallback fee in ubluechip when the USD-to-bluechip oracle
+// conversion fails (Pyth stale, oracle uninitialized, anchor pool not
+// liquid yet, etc.). Load-bearing during launch, since the very first
+// CreateStandardPool call — the one that creates the ATOM/bluechip
+// anchor pool — necessarily happens before the oracle has any data to
+// price USD against. 100 bluechip is a reasonable safety floor; the
+// admin tunes the USD-denominated fee separately via
+// `FactoryInstantiate.standard_pool_creation_fee_usd`.
+pub const STANDARD_POOL_CREATION_FEE_FALLBACK_BLUECHIP: Uint128 = Uint128::new(100_000_000);
+
 #[cw_serde]
 pub struct PendingPoolConfig {
     pub pool_id: u64,
@@ -116,6 +148,14 @@ pub struct FactoryInstantiate {
     pub cw20_token_contract_id: u64,
     pub cw721_nft_contract_id: u64,
     pub create_pool_wasm_contract_id: u64,
+    /// Code ID for the standard-pool wasm (split out of creator-pool in
+    /// H14). Defaults to `0` on old serialized records so factories
+    /// deployed pre-split continue to deserialize; operators must propose
+    /// a config update that sets this field before `CreateStandardPool`
+    /// can succeed. Standard pools instantiate against THIS code_id,
+    /// not `create_pool_wasm_contract_id`.
+    #[serde(default)]
+    pub standard_pool_wasm_contract_id: u64,
     pub bluechip_wallet_address: Addr,
     pub commit_fee_bluechip: Decimal,
     pub commit_fee_creator: Decimal,
@@ -123,6 +163,28 @@ pub struct FactoryInstantiate {
     pub creator_excess_liquidity_lock_days: u64,
     pub atom_bluechip_anchor_pool_address: Addr,
     pub bluechip_mint_contract_address: Option<Addr>,
+    /// Canonical native bank denom for the bluechip token on this chain
+    /// (e.g. "ubluechip"). Pinned at factory instantiate time and enforced
+    /// whenever a pool is created: the `TokenType::Native { denom }` entry
+    /// in `pool_token_info` MUST match this value exactly. Prevents an
+    /// attacker from registering a pool with an arbitrary native denom
+    /// (tokenfactory-minted fake bluechip, low-value IBC denom, etc.) and
+    /// having every downstream oracle/commit path treat that denom's
+    /// balance as real bluechip.
+    pub bluechip_denom: String,
+    /// USD-denominated fee (6 decimals: 1_000_000 = $1.00) charged on
+    /// every `CreateStandardPool` call. Paid in ubluechip — the handler
+    /// converts USD → bluechip via the internal oracle at call time. If
+    /// the oracle is unavailable (bootstrap, Pyth outage, no anchor
+    /// liquidity yet), the handler falls back to the hardcoded
+    /// `STANDARD_POOL_CREATION_FEE_FALLBACK_BLUECHIP` constant so that
+    /// the very first standard pool — usually the anchor pool itself —
+    /// can still be created before the oracle has any data.
+    ///
+    /// Tunable via the existing 48h `ProposeConfigUpdate` flow.
+    /// Setting this to zero disables the fee entirely (legitimate
+    /// configuration choice for permissioned deployments).
+    pub standard_pool_creation_fee_usd: Uint128,
 }
 
 #[cw_serde]
@@ -140,7 +202,6 @@ pub struct PoolCreationState {
     pub pool_address: Option<Addr>,
     pub creation_time: Timestamp,
     pub status: CreationStatus,
-    pub retry_count: u8,
 }
 
 /// Unified view of an in-flight pool creation. `temp` carries the original
@@ -150,7 +211,79 @@ pub struct PoolCreationState {
 pub struct PoolCreationContext {
     pub temp: TempPoolCreation,
     pub state: PoolCreationState,
+    /// Captured at commit-pool create time and threaded through the reply
+    /// chain into `PoolDetails.commit_pool_ordinal`. Stored on the context
+    /// rather than re-computed in `finalize_pool` so the ordinal is fixed
+    /// at create time even if a concurrent commit-pool create races —
+    /// commit pools share the global `COMMIT_POOL_COUNTER` allocator but
+    /// each pool's ordinal is locked in here on its own create tx.
+    #[serde(default)]
+    pub commit_pool_ordinal: u64,
 }
+
+/// Per-`CreateStandardPool` in-flight context. Mirrors the role of
+/// `PoolCreationContext` for the much shorter standard-pool reply chain.
+/// Standard pools don't mint a fresh CW20, so the chain is just
+/// CW721-instantiate → pool-instantiate (no SET_TOKENS step), and the
+/// state is correspondingly leaner. Removed by `finalize_standard_pool`
+/// once registration completes; on failure the entire tx reverts and
+/// nothing persists (same atomicity guarantees as commit pools — see
+/// pool_create_cleanup.rs comment block).
+#[cw_serde]
+pub struct StandardPoolCreationContext {
+    pub pool_id: u64,
+    pub pool_token_info: [crate::asset::TokenType; 2],
+    pub creator: Addr,
+    /// Caller-supplied label propagated to the pool wasm's instantiate
+    /// label field (visible to block explorers and operator tooling).
+    pub label: String,
+    /// Set after the CW721 NFT instantiate sub-message returns; consumed
+    /// by `finalize_standard_pool` to wire ownership to the new pool.
+    pub nft_addr: Option<Addr>,
+}
+
+pub const STANDARD_POOL_CREATION_CONTEXT: Map<u64, StandardPoolCreationContext> =
+    Map::new("std_pool_ctx");
+
+/// Cached list of pool contract addresses eligible for oracle TWAP sampling.
+/// Rebuilt by a full O(N) scan of `POOLS_BY_ID` at most once per
+/// `ELIGIBLE_POOL_REFRESH_BLOCKS` blocks (≈5 days at 6s blocks); between
+/// refreshes the oracle samples directly from the snapshot without touching
+/// POOLS_BY_ID. The cross-contract liquidity / paused check still runs
+/// per-sample at oracle-update time, so freshly-drained pools are dropped
+/// from the sample set immediately; they stay in the snapshot's `pool_addresses`
+/// until the next 5-day refresh but have no observable effect on the TWAP.
+///
+/// A newly-threshold-crossed pool is NOT visible to the oracle until the
+/// next refresh (up to 5 days). This is an intentional tradeoff: an explicit
+/// admin force-refresh was considered and rejected.
+///
+/// `pool_addresses` and `bluechip_indices` are coupled — entry `i` of the
+/// addresses array has its bluechip side at reserve-index `bluechip_indices[i]`.
+/// Hoisting the bluechip-side lookup into the snapshot eliminates the
+/// per-sample O(N) scan of `POOLS_BY_ID` that previously dominated oracle
+/// update gas at scale (75 sampled pools × N total pools = O(N²) reads).
+/// `#[serde(default)]` lets snapshots written by the pre-cache code path
+/// deserialize cleanly with an empty `bluechip_indices`; the oracle's
+/// is_bluechip_second resolution falls back to the linear scan in that
+/// (one-time) case until the next refresh repopulates the cache.
+#[cw_serde]
+pub struct EligiblePoolSnapshot {
+    pub pool_addresses: Vec<String>,
+    /// 0 = bluechip is reserve0, 1 = bluechip is reserve1.
+    /// Stored as u8 (rather than bool) because future pool variants may
+    /// extend the encoding, and u8 round-trips cleanly through cw_serde.
+    #[serde(default)]
+    pub bluechip_indices: Vec<u8>,
+    pub captured_at_block: u64,
+}
+
+pub const ELIGIBLE_POOL_SNAPSHOT: Item<EligiblePoolSnapshot> =
+    Item::new("eligible_pool_snap");
+
+/// How stale the snapshot is allowed to get before `select_random_pools_with_atom`
+/// rebuilds it. 72_000 blocks at 6s per block ≈ 5 days.
+pub const ELIGIBLE_POOL_REFRESH_BLOCKS: u64 = 72_000;
 
 #[cw_serde]
 pub enum CreationStatus {
@@ -175,11 +308,11 @@ pub struct PoolUpgrade {
 // ---------------------------------------------------------------------------
 // Pool registry helpers
 // ---------------------------------------------------------------------------
-// Centralized so the three pool-registry maps cannot drift. Direct writes
-// to POOLS_BY_ID / POOL_REGISTRY / POOLS_BY_CONTRACT_ADDRESS outside this
-// module risk leaving the factory's view of pools internally inconsistent.
+// Centralized so the two pool-registry maps cannot drift. Direct writes to
+// POOLS_BY_ID / POOLS_BY_CONTRACT_ADDRESS outside this module risk leaving
+// the factory's view of pools internally inconsistent.
 
-/// Atomically register a freshly created pool across all three maps.
+/// Atomically register a freshly created pool across both registry maps.
 ///
 /// Initial `PoolStateResponseForFactory` is materialized from `pool_details`
 /// — caller doesn't need to construct it. Reserves and TWAP accumulators
@@ -191,13 +324,12 @@ pub fn register_pool(
     pool_details: &PoolDetails,
 ) -> StdResult<()> {
     POOLS_BY_ID.save(storage, pool_id, pool_details)?;
-    POOL_REGISTRY.save(storage, pool_id, pool_address)?;
 
     let asset_strings: Vec<String> = pool_details
         .pool_token_info
         .iter()
         .map(|t| match t {
-            TokenType::Bluechip { denom } => denom.clone(),
+            TokenType::Native { denom } => denom.clone(),
             TokenType::CreatorToken { contract_addr } => contract_addr.to_string(),
         })
         .collect();

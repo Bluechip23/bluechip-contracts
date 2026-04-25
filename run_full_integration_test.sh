@@ -98,7 +98,8 @@ hdr "===== PHASE 1: UPLOAD ALL WASM CONTRACTS ====="
 # #####################################################################
 CW20_CODE=$(upload cw20_base.wasm "CW20 Base")
 CW721_CODE=$(upload cw721_base.wasm "CW721 Base")
-POOL_CODE=$(upload pool.wasm "Pool")
+POOL_CODE=$(upload creator_pool.wasm "Creator Pool")
+STANDARD_POOL_CODE=$(upload standard_pool.wasm "Standard Pool")
 ORACLE_CODE=$(upload oracle.wasm "Mock Oracle")
 FACTORY_CODE=$(upload factory.wasm "Factory")
 ECON_CODE=$(upload expand_economy.wasm "Expand Economy")
@@ -126,13 +127,16 @@ FINIT=$(cat <<EOF
   "cw721_nft_contract_id":$CW721_CODE,
   "cw20_token_contract_id":$CW20_CODE,
   "create_pool_wasm_contract_id":$POOL_CODE,
+  "standard_pool_wasm_contract_id":$STANDARD_POOL_CODE,
   "bluechip_wallet_address":"$ALICE",
   "commit_fee_bluechip":"0.01",
   "commit_fee_creator":"0.05",
   "max_bluechip_lock_per_pool":"25000000000",
   "creator_excess_liquidity_lock_days":7,
   "atom_bluechip_anchor_pool_address":"$ALICE",
-  "bluechip_mint_contract_address":null
+  "bluechip_mint_contract_address":null,
+  "bluechip_denom": "ubluechip",
+  "standard_pool_creation_fee_usd": "1000000"
 }
 EOF
 )
@@ -165,13 +169,16 @@ NEW_CFG=$(cat <<EOF
   "cw721_nft_contract_id":$CW721_CODE,
   "cw20_token_contract_id":$CW20_CODE,
   "create_pool_wasm_contract_id":$POOL_CODE,
+  "standard_pool_wasm_contract_id":$STANDARD_POOL_CODE,
   "bluechip_wallet_address":"$ALICE",
   "commit_fee_bluechip":"0.02",
   "commit_fee_creator":"0.05",
   "max_bluechip_lock_per_pool":"25000000000",
   "creator_excess_liquidity_lock_days":7,
   "atom_bluechip_anchor_pool_address":"$ALICE",
-  "bluechip_mint_contract_address":null
+  "bluechip_mint_contract_address":null,
+  "bluechip_denom": "ubluechip",
+  "standard_pool_creation_fee_usd": "1000000"
 }
 EOF
 )
@@ -977,13 +984,16 @@ FINIT2=$(cat <<EOF
   "cw721_nft_contract_id":$CW721_CODE,
   "cw20_token_contract_id":$CW20_CODE,
   "create_pool_wasm_contract_id":$POOL_CODE,
+  "standard_pool_wasm_contract_id":$STANDARD_POOL_CODE,
   "bluechip_wallet_address":"$ALICE",
   "commit_fee_bluechip":"0.01",
   "commit_fee_creator":"0.05",
   "max_bluechip_lock_per_pool":"100",
   "creator_excess_liquidity_lock_days":7,
   "atom_bluechip_anchor_pool_address":"$ALICE",
-  "bluechip_mint_contract_address":null
+  "bluechip_mint_contract_address":null,
+  "bluechip_denom": "ubluechip",
+  "standard_pool_creation_fee_usd": "1000000"
 }
 EOF
 )

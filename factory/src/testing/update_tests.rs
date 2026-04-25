@@ -12,10 +12,8 @@ use crate::execute::{execute, instantiate};
 use crate::mock_querier::WasmMockQuerier;
 use crate::msg::ExecuteMsg;
 use crate::pool_struct::{PoolConfigUpdate, PoolDetails};
-use crate::state::{
-    FactoryInstantiate, PENDING_CONFIG, PENDING_POOL_UPGRADE, POOLS_BY_ID, POOL_REGISTRY,
-};
-use crate::testing::tests::setup_atom_pool;
+use crate::state::{FactoryInstantiate, PENDING_CONFIG, PENDING_POOL_UPGRADE, POOLS_BY_ID};
+use crate::testing::tests::{register_test_pool_addr, setup_atom_pool};
 
 fn make_addr(label: &str) -> Addr {
     MockApi::default().addr_make(label)
@@ -57,6 +55,7 @@ fn test_propose_and_execute_update_config() {
         pyth_atom_usd_price_feed_id: "ORCL".to_string(),
         cw20_token_contract_id: 10,
         create_pool_wasm_contract_id: 11,
+        standard_pool_wasm_contract_id: 0,
         bluechip_wallet_address: make_addr("ubluechip"),
         commit_fee_bluechip: Decimal::from_ratio(10u128, 100u128),
         commit_fee_creator: Decimal::from_ratio(10u128, 100u128),
@@ -64,6 +63,8 @@ fn test_propose_and_execute_update_config() {
         creator_excess_liquidity_lock_days: 7,
         atom_bluechip_anchor_pool_address: atom_bluechip_pool_addr(),
         bluechip_mint_contract_address: None,
+        bluechip_denom: "ubluechip".to_string(),
+        standard_pool_creation_fee_usd: cosmwasm_std::Uint128::new(1_000_000),
     };
 
     let env = mock_env();
@@ -133,11 +134,12 @@ fn test_pool_registry_population() {
     setup_factory(&mut deps);
     let pool_id = 1u64;
     let pool_address = Addr::unchecked("pool_1");
-    POOL_REGISTRY
-        .save(&mut deps.storage, pool_id, &pool_address)
-        .unwrap();
+    register_test_pool_addr(&mut deps.storage, pool_id, &pool_address);
 
-    let loaded = POOL_REGISTRY.load(&deps.storage, pool_id).unwrap();
+    let loaded = POOLS_BY_ID
+        .load(&deps.storage, pool_id)
+        .unwrap()
+        .creator_pool_addr;
     assert_eq!(loaded, pool_address);
 }
 
@@ -148,9 +150,7 @@ fn test_upgrade_pools_with_registry() {
 
     for i in 1..=5 {
         let pool_addr = Addr::unchecked(format!("pool_{}", i));
-        POOL_REGISTRY
-            .save(&mut deps.storage, i, &pool_addr)
-            .unwrap();
+        register_test_pool_addr(&mut deps.storage, i, &pool_addr);
     }
 
     let env = mock_env();
@@ -227,14 +227,11 @@ fn test_update_specific_pool_from_registry() {
 
     let pool_id = 3u64;
     let pool_addr = Addr::unchecked("pool_3_address");
-    POOL_REGISTRY
-        .save(&mut deps.storage, pool_id, &pool_addr)
-        .unwrap();
 
     let pool_details = PoolDetails {
         pool_id,
         pool_token_info: [
-            TokenType::Bluechip {
+            TokenType::Native {
                 denom: "ubluechip".to_string(),
             },
             TokenType::CreatorToken {
@@ -242,6 +239,8 @@ fn test_update_specific_pool_from_registry() {
             },
         ],
         creator_pool_addr: pool_addr.clone(),
+        pool_kind: pool_factory_interfaces::PoolKind::Commit,
+        commit_pool_ordinal: 0,
     };
     POOLS_BY_ID
         .save(&mut deps.storage, pool_id, &pool_details)
@@ -289,13 +288,7 @@ fn test_migration_with_large_pool_count() {
     setup_factory(&mut deps);
 
     for i in 1..=25 {
-        POOL_REGISTRY
-            .save(
-                &mut deps.storage,
-                i,
-                &Addr::unchecked(format!("pool_{}", i)),
-            )
-            .unwrap();
+        register_test_pool_addr(&mut deps.storage, i, &Addr::unchecked(format!("pool_{}", i)));
     }
 
     let env = mock_env();
@@ -381,13 +374,7 @@ fn test_upgrade_skips_paused_pools() {
     setup_factory_custom(&mut deps);
 
     for i in 1..=3 {
-        POOL_REGISTRY
-            .save(
-                &mut deps.storage,
-                i,
-                &Addr::unchecked(format!("pool_{}", i)),
-            )
-            .unwrap();
+        register_test_pool_addr(&mut deps.storage, i, &Addr::unchecked(format!("pool_{}", i)));
     }
 
     // Mark pool_2 as paused via the mock querier.
@@ -465,13 +452,7 @@ fn test_upgrade_treats_query_failure_as_not_paused() {
     setup_factory_custom(&mut deps);
 
     for i in 1..=2 {
-        POOL_REGISTRY
-            .save(
-                &mut deps.storage,
-                i,
-                &Addr::unchecked(format!("pool_{}", i)),
-            )
-            .unwrap();
+        register_test_pool_addr(&mut deps.storage, i, &Addr::unchecked(format!("pool_{}", i)));
     }
 
     // Make pool_1's query error out; pool_2 is normal.
@@ -559,13 +540,7 @@ fn test_cancel_pool_upgrade() {
     setup_factory(&mut deps);
 
     for i in 1..=3 {
-        POOL_REGISTRY
-            .save(
-                &mut deps.storage,
-                i,
-                &Addr::unchecked(format!("pool_{}", i)),
-            )
-            .unwrap();
+        register_test_pool_addr(&mut deps.storage, i, &Addr::unchecked(format!("pool_{}", i)));
     }
 
     let env = mock_env();
@@ -646,6 +621,7 @@ fn default_factory_instantiate_msg() -> FactoryInstantiate {
         cw20_token_contract_id: 10,
         cw721_nft_contract_id: 20,
         create_pool_wasm_contract_id: 30,
+        standard_pool_wasm_contract_id: 0,
         bluechip_wallet_address: make_addr("ubluechip"),
         commit_fee_bluechip: Decimal::percent(1),
         commit_fee_creator: Decimal::percent(5),
@@ -653,5 +629,7 @@ fn default_factory_instantiate_msg() -> FactoryInstantiate {
         creator_excess_liquidity_lock_days: 7,
         atom_bluechip_anchor_pool_address: atom_bluechip_pool_addr(),
         bluechip_mint_contract_address: None,
+        bluechip_denom: "ubluechip".to_string(),
+        standard_pool_creation_fee_usd: cosmwasm_std::Uint128::new(1_000_000),
     }
 }

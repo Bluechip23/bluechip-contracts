@@ -67,7 +67,8 @@ upload() {
   echo "$c"
 }
 
-POOL_CODE=$(upload pool.wasm "Pool")
+POOL_CODE=$(upload creator_pool.wasm "Creator Pool")
+STANDARD_POOL_CODE=$(upload standard_pool.wasm "Standard Pool")
 ORACLE_CODE=$(upload oracle.wasm "Mock Oracle")
 ECON_CODE=$(upload expand_economy.wasm "Expand Economy")
 FACTORY_CODE=$(upload factory.wasm "Factory")
@@ -101,13 +102,16 @@ FINIT=$(cat <<EOF
   "cw721_nft_contract_id":2,
   "cw20_token_contract_id":1,
   "create_pool_wasm_contract_id":$POOL_CODE,
+  "standard_pool_wasm_contract_id":$STANDARD_POOL_CODE,
   "bluechip_wallet_address":"$ALICE",
   "commit_fee_bluechip":"0.01",
   "commit_fee_creator":"0.05",
   "max_bluechip_lock_per_pool":"25000000000",
   "creator_excess_liquidity_lock_days":7,
   "atom_bluechip_anchor_pool_address":"$ALICE",
-  "bluechip_mint_contract_address":null
+  "bluechip_mint_contract_address":null,
+  "bluechip_denom": "ubluechip",
+  "standard_pool_creation_fee_usd": "1000000"
 }
 EOF
 )
@@ -120,6 +124,7 @@ FACTORY=$(bluechipChaind query wasm list-contract-by-code $FACTORY_CODE --output
 FC=$(q $FACTORY '{"factory":{}}' | jq '.data.factory')
 [ "$(echo $FC | jq -r '.pyth_contract_addr_for_conversions')" = "$ORACLE" ] && pass "Factory→Oracle OK" || fail "Factory→Oracle wrong"
 [ "$(echo $FC | jq -r '.create_pool_wasm_contract_id')" = "$POOL_CODE" ] && pass "Factory→Pool code OK" || fail "Factory→Pool code wrong"
+[ "$(echo $FC | jq -r '.standard_pool_wasm_contract_id')" = "$STANDARD_POOL_CODE" ] && pass "Factory→StandardPool code OK" || fail "Factory→StandardPool code wrong"
 
 # Fund factory for threshold BankMsg mint fallback
 send bank send $ALICE $FACTORY "50000000${DENOM}" --from alice >/dev/null

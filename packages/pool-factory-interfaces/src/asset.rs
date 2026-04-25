@@ -3,7 +3,7 @@ use cosmwasm_std::{
     to_json_binary, Addr, Api, BalanceResponse, BankQuery, QuerierWrapper, QueryRequest, StdError,
     StdResult, Uint128, WasmQuery,
 };
-use cw20::{BalanceResponse as Cw20BalanceResponse, Cw20QueryMsg, TokenInfoResponse};
+use cw20::{BalanceResponse as Cw20BalanceResponse, Cw20QueryMsg};
 use std::fmt::{self, Display, Formatter, Result};
 
 #[cw_serde]
@@ -19,37 +19,39 @@ impl fmt::Display for TokenInfo {
 }
 
 impl TokenInfo {
-    pub fn is_bluechip_token(&self) -> bool {
-        self.info.is_bluechip_token()
+    pub fn is_native_token(&self) -> bool {
+        self.info.is_native_token()
     }
 }
 
 #[cw_serde]
 pub enum TokenType {
     CreatorToken { contract_addr: Addr },
-    Bluechip { denom: String },
+    /// Any native bank denom on the chain — bluechip itself (`ubluechip`),
+    /// IBC-wrapped remote assets (e.g. `ibc/...` for ATOM), tokenfactory
+    /// denoms, etc. Name was formerly `Bluechip`, which was semantically
+    /// misleading because a `Native { denom: "ibc/..." }` entry represents
+    /// an IBC asset, not bluechip. The wire tag stays `"bluechip"` via
+    /// `#[serde(rename = ...)]` so on-chain serialized state, deploy
+    /// scripts, and frontend integrations continue to round-trip without
+    /// a coordinated migration.
+    #[serde(rename = "bluechip")]
+    Native { denom: String },
 }
 
 impl fmt::Display for TokenType {
     fn fmt(&self, f: &mut fmt::Formatter) -> fmt::Result {
         match self {
-            TokenType::Bluechip { denom } => write!(f, "{}", denom),
+            TokenType::Native { denom } => write!(f, "{}", denom),
             TokenType::CreatorToken { contract_addr } => write!(f, "{}", contract_addr),
         }
     }
 }
 
 impl TokenType {
-    pub fn is_bluechip_token(&self) -> bool {
+    pub fn is_native_token(&self) -> bool {
         match self {
-            TokenType::Bluechip { .. } => true,
-            TokenType::CreatorToken { .. } => false,
-        }
-    }
-
-    pub fn is_token_an_ibc_token(&self) -> bool {
-        match self {
-            TokenType::Bluechip { denom } => denom.to_lowercase().starts_with("ibc/"),
+            TokenType::Native { .. } => true,
             TokenType::CreatorToken { .. } => false,
         }
     }
@@ -59,7 +61,7 @@ impl TokenType {
             TokenType::CreatorToken { contract_addr, .. } => {
                 query_token_balance(querier, contract_addr.clone(), pool_addr)
             }
-            TokenType::Bluechip { denom, .. } => {
+            TokenType::Native { denom, .. } => {
                 query_balance(querier, pool_addr, denom.to_string())
             }
         }
@@ -71,14 +73,14 @@ impl TokenType {
                 TokenType::CreatorToken { contract_addr: a },
                 TokenType::CreatorToken { contract_addr: b },
             ) => a == b,
-            (TokenType::Bluechip { denom: a }, TokenType::Bluechip { denom: b }) => a == b,
+            (TokenType::Native { denom: a }, TokenType::Native { denom: b }) => a == b,
             _ => false,
         }
     }
 
     pub fn as_bytes(&self) -> &[u8] {
         match self {
-            TokenType::Bluechip { denom } => denom.as_bytes(),
+            TokenType::Native { denom } => denom.as_bytes(),
             TokenType::CreatorToken { contract_addr } => contract_addr.as_bytes(),
         }
     }
@@ -106,16 +108,9 @@ impl Display for PoolPairType {
     }
 }
 
-// Returns a lowercased, validated address upon success if present.
-pub fn addr_opt_validate(api: &dyn Api, addr: &Option<String>) -> StdResult<Option<Addr>> {
-    addr.as_ref()
-        .map(|addr| api.addr_validate(addr))
-        .transpose()
-}
-
-pub fn bluechip_asset(denom: String, amount: Uint128) -> TokenInfo {
+pub fn native_asset(denom: String, amount: Uint128) -> TokenInfo {
     TokenInfo {
-        info: TokenType::Bluechip { denom },
+        info: TokenType::Native { denom },
         amount,
     }
 }
@@ -127,37 +122,16 @@ pub fn token_asset(contract_addr: Addr, amount: Uint128) -> TokenInfo {
     }
 }
 
-pub fn bluechip_asset_info(denom: String) -> TokenType {
-    TokenType::Bluechip { denom }
-}
-
-pub fn token_asset_info(contract_addr: Addr) -> TokenType {
-    TokenType::CreatorToken { contract_addr }
-}
-
 // Extracts the native bluechip denom from a pool's asset_infos array.
-pub fn get_bluechip_denom(asset_infos: &[TokenType; 2]) -> StdResult<String> {
+pub fn get_native_denom(asset_infos: &[TokenType; 2]) -> StdResult<String> {
     for asset in asset_infos {
-        if let TokenType::Bluechip { denom } = asset {
+        if let TokenType::Native { denom } = asset {
             return Ok(denom.clone());
         }
     }
     Err(StdError::generic_err(
         "No bluechip (native) asset found in pool asset_infos",
     ))
-}
-
-pub trait TokenTypeExt {
-    fn with_balance(&self, balance: impl Into<Uint128>) -> TokenInfo;
-}
-
-impl TokenTypeExt for TokenType {
-    fn with_balance(&self, balance: impl Into<Uint128>) -> TokenInfo {
-        TokenInfo {
-            info: self.clone(),
-            amount: balance.into(),
-        }
-    }
 }
 
 /// Queries a CW20 token balance for a given account.
@@ -177,15 +151,6 @@ pub fn query_token_balance(
             balance: Uint128::zero(),
         });
     Ok(res.balance)
-}
-
-/// Queries a CW20 token's symbol.
-pub fn query_token_symbol(querier: &QuerierWrapper, contract_addr: Addr) -> StdResult<String> {
-    let res: TokenInfoResponse = querier.query(&QueryRequest::Wasm(WasmQuery::Smart {
-        contract_addr: String::from(contract_addr),
-        msg: to_json_binary(&Cw20QueryMsg::TokenInfo {})?,
-    }))?;
-    Ok(res.symbol)
 }
 
 /// Queries a native bank balance for a given account and denom.

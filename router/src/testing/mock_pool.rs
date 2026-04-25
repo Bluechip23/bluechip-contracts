@@ -131,7 +131,7 @@ fn execute_native_swap(
     }
 
     let denom = match &offer_asset.info {
-        TokenType::Bluechip { denom } => denom.clone(),
+        TokenType::Native { denom } => denom.clone(),
         TokenType::CreatorToken { .. } => {
             return Err(StdError::generic_err(
                 "SimpleSwap requires a native offer; use cw20 Send for token swaps",
@@ -318,7 +318,7 @@ fn build_transfer_msg(
         return Err(StdError::generic_err("zero return amount"));
     }
     match asset {
-        TokenType::Bluechip { denom } => Ok(CosmosMsg::Bank(BankMsg::Send {
+        TokenType::Native { denom } => Ok(CosmosMsg::Bank(BankMsg::Send {
             to_address: recipient.to_string(),
             amount: vec![Coin {
                 denom: denom.clone(),

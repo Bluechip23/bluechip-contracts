@@ -40,18 +40,6 @@ pub enum RouterError {
         transition: String,
     },
 
-    /// A hop's declared offer/ask pair does not match the actual pool's
-    /// pair. `declared` is "<offer>/<ask>" and `actual` is the pool's pair.
-    #[error(
-        "Hop {hop_index} on pool {pool_addr} declares {declared} but the pool pair is {actual}"
-    )]
-    HopAssetMismatch {
-        hop_index: usize,
-        pool_addr: String,
-        declared: String,
-        actual: String,
-    },
-
     #[error("Hop {hop_index} on pool {pool_addr} failed: {reason}")]
     HopFailed {
         hop_index: usize,
