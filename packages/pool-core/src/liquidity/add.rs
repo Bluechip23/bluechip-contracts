@@ -115,36 +115,28 @@ pub fn add_to_position(
     analytics.total_lp_deposit_count += 1;
     POOL_ANALYTICS.save(deps.storage, &analytics)?;
 
-    let mut response = Response::new()
-        .add_attribute("action", "add_to_position")
-        .add_attribute("position_id", position_id)
-        .add_attribute("depositor", user.to_string())
-        .add_attribute("additional_liquidity", prep.liquidity.to_string())
-        .add_attribute("total_liquidity", liquidity_position.liquidity.to_string())
-        .add_attribute("amount0_requested", amount0)
-        .add_attribute("amount1_requested", amount1)
-        .add_attribute("actual_amount0_added", prep.actual_amount0.to_string())
-        .add_attribute("actual_amount1_added", prep.actual_amount1.to_string())
-        .add_attribute("refunded_amount0", prep.refund_amount0.to_string())
-        .add_attribute("refunded_amount1", prep.refund_amount1.to_string())
-        .add_attribute("fees_collected_0", fees_owed_0)
-        .add_attribute("fees_collected_1", fees_owed_1)
-        .add_attribute("reserve0_after", pool_state.reserve0.to_string())
-        .add_attribute("reserve1_after", pool_state.reserve1.to_string())
-        .add_attribute(
-            "total_liquidity_after",
-            pool_state.total_liquidity.to_string(),
-        )
-        .add_attribute(
-            "pool_contract",
-            pool_state.pool_contract_address.to_string(),
-        )
-        .add_attribute("block_height", env.block.height.to_string())
-        .add_attribute("block_time", env.block.time.seconds().to_string())
-        .add_attribute(
-            "total_lp_deposit_count",
-            analytics.total_lp_deposit_count.to_string(),
-        );
+    let mut response = Response::new().add_attributes(vec![
+        ("action", "add_to_position".to_string()),
+        ("position_id", position_id),
+        ("depositor", user.to_string()),
+        ("additional_liquidity", prep.liquidity.to_string()),
+        ("total_liquidity", liquidity_position.liquidity.to_string()),
+        ("amount0_requested", amount0.to_string()),
+        ("amount1_requested", amount1.to_string()),
+        ("actual_amount0_added", prep.actual_amount0.to_string()),
+        ("actual_amount1_added", prep.actual_amount1.to_string()),
+        ("refunded_amount0", prep.refund_amount0.to_string()),
+        ("refunded_amount1", prep.refund_amount1.to_string()),
+        ("fees_collected_0", fees_owed_0.to_string()),
+        ("fees_collected_1", fees_owed_1.to_string()),
+        ("reserve0_after", pool_state.reserve0.to_string()),
+        ("reserve1_after", pool_state.reserve1.to_string()),
+        ("total_liquidity_after", pool_state.total_liquidity.to_string()),
+        ("pool_contract", pool_state.pool_contract_address.to_string()),
+        ("block_height", env.block.height.to_string()),
+        ("block_time", env.block.time.seconds().to_string()),
+        ("total_lp_deposit_count", analytics.total_lp_deposit_count.to_string()),
+    ]);
     let fee_msgs = build_fee_transfer_msgs(&prep.pool_info, &user, fees_owed_0, fees_owed_1)?;
     messages.extend(fee_msgs);
     response = response.add_messages(messages);
