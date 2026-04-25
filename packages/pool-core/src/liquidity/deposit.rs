@@ -271,32 +271,25 @@ pub fn execute_deposit_liquidity(
 
     Ok(Response::new()
         .add_messages(messages)
-        .add_attribute("action", "deposit_liquidity")
-        .add_attribute("position_id", position_id)
-        .add_attribute("depositor", user)
-        .add_attribute("liquidity", prep.liquidity.to_string())
-        .add_attribute("actual_amount0", prep.actual_amount0.to_string())
-        .add_attribute("actual_amount1", prep.actual_amount1.to_string())
-        .add_attribute("refunded_amount0", prep.refund_amount0.to_string())
-        .add_attribute("refunded_amount1", prep.refund_amount1.to_string())
-        .add_attribute("offered_amount0", amount0.to_string())
-        .add_attribute("offered_amount1", amount1.to_string())
-        .add_attribute("reserve0_after", pool_state.reserve0.to_string())
-        .add_attribute("reserve1_after", pool_state.reserve1.to_string())
-        .add_attribute(
-            "total_liquidity_after",
-            pool_state.total_liquidity.to_string(),
-        )
-        .add_attribute("share_of_pool_bps", share_of_pool_bps)
-        .add_attribute(
-            "pool_contract",
-            pool_state.pool_contract_address.to_string(),
-        )
-        .add_attribute("block_height", env.block.height.to_string())
-        .add_attribute("block_time", env.block.time.seconds().to_string())
-        .add_attribute(
-            "total_lp_deposit_count",
-            analytics.total_lp_deposit_count.to_string(),
-        )
-        .add_attribute("pool_unpaused", if unpaused { "true" } else { "false" }))
+        .add_attributes(vec![
+            ("action", "deposit_liquidity".to_string()),
+            ("position_id", position_id),
+            ("depositor", user.to_string()),
+            ("liquidity", prep.liquidity.to_string()),
+            ("actual_amount0", prep.actual_amount0.to_string()),
+            ("actual_amount1", prep.actual_amount1.to_string()),
+            ("refunded_amount0", prep.refund_amount0.to_string()),
+            ("refunded_amount1", prep.refund_amount1.to_string()),
+            ("offered_amount0", amount0.to_string()),
+            ("offered_amount1", amount1.to_string()),
+            ("reserve0_after", pool_state.reserve0.to_string()),
+            ("reserve1_after", pool_state.reserve1.to_string()),
+            ("total_liquidity_after", pool_state.total_liquidity.to_string()),
+            ("share_of_pool_bps", share_of_pool_bps),
+            ("pool_contract", pool_state.pool_contract_address.to_string()),
+            ("block_height", env.block.height.to_string()),
+            ("block_time", env.block.time.seconds().to_string()),
+            ("total_lp_deposit_count", analytics.total_lp_deposit_count.to_string()),
+            ("pool_unpaused", if unpaused { "true".to_string() } else { "false".to_string() }),
+        ]))
 }
