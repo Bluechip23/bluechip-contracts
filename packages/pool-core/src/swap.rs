@@ -449,35 +449,26 @@ pub fn execute_simple_swap(
         "0".to_string()
     };
 
-    Ok(Response::new()
-        .add_messages(msgs)
-        .add_attribute("action", "swap")
-        .add_attribute("sender", sender)
-        .add_attribute("receiver", receiver)
-        .add_attribute("offer_asset", offer_asset.info.to_string())
-        .add_attribute("ask_asset", ask_asset_info.to_string())
-        .add_attribute("offer_amount", offer_asset.amount.to_string())
-        .add_attribute("return_amount", return_amt.to_string())
-        .add_attribute("spread_amount", spread_amt.to_string())
-        .add_attribute("commission_amount", commission_amt.to_string())
-        .add_attribute("effective_price", effective_price)
-        .add_attribute("reserve0_after", pool_state.reserve0.to_string())
-        .add_attribute("reserve1_after", pool_state.reserve1.to_string())
-        .add_attribute(
-            "total_fee_collected_0",
-            pool_fee_state.total_fees_collected_0.to_string(),
-        )
-        .add_attribute(
-            "total_fee_collected_1",
-            pool_fee_state.total_fees_collected_1.to_string(),
-        )
-        .add_attribute(
-            "pool_contract",
-            pool_state.pool_contract_address.to_string(),
-        )
-        .add_attribute("block_height", env.block.height.to_string())
-        .add_attribute("block_time", env.block.time.seconds().to_string())
-        .add_attribute("total_swap_count", analytics.total_swap_count.to_string()))
+    Ok(Response::new().add_messages(msgs).add_attributes(vec![
+        ("action", "swap".to_string()),
+        ("sender", sender.to_string()),
+        ("receiver", receiver.to_string()),
+        ("offer_asset", offer_asset.info.to_string()),
+        ("ask_asset", ask_asset_info.to_string()),
+        ("offer_amount", offer_asset.amount.to_string()),
+        ("return_amount", return_amt.to_string()),
+        ("spread_amount", spread_amt.to_string()),
+        ("commission_amount", commission_amt.to_string()),
+        ("effective_price", effective_price),
+        ("reserve0_after", pool_state.reserve0.to_string()),
+        ("reserve1_after", pool_state.reserve1.to_string()),
+        ("total_fee_collected_0", pool_fee_state.total_fees_collected_0.to_string()),
+        ("total_fee_collected_1", pool_fee_state.total_fees_collected_1.to_string()),
+        ("pool_contract", pool_state.pool_contract_address.to_string()),
+        ("block_height", env.block.height.to_string()),
+        ("block_time", env.block.time.seconds().to_string()),
+        ("total_swap_count", analytics.total_swap_count.to_string()),
+    ]))
 }
 
 #[cfg(test)]
