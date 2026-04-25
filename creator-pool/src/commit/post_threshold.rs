@@ -19,7 +19,7 @@ use crate::error::ContractError;
 use crate::generic_helpers::{update_commit_info, update_pool_fee_growth};
 use crate::state::{
     PoolFeeState, PoolInfo, PoolSpecs, PoolState, POOL_ANALYTICS, POOL_FEE_STATE, POOL_PAUSED,
-    POOL_STATE,
+    POOL_STATE, POST_THRESHOLD_COOLDOWN_UNTIL_BLOCK,
 };
 use crate::swap_helper::{assert_max_spread, compute_swap, update_price_accumulator};
 
@@ -43,6 +43,21 @@ pub(super) fn process_post_threshold_commit(
 ) -> Result<Response, ContractError> {
     if POOL_PAUSED.may_load(deps.storage)?.unwrap_or(false) {
         return Err(ContractError::PoolPausedLowLiquidity {});
+    }
+
+    // Post-threshold-crossing cooldown. Mirrors the gate in
+    // pool_core::swap::execute_simple_swap: a follower commit landing in
+    // the crossing block (after the crosser's tx) or the next N blocks
+    // is rejected so it can't atomically sandwich the freshly-seeded
+    // pool. The crosser's own bounded excess swap runs before any other
+    // tx ever observes this storage item, so it isn't gated by itself.
+    let cooldown_until = POST_THRESHOLD_COOLDOWN_UNTIL_BLOCK
+        .may_load(deps.storage)?
+        .unwrap_or(0);
+    if env.block.height < cooldown_until {
+        return Err(ContractError::PostThresholdCooldownActive {
+            until_block: cooldown_until,
+        });
     }
 
     let offer_pool = pool_state.reserve0;

@@ -174,7 +174,7 @@ pub enum QueryMsg {
     #[returns(PoolAnalyticsResponse)]
     Analytics {},
     #[returns(PoolStateResponseForFactory)]
-    GetPoolState { pool_contract_address: String },
+    GetPoolState {},
     #[returns(AllPoolsResponse)]
     GetAllPools {},
     #[returns(pool_factory_interfaces::IsPausedResponse)]
@@ -209,7 +209,6 @@ pub struct PoolInstantiateMsg {
     pub threshold_payout: Option<Binary>,
     pub commit_fee_info: CommitFeeInfo,
     pub commit_threshold_limit_usd: Uint128,
-    pub commit_amount_for_threshold: Uint128,
     pub position_nft_address: Addr,
     pub token_address: Addr,
     pub max_bluechip_lock_per_pool: Uint128,

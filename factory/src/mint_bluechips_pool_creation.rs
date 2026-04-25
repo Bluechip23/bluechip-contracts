@@ -1,6 +1,6 @@
 use crate::{
     error::ContractError,
-    state::{FACTORYINSTANTIATEINFO, FIRST_THRESHOLD_TIMESTAMP},
+    state::{FACTORYINSTANTIATEINFO, FIRST_THRESHOLD_TIMESTAMP, POOLS_BY_ID},
 };
 use cosmwasm_std::{BankMsg, Coin, CosmosMsg, DepsMut, Env, StdError, StdResult, Uint128};
 
@@ -81,7 +81,20 @@ pub fn calculate_and_mint_bluechip(
         .seconds()
         .saturating_sub(first_threshold_time.seconds());
 
-    let mint_amount = calculate_mint_amount(seconds_elapsed, pool_id)?;
+    // Use the commit-pool-only ordinal in the decay polynomial so that
+    // permissionless standard-pool creations (which also bump the global
+    // POOL_COUNTER) cannot inflate `x` and shrink legitimate commit pools'
+    // mint reward toward zero. Legacy commit pools written before
+    // `commit_pool_ordinal` existed have it default to zero on
+    // deserialize; for those, fall back to `pool_id` to preserve the
+    // exact mint amount they would have produced under the old code.
+    let pool_details = POOLS_BY_ID.load(deps.storage, pool_id)?;
+    let decay_x = if pool_details.commit_pool_ordinal == 0 {
+        pool_id
+    } else {
+        pool_details.commit_pool_ordinal
+    };
+    let mint_amount = calculate_mint_amount(seconds_elapsed, decay_x)?;
     let mut msgs = Vec::new();
 
     if !mint_amount.is_zero() {

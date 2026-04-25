@@ -7,6 +7,7 @@ use crate::asset::get_native_denom;
 use crate::error::ContractError;
 use crate::state::{
     CreatorFeePot, COMMITFEEINFO, CREATOR_EXCESS_POSITION, CREATOR_FEE_POT, POOL_INFO,
+    REENTRANCY_LOCK,
 };
 use cosmwasm_std::{
     to_json_binary, CosmosMsg, DepsMut, Env, MessageInfo, Response, Timestamp, Uint128, WasmMsg,
@@ -17,13 +18,27 @@ use cosmwasm_std::{
 /// accumulate in the pot via `execute_collect_fees`, `add_to_position`,
 /// `remove_all_liquidity`, and `remove_partial_liquidity`.
 pub fn execute_claim_creator_fees(
-    deps: DepsMut,
+    mut deps: DepsMut,
     env: Env,
     info: MessageInfo,
     transaction_deadline: Option<Timestamp>,
 ) -> Result<Response, ContractError> {
     crate::generic_helpers::enforce_transaction_deadline(env.block.time, transaction_deadline)?;
 
+    if REENTRANCY_LOCK.may_load(deps.storage)?.unwrap_or(false) {
+        return Err(ContractError::ReentrancyGuard {});
+    }
+    REENTRANCY_LOCK.save(deps.storage, &true)?;
+    let result = execute_claim_creator_fees_inner(deps.branch(), env, info);
+    REENTRANCY_LOCK.save(deps.storage, &false)?;
+    result
+}
+
+fn execute_claim_creator_fees_inner(
+    deps: DepsMut,
+    env: Env,
+    info: MessageInfo,
+) -> Result<Response, ContractError> {
     let fee_info = COMMITFEEINFO.load(deps.storage)?;
     if info.sender != fee_info.creator_wallet_address {
         return Err(ContractError::Unauthorized {});
@@ -80,7 +95,7 @@ pub fn execute_claim_creator_fees(
 }
 
 pub fn execute_claim_creator_excess(
-    deps: DepsMut,
+    mut deps: DepsMut,
     env: Env,
     info: MessageInfo,
     transaction_deadline: Option<Timestamp>,
@@ -91,6 +106,20 @@ pub fn execute_claim_creator_excess(
     // creator expected their tx to be final.
     crate::generic_helpers::enforce_transaction_deadline(env.block.time, transaction_deadline)?;
 
+    if REENTRANCY_LOCK.may_load(deps.storage)?.unwrap_or(false) {
+        return Err(ContractError::ReentrancyGuard {});
+    }
+    REENTRANCY_LOCK.save(deps.storage, &true)?;
+    let result = execute_claim_creator_excess_inner(deps.branch(), env, info);
+    REENTRANCY_LOCK.save(deps.storage, &false)?;
+    result
+}
+
+fn execute_claim_creator_excess_inner(
+    deps: DepsMut,
+    env: Env,
+    info: MessageInfo,
+) -> Result<Response, ContractError> {
     let excess_position = CREATOR_EXCESS_POSITION.load(deps.storage)?;
     let pool_info = POOL_INFO.load(deps.storage)?;
 

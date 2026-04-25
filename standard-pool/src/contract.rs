@@ -115,6 +115,8 @@ pub fn instantiate(
         fee_size_multiplier: Decimal::one(),
         unclaimed_fees_0: Uint128::zero(),
         unclaimed_fees_1: Uint128::zero(),
+        // Sentinel position at id "0" — no actual liquidity, no lock.
+        locked_liquidity: Uint128::zero(),
     };
 
     let pool_specs = PoolSpecs {
@@ -297,6 +299,11 @@ pub fn execute(
             max_ratio_deviation_bps,
         } => {
             ensure_not_drained(deps.storage)?;
+            // Block during admin pause / pending emergency withdraw so LPs
+            // can't race the drain (matches creator-pool's behavior).
+            if POOL_PAUSED.may_load(deps.storage)?.unwrap_or(false) {
+                return Err(ContractError::PoolPausedLowLiquidity {});
+            }
             execute_remove_partial_liquidity(
                 deps,
                 env,
@@ -318,6 +325,9 @@ pub fn execute(
             max_ratio_deviation_bps,
         } => {
             ensure_not_drained(deps.storage)?;
+            if POOL_PAUSED.may_load(deps.storage)?.unwrap_or(false) {
+                return Err(ContractError::PoolPausedLowLiquidity {});
+            }
             execute_remove_partial_liquidity_by_percent(
                 deps,
                 env,
@@ -338,6 +348,9 @@ pub fn execute(
             max_ratio_deviation_bps,
         } => {
             ensure_not_drained(deps.storage)?;
+            if POOL_PAUSED.may_load(deps.storage)?.unwrap_or(false) {
+                return Err(ContractError::PoolPausedLowLiquidity {});
+            }
             execute_remove_all_liquidity(
                 deps,
                 env,

@@ -1,4 +1,4 @@
-use cosmwasm_std::{OverflowError, StdError, Timestamp};
+use cosmwasm_std::{OverflowError, StdError, Timestamp, Uint128};
 use semver::Error as SemVerError;
 use thiserror::Error;
 
@@ -30,6 +30,14 @@ pub enum ContractError {
     SemVer(#[from] SemVerError),
     #[error("Update is not yet effective. Can be applied after {effective_after}")]
     TimelockNotExpired { effective_after: Timestamp },
+
+    #[error("TWAP circuit breaker tripped: drift {drift_bps} bps exceeds max {max_bps} bps (prior {prior}, new {new}). Oracle update rejected; investigate price-source pools before retrying.")]
+    TwapCircuitBreaker {
+        prior: Uint128,
+        new: Uint128,
+        drift_bps: u128,
+        max_bps: u64,
+    },
 }
 
 impl From<OverflowError> for ContractError {

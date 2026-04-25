@@ -17,6 +17,18 @@ pub const POOL_CREATION_CONTEXT: Map<u64, PoolCreationContext> =
 pub const PENDING_CONFIG: Item<PendingConfig> = Item::new("pending_config");
 pub const POOL_COUNTER: Item<u64> = Item::new("pool_counter");
 
+/// Commit-pool-only ordinal. Bumped exactly once per `execute_create_creator_pool`
+/// and stored on the commit pool's `PoolDetails.commit_pool_ordinal` so the
+/// threshold-mint decay formula can use it as `x` instead of `pool_id`.
+///
+/// This split exists because `POOL_COUNTER` is bumped by both commit and
+/// standard pool creations; using `pool_id` directly in the decay formula
+/// would let permissionless `CreateStandardPool` calls inflate `x` and
+/// shrink (toward zero) the bluechip mint reward for legitimate commit
+/// pools created later. The dedicated counter keeps the decay schedule
+/// anchored to actual commit-pool creation activity.
+pub const COMMIT_POOL_COUNTER: Item<u64> = Item::new("commit_pool_counter");
+
 // Two coupled pool-registry maps. They MUST stay in sync — every pool
 // that exists must appear in both. Always go through `register_pool`
 // rather than touching them individually.
@@ -199,6 +211,14 @@ pub struct PoolCreationState {
 pub struct PoolCreationContext {
     pub temp: TempPoolCreation,
     pub state: PoolCreationState,
+    /// Captured at commit-pool create time and threaded through the reply
+    /// chain into `PoolDetails.commit_pool_ordinal`. Stored on the context
+    /// rather than re-computed in `finalize_pool` so the ordinal is fixed
+    /// at create time even if a concurrent commit-pool create races —
+    /// commit pools share the global `COMMIT_POOL_COUNTER` allocator but
+    /// each pool's ordinal is locked in here on its own create tx.
+    #[serde(default)]
+    pub commit_pool_ordinal: u64,
 }
 
 /// Per-`CreateStandardPool` in-flight context. Mirrors the role of
@@ -237,9 +257,24 @@ pub const STANDARD_POOL_CREATION_CONTEXT: Map<u64, StandardPoolCreationContext> 
 /// A newly-threshold-crossed pool is NOT visible to the oracle until the
 /// next refresh (up to 5 days). This is an intentional tradeoff: an explicit
 /// admin force-refresh was considered and rejected.
+///
+/// `pool_addresses` and `bluechip_indices` are coupled — entry `i` of the
+/// addresses array has its bluechip side at reserve-index `bluechip_indices[i]`.
+/// Hoisting the bluechip-side lookup into the snapshot eliminates the
+/// per-sample O(N) scan of `POOLS_BY_ID` that previously dominated oracle
+/// update gas at scale (75 sampled pools × N total pools = O(N²) reads).
+/// `#[serde(default)]` lets snapshots written by the pre-cache code path
+/// deserialize cleanly with an empty `bluechip_indices`; the oracle's
+/// is_bluechip_second resolution falls back to the linear scan in that
+/// (one-time) case until the next refresh repopulates the cache.
 #[cw_serde]
 pub struct EligiblePoolSnapshot {
     pub pool_addresses: Vec<String>,
+    /// 0 = bluechip is reserve0, 1 = bluechip is reserve1.
+    /// Stored as u8 (rather than bool) because future pool variants may
+    /// extend the encoding, and u8 round-trips cleanly through cw_serde.
+    #[serde(default)]
+    pub bluechip_indices: Vec<u8>,
     pub captured_at_block: u64,
 }
 

@@ -269,28 +269,29 @@ fn test_race_condition_commits_crossing_threshold() {
         belief_price: None,
         max_spread: Some(Decimal::percent(99)),
     };
-    let res2 = execute(deps.as_mut(), env.clone(), info2, msg2).unwrap();
-    println!(
-        "[Commit 2] USD_RAISED_FROM_COMMIT: {}, IS_THRESHOLD_HIT: {}, THRESHOLD_PROCESSING: {}, Attributes: {:?}",
-        USD_RAISED_FROM_COMMIT.load(&deps.storage).unwrap(),
-        IS_THRESHOLD_HIT.load(&deps.storage).unwrap(),
-        THRESHOLD_PROCESSING.load(&deps.storage).unwrap(),
-        res2.attributes
-    );
-
-    assert!(
-        res2.attributes
-            .iter()
-            .all(|a| a.value != "threshold_crossing"),
-        "Second commit should not run threshold logic while THRESHOLD_PROCESSING is true"
-    );
-    // Second commit should NOT trigger threshold crossing
-    assert!(
-        res2.attributes
-            .iter()
-            .all(|a| a.value != "threshold_crossing"),
-        "Second commit should not run threshold logic while THRESHOLD_PROCESSING is true"
-    );
+    // After the H-cooldown change, a follower commit landing in the same
+    // block as the threshold-crossing tx is rejected outright with
+    // `PostThresholdCooldownActive`. This is the same-block-sandwich
+    // defense: Bob's commit cannot atomically swap against Alice's
+    // freshly-seeded pool. Pre-cooldown, this test asserted that Bob's
+    // tx fell through to `process_post_threshold_commit` (silently
+    // succeeding); now we assert that Bob's tx errors with the cooldown
+    // and produces zero state side-effects.
+    let err2 = execute(deps.as_mut(), env.clone(), info2, msg2).unwrap_err();
+    match err2 {
+        ContractError::PostThresholdCooldownActive { until_block } => {
+            assert!(
+                until_block > env.block.height,
+                "cooldown until_block {} must be > current block {}",
+                until_block,
+                env.block.height
+            );
+        }
+        other => panic!(
+            "Expected PostThresholdCooldownActive on same-block follower commit, got {:?}",
+            other
+        ),
+    }
 
     THRESHOLD_PROCESSING
         .save(&mut deps.storage, &false)
@@ -1246,7 +1247,6 @@ fn test_factory_impersonation_prevented() {
         },
         max_bluechip_lock_per_pool: Uint128::new(10_000_000_000),
         creator_excess_liquidity_lock_days: 7,
-        commit_amount_for_threshold: Uint128::new(0),
         commit_threshold_limit_usd: Uint128::new(350_000_000_000),
         position_nft_address: Addr::unchecked("NFT_contract"),
         token_address: Addr::unchecked("token_contract"),
@@ -2189,21 +2189,34 @@ fn test_race_condition_not_manually_set() {
         max_spread: Some(Decimal::percent(99)),
     };
 
-    let bob_res = execute(deps.as_mut(), env.clone(), bob_info.clone(), bob_msg).unwrap();
-
-    assert!(bob_res
-        .attributes
-        .iter()
-        .all(|a| a.value != "threshold_crossing"));
-    assert!(bob_res
-        .attributes
-        .iter()
-        .any(|a| a.key == "action" && a.value == "commit"));
+    // Same-block follower commit is now blocked by the post-threshold
+    // cooldown (eliminates the atomic same-block sandwich on the
+    // freshly-seeded pool). Pool reserves must remain at the seeded
+    // values from Alice's crossing.
+    let err = execute(deps.as_mut(), env.clone(), bob_info.clone(), bob_msg).unwrap_err();
+    match err {
+        ContractError::PostThresholdCooldownActive { until_block } => {
+            assert!(
+                until_block > env.block.height,
+                "cooldown until_block {} must be > current block {}",
+                until_block,
+                env.block.height
+            );
+        }
+        other => panic!(
+            "Expected PostThresholdCooldownActive, got {:?}",
+            other
+        ),
+    }
 
     let pool_state = POOL_STATE.load(&deps.storage).unwrap();
-    assert!(
-        pool_state.reserve0 > before.reserve0,
-        "Pool reserve0 should have increased from Bob's bluechip swap"
+    assert_eq!(
+        pool_state.reserve0, before.reserve0,
+        "Pool reserve0 must NOT change while cooldown blocks Bob's commit"
+    );
+    assert_eq!(
+        pool_state.reserve1, before.reserve1,
+        "Pool reserve1 must NOT change while cooldown blocks Bob's commit"
     );
 }
 
@@ -2307,7 +2320,33 @@ fn test_concurrent_commits_both_recorded() {
         max_spread: Some(Decimal::percent(50)),
     };
 
-    let bob_res = execute(deps.as_mut(), env.clone(), bob_info.clone(), bob_msg).unwrap();
+    // Same-block follower: rejected by post-threshold cooldown.
+    let same_block_err =
+        execute(deps.as_mut(), env.clone(), bob_info.clone(), bob_msg.clone()).unwrap_err();
+    match same_block_err {
+        ContractError::PostThresholdCooldownActive { .. } => {}
+        other => panic!(
+            "Expected PostThresholdCooldownActive on same-block commit, got {:?}",
+            other
+        ),
+    }
+    let pool_state_blocked = POOL_STATE.load(&deps.storage).unwrap();
+    assert_eq!(
+        pool_state_blocked.reserve0, before.reserve0,
+        "Reserves must be unchanged while cooldown blocks Bob"
+    );
+
+    // After advancing past the cooldown, the same commit succeeds and
+    // routes through the post-threshold AMM swap path, recording a
+    // reserve increase for Bob's bluechip — confirms the cooldown is
+    // a temporary gate, not a permanent block.
+    let mut env_after_cooldown = env.clone();
+    env_after_cooldown.block.height += pool_core::state::POST_THRESHOLD_COOLDOWN_BLOCKS + 1;
+    // Advance time too so the per-user `min_commit_interval` rate-limit
+    // (13s) doesn't reject the retry under the same-block timestamp.
+    env_after_cooldown.block.time = env_after_cooldown.block.time.plus_seconds(60);
+    let bob_res =
+        execute(deps.as_mut(), env_after_cooldown, bob_info.clone(), bob_msg).unwrap();
 
     assert!(
         bob_res
@@ -2323,11 +2362,6 @@ fn test_concurrent_commits_both_recorded() {
     );
 
     let pool_state = POOL_STATE.load(&deps.storage).unwrap();
-    println!(
-        "Pool reserves after Bob's swap - reserve0: {}, reserve1: {}",
-        pool_state.reserve0, pool_state.reserve1
-    );
-
     assert!(
         pool_state.reserve0 > before.reserve0,
         "Pool reserve0 should have increased from Bob's bluechip swap"
@@ -2390,7 +2424,6 @@ pub fn setup_pool_with_reserves(
     POOL_SPECS.save(&mut deps.storage, &pool_specs).unwrap();
 
     let commit_config = CommitLimitInfo {
-        commit_amount_for_threshold: Uint128::new(100_000_000), // 100 bluechip tokens
         commit_amount_for_threshold_usd: Uint128::new(25_000_000_000), // $25k with 6 decimals
         max_bluechip_lock_per_pool: Uint128::new(10_000_000_000),
         creator_excess_liquidity_lock_days: 7,

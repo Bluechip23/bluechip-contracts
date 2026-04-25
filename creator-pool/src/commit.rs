@@ -41,7 +41,8 @@ use crate::msg::CommitFeeInfo;
 use crate::state::{
     COMMITFEEINFO, COMMIT_LEDGER, COMMIT_LIMIT_INFO, IS_THRESHOLD_HIT, LAST_THRESHOLD_ATTEMPT,
     NATIVE_RAISED_FROM_COMMIT, POOL_ANALYTICS, POOL_FEE_STATE, POOL_INFO, POOL_SPECS, POOL_STATE,
-    REENTRANCY_LOCK, THRESHOLD_PAYOUT_AMOUNTS, THRESHOLD_PROCESSING, USD_RAISED_FROM_COMMIT,
+    POST_THRESHOLD_COOLDOWN_BLOCKS, POST_THRESHOLD_COOLDOWN_UNTIL_BLOCK, REENTRANCY_LOCK,
+    THRESHOLD_PAYOUT_AMOUNTS, THRESHOLD_PROCESSING, USD_RAISED_FROM_COMMIT,
 };
 use crate::swap_helper::get_oracle_conversion_with_staleness;
 
@@ -190,14 +191,20 @@ fn execute_commit_logic(
 
     match &asset.info {
         TokenType::Native { denom } if denom == &bluechip_denom => {
-            // Verify funds were actually sent
+            // Strict exact-match on attached funds. Underpayment is
+            // obviously rejected; overpayment was previously absorbed
+            // silently into the pool's bank balance with no entry in
+            // NATIVE_RAISED_FROM_COMMIT or COMMIT_LEDGER, stranding the
+            // surplus in pre-threshold and bypassing reserve accounting
+            // post-threshold. Matching the exact-amount semantics that
+            // `simple_swap` already enforces via `confirm_sent_native_balance`.
             let sent = info
                 .funds
                 .iter()
                 .find(|c| c.denom == denom.as_str())
                 .map(|c| c.amount)
                 .unwrap_or_default();
-            if sent < amount {
+            if sent != amount {
                 return Err(ContractError::MismatchAmount {});
             }
 
@@ -230,44 +237,40 @@ fn execute_commit_logic(
                 if new_total >= commit_config.commit_amount_for_threshold_usd {
                     LAST_THRESHOLD_ATTEMPT.save(deps.storage, &env.block.time)?;
 
-                    let processing = THRESHOLD_PROCESSING
+                    // THRESHOLD_PROCESSING is set to `true` immediately
+                    // below, then cleared at the end of the threshold-
+                    // crossing path (excess or exact-hit branch). If the
+                    // crossing handler errors, the entire tx reverts —
+                    // including this `save(true)` — so the storage
+                    // reverts to whatever it was before this tx (which
+                    // was `false`). REENTRANCY_LOCK separately blocks
+                    // any in-tx reentry. Net: under normal operation,
+                    // `THRESHOLD_PROCESSING == true` at this point is
+                    // structurally unreachable.
+                    //
+                    // The only way to observe a stuck `true` is genuine
+                    // storage corruption (unrecoverable bug) or an
+                    // interrupted prior tx that somehow committed without
+                    // clearing the flag (would also indicate a bug).
+                    // Rather than silently downgrading the user's intended
+                    // threshold-crossing commit into a pre/post-threshold
+                    // commit (the prior fallback behavior, which violated
+                    // user intent and hid the underlying corruption),
+                    // surface the stuck state with an explicit error
+                    // pointing operators at the recovery path.
+                    if THRESHOLD_PROCESSING
                         .may_load(deps.storage)?
-                        .unwrap_or(false);
-                    let can_process = if processing {
-                        false
-                    } else {
-                        THRESHOLD_PROCESSING.save(deps.storage, &true)?;
-                        true
-                    };
-
-                    if !can_process {
-                        if IS_THRESHOLD_HIT.load(deps.storage)? {
-                            return process_post_threshold_commit(
-                                deps,
-                                env,
-                                sender,
-                                asset,
-                                amount_after_fees,
-                                usd_value,
-                                messages,
-                                belief_price,
-                                max_spread,
-                                &pool_info,
-                                &pool_specs,
-                                &mut pool_state,
-                                &mut pool_fee_state,
-                            );
-                        }
-                        return process_pre_threshold_commit(
-                            deps,
-                            env,
-                            sender,
-                            &asset,
-                            usd_value,
-                            messages,
-                            &pool_state,
-                        );
+                        .unwrap_or(false)
+                    {
+                        return Err(ContractError::Std(StdError::generic_err(
+                            "THRESHOLD_PROCESSING is stuck = true; should be \
+                             unreachable in normal operation. Use the factory's \
+                             RecoverPoolStuckStates with StuckThreshold to \
+                             clear it (waits 1 hour from LAST_THRESHOLD_ATTEMPT), \
+                             then retry the commit.",
+                        )));
                     }
+                    THRESHOLD_PROCESSING.save(deps.storage, &true)?;
 
                     // Calculate exact amounts for threshold crossing
                     let usd_to_threshold = commit_config
@@ -311,6 +314,15 @@ fn execute_commit_logic(
                                 Ok(r.checked_add(asset.amount)?)
                             })?;
                         IS_THRESHOLD_HIT.save(deps.storage, &true)?;
+                        // Arm the post-threshold cooldown so other actors
+                        // can't atomically sandwich the freshly-seeded pool
+                        // in the same block (or the next two). Crossing tx
+                        // itself is unaffected — the writes here land
+                        // before the next tx ever runs the cooldown check.
+                        POST_THRESHOLD_COOLDOWN_UNTIL_BLOCK.save(
+                            deps.storage,
+                            &(env.block.height + POST_THRESHOLD_COOLDOWN_BLOCKS + 1),
+                        )?;
 
                         let payout = trigger_threshold_payout(
                             deps.storage,

@@ -353,9 +353,7 @@ fn build_factory_response(deps: Deps) -> StdResult<PoolStateResponseForFactory> 
 
 pub fn query_for_factory(deps: Deps, _env: Env, msg: PoolQueryMsg) -> StdResult<Binary> {
     match msg {
-        PoolQueryMsg::GetPoolState {
-            pool_contract_address: _,
-        } => to_json_binary(&build_factory_response(deps)?),
+        PoolQueryMsg::GetPoolState {} => to_json_binary(&build_factory_response(deps)?),
         PoolQueryMsg::GetAllPools {} => {
             let response = build_factory_response(deps)?;
             to_json_binary(&AllPoolsResponse {

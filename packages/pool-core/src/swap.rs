@@ -21,7 +21,8 @@ use crate::generic::{check_rate_limit, decimal2decimal256, enforce_transaction_d
 use crate::msg::Cw20HookMsg;
 use crate::state::{
     PoolCtx, PoolInfo, PoolState, IS_THRESHOLD_HIT, MINIMUM_LIQUIDITY, POOL_ANALYTICS,
-    POOL_FEE_STATE, POOL_INFO, POOL_PAUSED, POOL_SPECS, POOL_STATE, REENTRANCY_LOCK,
+    POOL_FEE_STATE, POOL_INFO, POOL_PAUSED, POOL_SPECS, POOL_STATE,
+    POST_THRESHOLD_COOLDOWN_UNTIL_BLOCK, REENTRANCY_LOCK,
 };
 use cosmwasm_std::{
     from_json, Addr, Decimal, Decimal256, DepsMut, Env, Fraction, MessageInfo, Response, StdError,
@@ -352,6 +353,20 @@ pub fn execute_simple_swap(
 
     if POOL_PAUSED.may_load(deps.storage)?.unwrap_or(false) {
         return Err(ContractError::PoolPausedLowLiquidity {});
+    }
+    // Post-threshold-crossing cooldown. Set inside the threshold-crossing
+    // commit handler to (crossing_block + POST_THRESHOLD_COOLDOWN_BLOCKS + 1),
+    // so the crossing block plus the next N blocks are gated. Eliminates
+    // the atomic same-block sandwich on the freshly-seeded pool. Standard
+    // pools never set this (no threshold crossing), so the may_load default
+    // of 0 makes this a no-op for them.
+    let cooldown_until = POST_THRESHOLD_COOLDOWN_UNTIL_BLOCK
+        .may_load(deps.storage)?
+        .unwrap_or(0);
+    if env.block.height < cooldown_until {
+        return Err(ContractError::PostThresholdCooldownActive {
+            until_block: cooldown_until,
+        });
     }
     // Drain guard: reject swaps when either side is below MINIMUM_LIQUIDITY.
     // Don't try to persist POOL_PAUSED here — returning Err would revert the

@@ -20,13 +20,14 @@ use pool_factory_interfaces::cw721_msgs::{Action, Cw721ExecuteMsg};
 
 use crate::asset::TokenType;
 use crate::error::ContractError;
-use crate::generic::enforce_transaction_deadline;
+use crate::generic::{check_rate_limit, enforce_transaction_deadline};
 use crate::liquidity_helpers::{
     calc_liquidity_for_deposit, calculate_fee_size_multiplier, check_slippage,
 };
 use crate::state::{
-    PoolInfo, Position, TokenMetadata, LIQUIDITY_POSITIONS, MINIMUM_LIQUIDITY, NEXT_POSITION_ID,
-    OWNER_POSITIONS, POOL_ANALYTICS, POOL_FEE_STATE, POOL_INFO, POOL_PAUSED, POOL_STATE,
+    PoolInfo, PoolSpecs, Position, TokenMetadata, LIQUIDITY_POSITIONS, MINIMUM_LIQUIDITY,
+    NEXT_POSITION_ID, OWNER_POSITIONS, POOL_ANALYTICS, POOL_FEE_STATE, POOL_INFO, POOL_PAUSED,
+    POOL_SPECS, POOL_STATE, REENTRANCY_LOCK,
 };
 use crate::swap::update_price_accumulator;
 
@@ -160,7 +161,7 @@ pub(crate) fn prepare_deposit(
 
 #[allow(clippy::too_many_arguments)]
 pub fn execute_deposit_liquidity(
-    deps: DepsMut,
+    mut deps: DepsMut,
     env: Env,
     info: MessageInfo,
     user: Addr,
@@ -172,6 +173,51 @@ pub fn execute_deposit_liquidity(
 ) -> Result<Response, ContractError> {
     enforce_transaction_deadline(env.block.time, transaction_deadline)?;
 
+    // Reentrancy guard. Hostile CW20 contracts (only a concern on standard
+    // pools that wrap third-party tokens, never on commit pools where the
+    // factory mints its own CW20) could otherwise re-enter the pool during
+    // an outgoing TransferFrom call and observe / mutate stale state.
+    // Shared `REENTRANCY_LOCK` across commit + swap + every liquidity path
+    // makes any cross-handler reentrancy attempt fail fast.
+    if REENTRANCY_LOCK.may_load(deps.storage)?.unwrap_or(false) {
+        return Err(ContractError::ReentrancyGuard {});
+    }
+    REENTRANCY_LOCK.save(deps.storage, &true)?;
+
+    // Per-user rate limit; matches `add_to_position` / `remove_*` paths.
+    // Without it, a user can open unlimited Position NFTs in one block
+    // (NFT-id namespace bloat + extra surface for atomic-exploit chains).
+    let pool_specs: PoolSpecs = POOL_SPECS.load(deps.storage)?;
+    if let Err(e) = check_rate_limit(&mut deps, &env, &pool_specs, &info.sender) {
+        REENTRANCY_LOCK.save(deps.storage, &false)?;
+        return Err(e);
+    }
+
+    let result = execute_deposit_liquidity_inner(
+        deps.branch(),
+        env,
+        info,
+        user,
+        amount0,
+        amount1,
+        min_amount0,
+        min_amount1,
+    );
+    REENTRANCY_LOCK.save(deps.storage, &false)?;
+    result
+}
+
+#[allow(clippy::too_many_arguments)]
+fn execute_deposit_liquidity_inner(
+    deps: DepsMut,
+    env: Env,
+    info: MessageInfo,
+    user: Addr,
+    amount0: Uint128,
+    amount1: Uint128,
+    min_amount0: Option<Uint128>,
+    min_amount1: Option<Uint128>,
+) -> Result<Response, ContractError> {
     let prep = prepare_deposit(
         deps.as_ref(),
         &info,
@@ -183,6 +229,25 @@ pub fn execute_deposit_liquidity(
 
     let mut pool_state = POOL_STATE.load(deps.storage)?;
     let pool_fee_state = POOL_FEE_STATE.load(deps.storage)?;
+
+    // First-depositor detection. `total_liquidity == 0` AND both reserves
+    // were zero immediately before this call → genuinely empty pool, this
+    // is the inflation-attack-relevant first deposit. We lock
+    // `MINIMUM_LIQUIDITY` LP units of the depositor's Position so they
+    // can never withdraw the principal, while letting fees still accrue
+    // against the full position (see `Position.locked_liquidity` doc).
+    //
+    // Creator pools after threshold crossing have non-zero seed reserves
+    // and non-zero `total_liquidity`, so this branch is not taken there
+    // — first post-threshold LPs deposit normally with no lock.
+    let is_first_deposit = pool_state.total_liquidity.is_zero()
+        && pool_state.reserve0.is_zero()
+        && pool_state.reserve1.is_zero();
+    let locked_liquidity = if is_first_deposit {
+        MINIMUM_LIQUIDITY
+    } else {
+        Uint128::zero()
+    };
 
     let mut messages = vec![];
     if !pool_state.nft_ownership_accepted {
@@ -235,6 +300,7 @@ pub fn execute_deposit_liquidity(
         fee_size_multiplier,
         unclaimed_fees_0: Uint128::zero(),
         unclaimed_fees_1: Uint128::zero(),
+        locked_liquidity,
     };
 
     LIQUIDITY_POSITIONS.save(deps.storage, &position_id, &position)?;

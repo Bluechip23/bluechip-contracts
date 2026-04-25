@@ -240,6 +240,7 @@ fn test_update_specific_pool_from_registry() {
         ],
         creator_pool_addr: pool_addr.clone(),
         pool_kind: pool_factory_interfaces::PoolKind::Commit,
+        commit_pool_ordinal: 0,
     };
     POOLS_BY_ID
         .save(&mut deps.storage, pool_id, &pool_details)

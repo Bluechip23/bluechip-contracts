@@ -3,8 +3,8 @@
 //! percent`) via standard-pool's execute dispatch.
 
 use cosmwasm_std::testing::{message_info, mock_env};
-use cosmwasm_std::{Addr, Coin, CosmosMsg, Uint128, WasmMsg};
-use pool_core::state::{LIQUIDITY_POSITIONS, POOL_STATE};
+use cosmwasm_std::{Addr, Coin, CosmosMsg, Env, Uint128, WasmMsg};
+use pool_core::state::{LIQUIDITY_POSITIONS, MINIMUM_LIQUIDITY, POOL_STATE};
 
 use super::fixtures::{instantiate_default_pool, BLUECHIP_DENOM};
 use crate::contract::execute;
@@ -13,6 +13,17 @@ use crate::msg::ExecuteMsg;
 
 const NATIVE_DEPOSIT: u128 = 1_000_000_000;
 const CW20_DEPOSIT: u128 = 2_000_000_000;
+
+/// Returns a `mock_env` whose block.time is advanced past the per-user
+/// commit-rate-limit window (`min_commit_interval = 13s` at instantiate)
+/// so the test can do a second user-rate-limited action right after a
+/// deposit without tripping `TooFrequentCommits`. 60s leaves comfortable
+/// margin in case the limit is ever raised.
+fn env_after_rate_limit() -> Env {
+    let mut env = mock_env();
+    env.block.time = env.block.time.plus_seconds(60);
+    env
+}
 
 fn deposit(
     deps: &mut cosmwasm_std::OwnedDeps<
@@ -46,7 +57,7 @@ fn remove_all_liquidity_drains_position() {
 
     let res = execute(
         deps.as_mut(),
-        mock_env(),
+        env_after_rate_limit(),
         message_info(&addrs.pool_owner, &[]),
         ExecuteMsg::RemoveAllLiquidity {
             position_id: "1".to_string(),
@@ -58,11 +69,15 @@ fn remove_all_liquidity_drains_position() {
     )
     .unwrap();
 
-    // Position removed.
-    assert!(LIQUIDITY_POSITIONS
-        .may_load(&deps.storage, "1")
-        .unwrap()
-        .is_none());
+    // First-depositor position now persists with `liquidity == locked_liquidity
+    // == MINIMUM_LIQUIDITY` so the depositor keeps fee rights on the
+    // permanently-locked principal slice. Pre-lock-fix this test asserted
+    // the position was burned outright.
+    let pos_after = LIQUIDITY_POSITIONS
+        .load(&deps.storage, "1")
+        .expect("first-depositor position should persist with locked liquidity");
+    assert_eq!(pos_after.liquidity, MINIMUM_LIQUIDITY);
+    assert_eq!(pos_after.locked_liquidity, MINIMUM_LIQUIDITY);
 
     // Response carries both transfers back to the owner. Total
     // liquidity includes the MINIMUM_LIQUIDITY lock, so principal
@@ -92,7 +107,7 @@ fn remove_partial_liquidity_reduces_position() {
 
     execute(
         deps.as_mut(),
-        mock_env(),
+        env_after_rate_limit(),
         message_info(&addrs.pool_owner, &[]),
         ExecuteMsg::RemovePartialLiquidity {
             position_id: "1".to_string(),
@@ -126,7 +141,7 @@ fn remove_partial_by_percent_50_reduces_half() {
 
     execute(
         deps.as_mut(),
-        mock_env(),
+        env_after_rate_limit(),
         message_info(&addrs.pool_owner, &[]),
         ExecuteMsg::RemovePartialLiquidityByPercent {
             position_id: "1".to_string(),
@@ -140,9 +155,15 @@ fn remove_partial_by_percent_50_reduces_half() {
     .unwrap();
 
     let pos_after = LIQUIDITY_POSITIONS.load(&deps.storage, "1").unwrap();
-    // 50% removed → remaining should be ~50% of original (integer floor).
-    let expected = pos_before.liquidity.u128() - (pos_before.liquidity.u128() / 2);
+    // Percent is now applied to `removable = liquidity - locked_liquidity`,
+    // so 50% removes half of the unlocked slice. Remaining =
+    // `locked + ceil(removable / 2)` (integer-floor on the removed half
+    // means the surviving half rounds up by the floor remainder).
+    let removable_before = pos_before.liquidity - pos_before.locked_liquidity;
+    let to_remove = removable_before.u128() / 2; // matches contract's integer-floor
+    let expected = pos_before.liquidity.u128() - to_remove;
     assert_eq!(pos_after.liquidity.u128(), expected);
+    assert_eq!(pos_after.locked_liquidity, pos_before.locked_liquidity);
 }
 
 #[test]
@@ -153,7 +174,7 @@ fn remove_partial_by_percent_100_drains_completely() {
     // percentage >= 100 dispatches to execute_remove_all_liquidity.
     execute(
         deps.as_mut(),
-        mock_env(),
+        env_after_rate_limit(),
         message_info(&addrs.pool_owner, &[]),
         ExecuteMsg::RemovePartialLiquidityByPercent {
             position_id: "1".to_string(),
@@ -166,10 +187,14 @@ fn remove_partial_by_percent_100_drains_completely() {
     )
     .unwrap();
 
-    assert!(LIQUIDITY_POSITIONS
-        .may_load(&deps.storage, "1")
-        .unwrap()
-        .is_none());
+    // First-depositor position survives full-remove with `liquidity ==
+    // locked_liquidity == MINIMUM_LIQUIDITY` so the depositor retains
+    // a fee-earning Position on the permanently-locked principal slice.
+    let pos_after = LIQUIDITY_POSITIONS
+        .load(&deps.storage, "1")
+        .expect("position survives full-remove via the locked-liquidity floor");
+    assert_eq!(pos_after.liquidity, MINIMUM_LIQUIDITY);
+    assert_eq!(pos_after.locked_liquidity, MINIMUM_LIQUIDITY);
 }
 
 #[test]
@@ -179,7 +204,7 @@ fn remove_partial_by_percent_rejects_zero() {
 
     let err = execute(
         deps.as_mut(),
-        mock_env(),
+        env_after_rate_limit(),
         message_info(&addrs.pool_owner, &[]),
         ExecuteMsg::RemovePartialLiquidityByPercent {
             position_id: "1".to_string(),
@@ -202,7 +227,7 @@ fn remove_partial_rejects_over_position_liquidity() {
 
     let err = execute(
         deps.as_mut(),
-        mock_env(),
+        env_after_rate_limit(),
         message_info(&addrs.pool_owner, &[]),
         ExecuteMsg::RemovePartialLiquidity {
             position_id: "1".to_string(),
@@ -225,7 +250,7 @@ fn remove_partial_slippage_guard_triggers() {
 
     let err = execute(
         deps.as_mut(),
-        mock_env(),
+        env_after_rate_limit(),
         message_info(&addrs.pool_owner, &[]),
         ExecuteMsg::RemovePartialLiquidity {
             position_id: "1".to_string(),
@@ -277,7 +302,7 @@ fn remove_partial_rejects_non_owner() {
     let attacker = cosmwasm_std::testing::MockApi::default().addr_make("attacker");
     let err = execute(
         deps.as_mut(),
-        mock_env(),
+        env_after_rate_limit(),
         message_info(&attacker, &[]),
         ExecuteMsg::RemovePartialLiquidity {
             position_id: "1".to_string(),

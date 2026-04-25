@@ -20,7 +20,6 @@ pub struct CreatePoolReplyMsg {
     //fees to bluechip and creator
     pub commit_fee_info: CommitFeeInfo,
     pub commit_threshold_limit_usd: Uint128,
-    pub commit_amount_for_threshold: Uint128,
     pub token_address: Addr,
     //address called by the pool to mint new liquidity position NFTs.
     pub position_nft_address: Addr,

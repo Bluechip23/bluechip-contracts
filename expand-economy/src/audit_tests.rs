@@ -3,8 +3,54 @@ mod tests {
     use crate::contract::{execute, instantiate};
     use crate::msg::{ExecuteMsg, ExpandEconomyMsg, InstantiateMsg};
     use crate::state::WITHDRAW_TIMELOCK_SECONDS;
+    use cosmwasm_schema::cw_serde;
     use cosmwasm_std::testing::{message_info, mock_dependencies, mock_env, MockApi};
-    use cosmwasm_std::{coins, BankMsg, CosmosMsg, Uint128};
+    use cosmwasm_std::{
+        coins, to_json_binary, Addr, BankMsg, Binary, ContractResult, CosmosMsg, SystemError,
+        SystemResult, Uint128, WasmQuery,
+    };
+
+    #[cw_serde]
+    struct MockFactoryConfig {
+        bluechip_denom: String,
+    }
+    #[cw_serde]
+    struct MockFactoryResp {
+        factory: MockFactoryConfig,
+    }
+
+    /// Install a wasm-mock that satisfies expand-economy's M10 cross-
+    /// validation query: `execute_expand_economy` queries the factory's
+    /// `Factory {}` to confirm `bluechip_denom` matches before issuing
+    /// a BankMsg::Send. Tests that don't otherwise care about the wasm
+    /// querier need to install this mock or the call rejects with
+    /// "Failed to query factory config".
+    fn install_factory_denom_mock(
+        deps: &mut cosmwasm_std::OwnedDeps<
+            cosmwasm_std::testing::MockStorage,
+            cosmwasm_std::testing::MockApi,
+            cosmwasm_std::testing::MockQuerier,
+        >,
+        factory_addr: Addr,
+        expected_denom: &str,
+    ) {
+        let factory_str = factory_addr.to_string();
+        let denom_owned = expected_denom.to_string();
+        deps.querier.update_wasm(move |req| match req {
+            WasmQuery::Smart { contract_addr, .. } if contract_addr == &factory_str => {
+                let resp = MockFactoryResp {
+                    factory: MockFactoryConfig {
+                        bluechip_denom: denom_owned.clone(),
+                    },
+                };
+                SystemResult::Ok(ContractResult::Ok(to_json_binary(&resp).unwrap()))
+            }
+            _ => SystemResult::Err(SystemError::InvalidRequest {
+                error: "unmocked wasm query".to_string(),
+                request: Binary::default(),
+            }),
+        });
+    }
 
     fn setup_contract(
         deps: &mut cosmwasm_std::OwnedDeps<
@@ -429,6 +475,9 @@ mod tests {
         let factory_addr = MockApi::default().addr_make("factory");
         let user_addr = MockApi::default().addr_make("user");
 
+        // M10: cross-validate factory's bluechip_denom on every call.
+        install_factory_denom_mock(&mut deps, factory_addr.clone(), "ubluechip");
+
         let msg = ExecuteMsg::ExpandEconomy(ExpandEconomyMsg::RequestExpansion {
             recipient: user_addr.to_string(),
             amount: Uint128::zero(),
@@ -449,6 +498,14 @@ mod tests {
             .find(|a| a.key == "action")
             .expect("Should have action attribute");
         assert_eq!(action_attr.value, "request_reward_skipped");
+        // M9: dormant reason explicit so monitoring can distinguish
+        // "decay-curve expired" from a bug.
+        let reason_attr = res
+            .attributes
+            .iter()
+            .find(|a| a.key == "reason")
+            .expect("Should have reason attribute");
+        assert_eq!(reason_attr.value, "economy_dormant");
     }
 
     #[test]

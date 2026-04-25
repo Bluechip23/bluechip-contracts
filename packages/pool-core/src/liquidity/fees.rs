@@ -18,11 +18,30 @@ use crate::liquidity_helpers::{
     verify_position_ownership,
 };
 use crate::state::{
-    CREATOR_FEE_POT, LIQUIDITY_POSITIONS, POOL_FEE_STATE, POOL_INFO, POOL_STATE,
+    CREATOR_FEE_POT, LIQUIDITY_POSITIONS, POOL_FEE_STATE, POOL_INFO, POOL_STATE, REENTRANCY_LOCK,
 };
 use crate::swap::update_price_accumulator;
 
 pub fn execute_collect_fees(
+    mut deps: DepsMut,
+    env: Env,
+    info: MessageInfo,
+    position_id: String,
+) -> Result<Response, ContractError> {
+    // Reentrancy guard, same shared lock as every other state-mutating
+    // entry point. CollectFees emits CW20 Transfer messages; a hostile
+    // creator token could otherwise re-enter the pool before the response
+    // commits and double-collect fees against a stale fee_growth checkpoint.
+    if REENTRANCY_LOCK.may_load(deps.storage)?.unwrap_or(false) {
+        return Err(ContractError::ReentrancyGuard {});
+    }
+    REENTRANCY_LOCK.save(deps.storage, &true)?;
+    let result = execute_collect_fees_inner(deps.branch(), env, info, position_id);
+    REENTRANCY_LOCK.save(deps.storage, &false)?;
+    result
+}
+
+fn execute_collect_fees_inner(
     deps: DepsMut,
     env: Env,
     info: MessageInfo,
