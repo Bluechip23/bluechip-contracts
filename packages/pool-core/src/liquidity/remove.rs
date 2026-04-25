@@ -62,10 +62,19 @@ pub fn remove_all_liquidity(
             "Pool total liquidity is zero",
         )));
     }
+
+    // Removable principal: full position minus the locked slice (always
+    // zero on non-first-deposit positions, so this is a no-op for them).
+    // The locked slice stays in the pool's reserves and continues to be
+    // "owned" by this Position for fee-accrual purposes — the depositor
+    // can keep calling collect_fees on it indefinitely.
+    let removable_liquidity = liquidity_position
+        .liquidity
+        .checked_sub(liquidity_position.locked_liquidity)?;
     let user_share_0 =
-        current_reserve0.multiply_ratio(liquidity_position.liquidity, pool_state.total_liquidity);
+        current_reserve0.multiply_ratio(removable_liquidity, pool_state.total_liquidity);
     let user_share_1 =
-        current_reserve1.multiply_ratio(liquidity_position.liquidity, pool_state.total_liquidity);
+        current_reserve1.multiply_ratio(removable_liquidity, pool_state.total_liquidity);
     check_slippage(user_share_0, min_amount0, "bluechip")?;
     check_slippage(user_share_1, min_amount1, "cw20")?;
     check_ratio_deviation(
@@ -81,10 +90,7 @@ pub fn remove_all_liquidity(
     let total_amount_0 = user_share_0.checked_add(fees_owed_0)?;
     let total_amount_1 = user_share_1.checked_add(fees_owed_1)?;
 
-    let liquidity_to_subtract = liquidity_position.liquidity;
-    pool_state.total_liquidity = pool_state
-        .total_liquidity
-        .checked_sub(liquidity_to_subtract)?;
+    pool_state.total_liquidity = pool_state.total_liquidity.checked_sub(removable_liquidity)?;
 
     liquidity_position.fee_growth_inside_0_last = pool_fee_state.fee_growth_global_0;
     liquidity_position.fee_growth_inside_1_last = pool_fee_state.fee_growth_global_1;
@@ -109,8 +115,24 @@ pub fn remove_all_liquidity(
     CREATOR_FEE_POT.save(deps.storage, &pot)?;
 
     POOL_STATE.save(deps.storage, &pool_state)?;
-    LIQUIDITY_POSITIONS.remove(deps.storage, &position_id);
-    OWNER_POSITIONS.remove(deps.storage, (&info.sender, &position_id));
+    if liquidity_position.locked_liquidity.is_zero() {
+        // Standard exit: nothing locked, burn the position completely.
+        LIQUIDITY_POSITIONS.remove(deps.storage, &position_id);
+        OWNER_POSITIONS.remove(deps.storage, (&info.sender, &position_id));
+    } else {
+        // First-depositor exit: the locked slice stays as a live Position
+        // so the depositor keeps fee rights forever. Reduce liquidity to
+        // exactly the locked amount, refresh fee multiplier and
+        // collection timestamp, persist the (reduced) position, and
+        // leave the NFT in place.
+        liquidity_position.liquidity = liquidity_position.locked_liquidity;
+        liquidity_position.fee_size_multiplier =
+            calculate_fee_size_multiplier(liquidity_position.liquidity);
+        liquidity_position.last_fee_collection = env.block.time.seconds();
+        liquidity_position.unclaimed_fees_0 = Uint128::zero();
+        liquidity_position.unclaimed_fees_1 = Uint128::zero();
+        LIQUIDITY_POSITIONS.save(deps.storage, &position_id, &liquidity_position)?;
+    }
     POOL_FEE_STATE.save(deps.storage, &pool_fee_state)?;
 
     // Update analytics
@@ -180,7 +202,24 @@ pub fn remove_partial_liquidity(
     if liquidity_to_remove.is_zero() {
         return Err(ContractError::InvalidAmount {});
     }
-    if liquidity_to_remove == liquidity_position.liquidity {
+    // First reject "more than the position has at all" with the existing
+    // error, so callers/tests that bump into the absolute ceiling keep
+    // seeing `InsufficientLiquidity`. Then cap at the locked floor:
+    // the locked slice (zero on every non-first-deposit Position) is
+    // permanently bound and can never be withdrawn, but still earns fees
+    // against the full position size — see `Position.locked_liquidity`.
+    if liquidity_to_remove > liquidity_position.liquidity {
+        return Err(ContractError::InsufficientLiquidity {});
+    }
+    let removable_liquidity = liquidity_position
+        .liquidity
+        .checked_sub(liquidity_position.locked_liquidity)?;
+    if liquidity_to_remove > removable_liquidity {
+        return Err(ContractError::LockedLiquidity {
+            locked: liquidity_position.locked_liquidity,
+        });
+    }
+    if liquidity_to_remove == removable_liquidity {
         return execute_remove_all_liquidity(
             deps.branch(),
             env,
@@ -191,9 +230,6 @@ pub fn remove_partial_liquidity(
             min_amount1,
             max_ratio_deviation_bps,
         );
-    }
-    if liquidity_to_remove > liquidity_position.liquidity {
-        return Err(ContractError::InsufficientLiquidity {});
     }
     let current_reserve0 = pool_state.reserve0;
     let current_reserve1 = pool_state.reserve1;
@@ -430,8 +466,15 @@ pub fn execute_remove_partial_liquidity_by_percent(
 
     let liquidity_position = LIQUIDITY_POSITIONS.load(deps.storage, &position_id)?;
 
-    let liquidity_to_remove = liquidity_position
+    // Percent-based removal is computed against the REMOVABLE slice, not
+    // the full position. This keeps `remove_by_percent(50)` followed by
+    // `remove_by_percent(50)` ending at 25% of the original removable
+    // share — the natural expectation. For a position with no lock
+    // (locked_liquidity == 0), this is identical to the previous behavior.
+    let removable = liquidity_position
         .liquidity
+        .checked_sub(liquidity_position.locked_liquidity)?;
+    let liquidity_to_remove = removable
         .checked_mul(Uint128::from(percentage))?
         .checked_div(Uint128::from(100u128))
         .map_err(|_| ContractError::DivideByZero)?;

@@ -107,6 +107,12 @@ pub enum ContractError {
 
     #[error("No pending emergency withdrawal to cancel")]
     NoPendingEmergencyWithdraw {},
+
+    #[error("Post-threshold cooldown active: trades resume at block {until_block}")]
+    PostThresholdCooldownActive { until_block: u64 },
+
+    #[error("Cannot remove locked liquidity (this position has {locked} locked)")]
+    LockedLiquidity { locked: Uint128 },
 }
 
 impl From<OverflowError> for ContractError {

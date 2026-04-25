@@ -1590,6 +1590,7 @@ pub fn create_test_position(
         fee_size_multiplier: calculate_fee_size_multiplier(liquidity),
         unclaimed_fees_0: Uint128::zero(),
         unclaimed_fees_1: Uint128::zero(),
+        locked_liquidity: Uint128::zero(),
     };
 
     LIQUIDITY_POSITIONS

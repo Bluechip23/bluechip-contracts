@@ -32,7 +32,8 @@ use crate::msg::CommitFeeInfo;
 use crate::state::{
     CommitLimitInfo, PoolFeeState, PoolInfo, PoolSpecs, PoolState, ThresholdPayoutAmounts,
     COMMIT_LEDGER, IS_THRESHOLD_HIT, NATIVE_RAISED_FROM_COMMIT, POOL_ANALYTICS, POOL_FEE_STATE,
-    POOL_STATE, THRESHOLD_PROCESSING, USD_RAISED_FROM_COMMIT,
+    POOL_STATE, POST_THRESHOLD_COOLDOWN_BLOCKS, POST_THRESHOLD_COOLDOWN_UNTIL_BLOCK,
+    THRESHOLD_PROCESSING, USD_RAISED_FROM_COMMIT,
 };
 use crate::swap_helper::{
     assert_max_spread, compute_swap, update_price_accumulator, usd_to_bluechip_at_rate,
@@ -86,6 +87,18 @@ pub(super) fn process_threshold_crossing_with_excess(
         .update::<_, ContractError>(deps.storage, |r| Ok(r.checked_add(bluechip_to_threshold)?))?;
 
     IS_THRESHOLD_HIT.save(deps.storage, &true)?;
+    // Arm the post-threshold cooldown. The crosser's own bounded excess
+    // swap (capped at 3% of seeded reserve below) executes in this same
+    // tx — the gate sits on simple_swap / execute_swap_cw20 /
+    // process_post_threshold_commit, none of which run inside the
+    // crossing tx. So the crosser's privileged excess is unaffected,
+    // while every follower trade in this block plus the next
+    // POST_THRESHOLD_COOLDOWN_BLOCKS blocks is rejected with
+    // PostThresholdCooldownActive.
+    POST_THRESHOLD_COOLDOWN_UNTIL_BLOCK.save(
+        deps.storage,
+        &(env.block.height + POST_THRESHOLD_COOLDOWN_BLOCKS + 1),
+    )?;
 
     // Hold factory_notify aside; it becomes a SubMsg on the final Response
     // so a factory-side failure is recoverable via RetryFactoryNotify

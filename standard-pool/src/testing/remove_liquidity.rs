@@ -4,7 +4,7 @@
 
 use cosmwasm_std::testing::{message_info, mock_env};
 use cosmwasm_std::{Addr, Coin, CosmosMsg, Uint128, WasmMsg};
-use pool_core::state::{LIQUIDITY_POSITIONS, POOL_STATE};
+use pool_core::state::{LIQUIDITY_POSITIONS, MINIMUM_LIQUIDITY, POOL_STATE};
 
 use super::fixtures::{instantiate_default_pool, BLUECHIP_DENOM};
 use crate::contract::execute;
@@ -58,11 +58,15 @@ fn remove_all_liquidity_drains_position() {
     )
     .unwrap();
 
-    // Position removed.
-    assert!(LIQUIDITY_POSITIONS
-        .may_load(&deps.storage, "1")
-        .unwrap()
-        .is_none());
+    // First-depositor position now persists with `liquidity == locked_liquidity
+    // == MINIMUM_LIQUIDITY` so the depositor keeps fee rights on the
+    // permanently-locked principal slice. Pre-lock-fix this test asserted
+    // the position was burned outright.
+    let pos_after = LIQUIDITY_POSITIONS
+        .load(&deps.storage, "1")
+        .expect("first-depositor position should persist with locked liquidity");
+    assert_eq!(pos_after.liquidity, MINIMUM_LIQUIDITY);
+    assert_eq!(pos_after.locked_liquidity, MINIMUM_LIQUIDITY);
 
     // Response carries both transfers back to the owner. Total
     // liquidity includes the MINIMUM_LIQUIDITY lock, so principal
@@ -140,9 +144,15 @@ fn remove_partial_by_percent_50_reduces_half() {
     .unwrap();
 
     let pos_after = LIQUIDITY_POSITIONS.load(&deps.storage, "1").unwrap();
-    // 50% removed → remaining should be ~50% of original (integer floor).
-    let expected = pos_before.liquidity.u128() - (pos_before.liquidity.u128() / 2);
+    // Percent is now applied to `removable = liquidity - locked_liquidity`,
+    // so 50% removes half of the unlocked slice. Remaining =
+    // `locked + ceil(removable / 2)` (integer-floor on the removed half
+    // means the surviving half rounds up by the floor remainder).
+    let removable_before = pos_before.liquidity - pos_before.locked_liquidity;
+    let to_remove = removable_before.u128() / 2; // matches contract's integer-floor
+    let expected = pos_before.liquidity.u128() - to_remove;
     assert_eq!(pos_after.liquidity.u128(), expected);
+    assert_eq!(pos_after.locked_liquidity, pos_before.locked_liquidity);
 }
 
 #[test]
@@ -166,10 +176,14 @@ fn remove_partial_by_percent_100_drains_completely() {
     )
     .unwrap();
 
-    assert!(LIQUIDITY_POSITIONS
-        .may_load(&deps.storage, "1")
-        .unwrap()
-        .is_none());
+    // First-depositor position survives full-remove with `liquidity ==
+    // locked_liquidity == MINIMUM_LIQUIDITY` so the depositor retains
+    // a fee-earning Position on the permanently-locked principal slice.
+    let pos_after = LIQUIDITY_POSITIONS
+        .load(&deps.storage, "1")
+        .expect("position survives full-remove via the locked-liquidity floor");
+    assert_eq!(pos_after.liquidity, MINIMUM_LIQUIDITY);
+    assert_eq!(pos_after.locked_liquidity, MINIMUM_LIQUIDITY);
 }
 
 #[test]

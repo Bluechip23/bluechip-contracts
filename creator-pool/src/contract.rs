@@ -146,6 +146,8 @@ pub fn instantiate(
         fee_size_multiplier: Decimal::one(),
         unclaimed_fees_0: Uint128::zero(),
         unclaimed_fees_1: Uint128::zero(),
+        // Sentinel position at id "0" — no actual liquidity, no lock.
+        locked_liquidity: Uint128::zero(),
     };
 
     let pool_specs = PoolSpecs {

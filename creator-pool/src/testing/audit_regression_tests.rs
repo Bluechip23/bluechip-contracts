@@ -264,6 +264,12 @@ fn test_recover_both_resets_all_stuck_states() {
 
 #[test]
 fn test_first_deposit_locks_minimum_liquidity() {
+    // Updated for the locked-on-Position model: the first depositor's
+    // Position now carries the FULL `raw_liquidity` plus a
+    // `locked_liquidity = MINIMUM_LIQUIDITY` field, so fees accrue
+    // against the full position. The lock is enforced on the remove
+    // paths (covered by separate tests) rather than by subtracting from
+    // `position.liquidity`. `pool_state.total_liquidity` matches.
     let mut deps = mock_dependencies();
     setup_pool_post_threshold(&mut deps);
 
@@ -307,28 +313,27 @@ fn test_first_deposit_locks_minimum_liquidity() {
     let position = LIQUIDITY_POSITIONS.load(&deps.storage, "2").unwrap();
 
     // sqrt(1k * 1k) = 1k = 1_000_000_000 units raw
-    // Position should get raw - MINIMUM_LIQUIDITY = 1_000_000_000 - 1000 = 999_999_000
     let raw_liquidity =
         crate::liquidity_helpers::integer_sqrt(bluechip_amount.checked_mul(token_amount).unwrap());
-    let expected_user_liquidity = raw_liquidity - MINIMUM_LIQUIDITY;
 
+    // Position carries the FULL raw_liquidity as `liquidity`, with
+    // MINIMUM_LIQUIDITY of it marked as `locked_liquidity` (cannot be
+    // withdrawn but still earns fees against the full position).
     assert_eq!(
-        position.liquidity, expected_user_liquidity,
-        "first depositor should get sqrt(a*b) - MINIMUM_LIQUIDITY ({}) but got {}",
-        expected_user_liquidity, position.liquidity
+        position.liquidity, raw_liquidity,
+        "first depositor's position.liquidity should equal raw sqrt(a*b) ({}); got {}",
+        raw_liquidity, position.liquidity
+    );
+    assert_eq!(
+        position.locked_liquidity, MINIMUM_LIQUIDITY,
+        "first depositor's position.locked_liquidity should equal MINIMUM_LIQUIDITY ({}); got {}",
+        MINIMUM_LIQUIDITY, position.locked_liquidity
     );
 
-    // total_liquidity tracks only assigned liquidity (not the locked minimum).
-    // The locked amount is implicit: reserves hold more value than total_liquidity accounts for.
+    // total_liquidity now tracks the FULL raw amount (matches position.liquidity).
     assert_eq!(
-        pool_state_after.total_liquidity, position.liquidity,
-        "total_liquidity should equal position liquidity (locked minimum is not tracked in total_liquidity)"
-    );
-
-    // Position got LESS than the raw sqrt due to the lock
-    assert!(
-        position.liquidity < raw_liquidity,
-        "position liquidity should be less than raw sqrt due to MINIMUM_LIQUIDITY lock"
+        pool_state_after.total_liquidity, raw_liquidity,
+        "total_liquidity should equal raw_liquidity (full first-depositor position)"
     );
 }
 

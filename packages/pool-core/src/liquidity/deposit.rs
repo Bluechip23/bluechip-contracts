@@ -184,6 +184,25 @@ pub fn execute_deposit_liquidity(
     let mut pool_state = POOL_STATE.load(deps.storage)?;
     let pool_fee_state = POOL_FEE_STATE.load(deps.storage)?;
 
+    // First-depositor detection. `total_liquidity == 0` AND both reserves
+    // were zero immediately before this call → genuinely empty pool, this
+    // is the inflation-attack-relevant first deposit. We lock
+    // `MINIMUM_LIQUIDITY` LP units of the depositor's Position so they
+    // can never withdraw the principal, while letting fees still accrue
+    // against the full position (see `Position.locked_liquidity` doc).
+    //
+    // Creator pools after threshold crossing have non-zero seed reserves
+    // and non-zero `total_liquidity`, so this branch is not taken there
+    // — first post-threshold LPs deposit normally with no lock.
+    let is_first_deposit = pool_state.total_liquidity.is_zero()
+        && pool_state.reserve0.is_zero()
+        && pool_state.reserve1.is_zero();
+    let locked_liquidity = if is_first_deposit {
+        MINIMUM_LIQUIDITY
+    } else {
+        Uint128::zero()
+    };
+
     let mut messages = vec![];
     if !pool_state.nft_ownership_accepted {
         let accept_msg = WasmMsg::Execute {
@@ -235,6 +254,7 @@ pub fn execute_deposit_liquidity(
         fee_size_multiplier,
         unclaimed_fees_0: Uint128::zero(),
         unclaimed_fees_1: Uint128::zero(),
+        locked_liquidity,
     };
 
     LIQUIDITY_POSITIONS.save(deps.storage, &position_id, &position)?;

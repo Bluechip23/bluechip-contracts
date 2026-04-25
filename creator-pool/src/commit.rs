@@ -41,7 +41,8 @@ use crate::msg::CommitFeeInfo;
 use crate::state::{
     COMMITFEEINFO, COMMIT_LEDGER, COMMIT_LIMIT_INFO, IS_THRESHOLD_HIT, LAST_THRESHOLD_ATTEMPT,
     NATIVE_RAISED_FROM_COMMIT, POOL_ANALYTICS, POOL_FEE_STATE, POOL_INFO, POOL_SPECS, POOL_STATE,
-    REENTRANCY_LOCK, THRESHOLD_PAYOUT_AMOUNTS, THRESHOLD_PROCESSING, USD_RAISED_FROM_COMMIT,
+    POST_THRESHOLD_COOLDOWN_BLOCKS, POST_THRESHOLD_COOLDOWN_UNTIL_BLOCK, REENTRANCY_LOCK,
+    THRESHOLD_PAYOUT_AMOUNTS, THRESHOLD_PROCESSING, USD_RAISED_FROM_COMMIT,
 };
 use crate::swap_helper::get_oracle_conversion_with_staleness;
 
@@ -311,6 +312,15 @@ fn execute_commit_logic(
                                 Ok(r.checked_add(asset.amount)?)
                             })?;
                         IS_THRESHOLD_HIT.save(deps.storage, &true)?;
+                        // Arm the post-threshold cooldown so other actors
+                        // can't atomically sandwich the freshly-seeded pool
+                        // in the same block (or the next two). Crossing tx
+                        // itself is unaffected — the writes here land
+                        // before the next tx ever runs the cooldown check.
+                        POST_THRESHOLD_COOLDOWN_UNTIL_BLOCK.save(
+                            deps.storage,
+                            &(env.block.height + POST_THRESHOLD_COOLDOWN_BLOCKS + 1),
+                        )?;
 
                         let payout = trigger_threshold_payout(
                             deps.storage,

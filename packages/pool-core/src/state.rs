@@ -153,6 +153,17 @@ pub struct Position {
     pub unclaimed_fees_0: Uint128,
     #[serde(default)]
     pub unclaimed_fees_1: Uint128,
+    /// Subset of `liquidity` that the owner cannot remove. Set to
+    /// `MINIMUM_LIQUIDITY` (1000) on the first depositor's position so the
+    /// classic Uniswap-V2 inflation-attack lock is genuinely enforced
+    /// here rather than being a cosmetic accounting trick. Fees still
+    /// accrue against the FULL `liquidity` (including the locked slice),
+    /// so the depositor keeps fee rights on the locked principal — they
+    /// just can never withdraw the principal itself.
+    /// `#[serde(default)]` keeps existing positions deserializing as zero
+    /// (no lock) for backward compatibility with already-deployed pools.
+    #[serde(default)]
+    pub locked_liquidity: Uint128,
 }
 
 impl PoolDetails {
@@ -239,7 +250,33 @@ pub const COMMITFEEINFO: Item<CommitFeeInfo> = Item::new("fee_info");
 // per audit H9; kept as-is for now to preserve storage layout.
 pub const ORACLE_INFO: Item<OracleInfo> = Item::new("oracle_info");
 
+// Block at which post-threshold trading is allowed to resume after a
+// commit pool crosses its threshold. Set inside the threshold-crossing
+// commit handler to `env.block.height + POST_THRESHOLD_COOLDOWN_BLOCKS + 1`,
+// so the crossing block plus the next `POST_THRESHOLD_COOLDOWN_BLOCKS`
+// blocks are gated. Same-block follower trades and the next-N-blocks
+// trades are rejected. Eliminates the atomic same-block sandwich on the
+// freshly-seeded pool. The threshold-crosser's own bounded excess swap
+// (3%-of-reserve cap) still executes in the crossing tx itself, since
+// that swap runs before this storage item is read by any other path.
+//
+// Standard pools never cross a threshold; this item is never set on
+// them, and `may_load(...).unwrap_or(0)` makes the gate a no-op.
+//
+// Read by: simple_swap, execute_swap_cw20, process_post_threshold_commit.
+// Written by: process_threshold_crossing_with_excess and the
+// "threshold hit exact" branch of execute_commit_logic.
+pub const POST_THRESHOLD_COOLDOWN_UNTIL_BLOCK: Item<u64> =
+    Item::new("post_threshold_cooldown_until_block");
+
 // -- Constants ------------------------------------------------------------
 
 pub const MINIMUM_LIQUIDITY: Uint128 = Uint128::new(1000);
 pub const EMERGENCY_WITHDRAW_DELAY_SECONDS: u64 = 86_400;
+
+/// Blocks of trading freeze applied immediately after a commit pool's
+/// threshold crosses. With ~6s block time on typical Cosmos chains, 2
+/// blocks ≈ 12s — long enough to break atomic same-block sandwiches
+/// targeting the freshly seeded pool, short enough to not meaningfully
+/// hurt UX for legitimate first traders.
+pub const POST_THRESHOLD_COOLDOWN_BLOCKS: u64 = 2;

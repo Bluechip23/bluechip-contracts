@@ -313,21 +313,25 @@ pub fn calc_liquidity_for_deposit(
         let product = final_amount0.checked_mul(final_amount1)?;
         let raw_liquidity = integer_sqrt(product).max(Uint128::new(1));
 
-        let liquidity = if current_reserve0.is_zero() && current_reserve1.is_zero() {
-            // First deposit ever: lock MINIMUM_LIQUIDITY permanently
-            if raw_liquidity <= MINIMUM_LIQUIDITY {
-                return Err(ContractError::InsufficientLiquidityMinted {});
-            }
-            raw_liquidity.checked_sub(MINIMUM_LIQUIDITY)?
-        } else {
-            raw_liquidity
-        };
-
-        if liquidity.is_zero() {
+        // Reject first-deposits too small to absorb the MINIMUM_LIQUIDITY
+        // lock. The lock itself is now applied by `execute_deposit_liquidity`
+        // via `Position.locked_liquidity = MINIMUM_LIQUIDITY` rather than by
+        // subtracting from the returned liquidity here, so the depositor's
+        // Position carries the FULL `raw_liquidity` and accrues fees against
+        // the full amount. They simply cannot withdraw the locked slice
+        // (enforced in remove_*).
+        if current_reserve0.is_zero()
+            && current_reserve1.is_zero()
+            && raw_liquidity <= MINIMUM_LIQUIDITY
+        {
             return Err(ContractError::InsufficientLiquidityMinted {});
         }
 
-        return Ok((liquidity, final_amount0, final_amount1));
+        if raw_liquidity.is_zero() {
+            return Err(ContractError::InsufficientLiquidityMinted {});
+        }
+
+        return Ok((raw_liquidity, final_amount0, final_amount1));
     }
 
     if amount0.is_zero() || amount1.is_zero() {
