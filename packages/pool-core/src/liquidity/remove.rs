@@ -118,36 +118,25 @@ pub fn remove_all_liquidity(
     analytics.total_lp_withdrawal_count += 1;
     POOL_ANALYTICS.save(deps.storage, &analytics)?;
 
-    let mut response = Response::new()
-        .add_attribute("action", "remove_liquidity")
-        .add_attribute("position_id", position_id)
-        .add_attribute("withdrawer", info.sender.to_string())
-        .add_attribute(
-            "liquidity_removed",
-            liquidity_position.liquidity.to_string(),
-        )
-        .add_attribute("principal_0", user_share_0)
-        .add_attribute("principal_1", user_share_1)
-        .add_attribute("fees_0", fees_owed_0)
-        .add_attribute("fees_1", fees_owed_1)
-        .add_attribute("total_0", total_amount_0)
-        .add_attribute("total_1", total_amount_1)
-        .add_attribute("reserve0_after", pool_state.reserve0.to_string())
-        .add_attribute("reserve1_after", pool_state.reserve1.to_string())
-        .add_attribute(
-            "total_liquidity_after",
-            pool_state.total_liquidity.to_string(),
-        )
-        .add_attribute(
-            "pool_contract",
-            pool_state.pool_contract_address.to_string(),
-        )
-        .add_attribute("block_height", env.block.height.to_string())
-        .add_attribute("block_time", env.block.time.seconds().to_string())
-        .add_attribute(
-            "total_lp_withdrawal_count",
-            analytics.total_lp_withdrawal_count.to_string(),
-        );
+    let mut response = Response::new().add_attributes(vec![
+        ("action", "remove_liquidity".to_string()),
+        ("position_id", position_id),
+        ("withdrawer", info.sender.to_string()),
+        ("liquidity_removed", liquidity_position.liquidity.to_string()),
+        ("principal_0", user_share_0.to_string()),
+        ("principal_1", user_share_1.to_string()),
+        ("fees_0", fees_owed_0.to_string()),
+        ("fees_1", fees_owed_1.to_string()),
+        ("total_0", total_amount_0.to_string()),
+        ("total_1", total_amount_1.to_string()),
+        ("reserve0_after", pool_state.reserve0.to_string()),
+        ("reserve1_after", pool_state.reserve1.to_string()),
+        ("total_liquidity_after", pool_state.total_liquidity.to_string()),
+        ("pool_contract", pool_state.pool_contract_address.to_string()),
+        ("block_height", env.block.height.to_string()),
+        ("block_time", env.block.time.seconds().to_string()),
+        ("total_lp_withdrawal_count", analytics.total_lp_withdrawal_count.to_string()),
+    ]);
     let transfer_msgs =
         build_fee_transfer_msgs(&pool_info, &info.sender, total_amount_0, total_amount_1)?;
     response = response.add_messages(transfer_msgs);
@@ -325,39 +314,28 @@ pub fn remove_partial_liquidity(
     analytics.total_lp_withdrawal_count += 1;
     POOL_ANALYTICS.save(deps.storage, &analytics)?;
 
-    let mut response = Response::new()
-        .add_attribute("action", "remove_partial_liquidity")
-        .add_attribute("position_id", position_id)
-        .add_attribute("withdrawer", info.sender.to_string())
-        .add_attribute("liquidity_removed", liquidity_to_remove.to_string())
-        .add_attribute(
-            "remaining_liquidity",
-            liquidity_position.liquidity.to_string(),
-        )
-        .add_attribute("principal_0", withdrawal_amount_0)
-        .add_attribute("principal_1", withdrawal_amount_1)
-        .add_attribute("fees_0", fees_owed_0)
-        .add_attribute("fees_1", fees_owed_1)
-        .add_attribute("preserved_fees_0", preserved_fees_0)
-        .add_attribute("preserved_fees_1", preserved_fees_1)
-        .add_attribute("total_0", total_amount_0)
-        .add_attribute("total_1", total_amount_1)
-        .add_attribute("reserve0_after", pool_state.reserve0.to_string())
-        .add_attribute("reserve1_after", pool_state.reserve1.to_string())
-        .add_attribute(
-            "total_liquidity_after",
-            pool_state.total_liquidity.to_string(),
-        )
-        .add_attribute(
-            "pool_contract",
-            pool_state.pool_contract_address.to_string(),
-        )
-        .add_attribute("block_height", env.block.height.to_string())
-        .add_attribute("block_time", env.block.time.seconds().to_string())
-        .add_attribute(
-            "total_lp_withdrawal_count",
-            analytics.total_lp_withdrawal_count.to_string(),
-        );
+    let mut response = Response::new().add_attributes(vec![
+        ("action", "remove_partial_liquidity".to_string()),
+        ("position_id", position_id),
+        ("withdrawer", info.sender.to_string()),
+        ("liquidity_removed", liquidity_to_remove.to_string()),
+        ("remaining_liquidity", liquidity_position.liquidity.to_string()),
+        ("principal_0", withdrawal_amount_0.to_string()),
+        ("principal_1", withdrawal_amount_1.to_string()),
+        ("fees_0", fees_owed_0.to_string()),
+        ("fees_1", fees_owed_1.to_string()),
+        ("preserved_fees_0", preserved_fees_0.to_string()),
+        ("preserved_fees_1", preserved_fees_1.to_string()),
+        ("total_0", total_amount_0.to_string()),
+        ("total_1", total_amount_1.to_string()),
+        ("reserve0_after", pool_state.reserve0.to_string()),
+        ("reserve1_after", pool_state.reserve1.to_string()),
+        ("total_liquidity_after", pool_state.total_liquidity.to_string()),
+        ("pool_contract", pool_state.pool_contract_address.to_string()),
+        ("block_height", env.block.height.to_string()),
+        ("block_time", env.block.time.seconds().to_string()),
+        ("total_lp_withdrawal_count", analytics.total_lp_withdrawal_count.to_string()),
+    ]);
     let transfer_msgs =
         build_fee_transfer_msgs(&pool_info, &info.sender, total_amount_0, total_amount_1)?;
     response = response.add_messages(transfer_msgs);
