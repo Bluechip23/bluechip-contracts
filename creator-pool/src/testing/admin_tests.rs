@@ -45,7 +45,6 @@ fn mock_instantiate_msg() -> PoolInstantiateMsg {
             commit_fee_creator: Decimal::percent(1),
         },
         commit_threshold_limit_usd: Uint128::new(1000),
-        commit_amount_for_threshold: Uint128::new(1000),
         position_nft_address: Addr::unchecked("nft_addr"),
         token_address: token_addr,
         max_bluechip_lock_per_pool: Uint128::new(10000),

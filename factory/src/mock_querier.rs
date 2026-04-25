@@ -64,11 +64,9 @@ impl WasmMockQuerier {
                 // Try parsing as PoolQueryMsg first (for pool contract queries)
                 if let Ok(pool_msg) = from_json::<PoolQueryMsg>(&msg) {
                     match pool_msg {
-                        PoolQueryMsg::GetPoolState {
-                            pool_contract_address,
-                        } => {
+                        PoolQueryMsg::GetPoolState {} => {
                             let pool_state = PoolStateResponseForFactory {
-                                pool_contract_address: Addr::unchecked(pool_contract_address),
+                                pool_contract_address: Addr::unchecked(contract_addr.clone()),
                                 nft_ownership_accepted: true,
                                 reserve0: cosmwasm_std::Uint128::new(50_000_000_000),
                                 reserve1: cosmwasm_std::Uint128::new(10_000_000_000),

@@ -326,9 +326,7 @@ pub fn get_eligible_creator_pools(
 
         let pool_state: PoolStateResponseForFactory = deps.querier.query_wasm_smart(
             pool_details.creator_pool_addr.to_string(),
-            &PoolQueryMsg::GetPoolState {
-                pool_contract_address: pool_details.creator_pool_addr.to_string(),
-            },
+            &PoolQueryMsg::GetPoolState {},
         )?;
 
         let total_liquidity = pool_state.reserve0.saturating_add(pool_state.reserve1);
@@ -1221,12 +1219,7 @@ fn query_pool_safe(
     #[cfg(not(test))]
     {
         deps.querier
-            .query_wasm_smart(
-                pool_address.to_string(),
-                &PoolQueryMsg::GetPoolState {
-                    pool_contract_address: pool_address.to_string(),
-                },
-            )
+            .query_wasm_smart(pool_address.to_string(), &PoolQueryMsg::GetPoolState {})
             .map_err(|e| ContractError::QueryError {
                 msg: format!("Failed to query pool {}: {}", pool_address, e),
             })

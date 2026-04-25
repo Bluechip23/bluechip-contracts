@@ -1247,7 +1247,6 @@ fn test_factory_impersonation_prevented() {
         },
         max_bluechip_lock_per_pool: Uint128::new(10_000_000_000),
         creator_excess_liquidity_lock_days: 7,
-        commit_amount_for_threshold: Uint128::new(0),
         commit_threshold_limit_usd: Uint128::new(350_000_000_000),
         position_nft_address: Addr::unchecked("NFT_contract"),
         token_address: Addr::unchecked("token_contract"),
@@ -2425,7 +2424,6 @@ pub fn setup_pool_with_reserves(
     POOL_SPECS.save(&mut deps.storage, &pool_specs).unwrap();
 
     let commit_config = CommitLimitInfo {
-        commit_amount_for_threshold: Uint128::new(100_000_000), // 100 bluechip tokens
         commit_amount_for_threshold_usd: Uint128::new(25_000_000_000), // $25k with 6 decimals
         max_bluechip_lock_per_pool: Uint128::new(10_000_000_000),
         creator_excess_liquidity_lock_days: 7,

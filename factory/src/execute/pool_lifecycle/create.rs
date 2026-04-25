@@ -45,42 +45,41 @@ pub(crate) fn validate_pool_token_info(
 ) -> Result<(), ContractError> {
     use crate::asset::TokenType;
 
-    let mut bluechip_count = 0usize;
-    let mut creator_count = 0usize;
-    for t in pool_token_info.iter() {
-        match t {
-            TokenType::Native { denom } => {
-                if denom.trim().is_empty() {
-                    return Err(ContractError::Std(StdError::generic_err(
-                        "Bluechip denom must be non-empty",
-                    )));
-                }
-                if denom != canonical_bluechip_denom {
-                    return Err(ContractError::Std(StdError::generic_err(format!(
-                        "Bluechip denom must match the factory canonical denom \"{}\"; got \"{}\"",
-                        canonical_bluechip_denom, denom
-                    ))));
-                }
-                bluechip_count += 1;
+    // Strict ordering: bluechip MUST be at index 0, creator-token at
+    // index 1. Every downstream piece of pool code (post_threshold_commit,
+    // simple_swap, threshold_payout reserves) hard-codes the assumption
+    // that `reserve0` is bluechip and `reserve1` is creator-token. The
+    // factory's `mint_create_pool` rewrites the sentinel in place
+    // preserving order, so a `[CreatorToken sentinel, Bluechip]` input
+    // would propagate a reversed pair into the pool and silently produce
+    // wrong-direction swaps. Enforcing order here keeps the assumption
+    // load-bearing rather than incidental.
+    match (&pool_token_info[0], &pool_token_info[1]) {
+        (TokenType::Native { denom }, TokenType::CreatorToken { contract_addr }) => {
+            if denom.trim().is_empty() {
+                return Err(ContractError::Std(StdError::generic_err(
+                    "Bluechip denom must be non-empty",
+                )));
             }
-            TokenType::CreatorToken { contract_addr } => {
-                if contract_addr.as_str() != CREATOR_TOKEN_SENTINEL {
-                    return Err(ContractError::Std(StdError::generic_err(format!(
-                        "CreatorToken contract_addr must be the sentinel \"{}\"; got \"{}\". The factory mints the CW20 itself and rewrites this field.",
-                        CREATOR_TOKEN_SENTINEL, contract_addr
-                    ))));
-                }
-                creator_count += 1;
+            if denom != canonical_bluechip_denom {
+                return Err(ContractError::Std(StdError::generic_err(format!(
+                    "Bluechip denom must match the factory canonical denom \"{}\"; got \"{}\"",
+                    canonical_bluechip_denom, denom
+                ))));
             }
+            if contract_addr.as_str() != CREATOR_TOKEN_SENTINEL {
+                return Err(ContractError::Std(StdError::generic_err(format!(
+                    "CreatorToken contract_addr must be the sentinel \"{}\"; got \"{}\". The factory mints the CW20 itself and rewrites this field.",
+                    CREATOR_TOKEN_SENTINEL, contract_addr
+                ))));
+            }
+            Ok(())
         }
+        _ => Err(ContractError::Std(StdError::generic_err(
+            "pool_token_info must be [Bluechip(canonical denom), CreatorToken(sentinel)] — \
+             order matters: bluechip at index 0, creator-token at index 1.",
+        ))),
     }
-    if bluechip_count != 1 || creator_count != 1 {
-        return Err(ContractError::Std(StdError::generic_err(format!(
-            "pool_token_info must contain exactly one Bluechip and one CreatorToken (got {} Bluechip, {} CreatorToken)",
-            bluechip_count, creator_count
-        ))));
-    }
-    Ok(())
 }
 
 /// Validates creator token metadata before any state is written.

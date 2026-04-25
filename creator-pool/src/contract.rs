@@ -66,45 +66,36 @@ pub fn instantiate(
         return Err(ContractError::DoublingAssets {});
     }
 
-    // Enforce the expected pair shape: exactly one Bluechip entry and
-    // exactly one CreatorToken entry whose address matches the factory-
-    // minted token. This is defense-in-depth — the factory already
-    // validates the shape and rewrites the sentinel — but the pool
-    // refuses to stand up unless the invariants actually hold here,
-    // so a buggy factory migration or a directly-instantiated pool
-    // (e.g. via a raw Wasm instantiate) can't silently produce a pool
-    // whose reserve accounting disagrees with its holdings.
-    let mut bluechip_count = 0usize;
-    let mut creator_match = false;
-    let mut creator_count = 0usize;
-    for t in msg.pool_token_info.iter() {
-        match t {
-            TokenType::Native { denom } => {
-                if denom.trim().is_empty() {
-                    return Err(ContractError::Std(StdError::generic_err(
-                        "Bluechip denom must be non-empty",
-                    )));
-                }
-                bluechip_count += 1;
+    // Enforce strict pair shape AND ordering: index 0 = Bluechip
+    // (Native), index 1 = CreatorToken matching `msg.token_address`.
+    // Every downstream piece of commit/swap/threshold-payout code
+    // hard-codes `reserve0 == bluechip, reserve1 == creator-token`,
+    // so a reversed pair would silently produce wrong-direction swaps.
+    // Defense-in-depth — the factory's validate_pool_token_info enforces
+    // the same invariant — but rejecting again here means a buggy
+    // factory migration or a directly-instantiated pool (e.g. via a raw
+    // Wasm instantiate bypassing the factory entirely) can't silently
+    // produce a pool whose reserve accounting disagrees with its
+    // holdings.
+    match (&msg.pool_token_info[0], &msg.pool_token_info[1]) {
+        (TokenType::Native { denom }, TokenType::CreatorToken { contract_addr }) => {
+            if denom.trim().is_empty() {
+                return Err(ContractError::Std(StdError::generic_err(
+                    "Bluechip denom must be non-empty",
+                )));
             }
-            TokenType::CreatorToken { contract_addr } => {
-                creator_count += 1;
-                if contract_addr == &msg.token_address {
-                    creator_match = true;
-                }
+            if contract_addr != &msg.token_address {
+                return Err(ContractError::Std(StdError::generic_err(
+                    "CreatorToken.contract_addr in pool_token_info must equal msg.token_address",
+                )));
             }
         }
-    }
-    if bluechip_count != 1 || creator_count != 1 {
-        return Err(ContractError::Std(StdError::generic_err(format!(
-            "pool_token_info must contain exactly one Bluechip and one CreatorToken (got {} Bluechip, {} CreatorToken)",
-            bluechip_count, creator_count
-        ))));
-    }
-    if !creator_match {
-        return Err(ContractError::Std(StdError::generic_err(
-            "CreatorToken.contract_addr in pool_token_info must equal msg.token_address",
-        )));
+        _ => {
+            return Err(ContractError::Std(StdError::generic_err(
+                "pool_token_info must be [Bluechip(Native), CreatorToken] — \
+                 order matters: bluechip at index 0, creator-token at index 1.",
+            )));
+        }
     }
     if (msg.commit_fee_info.commit_fee_bluechip + msg.commit_fee_info.commit_fee_creator)
         > Decimal::one()
@@ -158,7 +149,6 @@ pub fn instantiate(
 
     let commit_config = CommitLimitInfo {
         commit_amount_for_threshold_usd: msg.commit_threshold_limit_usd,
-        commit_amount_for_threshold: msg.commit_amount_for_threshold,
         max_bluechip_lock_per_pool: msg.max_bluechip_lock_per_pool,
         creator_excess_liquidity_lock_days: msg.creator_excess_liquidity_lock_days,
     };

@@ -6,7 +6,53 @@ mod expand_economy_tests {
     use cosmwasm_std::testing::{
         message_info, mock_dependencies, mock_dependencies_with_balance, mock_env, MockApi,
     };
-    use cosmwasm_std::{coin, coins, from_json, BankMsg, CosmosMsg, Uint128};
+    use cosmwasm_std::{
+        coin, coins, from_json, to_json_binary, Addr, BankMsg, Binary, ContractResult, CosmosMsg,
+        SystemError, SystemResult, Uint128, WasmQuery,
+    };
+
+    use cosmwasm_schema::cw_serde;
+
+    #[cw_serde]
+    struct MockFactoryConfig {
+        bluechip_denom: String,
+    }
+
+    #[cw_serde]
+    struct MockFactoryResp {
+        factory: MockFactoryConfig,
+    }
+
+    /// Install a wasm-mock that answers the factory's `Factory {}` query
+    /// with a config carrying `expected_denom`. Required since
+    /// `execute_expand_economy` cross-validates the factory's denom
+    /// against this contract's stored denom on every RequestExpansion.
+    fn install_factory_denom_mock(
+        deps: &mut cosmwasm_std::OwnedDeps<
+            cosmwasm_std::MemoryStorage,
+            cosmwasm_std::testing::MockApi,
+            cosmwasm_std::testing::MockQuerier,
+        >,
+        factory_addr: Addr,
+        expected_denom: &str,
+    ) {
+        let factory_str = factory_addr.to_string();
+        let denom_owned = expected_denom.to_string();
+        deps.querier.update_wasm(move |req| match req {
+            WasmQuery::Smart { contract_addr, .. } if contract_addr == &factory_str => {
+                let resp = MockFactoryResp {
+                    factory: MockFactoryConfig {
+                        bluechip_denom: denom_owned.clone(),
+                    },
+                };
+                SystemResult::Ok(ContractResult::Ok(to_json_binary(&resp).unwrap()))
+            }
+            _ => SystemResult::Err(SystemError::InvalidRequest {
+                error: "unmocked wasm query".to_string(),
+                request: Binary::default(),
+            }),
+        });
+    }
 
     #[test]
     fn proper_initialization() {
@@ -58,6 +104,12 @@ mod expand_economy_tests {
             msg,
         )
         .unwrap();
+
+        // Cross-validation query (M10): expand-economy reads the factory's
+        // `bluechip_denom` on every RequestExpansion and rejects if it
+        // doesn't match this contract's configured denom. Mock the factory
+        // response with the matching denom for this test.
+        install_factory_denom_mock(&mut deps, factory_addr.clone(), "ucustom");
 
         let res = execute(
             deps.as_mut(),
@@ -116,6 +168,10 @@ mod expand_economy_tests {
         };
         let info = message_info(&creator_addr, &[]);
         instantiate(deps.as_mut(), mock_env(), info, msg).unwrap();
+
+        // M10 denom cross-validation needs a factory mock that replies
+        // with the matching `bluechip_denom`.
+        install_factory_denom_mock(&mut deps, factory_addr.clone(), "ubluechip");
 
         // only factory can request expansion
         let auth_info = message_info(&factory_addr, &[]);

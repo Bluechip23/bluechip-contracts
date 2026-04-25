@@ -2,23 +2,25 @@ use cosmwasm_schema::cw_serde;
 
 use crate::asset::TokenType;
 
-use cosmwasm_std::{Addr, Binary, Decimal, StdError, StdResult, Uint128};
+use cosmwasm_std::{Addr, Decimal, StdError, StdResult, Uint128};
 use pool_factory_interfaces::PoolKind;
 
+/// Caller-supplied portion of the commit-pool create message.
+///
+/// Only `pool_token_info` is honored end-to-end — the factory's stored
+/// config is the authoritative source of truth for every other knob
+/// (commit threshold, commit fee splits, threshold payout amounts, lock
+/// caps, oracle config). The previous version of this struct included
+/// caller-supplied versions of those fields, but `mint_create_pool`
+/// silently overwrote them with `factory_config.*` values, so a caller
+/// thinking they were tuning their pool was just being ignored.
+///
+/// Reduced to the single load-bearing field so the wire format matches
+/// what the contract actually consumes; downstream tooling that used to
+/// supply the dropped fields no longer has to construct sentinel zeros.
 #[cw_serde]
 pub struct CreatePool {
     pub pool_token_info: [TokenType; 2],
-    pub cw20_token_contract_id: u64,
-    pub factory_to_create_pool_addr: Addr,
-    pub threshold_payout: Option<Binary>,
-    pub commit_fee_info: CommitFeeInfo,
-    pub creator_token_address: Addr,
-    pub commit_amount_for_threshold: Uint128,
-    pub commit_limit_usd: Uint128,
-    pub pyth_contract_addr_for_conversions: String,
-    pub pyth_atom_usd_price_feed_id: String,
-    pub max_bluechip_lock_per_pool: Uint128,
-    pub creator_excess_liquidity_lock_days: u64,
 }
 
 #[cw_serde]

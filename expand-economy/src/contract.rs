@@ -4,6 +4,7 @@ use cosmwasm_std::{
     to_json_binary, Addr, BankMsg, Binary, Coin, Deps, DepsMut, Env, MessageInfo, Response,
     StdError, StdResult, Storage, Uint128,
 };
+use cosmwasm_schema::cw_serde;
 use cw2::set_contract_version;
 use cw_storage_plus::Item;
 use serde::{de::DeserializeOwned, Serialize};
@@ -15,6 +16,31 @@ use crate::state::{
     CONFIG_TIMELOCK_SECONDS, DAILY_EXPANSION_CAP, DAILY_WINDOW_SECONDS, DEFAULT_BLUECHIP_DENOM,
     EXPANSION_WINDOW, PENDING_CONFIG_UPDATE, PENDING_WITHDRAWAL, WITHDRAW_TIMELOCK_SECONDS,
 };
+
+/// Minimal subset of the factory's query interface that this contract
+/// uses to cross-validate `bluechip_denom`. Defined locally to avoid a
+/// compile-time dependency on the `factory` crate (the two communicate
+/// only over wasm message boundaries). Wire format must mirror
+/// `factory::query::QueryMsg::Factory {}` exactly.
+#[cw_serde]
+enum FactoryQuery {
+    Factory {},
+}
+
+/// Wire-compatible subset of `factory::msg::FactoryInstantiateResponse`
+/// — only the field this contract reads. Round-trips against the full
+/// factory response because `cw_serde` does not set
+/// `deny_unknown_fields`, so the extra factory-side fields are ignored
+/// during deserialization.
+#[cw_serde]
+struct FactoryConfigSubset {
+    bluechip_denom: String,
+}
+
+#[cw_serde]
+struct FactoryInstantiateResponseSubset {
+    factory: FactoryConfigSubset,
+}
 
 const CONTRACT_NAME: &str = "crates.io:expand-economy";
 const CONTRACT_VERSION: &str = env!("CARGO_PKG_VERSION");
@@ -131,12 +157,53 @@ pub fn execute_expand_economy(
         return Err(ContractError::Unauthorized {});
     }
 
+    // Cross-validate the factory's `bluechip_denom` against this contract's
+    // configured denom. Both fields are independently admin-mutable (each
+    // contract has its own propose/apply config flow with separate 48h
+    // timelocks), so they can drift if a single-side update is forgotten.
+    // Drift would silently fund rewards in the wrong denom — better to
+    // refuse the call and surface the mismatch loudly.
+    //
+    // One additional cross-contract query per RequestExpansion. Cost is
+    // negligible: the call fires only on threshold-crossing events, not
+    // on hot paths.
+    let factory_resp: FactoryInstantiateResponseSubset = deps
+        .querier
+        .query_wasm_smart(&config.factory_address, &FactoryQuery::Factory {})
+        .map_err(|e| {
+            ContractError::Std(StdError::generic_err(format!(
+                "Failed to query factory config for denom validation: {}",
+                e
+            )))
+        })?;
+    if factory_resp.factory.bluechip_denom != config.bluechip_denom {
+        return Err(ContractError::Std(StdError::generic_err(format!(
+            "bluechip_denom mismatch: factory has \"{}\", expand-economy has \"{}\". \
+             Update one side via its config-update flow before retrying.",
+            factory_resp.factory.bluechip_denom, config.bluechip_denom
+        ))));
+    }
+
     match msg {
         ExpandEconomyMsg::RequestExpansion { recipient, amount } => {
             if amount.is_zero() {
+                // The factory's bluechip mint-decay polynomial drops to zero
+                // once `pool_id` and `seconds_elapsed` grow past the curve's
+                // crossover. Once it does, this contract is "dormant" by
+                // design — there is no more bluechip-economy expansion to
+                // dispense, and the mechanism's job is done. Surface that
+                // explicitly so operators and monitoring can distinguish
+                // "skipped because schedule has expired" from "skipped
+                // because of a bug".
                 return Ok(Response::new()
                     .add_attribute("action", "request_reward_skipped")
-                    .add_attribute("reason", "zero_amount"));
+                    .add_attribute("reason", "economy_dormant")
+                    .add_attribute(
+                        "note",
+                        "ExpandEconomy mint schedule has reached zero; \
+                         no further expansions will be dispensed. This \
+                         is the intended end-state of the decay curve.",
+                    ));
             }
 
             // Validate the recipient at the contract boundary rather than

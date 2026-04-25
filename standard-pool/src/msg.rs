@@ -129,7 +129,7 @@ pub enum QueryMsg {
     #[returns(PoolAnalyticsResponse)]
     Analytics {},
     #[returns(PoolStateResponseForFactory)]
-    GetPoolState { pool_contract_address: String },
+    GetPoolState {},
     #[returns(AllPoolsResponse)]
     GetAllPools {},
     #[returns(IsPausedResponse)]

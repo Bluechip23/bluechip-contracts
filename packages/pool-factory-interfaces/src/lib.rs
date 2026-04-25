@@ -9,7 +9,13 @@ use crate::asset::TokenType;
 
 #[cw_serde]
 pub enum PoolQueryMsg {
-    GetPoolState { pool_contract_address: String },
+    /// Returns this pool's `PoolStateResponseForFactory` (its own state — the
+    /// pool is the implicit subject of the query). Previously took a
+    /// `pool_contract_address: String` argument that was never read by any
+    /// implementor; the dispatch always replied with the queried pool's own
+    /// state. Removed to prevent future readers from assuming the parameter
+    /// changed which pool's state was returned.
+    GetPoolState {},
     GetAllPools {},
     IsPaused {},
 }

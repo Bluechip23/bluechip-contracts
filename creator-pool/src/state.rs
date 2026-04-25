@@ -116,7 +116,6 @@ pub struct ThresholdPayoutAmounts {
 
 #[cw_serde]
 pub struct CommitLimitInfo {
-    pub commit_amount_for_threshold: Uint128,
     pub commit_amount_for_threshold_usd: Uint128,
     pub max_bluechip_lock_per_pool: Uint128,
     pub creator_excess_liquidity_lock_days: u64,
