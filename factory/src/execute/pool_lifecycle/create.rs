@@ -324,7 +324,7 @@ pub(crate) fn execute_create_standard_pool(
         match crate::internal_bluechip_price_oracle::usd_to_bluechip(
             deps.as_ref(),
             usd_fee,
-            env.clone(),
+            &env,
         ) {
             Ok(conv) if !conv.amount.is_zero() => (conv.amount, "oracle"),
             _ => (

@@ -1982,12 +1982,12 @@ fn test_conversion_functions_with_pyth() {
     let env = mock_env();
 
     let bluechip_amount = Uint128::new(5_000_000);
-    let result = bluechip_to_usd(deps.as_ref(), bluechip_amount, env.clone());
+    let result = bluechip_to_usd(deps.as_ref(), bluechip_amount, &env);
     assert!(result.is_ok(), "bluechip_to_usd should succeed");
     println!("5 bluechip = ${}", result.as_ref().unwrap().amount);
 
     let usd_amount = Uint128::new(5_000_000); // $5
-    let result2 = usd_to_bluechip(deps.as_ref(), usd_amount, env.clone());
+    let result2 = usd_to_bluechip(deps.as_ref(), usd_amount, &env);
     assert!(result2.is_ok(), "usd_to_bluechip should succeed");
     println!("$5 = {} bluechip", result2.as_ref().unwrap().amount);
 }

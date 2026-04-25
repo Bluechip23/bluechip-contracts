@@ -508,7 +508,7 @@ pub fn update_internal_oracle_price(
         // Convert USD -> bluechip via the just-updated TWAP. If the
         // conversion errors (Pyth + cache both unavailable), skip the
         // bounty rather than reverting the whole oracle update.
-        match usd_to_bluechip(deps.as_ref(), bounty_usd, env.clone()) {
+        match usd_to_bluechip(deps.as_ref(), bounty_usd, &env) {
             Ok(conv) => {
                 let balance = deps
                     .querier
@@ -1040,13 +1040,17 @@ fn convert_with_oracle(
 pub fn bluechip_to_usd(
     deps: Deps,
     bluechip_amount: Uint128,
-    env: Env,
+    env: &Env,
 ) -> StdResult<ConversionResponse> {
-    convert_with_oracle(deps, &env, bluechip_amount, true)
+    convert_with_oracle(deps, env, bluechip_amount, true)
 }
 
-pub fn usd_to_bluechip(deps: Deps, usd_amount: Uint128, env: Env) -> StdResult<ConversionResponse> {
-    convert_with_oracle(deps, &env, usd_amount, false)
+pub fn usd_to_bluechip(
+    deps: Deps,
+    usd_amount: Uint128,
+    env: &Env,
+) -> StdResult<ConversionResponse> {
+    convert_with_oracle(deps, env, usd_amount, false)
 }
 
 pub fn get_price_with_staleness_check(

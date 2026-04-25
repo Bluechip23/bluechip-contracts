@@ -126,7 +126,7 @@ pub fn execute_pay_distribution_bounty(
     let bounty_bluechip = match crate::internal_bluechip_price_oracle::usd_to_bluechip(
         deps.as_ref(),
         bounty_usd,
-        env.clone(),
+        &env,
     ) {
         Ok(conv) => conv.amount,
         Err(_) => {

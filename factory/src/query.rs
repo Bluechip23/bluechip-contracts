@@ -164,10 +164,10 @@ pub fn handle_internal_bluechip_oracle_query(
             to_json_binary(&get_bluechip_usd_price(deps, &env)?)
         }
         FactoryQueryMsg::ConvertBluechipToUsd { amount } => {
-            to_json_binary(&bluechip_to_usd(deps, amount, env)?)
+            to_json_binary(&bluechip_to_usd(deps, amount, &env)?)
         }
         FactoryQueryMsg::ConvertUsdToBluechip { amount } => {
-            to_json_binary(&usd_to_bluechip(deps, amount, env)?)
+            to_json_binary(&usd_to_bluechip(deps, amount, &env)?)
         }
     }
 }
