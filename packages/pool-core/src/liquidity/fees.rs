@@ -82,25 +82,18 @@ pub fn execute_collect_fees(
 
     Ok(Response::new()
         .add_messages(fee_msgs)
-        .add_attribute("action", "collect_fees")
-        .add_attribute("position_id", position_id)
-        .add_attribute("collector", info.sender.to_string())
-        .add_attribute("fees_0", fees_owed_0)
-        .add_attribute("fees_1", fees_owed_1)
-        .add_attribute("clipped_to_creator_pot_0", clipped_0)
-        .add_attribute("clipped_to_creator_pot_1", clipped_1)
-        .add_attribute(
-            "fee_reserve_0_after",
-            pool_fee_state.fee_reserve_0.to_string(),
-        )
-        .add_attribute(
-            "fee_reserve_1_after",
-            pool_fee_state.fee_reserve_1.to_string(),
-        )
-        .add_attribute(
-            "pool_contract",
-            pool_state.pool_contract_address.to_string(),
-        )
-        .add_attribute("block_height", env.block.height.to_string())
-        .add_attribute("block_time", env.block.time.seconds().to_string()))
+        .add_attributes(vec![
+            ("action", "collect_fees".to_string()),
+            ("position_id", position_id),
+            ("collector", info.sender.to_string()),
+            ("fees_0", fees_owed_0.to_string()),
+            ("fees_1", fees_owed_1.to_string()),
+            ("clipped_to_creator_pot_0", clipped_0.to_string()),
+            ("clipped_to_creator_pot_1", clipped_1.to_string()),
+            ("fee_reserve_0_after", pool_fee_state.fee_reserve_0.to_string()),
+            ("fee_reserve_1_after", pool_fee_state.fee_reserve_1.to_string()),
+            ("pool_contract", pool_state.pool_contract_address.to_string()),
+            ("block_height", env.block.height.to_string()),
+            ("block_time", env.block.time.seconds().to_string()),
+        ]))
 }
