@@ -97,6 +97,7 @@ pub fn register_test_pool_addr(
                 ],
                 creator_pool_addr: pool_addr.clone(),
                 pool_kind: pool_factory_interfaces::PoolKind::Commit,
+                commit_pool_ordinal: 0,
             },
         )
         .unwrap();
@@ -244,6 +245,7 @@ fn test_oracle_initialization_with_multiple_pools() {
             ],
             creator_pool_addr: pool_addr.clone(),
             pool_kind: pool_factory_interfaces::PoolKind::Commit,
+            commit_pool_ordinal: 0,
         };
         POOLS_BY_ID
             .save(deps.as_mut().storage, i, &pool_details)
@@ -872,6 +874,7 @@ fn test_reply_handling() {
             creation_time: env.block.time,
             status: CreationStatus::Started,
         },
+        commit_pool_ordinal: 0,
     };
     POOL_CREATION_CONTEXT
         .save(deps.as_mut().storage, pool_id, &ctx)
@@ -1433,6 +1436,7 @@ fn test_oracle_aggregates_multiple_pool_prices() {
             ],
             creator_pool_addr: pool_addr,
             pool_kind: pool_factory_interfaces::PoolKind::Commit,
+            commit_pool_ordinal: 0,
         };
         POOLS_BY_ID
             .save(&mut deps.storage, pool_id, &pool_details)
@@ -2787,6 +2791,7 @@ fn test_oracle_ignores_pools_without_threshold_crossed() {
             ],
             creator_pool_addr: pool_addr.clone(),
             pool_kind: pool_factory_interfaces::PoolKind::Commit,
+            commit_pool_ordinal: 0,
         };
         POOLS_BY_ID
             .save(&mut deps.storage, 1, &pool_details)
@@ -2826,6 +2831,7 @@ fn test_oracle_ignores_pools_without_threshold_crossed() {
             ],
             creator_pool_addr: pool_addr.clone(),
             pool_kind: pool_factory_interfaces::PoolKind::Commit,
+            commit_pool_ordinal: 0,
         };
         POOLS_BY_ID
             .save(&mut deps.storage, 2, &pool_details)
@@ -2847,16 +2853,26 @@ fn test_oracle_ignores_pools_without_threshold_crossed() {
             .unwrap();
     }
 
-    let eligible = crate::internal_bluechip_price_oracle::get_eligible_creator_pools(
-        deps.as_ref(),
-        &atom_bluechip_pool_addr().to_string(),
-    )
-    .unwrap();
+    let (eligible_addrs, eligible_indices) =
+        crate::internal_bluechip_price_oracle::get_eligible_creator_pools(
+            deps.as_ref(),
+            &atom_bluechip_pool_addr().to_string(),
+        )
+        .unwrap();
 
-    assert_eq!(eligible.len(), 1, "only the threshold-crossed pool should be eligible");
-    assert_eq!(eligible[0], make_addr("good_pool").to_string());
+    assert_eq!(
+        eligible_addrs.len(),
+        1,
+        "only the threshold-crossed pool should be eligible"
+    );
+    assert_eq!(
+        eligible_indices.len(),
+        eligible_addrs.len(),
+        "addresses and bluechip indices must be paired 1:1"
+    );
+    assert_eq!(eligible_addrs[0], make_addr("good_pool").to_string());
     assert!(
-        !eligible.contains(&make_addr("spam_pool").to_string()),
+        !eligible_addrs.contains(&make_addr("spam_pool").to_string()),
         "spam pool without threshold crossing must not appear"
     );
 }

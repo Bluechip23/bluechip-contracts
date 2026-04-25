@@ -22,7 +22,7 @@ use crate::liquidity_helpers::{
 };
 use crate::state::{
     PoolSpecs, CREATOR_FEE_POT, LIQUIDITY_POSITIONS, POOL_ANALYTICS, POOL_FEE_STATE, POOL_SPECS,
-    POOL_STATE,
+    POOL_STATE, REENTRANCY_LOCK,
 };
 use crate::swap::update_price_accumulator;
 
@@ -158,10 +158,21 @@ pub fn execute_add_to_position(
     transaction_deadline: Option<Timestamp>,
 ) -> Result<Response, ContractError> {
     enforce_transaction_deadline(env.block.time, transaction_deadline)?;
-    let pool_specs: PoolSpecs = POOL_SPECS.load(deps.storage)?;
 
-    check_rate_limit(&mut deps, &env, &pool_specs, &sender)?;
-    add_to_position(
+    // Reentrancy guard. Same shared lock as commit/swap/deposit so a
+    // hostile CW20's transfer hook can't reach this handler from any
+    // other path, and vice versa.
+    if REENTRANCY_LOCK.may_load(deps.storage)?.unwrap_or(false) {
+        return Err(ContractError::ReentrancyGuard {});
+    }
+    REENTRANCY_LOCK.save(deps.storage, &true)?;
+
+    let pool_specs: PoolSpecs = POOL_SPECS.load(deps.storage)?;
+    if let Err(e) = check_rate_limit(&mut deps, &env, &pool_specs, &sender) {
+        REENTRANCY_LOCK.save(deps.storage, &false)?;
+        return Err(e);
+    }
+    let result = add_to_position(
         &mut deps,
         env,
         info.clone(),
@@ -172,5 +183,7 @@ pub fn execute_add_to_position(
         min_amount0,
         min_amount1,
         transaction_deadline,
-    )
+    );
+    REENTRANCY_LOCK.save(deps.storage, &false)?;
+    result
 }

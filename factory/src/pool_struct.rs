@@ -76,6 +76,18 @@ pub struct PoolDetails {
     /// to H14 was a commit pool.
     #[serde(default)]
     pub pool_kind: PoolKind,
+    /// 1-indexed ordinal among commit pools at the time this pool was
+    /// created. Always zero for standard pools. Consumed by the bluechip
+    /// mint-decay formula in `calculate_and_mint_bluechip` so that
+    /// permissionless standard-pool creation (which also bumps the
+    /// global `POOL_COUNTER`) cannot inflate `x` in the decay polynomial
+    /// and shrink legitimate commit pools' threshold-mint reward toward
+    /// zero. Legacy commit pools written before this field existed
+    /// deserialize with `commit_pool_ordinal = 0` via `#[serde(default)]`;
+    /// `calculate_and_mint_bluechip` falls back to `pool_id` in that case
+    /// to preserve their original mint amount.
+    #[serde(default)]
+    pub commit_pool_ordinal: u64,
 }
 
 impl ThresholdPayoutAmounts {

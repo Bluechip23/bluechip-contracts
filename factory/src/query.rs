@@ -92,7 +92,11 @@ pub fn query_pool_creation_status(
         Some(c) => c,
         None => return Ok(None),
     };
-    let crate::state::PoolCreationContext { temp, state } = ctx;
+    let crate::state::PoolCreationContext {
+        temp,
+        state,
+        commit_pool_ordinal: _,
+    } = ctx;
     Ok(Some(PoolCreationStatusResponse {
         pool_id: state.pool_id,
         creator: state.creator,

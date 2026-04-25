@@ -3,8 +3,10 @@ mod expand_economy_tests {
     use crate::contract::query;
     use crate::contract::{execute, instantiate};
     use crate::msg::{ConfigResponse, ExecuteMsg, ExpandEconomyMsg, InstantiateMsg, QueryMsg};
-    use cosmwasm_std::testing::{message_info, mock_dependencies, mock_env, MockApi};
-    use cosmwasm_std::{coins, from_json, BankMsg, CosmosMsg, Uint128};
+    use cosmwasm_std::testing::{
+        message_info, mock_dependencies, mock_dependencies_with_balance, mock_env, MockApi,
+    };
+    use cosmwasm_std::{coin, coins, from_json, BankMsg, CosmosMsg, Uint128};
 
     #[test]
     fn proper_initialization() {
@@ -36,7 +38,10 @@ mod expand_economy_tests {
     fn custom_bluechip_denom_is_honored() {
         // A non-None bluechip_denom in InstantiateMsg must be stored and
         // used by subsequent RequestExpansion calls.
-        let mut deps = mock_dependencies();
+        // Pre-fund the contract so the H3 graceful-no-op gate (which
+        // returns an attribute-only Response when balance < amount) does
+        // not short-circuit before the BankMsg is emitted.
+        let mut deps = mock_dependencies_with_balance(&[coin(1_000_000, "ucustom")]);
         let factory_addr = MockApi::default().addr_make("factory");
         let creator_addr = MockApi::default().addr_make("creator");
         let user_addr = MockApi::default().addr_make("user");
@@ -96,7 +101,9 @@ mod expand_economy_tests {
 
     #[test]
     fn request_expansion() {
-        let mut deps = mock_dependencies();
+        // Pre-fund the contract so the H3 graceful-no-op gate (skip when
+        // balance < amount) doesn't short-circuit and drop the BankMsg.
+        let mut deps = mock_dependencies_with_balance(&[coin(1_000_000, "ubluechip")]);
         let factory_addr = MockApi::default().addr_make("factory");
         let creator_addr = MockApi::default().addr_make("creator");
         let user_addr = MockApi::default().addr_make("user");

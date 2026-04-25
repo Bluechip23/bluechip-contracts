@@ -21,7 +21,7 @@ use crate::liquidity_helpers::{
 };
 use crate::state::{
     PoolSpecs, CREATOR_FEE_POT, LIQUIDITY_POSITIONS, OWNER_POSITIONS, POOL_ANALYTICS,
-    POOL_FEE_STATE, POOL_INFO, POOL_SPECS, POOL_STATE,
+    POOL_FEE_STATE, POOL_INFO, POOL_SPECS, POOL_STATE, REENTRANCY_LOCK,
 };
 use crate::swap::update_price_accumulator;
 
@@ -220,12 +220,18 @@ pub fn remove_partial_liquidity(
         });
     }
     if liquidity_to_remove == removable_liquidity {
-        return execute_remove_all_liquidity(
-            deps.branch(),
+        // Dispatch to the lock-/rate-limit-free core handler. The OUTER
+        // `execute_remove_*` wrappers already hold the reentrancy lock at
+        // this point, so calling `execute_remove_all_liquidity` here would
+        // self-reenter and erroneously trip ContractError::ReentrancyGuard.
+        // `remove_all_liquidity` is the same body without the wrapper —
+        // safe to call directly while holding the lock.
+        let _ = transaction_deadline;
+        return remove_all_liquidity(
+            deps,
             env,
             info,
             position_id,
-            transaction_deadline,
             min_amount0,
             min_amount1,
             max_ratio_deviation_bps,
@@ -391,10 +397,19 @@ pub fn execute_remove_all_liquidity(
     max_ratio_deviation_bps: Option<u16>,
 ) -> Result<Response, ContractError> {
     enforce_transaction_deadline(env.block.time, transaction_deadline)?;
+
+    if REENTRANCY_LOCK.may_load(deps.storage)?.unwrap_or(false) {
+        return Err(ContractError::ReentrancyGuard {});
+    }
+    REENTRANCY_LOCK.save(deps.storage, &true)?;
+
     let pool_specs: PoolSpecs = POOL_SPECS.load(deps.storage)?;
     let sender = info.sender.clone();
-    check_rate_limit(&mut deps, &env, &pool_specs, &sender)?;
-    remove_all_liquidity(
+    if let Err(e) = check_rate_limit(&mut deps, &env, &pool_specs, &sender) {
+        REENTRANCY_LOCK.save(deps.storage, &false)?;
+        return Err(e);
+    }
+    let result = remove_all_liquidity(
         &mut deps,
         env,
         info.clone(),
@@ -402,7 +417,9 @@ pub fn execute_remove_all_liquidity(
         min_amount0,
         min_amount1,
         max_ratio_deviation_bps,
-    )
+    );
+    REENTRANCY_LOCK.save(deps.storage, &false)?;
+    result
 }
 
 #[allow(clippy::too_many_arguments)]
@@ -418,11 +435,20 @@ pub fn execute_remove_partial_liquidity(
     max_ratio_deviation_bps: Option<u16>,
 ) -> Result<Response, ContractError> {
     enforce_transaction_deadline(env.block.time, transaction_deadline)?;
+
+    if REENTRANCY_LOCK.may_load(deps.storage)?.unwrap_or(false) {
+        return Err(ContractError::ReentrancyGuard {});
+    }
+    REENTRANCY_LOCK.save(deps.storage, &true)?;
+
     let pool_specs: PoolSpecs = POOL_SPECS.load(deps.storage)?;
     let sender = info.sender.clone();
 
-    check_rate_limit(&mut deps, &env, &pool_specs, &sender)?;
-    remove_partial_liquidity(
+    if let Err(e) = check_rate_limit(&mut deps, &env, &pool_specs, &sender) {
+        REENTRANCY_LOCK.save(deps.storage, &false)?;
+        return Err(e);
+    }
+    let result = remove_partial_liquidity(
         &mut deps,
         env,
         info.clone(),
@@ -432,7 +458,9 @@ pub fn execute_remove_partial_liquidity(
         min_amount0,
         min_amount1,
         max_ratio_deviation_bps,
-    )
+    );
+    REENTRANCY_LOCK.save(deps.storage, &false)?;
+    result
 }
 
 #[allow(clippy::too_many_arguments)]

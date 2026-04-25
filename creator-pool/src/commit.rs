@@ -191,14 +191,20 @@ fn execute_commit_logic(
 
     match &asset.info {
         TokenType::Native { denom } if denom == &bluechip_denom => {
-            // Verify funds were actually sent
+            // Strict exact-match on attached funds. Underpayment is
+            // obviously rejected; overpayment was previously absorbed
+            // silently into the pool's bank balance with no entry in
+            // NATIVE_RAISED_FROM_COMMIT or COMMIT_LEDGER, stranding the
+            // surplus in pre-threshold and bypassing reserve accounting
+            // post-threshold. Matching the exact-amount semantics that
+            // `simple_swap` already enforces via `confirm_sent_native_balance`.
             let sent = info
                 .funds
                 .iter()
                 .find(|c| c.denom == denom.as_str())
                 .map(|c| c.amount)
                 .unwrap_or_default();
-            if sent < amount {
+            if sent != amount {
                 return Err(ContractError::MismatchAmount {});
             }
 

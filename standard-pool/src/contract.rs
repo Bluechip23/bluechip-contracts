@@ -299,6 +299,11 @@ pub fn execute(
             max_ratio_deviation_bps,
         } => {
             ensure_not_drained(deps.storage)?;
+            // Block during admin pause / pending emergency withdraw so LPs
+            // can't race the drain (matches creator-pool's behavior).
+            if POOL_PAUSED.may_load(deps.storage)?.unwrap_or(false) {
+                return Err(ContractError::PoolPausedLowLiquidity {});
+            }
             execute_remove_partial_liquidity(
                 deps,
                 env,
@@ -320,6 +325,9 @@ pub fn execute(
             max_ratio_deviation_bps,
         } => {
             ensure_not_drained(deps.storage)?;
+            if POOL_PAUSED.may_load(deps.storage)?.unwrap_or(false) {
+                return Err(ContractError::PoolPausedLowLiquidity {});
+            }
             execute_remove_partial_liquidity_by_percent(
                 deps,
                 env,
@@ -340,6 +348,9 @@ pub fn execute(
             max_ratio_deviation_bps,
         } => {
             ensure_not_drained(deps.storage)?;
+            if POOL_PAUSED.may_load(deps.storage)?.unwrap_or(false) {
+                return Err(ContractError::PoolPausedLowLiquidity {});
+            }
             execute_remove_all_liquidity(
                 deps,
                 env,

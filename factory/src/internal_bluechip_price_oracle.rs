@@ -87,6 +87,10 @@ pub struct PoolCumulativeSnapshot {
 /// from inside `select_random_pools_with_atom` at the top of each sample
 /// attempt; amortizes the O(N) `POOLS_BY_ID` scan to once per ≈5 days even
 /// if the oracle rotates hourly.
+///
+/// Captures `(address, bluechip_index)` pairs so the per-sample lookup at
+/// `calculate_weighted_price_with_atom` time is O(1) instead of O(N) — see
+/// `EligiblePoolSnapshot` doc.
 fn refresh_eligible_pool_snapshot_if_stale(
     deps: &mut DepsMut,
     env: &Env,
@@ -101,12 +105,13 @@ fn refresh_eligible_pool_snapshot_if_stale(
     if !is_stale {
         return Ok(());
     }
-    let pool_addresses =
+    let (pool_addresses, bluechip_indices) =
         get_eligible_creator_pools(deps.as_ref(), atom_pool_contract_address)?;
     ELIGIBLE_POOL_SNAPSHOT.save(
         deps.storage,
         &EligiblePoolSnapshot {
             pool_addresses,
+            bluechip_indices,
             captured_at_block: current_block,
         },
     )?;
@@ -243,10 +248,14 @@ pub fn initialize_internal_bluechip_oracle(
     Ok(Response::new())
 }
 
+/// Returns (eligible_addresses, bluechip_indices). Each address at index
+/// `i` has bluechip on reserve-side `bluechip_indices[i]` (0 or 1).
+/// Hoisting this into the snapshot is what makes oracle updates O(1) per
+/// sampled pool instead of O(N).
 pub fn get_eligible_creator_pools(
     deps: Deps,
     atom_pool_contract_address: &str,
-) -> StdResult<Vec<String>> {
+) -> StdResult<(Vec<String>, Vec<u8>)> {
     // Return every pool eligible for oracle sampling. A pool is eligible iff:
     //   1. It is a commit pool (NOT a standard pool — standard pools can
     //      hold arbitrary pairs including non-bluechip ones and their price
@@ -266,6 +275,7 @@ pub fn get_eligible_creator_pools(
     // implementation did two full range scans plus a HashSet build, which
     // dominated oracle-update gas at scale.
     let mut eligible = Vec::new();
+    let mut indices = Vec::new();
     for row in POOLS_BY_ID.range(deps.storage, None, None, Order::Ascending) {
         let (pool_id, pool_details) = row?;
 
@@ -276,13 +286,17 @@ pub fn get_eligible_creator_pools(
         if pool_details.pool_kind == PoolKind::Standard {
             continue;
         }
-        let has_bluechip = pool_details
+        // Resolve bluechip side once at snapshot capture time. Commit pools
+        // are validated at instantiate to contain exactly one Bluechip and
+        // one CreatorToken, so this find always succeeds for eligible pools.
+        let bluechip_idx = match pool_details
             .pool_token_info
             .iter()
-            .any(|token| matches!(token, TokenType::Native { .. }));
-        if !has_bluechip {
-            continue;
-        }
+            .position(|t| matches!(t, TokenType::Native { .. }))
+        {
+            Some(i) => i as u8,
+            None => continue, // No bluechip side — gate (2) fails.
+        };
         if !POOL_THRESHOLD_MINTED
             .may_load(deps.storage, pool_id)?
             .unwrap_or(false)
@@ -300,9 +314,10 @@ pub fn get_eligible_creator_pools(
         let total_liquidity = pool_state.reserve0.saturating_add(pool_state.reserve1);
         if total_liquidity >= MIN_POOL_LIQUIDITY {
             eligible.push(pool_details.creator_pool_addr.to_string());
+            indices.push(bluechip_idx);
         }
     }
-    Ok(eligible)
+    Ok((eligible, indices))
 }
 
 // MOCK-ONLY: read the bluechip USD price directly from the configured mock
@@ -532,6 +547,33 @@ pub fn update_internal_oracle_price(
     Ok(response)
 }
 
+/// O(M) lookup of the bluechip-side index for `pool_address` in the
+/// eligible-pool snapshot, where M is the snapshot size (≤ a few thousand).
+/// Returns `None` if the snapshot is missing, the address isn't in the
+/// snapshot (e.g., it's the anchor), or the indices array is shorter than
+/// the addresses array (a snapshot written by pre-cache code).
+///
+/// The linear search is fine here even at large M: it runs once per sampled
+/// pool, vs the prior O(N) full POOLS_BY_ID range scan which deserialized
+/// every pool record. Snapshot entries are just `String + u8`, so a 1000-pool
+/// snapshot scan is ~16 KB of memory comparison vs the storage-deserializing
+/// scan it replaced.
+fn bluechip_index_lookup(deps: Deps, pool_address: &str) -> StdResult<Option<u8>> {
+    let snap = match ELIGIBLE_POOL_SNAPSHOT.may_load(deps.storage)? {
+        Some(s) => s,
+        None => return Ok(None),
+    };
+    if snap.bluechip_indices.len() != snap.pool_addresses.len() {
+        // Pre-cache snapshot — caller should fall back to the scan.
+        return Ok(None);
+    }
+    Ok(snap
+        .pool_addresses
+        .iter()
+        .position(|addr| addr == pool_address)
+        .map(|i| snap.bluechip_indices[i]))
+}
+
 // Calculates a liquidity-weighted price across sampled pools using cumulative
 pub fn calculate_weighted_price_with_atom(
     deps: Deps,
@@ -565,15 +607,31 @@ pub fn calculate_weighted_price_with_atom(
                     continue;
                 }
 
-                // Determine if Bluechip is reserve0 or reserve1 by looking up the
-                let is_bluechip_second = {
+                // Determine if Bluechip is reserve0 or reserve1. Hoisted out
+                // of an O(N) scan of `POOLS_BY_ID` (formerly run per-sample;
+                // amounted to O(N²) per oracle update at scale). The
+                // eligible-pool snapshot now caches the bluechip-side index
+                // alongside each address, populated at capture time in
+                // `get_eligible_creator_pools`.
+                //
+                // Falls back to the old linear scan only on:
+                //   - the anchor pool (which isn't in the snapshot — it's
+                //     always added separately by `select_random_pools_with_atom`)
+                //   - a snapshot written by pre-cache code that had no
+                //     `bluechip_indices` populated (`#[serde(default)]`
+                //     produces an empty Vec; one-time, until next refresh)
+                let is_bluechip_second = if let Some(idx) =
+                    bluechip_index_lookup(deps, pool_address)?
+                {
+                    idx == 1
+                } else {
+                    // Anchor pool or stale snapshot — fall back to scan.
                     let mut found = false;
                     for (_id, pool_details) in POOLS_BY_ID
                         .range(deps.storage, None, None, Order::Ascending)
                         .flatten()
                     {
                         if pool_details.creator_pool_addr.as_str() == pool_address.as_str() {
-                            // asset_infos[0] is CreatorToken => bluechip is second (index 1)
                             found = matches!(
                                 pool_details.pool_token_info[0],
                                 TokenType::CreatorToken { .. }
@@ -858,7 +916,13 @@ pub fn query_pyth_atom_usd_price(deps: Deps, env: &Env) -> StdResult<Uint128> {
             )));
         }
 
-        let price_u128 = price_data.price as u128;
+        // Derive `price_u128` from the already-validated `price_u64` rather
+        // than re-casting `price_data.price` (i64) directly. If a future edit
+        // ever drops or reorders the negative-price guard above, this chain
+        // would still produce a typed runtime error from `try_into::<u64>`
+        // rather than silently sign-extending a negative i64 into the high
+        // bits of u128 and passing every later check vacuously.
+        let price_u128: u128 = price_u64.into();
         let expo = price_data.expo;
 
         // Validate expo is within reasonable range for price feeds

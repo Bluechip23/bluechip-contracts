@@ -2,6 +2,17 @@
 //! coverage via standard-pool's execute dispatch.
 
 use cosmwasm_std::testing::{message_info, mock_env};
+use cosmwasm_std::Env;
+
+/// Advances `mock_env()` past the per-user rate-limit window
+/// (`min_commit_interval = 13s` at instantiate). Used by tests that
+/// perform a second user-rate-limited action right after a deposit so
+/// they don't trip `TooFrequentCommits` in the same mock block.
+fn env_after_rate_limit() -> Env {
+    let mut env = mock_env();
+    env.block.time = env.block.time.plus_seconds(60);
+    env
+}
 use cosmwasm_std::{Addr, Coin, CosmosMsg, Uint128, WasmMsg};
 use pool_core::state::{LIQUIDITY_POSITIONS, NEXT_POSITION_ID, POOL_STATE};
 
@@ -103,7 +114,7 @@ fn second_deposit_does_not_reemit_accept_ownership() {
     let funds2 = vec![Coin::new(500_000u128, BLUECHIP_DENOM)];
     let res = execute(
         deps.as_mut(),
-        mock_env(),
+        env_after_rate_limit(),
         message_info(&user, &funds2),
         ExecuteMsg::DepositLiquidity {
             amount0: Uint128::new(500_000),
@@ -246,7 +257,7 @@ fn deposit_slippage_guard_triggers() {
     // min_amount1 = 5M, which ratio math can't meet.
     let err = execute(
         deps.as_mut(),
-        mock_env(),
+        env_after_rate_limit(),
         message_info(&addrs.pool_owner, &[Coin::new(1_000_000u128, BLUECHIP_DENOM)]),
         ExecuteMsg::DepositLiquidity {
             amount0: Uint128::new(1_000_000),

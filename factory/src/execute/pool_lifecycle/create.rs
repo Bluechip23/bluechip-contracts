@@ -16,8 +16,8 @@ use crate::error::ContractError;
 use crate::msg::{CreatorTokenInfo, TokenInstantiateMsg};
 use crate::pool_struct::{CreatePool, TempPoolCreation};
 use crate::state::{
-    CreationStatus, FACTORYINSTANTIATEINFO, POOL_COUNTER, POOL_CREATION_CONTEXT,
-    PoolCreationContext, PoolCreationState,
+    CreationStatus, COMMIT_POOL_COUNTER, FACTORYINSTANTIATEINFO, POOL_COUNTER,
+    POOL_CREATION_CONTEXT, PoolCreationContext, PoolCreationState,
 };
 
 use super::super::{encode_reply_id, MINT_STANDARD_NFT, SET_TOKENS};
@@ -154,6 +154,14 @@ pub(crate) fn execute_create_creator_pool(
     let pool_counter = POOL_COUNTER.may_load(deps.storage)?.unwrap_or(0);
     let pool_id = pool_counter + 1;
     POOL_COUNTER.save(deps.storage, &pool_id)?;
+    // Allocate the commit-pool-only ordinal. Bumped only here, never in
+    // `execute_create_standard_pool`, so the bluechip mint-decay formula
+    // sees a count of legitimate commit-pool creations rather than a
+    // count that permissionless standard-pool creation can inflate.
+    let commit_pool_counter = COMMIT_POOL_COUNTER.may_load(deps.storage)?.unwrap_or(0);
+    let commit_pool_ordinal = commit_pool_counter + 1;
+    COMMIT_POOL_COUNTER.save(deps.storage, &commit_pool_ordinal)?;
+
     let msg = WasmMsg::Instantiate {
         code_id: factory_cw20.cw20_token_contract_id,
         //creating the creator token only, no minting.
@@ -193,6 +201,7 @@ pub(crate) fn execute_create_creator_pool(
                 creation_time: env.block.time,
                 status: CreationStatus::Started,
             },
+            commit_pool_ordinal,
         },
     )?;
     let sub_msg = vec![SubMsg::reply_on_success(

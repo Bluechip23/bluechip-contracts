@@ -198,6 +198,11 @@ pub fn finalize_pool(
         // chain (triggered by ExecuteMsg::Create). Standard pools have
         // their own reply chain that sets pool_kind = Standard.
         pool_kind: pool_factory_interfaces::PoolKind::Commit,
+        // Captured at create time on `PoolCreationContext.commit_pool_ordinal`
+        // so the threshold-mint decay formula uses commit-pool-count
+        // semantics rather than a global pool counter mixed with
+        // permissionlessly-created standard pools.
+        commit_pool_ordinal: ctx.commit_pool_ordinal,
     };
 
     // Transfer ownership to pool
@@ -316,6 +321,10 @@ pub fn finalize_standard_pool(
         pool_token_info: ctx.pool_token_info.clone(),
         creator_pool_addr: pool_address.clone(),
         pool_kind: PoolKind::Standard,
+        // Standard pools never participate in the commit-pool decay
+        // schedule. Zero ordinal flags this in `calculate_and_mint_bluechip`
+        // (which never runs for standard pools anyway, but defense-in-depth).
+        commit_pool_ordinal: 0,
     };
 
     // Standard pools have only the NFT to transfer (no CW20 minter to
