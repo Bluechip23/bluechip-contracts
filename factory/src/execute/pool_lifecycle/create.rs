@@ -343,8 +343,9 @@ pub(crate) fn execute_create_standard_pool(
     };
 
     // Caller must supply at least the required amount in the canonical
-    // bluechip denom. We don't refund overpayment — the caller controls
-    // their input and can use the conversion query to size it precisely.
+    // bluechip denom. Overpayment is refunded to the caller in the same
+    // tx (atomic with pool creation — if any reply-chain step fails, the
+    // whole tx reverts and the caller's funds are untouched).
     let paid_bluechip = info
         .funds
         .iter()
@@ -366,21 +367,40 @@ pub(crate) fn execute_create_standard_pool(
     let pool_id = pool_counter + 1;
     POOL_COUNTER.save(deps.storage, &pool_id)?;
 
-    // Forward whatever the caller paid to the bluechip wallet. If they
-    // overpaid, the surplus stays with the protocol — same convention as
-    // commit-fee handling. Partial-move `bluechip_denom` out of
-    // factory_config since it has no further reads after this point;
-    // remaining `factory_config` fields (`cw721_nft_contract_id` below)
-    // are still accessible because partial moves don't invalidate the
-    // rest of the struct.
+    // Forward exactly `required_bluechip` to the bluechip wallet and
+    // refund any surplus (`paid - required`) to the caller. Both sends
+    // ride in the same Response as the NFT-instantiate SubMsg, so they
+    // dispatch atomically with pool creation: if any reply step fails
+    // downstream the whole tx reverts and the caller keeps `paid`
+    // intact.
+    //
+    // Disabled-fee case (`required_bluechip == 0`): the entire `paid`
+    // amount is returned to the caller; nothing reaches the wallet. A
+    // caller who attached zero funds gets neither send (no-op).
+    //
+    // Partial-move `bluechip_denom` out of factory_config since it has
+    // no further reads after this point; remaining fields
+    // (`cw721_nft_contract_id`, `bluechip_wallet_address`) are still
+    // accessible because partial moves don't invalidate the rest of
+    // the struct.
+    let surplus = paid_bluechip.checked_sub(required_bluechip)?;
     let bluechip_denom = factory_config.bluechip_denom;
     let mut messages: Vec<CosmosMsg> = Vec::new();
-    if !paid_bluechip.is_zero() {
+    if !required_bluechip.is_zero() {
         messages.push(CosmosMsg::Bank(cosmwasm_std::BankMsg::Send {
             to_address: factory_config.bluechip_wallet_address.to_string(),
             amount: vec![cosmwasm_std::Coin {
+                denom: bluechip_denom.clone(),
+                amount: required_bluechip,
+            }],
+        }));
+    }
+    if !surplus.is_zero() {
+        messages.push(CosmosMsg::Bank(cosmwasm_std::BankMsg::Send {
+            to_address: info.sender.to_string(),
+            amount: vec![cosmwasm_std::Coin {
                 denom: bluechip_denom,
-                amount: paid_bluechip,
+                amount: surplus,
             }],
         }));
     }
@@ -418,6 +438,7 @@ pub(crate) fn execute_create_standard_pool(
         .add_attribute("creator", info.sender.to_string())
         .add_attribute("required_fee_bluechip", required_bluechip.to_string())
         .add_attribute("paid_fee_bluechip", paid_bluechip.to_string())
+        .add_attribute("refunded_bluechip", surplus.to_string())
         .add_attribute("fee_source", fee_source)
         .add_attribute("label", label))
 }
