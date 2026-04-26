@@ -68,6 +68,7 @@ fn create_default_instantiate_msg() -> FactoryInstantiate {
         atom_bluechip_anchor_pool_address: atom_bluechip_pool_addr(),
         bluechip_mint_contract_address: None,
         bluechip_denom: "ubluechip".to_string(),
+        atom_denom: "uatom".to_string(),
         standard_pool_creation_fee_usd: cosmwasm_std::Uint128::new(1_000_000),
     }
 }
@@ -147,6 +148,7 @@ fn proper_initialization() {
         atom_bluechip_anchor_pool_address: atom_bluechip_pool_addr(),
         bluechip_mint_contract_address: None,
         bluechip_denom: "ubluechip".to_string(),
+        atom_denom: "uatom".to_string(),
         standard_pool_creation_fee_usd: cosmwasm_std::Uint128::new(1_000_000),
     };
 
@@ -307,6 +309,7 @@ fn create_pair() {
         atom_bluechip_anchor_pool_address: atom_bluechip_pool_addr(),
         bluechip_mint_contract_address: None,
         bluechip_denom: "ubluechip".to_string(),
+        atom_denom: "uatom".to_string(),
         standard_pool_creation_fee_usd: cosmwasm_std::Uint128::new(1_000_000),
     };
 
@@ -374,6 +377,7 @@ fn test_create_pair_with_custom_params() {
         atom_bluechip_anchor_pool_address: atom_bluechip_pool_addr(),
         bluechip_mint_contract_address: None,
         bluechip_denom: "ubluechip".to_string(),
+        atom_denom: "uatom".to_string(),
         standard_pool_creation_fee_usd: cosmwasm_std::Uint128::new(1_000_000),
     };
 
@@ -572,6 +576,7 @@ fn test_complete_pool_creation_flow() {
         atom_bluechip_anchor_pool_address: atom_bluechip_pool_addr(),
         bluechip_mint_contract_address: None,
         bluechip_denom: "ubluechip".to_string(),
+        atom_denom: "uatom".to_string(),
         standard_pool_creation_fee_usd: cosmwasm_std::Uint128::new(1_000_000),
     };
 
@@ -706,6 +711,7 @@ fn test_config() {
         atom_bluechip_anchor_pool_address: atom_bluechip_pool_addr(),
         bluechip_mint_contract_address: None,
         bluechip_denom: "ubluechip".to_string(),
+        atom_denom: "uatom".to_string(),
         standard_pool_creation_fee_usd: cosmwasm_std::Uint128::new(1_000_000),
     };
 
@@ -747,6 +753,7 @@ fn test_reply_handling() {
         atom_bluechip_anchor_pool_address: atom_bluechip_pool_addr(),
         bluechip_mint_contract_address: None,
         bluechip_denom: "ubluechip".to_string(),
+        atom_denom: "uatom".to_string(),
         standard_pool_creation_fee_usd: cosmwasm_std::Uint128::new(1_000_000),
     };
 
@@ -1585,6 +1592,7 @@ fn test_query_pyth_atom_usd_price_success() {
         atom_bluechip_anchor_pool_address: atom_bluechip_pool_addr(),
         bluechip_mint_contract_address: None,
         bluechip_denom: "ubluechip".to_string(),
+        atom_denom: "uatom".to_string(),
         standard_pool_creation_fee_usd: cosmwasm_std::Uint128::new(1_000_000),
     };
     FACTORYINSTANTIATEINFO
@@ -1630,6 +1638,7 @@ fn test_query_pyth_atom_usd_price_default() {
         atom_bluechip_anchor_pool_address: atom_bluechip_pool_addr(),
         bluechip_mint_contract_address: None,
         bluechip_denom: "ubluechip".to_string(),
+        atom_denom: "uatom".to_string(),
         standard_pool_creation_fee_usd: cosmwasm_std::Uint128::new(1_000_000),
     };
     FACTORYINSTANTIATEINFO
@@ -1665,6 +1674,7 @@ fn test_query_pyth_extreme_atom_prices() {
         atom_bluechip_anchor_pool_address: atom_bluechip_pool_addr(),
         bluechip_mint_contract_address: None,
         bluechip_denom: "ubluechip".to_string(),
+        atom_denom: "uatom".to_string(),
         standard_pool_creation_fee_usd: cosmwasm_std::Uint128::new(1_000_000),
     };
     FACTORYINSTANTIATEINFO
@@ -1719,6 +1729,7 @@ fn test_get_bluechip_usd_price_with_pyth() {
         atom_bluechip_anchor_pool_address: atom_bluechip_pool_addr(),
         bluechip_mint_contract_address: None,
         bluechip_denom: "ubluechip".to_string(),
+        atom_denom: "uatom".to_string(),
         standard_pool_creation_fee_usd: cosmwasm_std::Uint128::new(1_000_000),
     };
     FACTORYINSTANTIATEINFO
@@ -1789,6 +1800,7 @@ fn test_bluechip_usd_price_with_different_atom_prices() {
         atom_bluechip_anchor_pool_address: atom_bluechip_pool_addr(),
         bluechip_mint_contract_address: None,
         bluechip_denom: "ubluechip".to_string(),
+        atom_denom: "uatom".to_string(),
         standard_pool_creation_fee_usd: cosmwasm_std::Uint128::new(1_000_000),
     };
     FACTORYINSTANTIATEINFO
@@ -1862,6 +1874,7 @@ fn test_conversion_functions_with_pyth() {
         atom_bluechip_anchor_pool_address: atom_bluechip_pool_addr(),
         bluechip_mint_contract_address: None,
         bluechip_denom: "ubluechip".to_string(),
+        atom_denom: "uatom".to_string(),
         standard_pool_creation_fee_usd: cosmwasm_std::Uint128::new(1_000_000),
     };
     FACTORYINSTANTIATEINFO
@@ -1945,6 +1958,7 @@ fn test_bluechip_minting_on_threshold_crossing() {
         atom_bluechip_anchor_pool_address: atom_bluechip_pool_addr(),
         bluechip_mint_contract_address: None,
         bluechip_denom: "ubluechip".to_string(),
+        atom_denom: "uatom".to_string(),
         standard_pool_creation_fee_usd: cosmwasm_std::Uint128::new(1_000_000),
     };
 
@@ -2040,6 +2054,7 @@ fn test_no_mint_when_amount_is_zero() {
         atom_bluechip_anchor_pool_address: atom_bluechip_pool_addr(),
         bluechip_mint_contract_address: None,
         bluechip_denom: "ubluechip".to_string(),
+        atom_denom: "uatom".to_string(),
         standard_pool_creation_fee_usd: cosmwasm_std::Uint128::new(1_000_000),
     };
 

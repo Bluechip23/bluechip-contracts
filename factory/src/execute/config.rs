@@ -38,6 +38,23 @@ pub(crate) fn validate_factory_config(
             "bluechip_denom must be non-empty",
         )));
     }
+    // `atom_denom` is the bank denom for the non-bluechip side of the
+    // ATOM/bluechip anchor pool. Required at instantiate so SetAnchorPool
+    // can enforce that the anchor pool actually references it. Empty would
+    // either lock SetAnchorPool out indefinitely or — worse, if the empty
+    // check were skipped — let the admin point the anchor at any bluechip/X
+    // pool with no relation to the Pyth ATOM/USD feed.
+    if config.atom_denom.trim().is_empty() {
+        return Err(ContractError::Std(StdError::generic_err(
+            "atom_denom must be non-empty (e.g. \"uatom\" on Cosmos Hub, or the chain's \
+             IBC-wrapped atom denom). Set this before instantiate or via ProposeConfigUpdate.",
+        )));
+    }
+    if config.atom_denom == config.bluechip_denom {
+        return Err(ContractError::Std(StdError::generic_err(
+            "atom_denom must differ from bluechip_denom",
+        )));
+    }
     Ok(())
 }
 

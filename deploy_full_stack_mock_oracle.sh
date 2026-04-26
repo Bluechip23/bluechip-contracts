@@ -170,6 +170,7 @@ FACTORY_INIT=$(cat <<EOF
   "atom_bluechip_anchor_pool_address": "$ALICE_ADDR",
   "bluechip_mint_contract_address": "$ECON_ADDR",
   "bluechip_denom": "ubluechip",
+  "atom_denom": "uatom",
   "standard_pool_creation_fee_usd": "1000000"
 }
 EOF

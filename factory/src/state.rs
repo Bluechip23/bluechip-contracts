@@ -172,6 +172,27 @@ pub struct FactoryInstantiate {
     /// having every downstream oracle/commit path treat that denom's
     /// balance as real bluechip.
     pub bluechip_denom: String,
+    /// Bank denom for the asset paired against bluechip in the
+    /// ATOM/bluechip anchor pool. On Cosmos Hub this is `"uatom"`
+    /// directly; on other chains it's the IBC-wrapped denom hash
+    /// (e.g. `"ibc/27394FB..."`). Pinned at factory instantiate time.
+    /// `execute_set_anchor_pool` enforces that the anchor pool's
+    /// non-bluechip side matches this value exactly, preventing the
+    /// admin (or a compromised admin key) from pointing the anchor at
+    /// a bluechip/<arbitrary> standard pool whose price has no relation
+    /// to the configured Pyth ATOM/USD feed.
+    ///
+    /// Non-empty at instantiate; tunable via the standard 48h
+    /// `ProposeConfigUpdate` flow (e.g. if the chain swaps the
+    /// IBC channel underlying the atom denom).
+    ///
+    /// `#[serde(default)]` keeps old serialized factory records
+    /// (instantiated pre-this-field) deserializing — they round-trip
+    /// with an empty string, and `execute_set_anchor_pool` rejects
+    /// with a clear "atom_denom not configured" error pointing at
+    /// `ProposeConfigUpdate` until the operator backfills it.
+    #[serde(default)]
+    pub atom_denom: String,
     /// USD-denominated fee (6 decimals: 1_000_000 = $1.00) charged on
     /// every `CreateStandardPool` call. Paid in ubluechip — the handler
     /// converts USD → bluechip via the internal oracle at call time. If
