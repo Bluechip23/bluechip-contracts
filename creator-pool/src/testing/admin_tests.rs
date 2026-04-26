@@ -334,3 +334,102 @@ fn test_unauthorized_admin_actions() {
     .unwrap_err();
     assert!(format!("{:?}", err).contains("Unauthorized"));
 }
+
+// ─────────────────────────────────────────────────────────────────────
+// Instantiate-time pair validation
+//
+// Defense-in-depth: the factory pre-validates pool_token_info via
+// `validate_pool_token_info` before issuing the instantiate; the pool's
+// own `instantiate` re-checks the same invariants so a directly-issued
+// instantiate (bypassing the factory) can't produce a malformed pool.
+// These tests exercise that second layer.
+// ─────────────────────────────────────────────────────────────────────
+
+#[test]
+fn instantiate_rejects_doubling_assets() {
+    // Both legs identical → DoublingAssets.
+    let mut msg = mock_instantiate_msg();
+    msg.pool_token_info[1] = msg.pool_token_info[0].clone();
+    let mut deps = mock_dependencies();
+    let info = message_info(&Addr::unchecked("factory_addr"), &[]);
+    let err = instantiate(deps.as_mut(), mock_env(), info, msg).unwrap_err();
+    assert!(
+        format!("{:?}", err).contains("DoublingAssets"),
+        "expected DoublingAssets, got: {:?}",
+        err
+    );
+}
+
+#[test]
+fn instantiate_rejects_reversed_pair() {
+    // Index 0 must be Bluechip(Native) and index 1 must be CreatorToken.
+    // Swap them and the pool should reject — the threshold/swap math
+    // hard-codes reserve0=bluechip, reserve1=creator-token.
+    let mut msg = mock_instantiate_msg();
+    msg.pool_token_info.swap(0, 1);
+    let mut deps = mock_dependencies();
+    let info = message_info(&Addr::unchecked("factory_addr"), &[]);
+    let err = instantiate(deps.as_mut(), mock_env(), info, msg).unwrap_err();
+    let s = format!("{:?}", err);
+    assert!(
+        s.contains("pool_token_info must be") || s.contains("order matters"),
+        "expected reversed-pair rejection, got: {:?}",
+        err
+    );
+}
+
+#[test]
+fn instantiate_rejects_two_native_legs() {
+    // Two Native legs (no CreatorToken) → must be rejected at the
+    // `match (...)` arm in instantiate even though both are valid
+    // TokenTypes individually.
+    let mut msg = mock_instantiate_msg();
+    msg.pool_token_info[1] = TokenType::Native {
+        denom: "uatom".to_string(),
+    };
+    let mut deps = mock_dependencies();
+    let info = message_info(&Addr::unchecked("factory_addr"), &[]);
+    let err = instantiate(deps.as_mut(), mock_env(), info, msg).unwrap_err();
+    let s = format!("{:?}", err);
+    assert!(
+        s.contains("pool_token_info must be") || s.contains("order matters"),
+        "expected pair-shape rejection, got: {:?}",
+        err
+    );
+}
+
+#[test]
+fn instantiate_rejects_empty_bluechip_denom() {
+    let mut msg = mock_instantiate_msg();
+    msg.pool_token_info[0] = TokenType::Native {
+        denom: "   ".to_string(),
+    };
+    let mut deps = mock_dependencies();
+    let info = message_info(&Addr::unchecked("factory_addr"), &[]);
+    let err = instantiate(deps.as_mut(), mock_env(), info, msg).unwrap_err();
+    let s = format!("{:?}", err);
+    assert!(
+        s.contains("Bluechip denom must be non-empty"),
+        "expected empty-denom rejection, got: {:?}",
+        err
+    );
+}
+
+#[test]
+fn instantiate_rejects_creator_token_addr_mismatch() {
+    // CreatorToken.contract_addr inside pool_token_info must equal the
+    // separate `token_address` field on the msg. Mismatch is rejected so
+    // a buggy factory can't smuggle a different cw20 into the pool's
+    // accounting.
+    let mut msg = mock_instantiate_msg();
+    msg.token_address = Addr::unchecked("a_completely_different_addr");
+    let mut deps = mock_dependencies();
+    let info = message_info(&Addr::unchecked("factory_addr"), &[]);
+    let err = instantiate(deps.as_mut(), mock_env(), info, msg).unwrap_err();
+    let s = format!("{:?}", err);
+    assert!(
+        s.contains("must equal msg.token_address"),
+        "expected token_address-mismatch rejection, got: {:?}",
+        err
+    );
+}

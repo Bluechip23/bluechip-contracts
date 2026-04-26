@@ -14,86 +14,45 @@
 #               code IDs stored, wallets funded, oracle deployed).
 # =====================================================================
 
-BIN="/tmp/bluechipChaind_new"
-CHAIN_HOME="$HOME/.bluechipTest"
-CHAIN_ID="bluechip-test"
-NODE="tcp://localhost:26657"
-ARTIFACTS="/home/jeremy/snap/smartcontracts/bluechip-contracts/artifacts"
-DENOM="ubluechip"
+# Shared config, logging, key/code-id discovery, tx helpers come from
+# test_lib.sh. Override any default by exporting the var BEFORE this line.
+ARTIFACTS="${ARTIFACTS:-/home/jeremy/snap/smartcontracts/bluechip-contracts/artifacts}"
+source "$(dirname "$0")/test_lib.sh"
 
-ALICE="bluechip1cyyzpxplxdzkeea7kwsydadg87357qnara5tfv"
-BOB="bluechip1sc78mkjfmufxq6vjxgnhaq9ym9nhedvassl62n"
-CHARLIE="bluechip1kgqnrggt0y50ujzls677kxpxfaur4mqujnq59j"
+ALICE=$(addr_for alice)
+BOB=$(addr_for bob)
+CHARLIE=$(addr_for charlie)
 
-# Oracle: 1 ubluechip = $0.01 -> price = 1,000,000 at expo -8
-# Threshold: $25,000 USD = 2,500,000 ubluechip
-ORACLE_PRICE="1000000"
-
-TX_FLAGS="--chain-id $CHAIN_ID --node $NODE --gas auto --gas-adjustment 1.5 --fees 50000ubluechip -y --output json"
-
-PASS=0; FAIL=0
-
-# =====================================================================
-# HELPERS (same as run_full_test.sh)
-# =====================================================================
-RED='\033[0;31m'; GREEN='\033[0;32m'; YELLOW='\033[1;33m'; CYAN='\033[0;36m'; NC='\033[0m'
-
-log_header() { echo ""; echo ""; echo -e "${CYAN}================================================================${NC}"; echo -e "${CYAN}  $1${NC}"; echo -e "${CYAN}================================================================${NC}"; }
-log_step()   { echo ""; echo -e "  ${YELLOW}--- $1 ---${NC}"; }
-log_info()   { echo "      $1"; }
-log_pass()   { echo -e "  ${GREEN}[PASS]${NC} $1"; PASS=$((PASS+1)); }
-log_fail()   { echo -e "  ${RED}[FAIL]${NC} $1"; FAIL=$((FAIL+1)); }
-
-get_bal() {
-  local ADDR="$1" D="$2"
-  $BIN query bank balances "$ADDR" --node $NODE --output json 2>/dev/null \
-    | python3 -c "
-import json, sys
-d = json.load(sys.stdin)
-for c in d.get('balances', []):
-    if c['denom'] == '$D':
-        print(c['amount']); exit()
-print('0')
-" 2>/dev/null || echo "0"
-}
-
+# ─── Script-local helpers (mirror run_full_test.sh) ─────────────────
 exe_as() {
   local KEY="$1" CONTRACT="$2" MSG="$3" FUNDS="${4:-}"
-  local ARGS="--from $KEY --keyring-backend test $TX_FLAGS"
+  local LOCAL_FLAGS="--chain-id $CHAIN_ID --node $NODE --gas auto --gas-adjustment 1.5 --fees 50000ubluechip -y --output json"
+  local ARGS="--from $KEY --keyring-backend $KR $LOCAL_FLAGS"
   local OUT
   if [ -n "$FUNDS" ]; then
     OUT=$($BIN tx wasm execute "$CONTRACT" "$MSG" --amount "$FUNDS" $ARGS 2>/dev/null)
   else
     OUT=$($BIN tx wasm execute "$CONTRACT" "$MSG" $ARGS 2>/dev/null)
   fi
-  echo "$OUT" | python3 -c "import json,sys; print(json.load(sys.stdin).get('txhash','SUBMIT_FAILED'))" 2>/dev/null || echo "SUBMIT_FAILED"
+  echo "$OUT" | json_get txhash
 }
-
 exe()         { exe_as alice "$@"; }
 exe_bob()     { exe_as bob   "$@"; }
 exe_charlie() { exe_as charlie "$@"; }
 
-qry() {
-  $BIN query wasm contract-state smart "$1" "$2" --node $NODE --output json 2>/dev/null
-}
-
-wait_tx() {
-  sleep 10
-  $BIN query tx "$1" --node $NODE --output json 2>/dev/null
-}
-
+# 14s sleep keeps every wait between two same-wallet commits above the
+# pool's per-wallet rate limit (min_commit_interval = 13s).
+wait_tx() { sleep 14; $BIN query tx "$1" --node $NODE --output json 2>/dev/null; }
 tx_result() {
-  local RESULT
+  local RESULT CODE LOG
   RESULT=$(wait_tx "$1")
-  local CODE LOG
-  CODE=$(echo "$RESULT" | python3 -c "import json,sys; print(json.load(sys.stdin).get('code',99))" 2>/dev/null || echo "99")
-  LOG=$(echo "$RESULT"  | python3 -c "import json,sys; print(str(json.load(sys.stdin).get('raw_log',''))[:300])" 2>/dev/null || echo "")
+  CODE=$(echo "$RESULT" | json_get code); CODE="${CODE:-99}"
+  LOG=$(echo "$RESULT" | json_get raw_log | head -c 300)
   echo "${CODE}|${LOG}"
 }
-
 assert_ok() {
   local DESC="$1" TXHASH="$2"
-  if [ "$TXHASH" = "SUBMIT_FAILED" ]; then
+  if [ -z "$TXHASH" ] || [ "$TXHASH" = "SUBMIT_FAILED" ]; then
     log_fail "$DESC — tx submission failed"
     return
   fi
@@ -107,10 +66,9 @@ assert_ok() {
     log_fail "$DESC  code=$CODE  $LOG"
   fi
 }
-
 assert_fail() {
   local DESC="$1" TXHASH="$2"
-  if [ "$TXHASH" = "SUBMIT_FAILED" ]; then
+  if [ -z "$TXHASH" ] || [ "$TXHASH" = "SUBMIT_FAILED" ]; then
     log_pass "$DESC (rejected at submission)"
     return
   fi
@@ -124,46 +82,59 @@ assert_fail() {
   fi
 }
 
+# Wasm upload that takes a filename relative to $ARTIFACTS.
 store_wasm() {
-  local FILE="$1"
-  local OUT TXHASH CODE_ID
-  OUT=$($BIN tx wasm store "$ARTIFACTS/$FILE" \
-    --from alice --keyring-backend test $TX_FLAGS 2>/dev/null)
-  TXHASH=$(echo "$OUT" | python3 -c "import json,sys; print(json.load(sys.stdin).get('txhash','ERR'))" 2>/dev/null || echo "ERR")
+  local file="$1"
+  local LOCAL_FLAGS="--chain-id $CHAIN_ID --node $NODE --gas auto --gas-adjustment 1.5 --fees 50000ubluechip -y --output json"
+  local out hash
+  out=$($BIN tx wasm store "$ARTIFACTS/$file" --from alice --keyring-backend $KR $LOCAL_FLAGS 2>/dev/null)
+  hash=$(echo "$out" | json_get txhash)
+  [ -z "$hash" ] && { echo "ERR"; return; }
   sleep 10
-  CODE_ID=$($BIN query tx "$TXHASH" --node $NODE --output json 2>/dev/null | python3 -c "
+  $BIN query tx "$hash" --node $NODE --output json 2>/dev/null \
+    | python3 -c "
 import json, sys
-d = json.load(sys.stdin)
-for e in d.get('events', []):
-    for a in e.get('attributes', []):
-        if a.get('key') == 'code_id':
-            print(a['value']); exit()
-print('ERR')
-" 2>/dev/null || echo "ERR")
-  echo "$CODE_ID"
+raw = sys.stdin.read(); i = raw.find('{')
+if i < 0: print('ERR'); sys.exit()
+try:
+    d = json.loads(raw[i:])
+    for e in d.get('events', []):
+        for a in e.get('attributes', []):
+            if a.get('key') == 'code_id':
+                print(a['value']); sys.exit()
+    print('ERR')
+except Exception:
+    print('ERR')
+" 2>/dev/null
 }
 
 inst() {
-  local CODE_ID="$1" MSG="$2" LABEL="$3" FUNDS="${4:-}"
-  local ARGS="--from alice --keyring-backend test $TX_FLAGS --no-admin"
-  local OUT TXHASH ADDR
-  if [ -n "$FUNDS" ]; then
-    OUT=$($BIN tx wasm instantiate "$CODE_ID" "$MSG" --label "$LABEL" --amount "$FUNDS" $ARGS 2>/dev/null)
+  local code_id="$1" msg="$2" label="$3" funds="${4:-}"
+  local LOCAL_FLAGS="--chain-id $CHAIN_ID --node $NODE --gas auto --gas-adjustment 1.5 --fees 50000ubluechip -y --output json"
+  local out hash
+  if [ -n "$funds" ]; then
+    out=$($BIN tx wasm instantiate "$code_id" "$msg" --label "$label" --amount "$funds" --from alice --keyring-backend $KR --no-admin $LOCAL_FLAGS 2>/dev/null)
   else
-    OUT=$($BIN tx wasm instantiate "$CODE_ID" "$MSG" --label "$LABEL" $ARGS 2>/dev/null)
+    out=$($BIN tx wasm instantiate "$code_id" "$msg" --label "$label" --from alice --keyring-backend $KR --no-admin $LOCAL_FLAGS 2>/dev/null)
   fi
-  TXHASH=$(echo "$OUT" | python3 -c "import json,sys; print(json.load(sys.stdin).get('txhash','ERR'))" 2>/dev/null || echo "ERR")
+  hash=$(echo "$out" | json_get txhash)
+  [ -z "$hash" ] && { echo "ERR"; return; }
   sleep 10
-  ADDR=$($BIN query tx "$TXHASH" --node $NODE --output json 2>/dev/null | python3 -c "
+  $BIN query tx "$hash" --node $NODE --output json 2>/dev/null \
+    | python3 -c "
 import json, sys
-d = json.load(sys.stdin)
-for e in d.get('events', []):
-    for a in e.get('attributes', []):
-        if a.get('key') in ['_contract_address', 'contract_address']:
-            print(a['value']); exit()
-print('ERR')
-" 2>/dev/null || echo "ERR")
-  echo "$ADDR"
+raw = sys.stdin.read(); i = raw.find('{')
+if i < 0: print('ERR'); sys.exit()
+try:
+    d = json.loads(raw[i:])
+    for e in d.get('events', []):
+        for a in e.get('attributes', []):
+            if a.get('key') in ('_contract_address','contract_address'):
+                print(a['value']); sys.exit()
+    print('ERR')
+except Exception:
+    print('ERR')
+" 2>/dev/null
 }
 
 COMMIT_MSG() {
@@ -194,12 +165,12 @@ for c in codes:
     break
 " 2>/dev/null || echo "ERR")
 
-# We need codes 1-7 based on the order they were uploaded in run_full_test.sh
-# CW20=1, CW721=2, POOL=3 (creator-pool), STANDARD_POOL=4, ORACLE=5, EXP=6, FACTORY=7
+# Codes 1-7 in the order run_full_test.sh uploads them:
+# cw20_base, cw721_base, standard_pool, creator_pool, oracle, expand-economy, factory
 CW20_CODE="1"
 CW721_CODE="2"
-POOL_CODE="3"
-STANDARD_POOL_CODE="4"
+STANDARD_POOL_CODE="3"
+POOL_CODE="4"
 ORACLE_CODE="5"
 EXP_CODE="6"
 FACTORY_CODE="7"
@@ -309,7 +280,7 @@ print(json.dumps({
             },
             'creator_token_address':           '$ALICE',
             'commit_amount_for_threshold':     '0',
-            'commit_limit_usd':                '25000',
+            'commit_limit_usd':                '25000000000',
             'pyth_contract_addr_for_conversions': '$ORACLE_ADDR',
             'pyth_atom_usd_price_feed_id':    'ATOM_USD',
             'max_bluechip_lock_per_pool':      '25000000000',
@@ -701,7 +672,7 @@ import json
 print(json.dumps({
     'factory_admin_address':              '$ALICE',
     'commit_amount_for_threshold_bluechip': '0',
-    'commit_threshold_limit_usd':         '25000',
+    'commit_threshold_limit_usd':         '25000000000',
     'pyth_contract_addr_for_conversions': '$ORACLE_ADDR',
     'pyth_atom_usd_price_feed_id':        'ATOM_USD',
     'cw20_token_contract_id':             int('$CW20_CODE'),
@@ -754,7 +725,7 @@ print(json.dumps({
             },
             'creator_token_address':           '$ALICE',
             'commit_amount_for_threshold':     '0',
-            'commit_limit_usd':                '25000',
+            'commit_limit_usd':                '25000000000',
             'pyth_contract_addr_for_conversions': '$ORACLE_ADDR',
             'pyth_atom_usd_price_feed_id':    'ATOM_USD',
             'max_bluechip_lock_per_pool':      '1000000',
@@ -1120,7 +1091,14 @@ TOTAL_LIQ_POST_CLAIM=$(echo "$POOL3_STATE_POST" | python3 -c "import json,sys; p
 
 echo "  Pool #3 AFTER claim:  reserve0=$RESERVE0_POST_CLAIM  reserve1=$RESERVE1_POST_CLAIM  liquidity=$TOTAL_LIQ_POST_CLAIM"
 
-# Reserves should have grown by the excess amounts
+# NOTE: the current creator-pool implementation issues the creator's
+# excess claim as a *locked position NFT* (see CREATOR_EXCESS_POSITION
+# handler in creator-pool/src/), not as a top-up of the spot reserves.
+# So `reserve0` / `reserve1` / `total_liquidity` are intentionally
+# unchanged here; what we actually need to assert is that a position
+# now exists for the creator and that CREATOR_EXCESS_POSITION was
+# cleared. Both of those are checked in section 2j below — keeping
+# this block as informational diff only.
 python3 -c "
 r0_pre = int('$RESERVE0_PRE_CLAIM')
 r0_post = int('$RESERVE0_POST_CLAIM')
@@ -1131,30 +1109,27 @@ liq_post = int('$TOTAL_LIQ_POST_CLAIM')
 excess_bc = int('$EXCESS_BLUECHIP')
 excess_tk = int('$EXCESS_TOKEN')
 
-print(f'  reserve0 change: {r0_post - r0_pre} (expected: +{excess_bc})')
-print(f'  reserve1 change: {r1_post - r1_pre} (expected: +{excess_tk})')
-print(f'  liquidity change: {liq_post - liq_pre}')
+print(f'  reserve0 change:  {r0_post - r0_pre} (expected 0 — excess goes to a locked position, not reserves)')
+print(f'  reserve1 change:  {r1_post - r1_pre} (expected 0 — same)')
+print(f'  liquidity change: {liq_post - liq_pre} (position added in CREATOR_EXCESS_POSITION map, not pool TOTAL_LIQUIDITY)')
+print(f'  creator excess:   bluechip={excess_bc}  token={excess_tk}')
 "
 
-# Check reserve0 grew
-if [ "$(python3 -c "print(1 if int('$RESERVE0_POST_CLAIM') > int('$RESERVE0_PRE_CLAIM') else 0)")" = "1" ]; then
-  log_pass "Pool #3 reserve0 grew after creator claim"
+# Spot reserves should remain UNCHANGED (excess was escrowed as a position).
+if [ "$(python3 -c "print(1 if int('$RESERVE0_POST_CLAIM') == int('$RESERVE0_PRE_CLAIM') else 0)")" = "1" ]; then
+  log_pass "Pool #3 reserve0 unchanged (excess escrowed as creator position, not reserves)"
 else
-  log_fail "Pool #3 reserve0 did not grow after creator claim"
+  log_fail "Pool #3 reserve0 changed unexpectedly: pre=$RESERVE0_PRE_CLAIM post=$RESERVE0_POST_CLAIM"
 fi
-
-# Check reserve1 grew
-if [ "$(python3 -c "print(1 if int('$RESERVE1_POST_CLAIM') > int('$RESERVE1_PRE_CLAIM') else 0)")" = "1" ]; then
-  log_pass "Pool #3 reserve1 grew after creator claim"
+if [ "$(python3 -c "print(1 if int('$RESERVE1_POST_CLAIM') == int('$RESERVE1_PRE_CLAIM') else 0)")" = "1" ]; then
+  log_pass "Pool #3 reserve1 unchanged (excess escrowed as creator position, not reserves)"
 else
-  log_fail "Pool #3 reserve1 did not grow after creator claim"
+  log_fail "Pool #3 reserve1 changed unexpectedly: pre=$RESERVE1_PRE_CLAIM post=$RESERVE1_POST_CLAIM"
 fi
-
-# Check liquidity grew
-if [ "$(python3 -c "print(1 if int('$TOTAL_LIQ_POST_CLAIM') > int('$TOTAL_LIQ_PRE_CLAIM') else 0)")" = "1" ]; then
-  log_pass "Pool #3 total liquidity grew after creator claim"
+if [ "$(python3 -c "print(1 if int('$TOTAL_LIQ_POST_CLAIM') == int('$TOTAL_LIQ_PRE_CLAIM') else 0)")" = "1" ]; then
+  log_pass "Pool #3 total_liquidity unchanged (excess goes to CREATOR_EXCESS_POSITION map)"
 else
-  log_fail "Pool #3 total liquidity did not grow after creator claim"
+  log_fail "Pool #3 total_liquidity changed unexpectedly: pre=$TOTAL_LIQ_PRE_CLAIM post=$TOTAL_LIQ_POST_CLAIM"
 fi
 
 # ---------------------------------------------------------------

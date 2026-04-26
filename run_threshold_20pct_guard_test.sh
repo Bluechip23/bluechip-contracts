@@ -17,17 +17,32 @@
 # =====================================================================
 set -uo pipefail
 
-CHAIN_ID="bluechipChain"
-KR="test"
-DENOM="ubluechip"
 GAS=3000000
 W=7
+source "$(dirname "$0")/test_lib.sh"
 
-RED='\033[0;31m'; GRN='\033[0;32m'; YEL='\033[1;33m'; CYN='\033[0;36m'; NC='\033[0m'
-pass() { echo -e "${GRN}[PASS]${NC} $1"; }
-fail() { echo -e "${RED}[FAIL]${NC} $1"; F=$((F+1)); }
-info() { echo -e "${CYN}[INFO]${NC} $1"; }
-hdr()  { echo ""; echo -e "${YEL}══ $1 ══${NC}"; }
+# Re-bind bluechipChaind so `--home/--node` are always present even when the
+# script's helpers forget to pass them (lets us reuse the chain that
+# run_full_test.sh leaves running).
+shopt -s expand_aliases
+bluechipChaind() {
+  case "${1:-}" in
+    tx|query)
+      command bluechipChaind "$@" --node "$NODE" --home "$CHAIN_HOME" ;;
+    keys)
+      command bluechipChaind "$@" --home "$CHAIN_HOME" ;;
+    *)
+      command bluechipChaind "$@" ;;
+  esac
+}
+export -f bluechipChaind
+
+# Bridge this script's pass/fail/info/hdr names to the lib's counters,
+# so the lib's exit summary prints the right tally.
+pass() { log_pass "$1"; }
+fail() { log_fail "$1"; F=$((F+1)); }
+info() { echo "      $1"; }
+hdr()  { log_header "$1"; }
 F=0
 
 send() { bluechipChaind tx "$@" --chain-id $CHAIN_ID --keyring-backend $KR --gas $GAS -y --output json 2>/dev/null | jq -r '.txhash'; }

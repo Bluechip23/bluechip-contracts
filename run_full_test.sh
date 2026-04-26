@@ -16,90 +16,53 @@
 #   9. Liquidity exits & fee collection
 # =====================================================================
 
-BIN="/tmp/bluechipChaind_new"
-CHAIN_HOME="$HOME/.bluechipTest"
-CHAIN_ID="bluechip-test"
-NODE="tcp://localhost:26657"
-ARTIFACTS="/home/jeremy/snap/smartcontracts/bluechip-contracts/artifacts"
-DENOM="ubluechip"
+# Shared config, logging, key/code-id discovery, and tx helpers come from
+# test_lib.sh. Override any default by exporting the var BEFORE this line.
+ARTIFACTS="${ARTIFACTS:-/home/jeremy/snap/smartcontracts/bluechip-contracts/artifacts}"
+source "$(dirname "$0")/test_lib.sh"
 
-ALICE="bluechip1cyyzpxplxdzkeea7kwsydadg87357qnara5tfv"
-BOB="bluechip1sc78mkjfmufxq6vjxgnhaq9ym9nhedvassl62n"
-CHARLIE="bluechip1kgqnrggt0y50ujzls677kxpxfaur4mqujnq59j"
+# Test wallets — resolved at runtime, no more hardcoded bluechip1cyy... literals.
+ALICE=$(addr_for alice)
+BOB=$(addr_for bob)
+CHARLIE=$(addr_for charlie)
 
-# Oracle: 1 ubluechip = $0.01 → price = 1,000,000 at expo -8
-# Threshold: $25,000 USD → 2,500,000 ubluechip
-ORACLE_PRICE="1000000"
+# Threshold scenario: $25,000 USD = 2,500,000 ubluechip at $0.01/each.
+# (USD constants — ORACLE_PRICE / THRESHOLD_USD_RAW — live in test_lib.sh.)
 
-TX_FLAGS="--chain-id $CHAIN_ID --node $NODE --gas auto --gas-adjustment 1.5 --fees 50000ubluechip -y --output json"
-
-PASS=0; FAIL=0
-
-# =====================================================================
-# HELPERS
-# =====================================================================
-RED='\033[0;31m'; GREEN='\033[0;32m'; YELLOW='\033[1;33m'; CYAN='\033[0;36m'; NC='\033[0m'
-
-log_header() { echo ""; echo ""; echo -e "${CYAN}================================================================${NC}"; echo -e "${CYAN}  $1${NC}"; echo -e "${CYAN}================================================================${NC}"; }
-log_step()   { echo ""; echo -e "  ${YELLOW}--- $1 ---${NC}"; }
-log_info()   { echo "      $1"; }
-log_pass()   { echo -e "  ${GREEN}[PASS]${NC} $1"; PASS=$((PASS+1)); }
-log_fail()   { echo -e "  ${RED}[FAIL]${NC} $1"; FAIL=$((FAIL+1)); }
-
-# Get balance of a specific denom for an address
-get_bal() {
-  local ADDR="$1" D="$2"
-  $BIN query bank balances "$ADDR" --node $NODE --output json 2>/dev/null \
-    | python3 -c "
-import json, sys
-d = json.load(sys.stdin)
-for c in d.get('balances', []):
-    if c['denom'] == '$D':
-        print(c['amount']); exit()
-print('0')
-" 2>/dev/null || echo "0"
-}
-
-# Submit tx as a specific key, return txhash
+# ─── Script-local helpers ───────────────────────────────────────────
+# Match the original script's tx submission behaviour byte-for-byte
+# (the lib's `exe_as` adds --home which breaks the threshold-crossing
+# auto-gas path on this chain — investigating).
 exe_as() {
   local KEY="$1" CONTRACT="$2" MSG="$3" FUNDS="${4:-}"
-  local ARGS="--from $KEY --keyring-backend test $TX_FLAGS"
+  local LOCAL_FLAGS="--chain-id $CHAIN_ID --node $NODE --gas auto --gas-adjustment 1.5 --fees 50000ubluechip -y --output json"
+  local ARGS="--from $KEY --keyring-backend $KR $LOCAL_FLAGS"
   local OUT
   if [ -n "$FUNDS" ]; then
     OUT=$($BIN tx wasm execute "$CONTRACT" "$MSG" --amount "$FUNDS" $ARGS 2>/dev/null)
   else
     OUT=$($BIN tx wasm execute "$CONTRACT" "$MSG" $ARGS 2>/dev/null)
   fi
-  echo "$OUT" | python3 -c "import json,sys; print(json.load(sys.stdin).get('txhash','SUBMIT_FAILED'))" 2>/dev/null || echo "SUBMIT_FAILED"
+  echo "$OUT" | json_get txhash
 }
-
 exe()     { exe_as alice "$@"; }
 exe_bob() { exe_as bob   "$@"; }
 
-# Query contract
-qry() {
-  $BIN query wasm contract-state smart "$1" "$2" --node $NODE --output json 2>/dev/null
-}
-
-# Wait for tx, return result JSON
-wait_tx() {
-  sleep 10
-  $BIN query tx "$1" --node $NODE --output json 2>/dev/null
-}
-
-# Return "code|log"
+# 14s sleep keeps every wait between two same-wallet commits above the
+# pool's per-wallet rate limit (min_commit_interval = 13s in
+# creator-pool/src/contract.rs) at simulation time. Going below 13s
+# reliably trips "You are trying to commit too frequently" on Commit #3.
+wait_tx() { sleep 14; $BIN query tx "$1" --node $NODE --output json 2>/dev/null; }
 tx_result() {
-  local RESULT
+  local RESULT CODE LOG
   RESULT=$(wait_tx "$1")
-  local CODE LOG
-  CODE=$(echo "$RESULT" | python3 -c "import json,sys; print(json.load(sys.stdin).get('code',99))" 2>/dev/null || echo "99")
-  LOG=$(echo "$RESULT"  | python3 -c "import json,sys; print(str(json.load(sys.stdin).get('raw_log',''))[:300])" 2>/dev/null || echo "")
+  CODE=$(echo "$RESULT" | json_get code); CODE="${CODE:-99}"
+  LOG=$(echo "$RESULT" | json_get raw_log | head -c 300)
   echo "${CODE}|${LOG}"
 }
-
 assert_ok() {
   local DESC="$1" TXHASH="$2"
-  if [ "$TXHASH" = "SUBMIT_FAILED" ]; then
+  if [ -z "$TXHASH" ] || [ "$TXHASH" = "SUBMIT_FAILED" ]; then
     log_fail "$DESC — tx submission failed"
     return
   fi
@@ -113,10 +76,9 @@ assert_ok() {
     log_fail "$DESC  code=$CODE  $LOG"
   fi
 }
-
 assert_fail() {
   local DESC="$1" TXHASH="$2"
-  if [ "$TXHASH" = "SUBMIT_FAILED" ]; then
+  if [ -z "$TXHASH" ] || [ "$TXHASH" = "SUBMIT_FAILED" ]; then
     log_pass "$DESC (rejected at submission)"
     return
   fi
@@ -130,48 +92,63 @@ assert_fail() {
   fi
 }
 
-# Upload wasm, return code_id
-store_wasm() {
-  local FILE="$1"
-  local OUT TXHASH CODE_ID
-  OUT=$($BIN tx wasm store "$ARTIFACTS/$FILE" \
-    --from alice --keyring-backend test $TX_FLAGS 2>/dev/null)
-  TXHASH=$(echo "$OUT" | python3 -c "import json,sys; print(json.load(sys.stdin).get('txhash','ERR'))" 2>/dev/null || echo "ERR")
-  sleep 10
-  CODE_ID=$($BIN query tx "$TXHASH" --node $NODE --output json 2>/dev/null | python3 -c "
+# Wasm upload that takes a filename relative to $ARTIFACTS (preserves the
+# 7 existing call sites). Returns the new code_id.
+_upload_wasm() {
+  local file="$1"
+  local out hash
+  out=$($BIN tx wasm store "$ARTIFACTS/$file" --from alice $TX_FLAGS 2>/dev/null)
+  hash=$(echo "$out" | json_get txhash)
+  [ -z "$hash" ] && { echo "ERR"; return; }
+  local raw
+  raw=$(wait_for_tx "$hash" 10 1) || { echo "ERR"; return; }
+  echo "$raw" | python3 -c "
 import json, sys
-d = json.load(sys.stdin)
-for e in d.get('events', []):
-    for a in e.get('attributes', []):
-        if a.get('key') == 'code_id':
-            print(a['value']); exit()
-print('ERR')
-" 2>/dev/null || echo "ERR")
-  echo "$CODE_ID"
+raw = sys.stdin.read(); i = raw.find('{')
+if i < 0: print('ERR'); sys.exit()
+try:
+    d = json.loads(raw[i:])
+    for e in d.get('events', []):
+        for a in e.get('attributes', []):
+            if a.get('key') == 'code_id':
+                print(a['value']); sys.exit()
+    print('ERR')
+except Exception:
+    print('ERR')
+" 2>/dev/null
 }
+# Override the lib's store_wasm so the existing 7 call sites of
+# `store_wasm "creator_pool.wasm"` keep working.
+store_wasm() { _upload_wasm "$@"; }
 
-# Instantiate contract, return address
+# Local instantiate that defaults to alice + --no-admin (matches what the
+# whole script wants). Lib has a more general `inst`; we wrap it.
 inst() {
-  local CODE_ID="$1" MSG="$2" LABEL="$3" FUNDS="${4:-}"
-  local ARGS="--from alice --keyring-backend test $TX_FLAGS --no-admin"
-  local OUT TXHASH ADDR
-  if [ -n "$FUNDS" ]; then
-    OUT=$($BIN tx wasm instantiate "$CODE_ID" "$MSG" --label "$LABEL" --amount "$FUNDS" $ARGS 2>/dev/null)
+  local code_id="$1" msg="$2" label="$3" funds="${4:-}"
+  local out hash
+  if [ -n "$funds" ]; then
+    out=$($BIN tx wasm instantiate "$code_id" "$msg" --label "$label" --amount "$funds" --from alice --no-admin $TX_FLAGS 2>/dev/null)
   else
-    OUT=$($BIN tx wasm instantiate "$CODE_ID" "$MSG" --label "$LABEL" $ARGS 2>/dev/null)
+    out=$($BIN tx wasm instantiate "$code_id" "$msg" --label "$label" --from alice --no-admin $TX_FLAGS 2>/dev/null)
   fi
-  TXHASH=$(echo "$OUT" | python3 -c "import json,sys; print(json.load(sys.stdin).get('txhash','ERR'))" 2>/dev/null || echo "ERR")
-  sleep 10
-  ADDR=$($BIN query tx "$TXHASH" --node $NODE --output json 2>/dev/null | python3 -c "
+  hash=$(echo "$out" | json_get txhash)
+  [ -z "$hash" ] && { echo "ERR"; return; }
+  local raw
+  raw=$(wait_for_tx "$hash" 10 1) || { echo "ERR"; return; }
+  echo "$raw" | python3 -c "
 import json, sys
-d = json.load(sys.stdin)
-for e in d.get('events', []):
-    for a in e.get('attributes', []):
-        if a.get('key') in ['_contract_address', 'contract_address']:
-            print(a['value']); exit()
-print('ERR')
-" 2>/dev/null || echo "ERR")
-  echo "$ADDR"
+raw = sys.stdin.read(); i = raw.find('{')
+if i < 0: print('ERR'); sys.exit()
+try:
+    d = json.loads(raw[i:])
+    for e in d.get('events', []):
+        for a in e.get('attributes', []):
+            if a.get('key') in ('_contract_address','contract_address'):
+                print(a['value']); sys.exit()
+    print('ERR')
+except Exception:
+    print('ERR')
+" 2>/dev/null
 }
 
 # Build commit message (optional 2nd arg = max_spread for post-threshold commits)
@@ -360,7 +337,7 @@ import json
 print(json.dumps({
     'factory_admin_address':              '$ALICE',
     'commit_amount_for_threshold_bluechip': '0',
-    'commit_threshold_limit_usd':         '25000',
+    'commit_threshold_limit_usd':         '25000000000',
     'pyth_contract_addr_for_conversions': '$ORACLE_ADDR',
     'pyth_atom_usd_price_feed_id':        'ATOM_USD',
     'cw20_token_contract_id':             int('$CW20_CODE'),
@@ -410,7 +387,7 @@ print(json.dumps({
             },
             'creator_token_address':           '$ALICE',
             'commit_amount_for_threshold':     '0',
-            'commit_limit_usd':                '25000',
+            'commit_limit_usd':                '25000000000',
             'pyth_contract_addr_for_conversions': '$ORACLE_ADDR',
             'pyth_atom_usd_price_feed_id':    'ATOM_USD',
             'max_bluechip_lock_per_pool':      '25000000000',
@@ -1099,9 +1076,18 @@ for k, v in d.items():
 " 2>/dev/null
 
 # Swap #1: 500,000 ubluechip → creator tokens (Alice)
+# Buffer for Alice's per-wallet rate limit (min_commit_interval=13s).
+# Alice's last on-pool action before this is the deposit/swap pair from
+# Phase 6's "Large Position" setup; without a buffer here the simulation
+# can race the 13s window even with assert_ok's 14s wait.
 log_step "Swap #1 — 500,000 ubluechip → creator tokens"
+sleep 5
 SWAP1='{"simple_swap":{"offer_asset":{"info":{"bluechip":{"denom":"ubluechip"}},"amount":"500000"},"belief_price":null,"max_spread":"0.99","to":null,"transaction_deadline":null}}'
-TXHASH=$(exe "$POOL_ADDR" "$SWAP1" "500000ubluechip")
+$BIN tx wasm execute "$POOL_ADDR" "$SWAP1" --amount "500000ubluechip" --from alice --keyring-backend $KR --chain-id $CHAIN_ID --node $NODE --gas auto --gas-adjustment 1.5 --fees 50000ubluechip -y --output json > /tmp/swap1.stdout 2> /tmp/swap1.stderr
+TXHASH=$(cat /tmp/swap1.stdout | json_get txhash)
+if [ -z "$TXHASH" ]; then
+  log_info "Swap #1 stderr: $(head -c 240 /tmp/swap1.stderr)"
+fi
 assert_ok "Swap #1: 500K ubluechip → creator" "$TXHASH"
 
 # Swap #2: creator tokens → ubluechip (Alice, reverse direction)

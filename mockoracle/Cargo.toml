@@ -18,13 +18,16 @@ exclude = [
 crate-type = ["cdylib", "rlib"]
 
 [features]
+# Mock oracle is a *test-only* contract — entry points must always be
+# emitted, including when built via the docker optimizer (which doesn't
+# pass --features). Defaulting `testing` on is safe here because no
+# real production build of this crate exists.
+default = ["testing"]
 # for more explicit tests, cargo test --features=backtraces
 backtraces = []
 # use library feature to disable all instantiate/execute/query exports
 library = []
-# REQUIRED to compile entry points. Without this feature, the contract
-# cannot be instantiated on-chain, preventing accidental production deployment.
-# Usage: cargo build -p oracle --features testing
+# Gates instantiate/execute/query exports. Required for on-chain use.
 testing = []
 
 [package.metadata.scripts]

@@ -42,17 +42,29 @@ optimize:
 	  cosmwasm/workspace-optimizer:0.15.0
 
 # ─── Docker Optimizer (per-contract) ─────────────────────────────────────────
-optimize-pool:
+optimize-creator-pool:
 	docker run --rm -v ${CURDIR}:/code \
-	  --mount type=volume,source=pool_cache,target=/target \
+	  --mount type=volume,source=creator_pool_cache,target=/target \
 	  --mount type=volume,source=registry_cache,target=/usr/local/cargo/registry \
-	  cosmwasm/optimizer:0.16.0 ./pool
+	  cosmwasm/optimizer:0.16.0 ./creator-pool
+
+optimize-standard-pool:
+	docker run --rm -v ${CURDIR}:/code \
+	  --mount type=volume,source=standard_pool_cache,target=/target \
+	  --mount type=volume,source=registry_cache,target=/usr/local/cargo/registry \
+	  cosmwasm/optimizer:0.16.0 ./standard-pool
 
 optimize-factory:
 	docker run --rm -v ${CURDIR}:/code \
 	  --mount type=volume,source=factory_cache,target=/target \
 	  --mount type=volume,source=registry_cache,target=/usr/local/cargo/registry \
 	  cosmwasm/optimizer:0.16.0 ./factory
+	@# factory's [[package.metadata.optimizer.builds]] has name="mock";
+	@# the optimizer emits factory-mock.wasm — rename it for the rest
+	@# of the toolchain that expects artifacts/factory.wasm.
+	@if [ -f $(ARTIFACTS)/factory-mock.wasm ]; then \
+	  mv $(ARTIFACTS)/factory-mock.wasm $(ARTIFACTS)/factory.wasm; \
+	fi
 
 optimize-expand-economy:
 	docker run --rm -v ${CURDIR}:/code \
@@ -66,7 +78,7 @@ optimize-mockoracle:
 	  --mount type=volume,source=registry_cache,target=/usr/local/cargo/registry \
 	  cosmwasm/optimizer:0.16.0 ./mockoracle
 
-optimize-all: optimize-pool optimize-factory optimize-expand-economy optimize-mockoracle
+optimize-all: optimize-creator-pool optimize-standard-pool optimize-factory optimize-expand-economy optimize-mockoracle
 
 # ─── Cosmwasm Check ──────────────────────────────────────────────────────────
 check:
@@ -198,6 +210,6 @@ init-pool:
 		-b block \
 		-y | tee ./config/pool_init_result.txt
 
-.PHONY: build test optimize optimize-all optimize-pool optimize-factory optimize-expand-economy optimize-mockoracle \
+.PHONY: build test optimize optimize-all optimize-creator-pool optimize-standard-pool optimize-factory optimize-expand-economy optimize-mockoracle \
 	check check-pool check-factory check-expand-economy check-mockoracle \
 	deploy-pool-local deploy-factory-local deploy-expand-economy-local deploy-mockoracle-local deploy-all-local \

@@ -4025,3 +4025,131 @@ fn test_set_distribution_bounty_cap_enforced() {
     .unwrap_err();
     assert!(format!("{}", err).contains("exceeds max"));
 }
+
+// ─────────────────────────────────────────────────────────────────────
+// Factory's pool_token_info pre-instantiate validator
+//
+// Catches malformed pair specs at CreatePool entry (before any wasm
+// instantiate is dispatched) so the downstream pool never sees a
+// reversed pair, a wrong-denom bluechip, or a non-sentinel
+// creator-token address.
+// ─────────────────────────────────────────────────────────────────────
+#[cfg(test)]
+mod validate_pool_token_info_tests {
+    use crate::asset::TokenType;
+    use crate::execute::pool_lifecycle::create::{
+        validate_pool_token_info, CREATOR_TOKEN_SENTINEL,
+    };
+    use cosmwasm_std::Addr;
+
+    const CANON: &str = "ubluechip";
+
+    fn good_pair() -> [TokenType; 2] {
+        [
+            TokenType::Native {
+                denom: CANON.to_string(),
+            },
+            TokenType::CreatorToken {
+                contract_addr: Addr::unchecked(CREATOR_TOKEN_SENTINEL),
+            },
+        ]
+    }
+
+    #[test]
+    fn accepts_canonical_pair() {
+        validate_pool_token_info(&good_pair(), CANON).expect("canonical pair must validate");
+    }
+
+    #[test]
+    fn rejects_wrong_bluechip_denom() {
+        let mut p = good_pair();
+        p[0] = TokenType::Native {
+            denom: "uatom".to_string(),
+        };
+        let err = validate_pool_token_info(&p, CANON).unwrap_err();
+        assert!(
+            format!("{}", err).contains("must match the factory canonical denom"),
+            "got: {}",
+            err
+        );
+    }
+
+    #[test]
+    fn rejects_empty_bluechip_denom() {
+        let mut p = good_pair();
+        p[0] = TokenType::Native {
+            denom: "   ".to_string(),
+        };
+        let err = validate_pool_token_info(&p, CANON).unwrap_err();
+        assert!(
+            format!("{}", err).contains("Bluechip denom must be non-empty"),
+            "got: {}",
+            err
+        );
+    }
+
+    #[test]
+    fn rejects_reversed_pair() {
+        let mut p = good_pair();
+        p.swap(0, 1);
+        let err = validate_pool_token_info(&p, CANON).unwrap_err();
+        let s = format!("{}", err);
+        assert!(
+            s.contains("pool_token_info must be") || s.contains("order matters"),
+            "got: {}",
+            err
+        );
+    }
+
+    #[test]
+    fn rejects_two_creator_tokens() {
+        let p = [
+            TokenType::CreatorToken {
+                contract_addr: Addr::unchecked(CREATOR_TOKEN_SENTINEL),
+            },
+            TokenType::CreatorToken {
+                contract_addr: Addr::unchecked(CREATOR_TOKEN_SENTINEL),
+            },
+        ];
+        let err = validate_pool_token_info(&p, CANON).unwrap_err();
+        let s = format!("{}", err);
+        assert!(
+            s.contains("pool_token_info must be") || s.contains("order matters"),
+            "got: {}",
+            err
+        );
+    }
+
+    #[test]
+    fn rejects_two_native_legs() {
+        let p = [
+            TokenType::Native {
+                denom: CANON.to_string(),
+            },
+            TokenType::Native {
+                denom: "uatom".to_string(),
+            },
+        ];
+        let err = validate_pool_token_info(&p, CANON).unwrap_err();
+        let s = format!("{}", err);
+        assert!(
+            s.contains("pool_token_info must be") || s.contains("order matters"),
+            "got: {}",
+            err
+        );
+    }
+
+    #[test]
+    fn rejects_creator_token_addr_not_sentinel() {
+        let mut p = good_pair();
+        p[1] = TokenType::CreatorToken {
+            contract_addr: Addr::unchecked("a_real_cw20_address"),
+        };
+        let err = validate_pool_token_info(&p, CANON).unwrap_err();
+        assert!(
+            format!("{}", err).contains("must be the sentinel"),
+            "got: {}",
+            err
+        );
+    }
+}
