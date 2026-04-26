@@ -71,6 +71,63 @@ pub fn calculate_fees_owed_split(
     }
 }
 
+/// Split-fee computation for two liquidity values that share the same
+/// `fee_growth_global` / `fee_growth_last` / `fee_multiplier` inputs.
+///
+/// `remove_partial_liquidity` needs both the fees owed on the portion
+/// being removed (LP payout) and the fees owed on the portion staying in
+/// the position (preserved into `unclaimed_fees`). Computing them
+/// separately recomputes the same `fee_growth_delta` subtraction;
+/// folding both into one call hoists that shared step.
+///
+/// Returns `(removed_adj, removed_clip, preserved_adj)`. The preserved
+/// clip is intentionally dropped: the clipped slice on the remaining
+/// liquidity accrues through the next `fee_growth` snapshot on the
+/// following collect, matching the pre-refactor behavior exactly.
+pub fn calculate_fees_owed_split_pair(
+    liquidity_removed: Uint128,
+    liquidity_preserved: Uint128,
+    fee_growth_global: Decimal,
+    fee_growth_last: Decimal,
+    fee_multiplier: Decimal,
+) -> Result<(Uint128, Uint128, Uint128), ContractError> {
+    if fee_growth_global < fee_growth_last {
+        return Ok((Uint128::zero(), Uint128::zero(), Uint128::zero()));
+    }
+    let fee_growth_delta = fee_growth_global - fee_growth_last;
+
+    let removed_base = liquidity_removed
+        .checked_mul_floor(fee_growth_delta)
+        .map_err(|e| {
+            ContractError::Std(StdError::generic_err(format!("Fee base overflow: {}", e)))
+        })?;
+    let removed_adj = removed_base
+        .checked_mul_floor(fee_multiplier)
+        .map_err(|e| {
+            ContractError::Std(StdError::generic_err(format!(
+                "Fee multiplier overflow: {}",
+                e
+            )))
+        })?;
+    let removed_clip = removed_base.saturating_sub(removed_adj);
+
+    let preserved_base = liquidity_preserved
+        .checked_mul_floor(fee_growth_delta)
+        .map_err(|e| {
+            ContractError::Std(StdError::generic_err(format!("Fee base overflow: {}", e)))
+        })?;
+    let preserved_adj = preserved_base
+        .checked_mul_floor(fee_multiplier)
+        .map_err(|e| {
+            ContractError::Std(StdError::generic_err(format!(
+                "Fee multiplier overflow: {}",
+                e
+            )))
+        })?;
+
+    Ok((removed_adj, removed_clip, preserved_adj))
+}
+
 pub fn calc_capped_fees(
     position: &Position,
     pool_fee_state: &PoolFeeState,

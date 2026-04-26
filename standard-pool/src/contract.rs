@@ -8,7 +8,8 @@
 use crate::error::ContractError;
 use crate::msg::{ExecuteMsg, MigrateMsg};
 use cosmwasm_std::{
-    entry_point, Addr, Decimal, DepsMut, Env, MessageInfo, Response, StdError, StdResult, Uint128,
+    entry_point, Addr, Decimal, DepsMut, Env, MessageInfo, Response, StdError, StdResult, Storage,
+    Uint128,
 };
 use cw2::set_contract_version;
 use pool_core::admin::{
@@ -191,6 +192,19 @@ pub fn instantiate(
 // Execute dispatch
 // ---------------------------------------------------------------------------
 
+/// Liquidity-write gate: every deposit / add / remove / collect path must
+/// fail closed when an emergency drain has been kicked off OR when an
+/// admin has paused the pool. Inlining this pair was correct but copy-
+/// pasted into every gated arm of `execute`; centralising it keeps the
+/// behaviour identical and the dispatch arms shorter.
+fn check_pool_writable(storage: &dyn Storage) -> Result<(), ContractError> {
+    ensure_not_drained(storage)?;
+    if POOL_PAUSED.may_load(storage)?.unwrap_or(false) {
+        return Err(ContractError::PoolPausedLowLiquidity {});
+    }
+    Ok(())
+}
+
 #[cfg_attr(not(feature = "library"), entry_point)]
 pub fn execute(
     deps: DepsMut,
@@ -240,10 +254,7 @@ pub fn execute(
             min_amount1,
             transaction_deadline,
         } => {
-            ensure_not_drained(deps.storage)?;
-            if POOL_PAUSED.may_load(deps.storage)?.unwrap_or(false) {
-                return Err(ContractError::PoolPausedLowLiquidity {});
-            }
+            check_pool_writable(deps.storage)?;
             let sender = info.sender.clone();
             execute_deposit_liquidity(
                 deps,
@@ -265,10 +276,7 @@ pub fn execute(
             min_amount1,
             transaction_deadline,
         } => {
-            ensure_not_drained(deps.storage)?;
-            if POOL_PAUSED.may_load(deps.storage)?.unwrap_or(false) {
-                return Err(ContractError::PoolPausedLowLiquidity {});
-            }
+            check_pool_writable(deps.storage)?;
             let sender = info.sender.clone();
             execute_add_to_position(
                 deps,
@@ -284,10 +292,7 @@ pub fn execute(
             )
         }
         ExecuteMsg::CollectFees { position_id } => {
-            ensure_not_drained(deps.storage)?;
-            if POOL_PAUSED.may_load(deps.storage)?.unwrap_or(false) {
-                return Err(ContractError::PoolPausedLowLiquidity {});
-            }
+            check_pool_writable(deps.storage)?;
             execute_collect_fees(deps, env, info, position_id)
         }
         ExecuteMsg::RemovePartialLiquidity {
@@ -298,12 +303,9 @@ pub fn execute(
             min_amount1,
             max_ratio_deviation_bps,
         } => {
-            ensure_not_drained(deps.storage)?;
             // Block during admin pause / pending emergency withdraw so LPs
             // can't race the drain (matches creator-pool's behavior).
-            if POOL_PAUSED.may_load(deps.storage)?.unwrap_or(false) {
-                return Err(ContractError::PoolPausedLowLiquidity {});
-            }
+            check_pool_writable(deps.storage)?;
             execute_remove_partial_liquidity(
                 deps,
                 env,
@@ -324,10 +326,7 @@ pub fn execute(
             min_amount1,
             max_ratio_deviation_bps,
         } => {
-            ensure_not_drained(deps.storage)?;
-            if POOL_PAUSED.may_load(deps.storage)?.unwrap_or(false) {
-                return Err(ContractError::PoolPausedLowLiquidity {});
-            }
+            check_pool_writable(deps.storage)?;
             execute_remove_partial_liquidity_by_percent(
                 deps,
                 env,
@@ -347,10 +346,7 @@ pub fn execute(
             min_amount1,
             max_ratio_deviation_bps,
         } => {
-            ensure_not_drained(deps.storage)?;
-            if POOL_PAUSED.may_load(deps.storage)?.unwrap_or(false) {
-                return Err(ContractError::PoolPausedLowLiquidity {});
-            }
+            check_pool_writable(deps.storage)?;
             execute_remove_all_liquidity(
                 deps,
                 env,

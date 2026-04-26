@@ -12,19 +12,23 @@
 //! its own slimmer versions in its own `msg.rs`.
 pub use pool_core::msg::*;
 
-#[allow(unused_imports)]
 use crate::asset::{TokenInfo, TokenType};
-// Referenced only by `#[returns(PoolDetails)]` on QueryMsg::Pair; the
-// QueryResponses derive drops these refs in wasm release builds.
+use crate::state::RecoveryType;
+// Schema-only refs: cited only by `#[returns(...)]` on QueryMsg
+// variants. The QueryResponses derive consumes them but rustc still
+// flags them as unused without this allow. Grouping them under one
+// outer allow keeps the schema-suppression scoped (so an unused-import
+// on `TokenInfo` / `RecoveryType` would still get reported), and folds
+// the four prior `#[allow(unused_imports)]` directives into a single
+// block. `PoolAnalytics` was removed — it was never referenced.
 #[allow(unused_imports)]
-use crate::state::PoolDetails;
-#[allow(unused_imports)]
-use crate::state::{Committing, PoolAnalytics, RecoveryType};
+use {
+    crate::state::{Committing, PoolDetails},
+    pool_factory_interfaces::{AllPoolsResponse, PoolStateResponseForFactory},
+};
 use cosmwasm_schema::{cw_serde, QueryResponses};
 use cosmwasm_std::{Addr, Binary, Decimal, Timestamp, Uint128};
 use cw20::Cw20ReceiveMsg;
-#[allow(unused_imports)]
-use pool_factory_interfaces::{AllPoolsResponse, PoolStateResponseForFactory};
 
 #[cw_serde]
 pub enum ExecuteMsg {

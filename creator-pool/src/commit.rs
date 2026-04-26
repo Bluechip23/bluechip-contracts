@@ -228,9 +228,18 @@ fn execute_commit_logic(
                 commit_fee_creator_amt,
             )?;
 
+            // Load `POOL_ANALYTICS` once for this dispatch path; the
+            // `total_commit_count` bump is universal to every commit
+            // branch below, so we increment here and let each handler
+            // mutate swap-specific fields on the shared `&mut analytics`.
+            // The single save at the bottom of the Native arm subsumes
+            // what was previously a load+save inside each handler.
+            let mut analytics = POOL_ANALYTICS.may_load(deps.storage)?.unwrap_or_default();
+            analytics.total_commit_count += 1;
+
             // `threshold_already_hit` was loaded above alongside the
             // minimum-commit check — reuse it here instead of re-reading.
-            if !threshold_already_hit {
+            let response = if !threshold_already_hit {
                 let current_usd_raised = USD_RAISED_FROM_COMMIT.load(deps.storage)?;
                 let new_total = current_usd_raised.checked_add(usd_value)?;
 
@@ -300,7 +309,8 @@ fn execute_commit_logic(
                             messages,
                             belief_price,
                             max_spread,
-                        )
+                            &mut analytics,
+                        )?
                     } else {
                         // Threshold hit exactly
                         COMMIT_LEDGER.update::<_, ContractError>(deps.storage, &sender, |v| {
@@ -345,10 +355,11 @@ fn execute_commit_logic(
                         )?;
                         THRESHOLD_PROCESSING.save(deps.storage, &false)?;
 
-                        // Update analytics
-                        let mut analytics = POOL_ANALYTICS.may_load(deps.storage)?.unwrap_or_default();
-                        analytics.total_commit_count += 1;
-                        POOL_ANALYTICS.save(deps.storage, &analytics)?;
+                        // Analytics counter is incremented and persisted by
+                        // the dispatcher (see the `analytics` binding above
+                        // and the `POOL_ANALYTICS.save` below the cascade);
+                        // this branch only needs to read the already-bumped
+                        // `total_commit_count` for response attributes.
 
                         // `payout.factory_notify` is attached as a SubMsg so a
                         // factory-side failure lands in the pool's reply handler
@@ -360,13 +371,13 @@ fn execute_commit_logic(
                             analytics.total_commit_count,
                             &env,
                         );
-                        Ok(Response::new()
+                        Response::new()
                             .add_submessage(payout.factory_notify)
                             .add_messages(messages)
                             .add_attributes(base)
                             .add_attribute("commit_amount_bluechip", asset.amount.to_string())
                             .add_attribute("commit_amount_usd", usd_value.to_string())
-                            .add_attribute("total_usd_raised_after", new_total.to_string()))
+                            .add_attribute("total_usd_raised_after", new_total.to_string())
                     }
                 } else {
                     process_pre_threshold_commit(
@@ -377,7 +388,8 @@ fn execute_commit_logic(
                         usd_value,
                         messages,
                         &pool_state,
-                    )
+                        &mut analytics,
+                    )?
                 }
             } else {
                 process_post_threshold_commit(
@@ -394,8 +406,16 @@ fn execute_commit_logic(
                     &pool_specs,
                     &mut pool_state,
                     &mut pool_fee_state,
-                )
-            }
+                    &mut analytics,
+                )?
+            };
+
+            // Single analytics save subsumes what each handler used to do
+            // individually. If anything above returned `Err`, the whole
+            // tx aborts (CosmWasm storage is transactional), so this save
+            // never persists in error paths.
+            POOL_ANALYTICS.save(deps.storage, &analytics)?;
+            Ok(response)
         }
         _ => Err(ContractError::AssetMismatch {}),
     }

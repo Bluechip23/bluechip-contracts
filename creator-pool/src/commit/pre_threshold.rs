@@ -13,7 +13,7 @@ use crate::asset::TokenInfo;
 use crate::error::ContractError;
 use crate::generic_helpers::update_commit_info;
 use crate::state::{
-    PoolState, COMMIT_LEDGER, NATIVE_RAISED_FROM_COMMIT, POOL_ANALYTICS, USD_RAISED_FROM_COMMIT,
+    PoolAnalytics, PoolState, COMMIT_LEDGER, NATIVE_RAISED_FROM_COMMIT, USD_RAISED_FROM_COMMIT,
 };
 
 use super::commit_base_attributes;
@@ -26,6 +26,7 @@ pub(super) fn process_pre_threshold_commit(
     usd_value: Uint128,
     messages: Vec<CosmosMsg>,
     pool_state: &PoolState,
+    analytics: &mut PoolAnalytics,
 ) -> Result<Response, ContractError> {
     COMMIT_LEDGER.update::<_, ContractError>(deps.storage, &sender, |v| {
         Ok(v.unwrap_or_default().checked_add(usd_value)?)
@@ -46,11 +47,9 @@ pub(super) fn process_pre_threshold_commit(
         env.block.time,
     )?;
 
-    // Update analytics
-    let mut analytics = POOL_ANALYTICS.may_load(deps.storage)?.unwrap_or_default();
-    analytics.total_commit_count += 1;
-    POOL_ANALYTICS.save(deps.storage, &analytics)?;
-
+    // Analytics counter is incremented and persisted by the dispatcher
+    // (`commit::execute_commit_logic`); this handler only reads the
+    // already-bumped `total_commit_count` for response attributes.
     let base = commit_base_attributes(
         "funding",
         &sender,

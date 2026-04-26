@@ -18,7 +18,7 @@ use crate::asset::TokenInfo;
 use crate::error::ContractError;
 use crate::generic_helpers::{update_commit_info, update_pool_fee_growth};
 use crate::state::{
-    PoolFeeState, PoolInfo, PoolSpecs, PoolState, POOL_ANALYTICS, POOL_FEE_STATE, POOL_PAUSED,
+    PoolAnalytics, PoolFeeState, PoolInfo, PoolSpecs, PoolState, POOL_FEE_STATE, POOL_PAUSED,
     POOL_STATE, POST_THRESHOLD_COOLDOWN_UNTIL_BLOCK,
 };
 use crate::swap_helper::{assert_max_spread, compute_swap, update_price_accumulator};
@@ -40,6 +40,7 @@ pub(super) fn process_post_threshold_commit(
     pool_specs: &PoolSpecs,
     pool_state: &mut PoolState,
     pool_fee_state: &mut PoolFeeState,
+    analytics: &mut PoolAnalytics,
 ) -> Result<Response, ContractError> {
     if POOL_PAUSED.may_load(deps.storage)?.unwrap_or(false) {
         return Err(ContractError::PoolPausedLowLiquidity {});
@@ -113,15 +114,14 @@ pub(super) fn process_post_threshold_commit(
         env.block.time,
     )?;
 
-    // Update analytics
-    let mut analytics = POOL_ANALYTICS.may_load(deps.storage)?.unwrap_or_default();
-    analytics.total_commit_count += 1;
+    // Update analytics — `total_commit_count` is incremented and persisted
+    // by the dispatcher (`commit::execute_commit_logic`); this handler
+    // only mutates the swap-specific fields on the shared `&mut analytics`.
     analytics.total_swap_count += 1;
     analytics.total_volume_0 = analytics.total_volume_0.saturating_add(swap_amount);
     analytics.total_volume_1 = analytics.total_volume_1.saturating_add(return_amt);
     analytics.last_trade_block = env.block.height;
     analytics.last_trade_timestamp = env.block.time.seconds();
-    POOL_ANALYTICS.save(deps.storage, &analytics)?;
 
     // Effective price: creator tokens received per bluechip spent
     let effective_price = if !swap_amount.is_zero() {
