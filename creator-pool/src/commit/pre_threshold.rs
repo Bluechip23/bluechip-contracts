@@ -18,6 +18,7 @@ use crate::state::{
 
 use super::commit_base_attributes;
 
+#[allow(clippy::too_many_arguments)]
 pub(super) fn process_pre_threshold_commit(
     deps: &mut DepsMut,
     env: Env,
