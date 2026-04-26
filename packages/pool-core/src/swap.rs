@@ -21,7 +21,7 @@ use crate::generic::{check_rate_limit, decimal2decimal256, enforce_transaction_d
 use crate::msg::Cw20HookMsg;
 use crate::state::{
     PoolCtx, PoolInfo, PoolState, IS_THRESHOLD_HIT, MINIMUM_LIQUIDITY, POOL_ANALYTICS,
-    POOL_FEE_STATE, POOL_INFO, POOL_PAUSED, POOL_SPECS, POOL_STATE,
+    POOL_FEE_STATE, POOL_INFO, POOL_PAUSED, POOL_STATE,
     POST_THRESHOLD_COOLDOWN_UNTIL_BLOCK, REENTRANCY_LOCK,
 };
 use cosmwasm_std::{
@@ -303,13 +303,11 @@ pub fn simple_swap(
     }
     REENTRANCY_LOCK.save(deps.storage, &true)?;
 
-    let pool_specs = POOL_SPECS.load(deps.storage)?;
-
-    if let Err(e) = check_rate_limit(&mut deps, &env, &pool_specs, &sender) {
-        REENTRANCY_LOCK.save(deps.storage, &false)?;
-        return Err(e);
-    }
-
+    // POOL_SPECS load + rate-limit check moved into `execute_simple_swap`
+    // so they share `PoolCtx::load`'s POOL_SPECS read instead of issuing
+    // their own. On Err the tx reverts and rolls back this REENTRANCY_LOCK
+    // save anyway, so dropping the explicit save-false-on-error path here
+    // is a no-op behaviorally.
     let result = execute_simple_swap(
         &mut deps,
         env,
@@ -341,6 +339,12 @@ pub fn execute_simple_swap(
         fees: mut pool_fee_state,
         specs: pool_specs,
     } = PoolCtx::load(deps.storage)?;
+
+    // Hoisted from `simple_swap` so it can share PoolCtx's POOL_SPECS load
+    // (the previous structure issued a redundant POOL_SPECS.load just for
+    // this rate-limit check). USER_LAST_COMMIT writes here are reverted by
+    // the chain if the swap fails downstream, identical to before.
+    check_rate_limit(deps, &env, &pool_specs, &sender)?;
 
     let (offer_index, offer_pool, ask_pool) =
         if offer_asset.info.equal(&pool_info.pool_info.asset_infos[0]) {
