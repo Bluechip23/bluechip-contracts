@@ -19,8 +19,9 @@ use crate::msg::{
     ReverseSimulationResponse, SimulationResponse,
 };
 use crate::state::{
-    PoolDetails, COMMITFEEINFO, IS_THRESHOLD_HIT, LIQUIDITY_POSITIONS, NEXT_POSITION_ID,
-    OWNER_POSITIONS, POOL_ANALYTICS, POOL_FEE_STATE, POOL_INFO, POOL_PAUSED, POOL_SPECS, POOL_STATE,
+    PoolDetails, Position, PoolFeeState, COMMITFEEINFO, IS_THRESHOLD_HIT, LIQUIDITY_POSITIONS,
+    NEXT_POSITION_ID, OWNER_POSITIONS, POOL_ANALYTICS, POOL_FEE_STATE, POOL_INFO, POOL_PAUSED,
+    POOL_SPECS, POOL_STATE,
 };
 use crate::swap::{compute_offer_amount, compute_swap, update_price_accumulator};
 use cosmwasm_std::{
@@ -184,34 +185,44 @@ pub fn query_fee_state(deps: Deps) -> StdResult<PoolFeeStateResponse> {
     })
 }
 
-pub fn query_position(deps: Deps, position_id: String) -> StdResult<PositionResponse> {
-    let liquidity_position = LIQUIDITY_POSITIONS.load(deps.storage, &position_id)?;
-
-    let pool_fee_state = POOL_FEE_STATE.load(deps.storage)?;
+/// Build a `PositionResponse` from a pre-loaded `Position` and a pre-loaded
+/// `PoolFeeState`. Lets list queries load `POOL_FEE_STATE` once and reuse it
+/// across every row instead of reloading per-position.
+fn build_position_response(
+    position_id: String,
+    position: Position,
+    pool_fee_state: &PoolFeeState,
+) -> StdResult<PositionResponse> {
     let unclaimed_fees_0 = calculate_unclaimed_fees(
-        liquidity_position.liquidity,
-        liquidity_position.fee_growth_inside_0_last,
+        position.liquidity,
+        position.fee_growth_inside_0_last,
         pool_fee_state.fee_growth_global_0,
     )?
-    .checked_add(liquidity_position.unclaimed_fees_0)?;
+    .checked_add(position.unclaimed_fees_0)?;
     let unclaimed_fees_1 = calculate_unclaimed_fees(
-        liquidity_position.liquidity,
-        liquidity_position.fee_growth_inside_1_last,
+        position.liquidity,
+        position.fee_growth_inside_1_last,
         pool_fee_state.fee_growth_global_1,
     )?
-    .checked_add(liquidity_position.unclaimed_fees_1)?;
+    .checked_add(position.unclaimed_fees_1)?;
 
     Ok(PositionResponse {
         position_id,
-        liquidity: liquidity_position.liquidity,
-        owner: liquidity_position.owner,
-        fee_growth_inside_0_last: liquidity_position.fee_growth_inside_0_last,
-        fee_growth_inside_1_last: liquidity_position.fee_growth_inside_1_last,
-        created_at: liquidity_position.created_at,
-        last_fee_collection: liquidity_position.last_fee_collection,
+        liquidity: position.liquidity,
+        owner: position.owner,
+        fee_growth_inside_0_last: position.fee_growth_inside_0_last,
+        fee_growth_inside_1_last: position.fee_growth_inside_1_last,
+        created_at: position.created_at,
+        last_fee_collection: position.last_fee_collection,
         unclaimed_fees_0,
         unclaimed_fees_1,
     })
+}
+
+pub fn query_position(deps: Deps, position_id: String) -> StdResult<PositionResponse> {
+    let position = LIQUIDITY_POSITIONS.load(deps.storage, &position_id)?;
+    let pool_fee_state = POOL_FEE_STATE.load(deps.storage)?;
+    build_position_response(position_id, position, &pool_fee_state)
 }
 
 pub fn query_positions(
@@ -221,13 +232,14 @@ pub fn query_positions(
 ) -> StdResult<PositionsResponse> {
     let limit = limit.unwrap_or(10).min(30) as usize;
     let start = start_after.as_ref().map(|s| Bound::exclusive(s.as_str()));
+    let pool_fee_state = POOL_FEE_STATE.load(deps.storage)?;
 
     let liquidity_positions: StdResult<Vec<_>> = LIQUIDITY_POSITIONS
         .range(deps.storage, start, None, Order::Ascending)
         .take(limit)
         .map(|item| {
-            let (position_id, _position) = item?;
-            query_position(deps, position_id)
+            let (position_id, position) = item?;
+            build_position_response(position_id, position, &pool_fee_state)
         })
         .collect();
 
@@ -247,6 +259,7 @@ pub fn query_positions_by_owner(
     let start = start_after
         .as_ref()
         .map(|s| Bound::<&str>::exclusive(s.as_str()));
+    let pool_fee_state = POOL_FEE_STATE.load(deps.storage)?;
 
     let positions: StdResult<Vec<_>> = OWNER_POSITIONS
         .prefix(&owner_addr)
@@ -254,7 +267,8 @@ pub fn query_positions_by_owner(
         .take(limit)
         .map(|item| {
             let (position_id, _) = item?;
-            query_position(deps, position_id)
+            let position = LIQUIDITY_POSITIONS.load(deps.storage, &position_id)?;
+            build_position_response(position_id, position, &pool_fee_state)
         })
         .collect();
 

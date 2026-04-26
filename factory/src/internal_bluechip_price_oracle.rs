@@ -905,28 +905,28 @@ pub fn query_pyth_atom_usd_price(deps: Deps, env: &Env) -> StdResult<Uint128> {
     {
         let factory = FACTORYINSTANTIATEINFO.load(deps.storage)?;
 
-        // Use the configurable feed ID from factory config, not the hardcoded constant
-        let feed_id = &factory.pyth_atom_usd_price_feed_id;
+        // Partial-move feed id and pyth contract address out of factory:
+        // both are used at most twice (once for the standard query, once
+        // again only on the mock-oracle fallback path) and both consumers
+        // need owned `String`. Owning them locally lets the fallback
+        // branch reuse them by move instead of cloning a second time.
+        let feed_id = factory.pyth_atom_usd_price_feed_id;
+        let pyth_addr = factory.pyth_contract_addr_for_conversions;
 
         let query_msg = PythQueryMsg::PythConversionPriceFeed {
             id: feed_id.clone(),
         };
 
         // Try the standard query first, fallback to GetPrice for local/mock oracle
-        let response: PriceFeedResponse = match deps.querier.query_wasm_smart(
-            factory.pyth_contract_addr_for_conversions.clone(),
-            &query_msg,
-        ) {
-            Ok(res) => res,
-            //used for mock oracle
-            Err(_) => {
-                let fallback_msg = PythQueryMsg::GetPrice {
-                    price_id: feed_id.clone(),
-                };
-                deps.querier
-                    .query_wasm_smart(factory.pyth_contract_addr_for_conversions, &fallback_msg)?
-            }
-        };
+        let response: PriceFeedResponse =
+            match deps.querier.query_wasm_smart(pyth_addr.clone(), &query_msg) {
+                Ok(res) => res,
+                //used for mock oracle
+                Err(_) => {
+                    let fallback_msg = PythQueryMsg::GetPrice { price_id: feed_id };
+                    deps.querier.query_wasm_smart(pyth_addr, &fallback_msg)?
+                }
+            };
 
         let current_time = env.block.time.seconds() as i64;
 
@@ -1024,7 +1024,23 @@ pub fn query_pyth_atom_usd_price(deps: Deps, env: &Env) -> StdResult<Uint128> {
     }
 }
 
-pub fn get_bluechip_usd_price(deps: Deps, env: &Env) -> StdResult<Uint128> {
+/// Internal: returns the bluechip USD price together with the oracle's
+/// `last_update` timestamp from a single load of INTERNAL_ORACLE. The
+/// conversion wrappers (`bluechip_to_usd` / `usd_to_bluechip`) need both
+/// values to populate `ConversionResponse.timestamp`, and the cache
+/// fallback path needs the cache to authorize the stale-pyth bridge —
+/// so loading the oracle once and reusing it both for the cache check
+/// and for the TWAP read avoids the prior 2× / 3× re-deserialization.
+fn get_bluechip_usd_price_with_meta(deps: Deps, env: &Env) -> StdResult<(Uint128, u64)> {
+    // Single load of INTERNAL_ORACLE shared by both the Pyth-fallback
+    // branch (which reads `bluechip_price_cache`) and the post-Pyth TWAP
+    // computation (which reads `bluechip_price_cache.last_price`).
+    let oracle = INTERNAL_ORACLE
+        .load(deps.storage)
+        .map_err(|_| StdError::generic_err("Internal oracle not initialized"))?;
+    let cache = &oracle.bluechip_price_cache;
+    let last_update = cache.last_update;
+
     // Try live Pyth price first; fall back to cached price if Pyth is stale.
     let atom_usd_price = match query_pyth_atom_usd_price(deps, env) {
         Ok(price) => price,
@@ -1036,10 +1052,6 @@ pub fn get_bluechip_usd_price(deps: Deps, env: &Env) -> StdResult<Uint128> {
             // rather than letting a volatile old value leak into commit USD
             // valuations. This converts a prolonged Pyth outage into a
             // temporary commit freeze, which is safer than mispricing.
-            let oracle = INTERNAL_ORACLE
-                .load(deps.storage)
-                .map_err(|_| StdError::generic_err("Internal oracle not initialized"))?;
-            let cache = &oracle.bluechip_price_cache;
             let current_time = env.block.time.seconds();
             let max_cache_age = crate::state::MAX_PRICE_AGE_SECONDS_BEFORE_STALE;
             if cache.cached_pyth_price.is_zero()
@@ -1055,13 +1067,8 @@ pub fn get_bluechip_usd_price(deps: Deps, env: &Env) -> StdResult<Uint128> {
 
     #[cfg(feature = "mock")]
     {
-        return Ok(atom_usd_price);
+        return Ok((atom_usd_price, last_update));
     }
-
-    // Load the internal oracle to get the TWAP of Bluechip/ATOM
-    let oracle = INTERNAL_ORACLE
-        .load(deps.storage)
-        .map_err(|_| StdError::generic_err("Internal oracle not initialized"))?;
 
     // Bootstrap note: when fewer than MIN_ELIGIBLE_POOLS_FOR_TWAP creator
     // pools have crossed threshold, `oracle.bluechip_price_cache.last_price`
@@ -1088,35 +1095,42 @@ pub fn get_bluechip_usd_price(deps: Deps, env: &Env) -> StdResult<Uint128> {
     // price is older than MAX_ORACLE_STALENESS_SECONDS. And the zero
     // guard below catches the pre-first-update case where UpdateOraclePrice
     // has never been called.
-    let bluechip_per_atom_twap = oracle.bluechip_price_cache.last_price;
+    #[cfg(not(feature = "mock"))]
+    {
+        let bluechip_per_atom_twap = cache.last_price;
 
-    if bluechip_per_atom_twap.is_zero() {
-        return Err(StdError::generic_err(
-            "TWAP price is zero - oracle may need update",
-        ));
+        if bluechip_per_atom_twap.is_zero() {
+            return Err(StdError::generic_err(
+                "TWAP price is zero - oracle may need update",
+            ));
+        }
+
+        // Calculate USD price using TWAP
+        // bluechip_usd_price = atom_usd_price / bluechip_per_atom_twap
+        // Units: (USD/ATOM) / (Bluechip/ATOM) = USD/Bluechip
+        let bluechip_usd_price = atom_usd_price
+            .checked_mul(Uint128::from(PRICE_PRECISION))
+            .map_err(|e| {
+                StdError::generic_err(format!("Overflow calculating bluechip USD price: {}", e))
+            })?
+            .checked_div(bluechip_per_atom_twap)
+            .map_err(|e| {
+                StdError::generic_err(format!(
+                    "Division error calculating bluechip USD price: {}",
+                    e
+                ))
+            })?;
+
+        if bluechip_usd_price.is_zero() {
+            return Err(StdError::generic_err("Calculated bluechip price is zero"));
+        }
+
+        Ok((bluechip_usd_price, last_update))
     }
+}
 
-    // Calculate USD price using TWAP
-    // bluechip_usd_price = atom_usd_price / bluechip_per_atom_twap
-    // Units: (USD/ATOM) / (Bluechip/ATOM) = USD/Bluechip
-    let bluechip_usd_price = atom_usd_price
-        .checked_mul(Uint128::from(PRICE_PRECISION))
-        .map_err(|e| {
-            StdError::generic_err(format!("Overflow calculating bluechip USD price: {}", e))
-        })?
-        .checked_div(bluechip_per_atom_twap)
-        .map_err(|e| {
-            StdError::generic_err(format!(
-                "Division error calculating bluechip USD price: {}",
-                e
-            ))
-        })?;
-
-    if bluechip_usd_price.is_zero() {
-        return Err(StdError::generic_err("Calculated bluechip price is zero"));
-    }
-
-    Ok(bluechip_usd_price)
+pub fn get_bluechip_usd_price(deps: Deps, env: &Env) -> StdResult<Uint128> {
+    get_bluechip_usd_price_with_meta(deps, env).map(|(price, _)| price)
 }
 
 /// Core conversion: when `to_usd` is true, converts bluechip→USD; otherwise USD→bluechip.
@@ -1126,8 +1140,11 @@ fn convert_with_oracle(
     amount: Uint128,
     to_usd: bool,
 ) -> StdResult<ConversionResponse> {
-    let oracle = INTERNAL_ORACLE.load(deps.storage)?;
-    let cached_price = get_bluechip_usd_price(deps, env)?;
+    // Single oracle load — `get_bluechip_usd_price_with_meta` returns both
+    // the price and the cache's `last_update`, so we no longer need a
+    // separate `INTERNAL_ORACLE.load(...)` here just to populate the
+    // response timestamp.
+    let (cached_price, last_update) = get_bluechip_usd_price_with_meta(deps, env)?;
 
     if cached_price.is_zero() {
         return Err(StdError::generic_err("Invalid zero price"));
@@ -1155,7 +1172,7 @@ fn convert_with_oracle(
     Ok(ConversionResponse {
         amount: converted,
         rate_used: cached_price,
-        timestamp: oracle.bluechip_price_cache.last_update,
+        timestamp: last_update,
     })
 }
 

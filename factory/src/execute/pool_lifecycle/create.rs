@@ -149,7 +149,7 @@ pub(crate) fn execute_create_creator_pool(
     // `standard_pool_wasm_contract_id` code_id added in 4c). The old
     // `is_standard_pool: Some(true)` bypass on `CreatePool` is gone.
 
-    let sender = info.sender.clone();
+    let creator_attr = info.sender.to_string();
     let pool_counter = POOL_COUNTER.may_load(deps.storage)?.unwrap_or(0);
     let pool_id = pool_counter + 1;
     POOL_COUNTER.save(deps.storage, &pool_id)?;
@@ -166,7 +166,7 @@ pub(crate) fn execute_create_creator_pool(
         //creating the creator token only, no minting.
         msg: to_json_binary(&TokenInstantiateMsg {
             name: token_info.name.clone(),
-            symbol: token_info.symbol.clone(),
+            symbol: token_info.symbol,
             decimals: token_info.decimal,
             initial_balances: vec![],
             mint: Some(MinterResponse {
@@ -210,7 +210,7 @@ pub(crate) fn execute_create_creator_pool(
 
     Ok(Response::new()
         .add_attribute("action", "create")
-        .add_attribute("creator", sender.to_string())
+        .add_attribute("creator", creator_attr)
         .add_attribute("pool_id", pool_id.to_string())
         .add_submessages(sub_msg))
 }
@@ -368,13 +368,18 @@ pub(crate) fn execute_create_standard_pool(
 
     // Forward whatever the caller paid to the bluechip wallet. If they
     // overpaid, the surplus stays with the protocol — same convention as
-    // commit-fee handling.
+    // commit-fee handling. Partial-move `bluechip_denom` out of
+    // factory_config since it has no further reads after this point;
+    // remaining `factory_config` fields (`cw721_nft_contract_id` below)
+    // are still accessible because partial moves don't invalidate the
+    // rest of the struct.
+    let bluechip_denom = factory_config.bluechip_denom;
     let mut messages: Vec<CosmosMsg> = Vec::new();
     if !paid_bluechip.is_zero() {
         messages.push(CosmosMsg::Bank(cosmwasm_std::BankMsg::Send {
             to_address: factory_config.bluechip_wallet_address.to_string(),
             amount: vec![cosmwasm_std::Coin {
-                denom: factory_config.bluechip_denom.clone(),
+                denom: bluechip_denom,
                 amount: paid_bluechip,
             }],
         }));

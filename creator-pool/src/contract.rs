@@ -34,7 +34,7 @@ use crate::state::{
 use crate::swap_helper::{execute_swap_cw20, simple_swap};
 use cosmwasm_std::{
     entry_point, from_json, to_json_binary, Addr, CosmosMsg, Decimal, DepsMut, Env, MessageInfo,
-    Reply, Response, StdError, StdResult, SubMsg, SubMsgResult, Uint128, WasmMsg,
+    Reply, Response, StdError, StdResult, Storage, SubMsg, SubMsgResult, Uint128, WasmMsg,
 };
 use cw2::set_contract_version;
 
@@ -207,6 +207,26 @@ pub fn instantiate(
 // Execute dispatch
 // ---------------------------------------------------------------------------
 
+/// Pause-only gate. Used by `Commit` (pre-threshold path) where the pool
+/// has no reserves yet, so the drain check from `check_pool_writable`
+/// doesn't apply. Identical inlined check was repeated 9× across the
+/// dispatch arms before this extraction.
+fn check_pool_not_paused(storage: &dyn Storage) -> Result<(), ContractError> {
+    if POOL_PAUSED.may_load(storage)?.unwrap_or(false) {
+        return Err(ContractError::PoolPausedLowLiquidity {});
+    }
+    Ok(())
+}
+
+/// Liquidity-write gate: every deposit / add / remove / collect / claim
+/// path must fail closed when an emergency drain has been initiated OR
+/// when admin has paused the pool. Combines the two checks that were
+/// previously copy-pasted into 8 dispatch arms.
+fn check_pool_writable(storage: &dyn Storage) -> Result<(), ContractError> {
+    ensure_not_drained(storage)?;
+    check_pool_not_paused(storage)
+}
+
 #[cfg_attr(not(feature = "library"), entry_point)]
 pub fn execute(
     deps: DepsMut,
@@ -240,9 +260,7 @@ pub fn execute(
             // Previously only process_post_threshold_commit checked POOL_PAUSED,
             // so admin pauses failed to stop pre-threshold deposits, letting
             // users trap funds in the COMMIT_LEDGER of a paused pool.
-            if POOL_PAUSED.may_load(deps.storage)?.unwrap_or(false) {
-                return Err(ContractError::PoolPausedLowLiquidity {});
-            }
+            check_pool_not_paused(deps.storage)?;
             commit(
                 deps,
                 env,
@@ -302,10 +320,7 @@ pub fn execute(
             min_amount1,
             transaction_deadline,
         } => {
-            ensure_not_drained(deps.storage)?;
-            if POOL_PAUSED.may_load(deps.storage)?.unwrap_or(false) {
-                return Err(ContractError::PoolPausedLowLiquidity {});
-            }
+            check_pool_writable(deps.storage)?;
             if !query_check_commit(deps.as_ref())? {
                 return Err(ContractError::ShortOfThreshold {});
             }
@@ -330,10 +345,7 @@ pub fn execute(
             min_amount1,
             transaction_deadline,
         } => {
-            ensure_not_drained(deps.storage)?;
-            if POOL_PAUSED.may_load(deps.storage)?.unwrap_or(false) {
-                return Err(ContractError::PoolPausedLowLiquidity {});
-            }
+            check_pool_writable(deps.storage)?;
             if !query_check_commit(deps.as_ref())? {
                 return Err(ContractError::ShortOfThreshold {});
             }
@@ -352,10 +364,7 @@ pub fn execute(
             )
         }
         ExecuteMsg::CollectFees { position_id } => {
-            ensure_not_drained(deps.storage)?;
-            if POOL_PAUSED.may_load(deps.storage)?.unwrap_or(false) {
-                return Err(ContractError::PoolPausedLowLiquidity {});
-            }
+            check_pool_writable(deps.storage)?;
             execute_collect_fees(deps, env, info, position_id)
         }
         ExecuteMsg::RemovePartialLiquidity {
@@ -373,10 +382,7 @@ pub fn execute(
             // leaves non-zero total_liquidity after EMERGENCY_DRAINED is set,
             // an explicit check here keeps users from pulling against
             // already-swept reserves with arbitrary math.
-            ensure_not_drained(deps.storage)?;
-            if POOL_PAUSED.may_load(deps.storage)?.unwrap_or(false) {
-                return Err(ContractError::PoolPausedLowLiquidity {});
-            }
+            check_pool_writable(deps.storage)?;
             execute_remove_partial_liquidity(
                 deps,
                 env,
@@ -396,10 +402,7 @@ pub fn execute(
             min_amount0,
             max_ratio_deviation_bps,
         } => {
-            ensure_not_drained(deps.storage)?;
-            if POOL_PAUSED.may_load(deps.storage)?.unwrap_or(false) {
-                return Err(ContractError::PoolPausedLowLiquidity {});
-            }
+            check_pool_writable(deps.storage)?;
             execute_remove_all_liquidity(
                 deps,
                 env,
@@ -419,10 +422,7 @@ pub fn execute(
             min_amount1,
             max_ratio_deviation_bps,
         } => {
-            ensure_not_drained(deps.storage)?;
-            if POOL_PAUSED.may_load(deps.storage)?.unwrap_or(false) {
-                return Err(ContractError::PoolPausedLowLiquidity {});
-            }
+            check_pool_writable(deps.storage)?;
             execute_remove_partial_liquidity_by_percent(
                 deps,
                 env,
@@ -440,20 +440,14 @@ pub fn execute(
             // with more raised-bluechip than `max_bluechip_lock_per_pool`
             // absorbs. Standard pools have no commit phase and no excess
             // position, so there's nothing to claim.
-            ensure_not_drained(deps.storage)?;
-            if POOL_PAUSED.may_load(deps.storage)?.unwrap_or(false) {
-                return Err(ContractError::PoolPausedLowLiquidity {});
-            }
+            check_pool_writable(deps.storage)?;
             execute_claim_creator_excess(deps, env, info, transaction_deadline)
         }
         ExecuteMsg::ClaimCreatorFees { transaction_deadline } => {
             // The creator fee pot is seeded by the fee_size_multiplier
             // clip on commit-pool LP fees. Standard pools have no creator
             // concept, so the pot is always empty and this handler is N/A.
-            ensure_not_drained(deps.storage)?;
-            if POOL_PAUSED.may_load(deps.storage)?.unwrap_or(false) {
-                return Err(ContractError::PoolPausedLowLiquidity {});
-            }
+            check_pool_writable(deps.storage)?;
             execute_claim_creator_fees(deps, env, info, transaction_deadline)
         }
         ExecuteMsg::RetryFactoryNotify {} => {

@@ -9,8 +9,9 @@
 
 use cosmwasm_std::{
     Addr, Attribute, BankMsg, Coin, CosmosMsg, DepsMut, Env, MessageInfo, Response, StdError,
-    StdResult, Uint128,
+    StdResult, Storage, Uint128,
 };
+use cw_storage_plus::Item;
 
 use crate::error::ContractError;
 use crate::state::{
@@ -20,6 +21,30 @@ use crate::state::{
 };
 
 use super::ensure_admin;
+
+/// Shared body for the two bounty setters (oracle-update and distribution).
+/// Validates against the per-bounty cap, persists the new value, and emits
+/// the standard `action` + `new_bounty_usd` attribute pair.
+fn save_bounty_with_cap(
+    storage: &mut dyn Storage,
+    item: Item<Uint128>,
+    max_bounty_usd: Uint128,
+    new_bounty: Uint128,
+    action: &'static str,
+) -> Result<Response, ContractError> {
+    if new_bounty > max_bounty_usd {
+        return Err(ContractError::Std(StdError::generic_err(format!(
+            "Bounty exceeds max of {} (USD, 6 decimals)",
+            max_bounty_usd
+        ))));
+    }
+
+    item.save(storage, &new_bounty)?;
+
+    Ok(Response::new()
+        .add_attribute("action", action)
+        .add_attribute("new_bounty_usd", new_bounty.to_string()))
+}
 
 /// Builds a uniform "bounty skipped" Response for execute_pay_distribution_bounty.
 /// Every skip path emits the same action+bounty_skipped+pool triple plus
@@ -49,19 +74,13 @@ pub fn execute_set_oracle_update_bounty(
     new_bounty: Uint128,
 ) -> Result<Response, ContractError> {
     ensure_admin(deps.as_ref(), &info)?;
-
-    if new_bounty > MAX_ORACLE_UPDATE_BOUNTY_USD {
-        return Err(ContractError::Std(StdError::generic_err(format!(
-            "Bounty exceeds max of {} (USD, 6 decimals)",
-            MAX_ORACLE_UPDATE_BOUNTY_USD
-        ))));
-    }
-
-    ORACLE_UPDATE_BOUNTY_USD.save(deps.storage, &new_bounty)?;
-
-    Ok(Response::new()
-        .add_attribute("action", "set_oracle_update_bounty")
-        .add_attribute("new_bounty_usd", new_bounty.to_string()))
+    save_bounty_with_cap(
+        deps.storage,
+        ORACLE_UPDATE_BOUNTY_USD,
+        MAX_ORACLE_UPDATE_BOUNTY_USD,
+        new_bounty,
+        "set_oracle_update_bounty",
+    )
 }
 
 /// Admin-only. Sets the per-batch USD bounty (6 decimals, e.g. 50_000 = $0.05)
@@ -73,19 +92,13 @@ pub fn execute_set_distribution_bounty(
     new_bounty: Uint128,
 ) -> Result<Response, ContractError> {
     ensure_admin(deps.as_ref(), &info)?;
-
-    if new_bounty > MAX_DISTRIBUTION_BOUNTY_USD {
-        return Err(ContractError::Std(StdError::generic_err(format!(
-            "Bounty exceeds max of {} (USD, 6 decimals)",
-            MAX_DISTRIBUTION_BOUNTY_USD
-        ))));
-    }
-
-    DISTRIBUTION_BOUNTY_USD.save(deps.storage, &new_bounty)?;
-
-    Ok(Response::new()
-        .add_attribute("action", "set_distribution_bounty")
-        .add_attribute("new_bounty_usd", new_bounty.to_string()))
+    save_bounty_with_cap(
+        deps.storage,
+        DISTRIBUTION_BOUNTY_USD,
+        MAX_DISTRIBUTION_BOUNTY_USD,
+        new_bounty,
+        "set_distribution_bounty",
+    )
 }
 
 /// Pool-only. Called by a pool's ContinueDistribution handler to forward

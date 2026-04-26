@@ -31,19 +31,14 @@ pub const MAX_ORACLE_STALENESS_SECONDS: u64 = 90;
 /// PRICE_PRECISION must be mirrored here.
 pub const ORACLE_PRICE_PRECISION: u128 = 1_000_000;
 
-pub fn get_usd_value_with_staleness_check(
-    deps: Deps,
-    bluechip_amount: Uint128,
-    current_block_time: u64,
-) -> StdResult<Uint128> {
-    Ok(get_oracle_conversion_with_staleness(deps, bluechip_amount, current_block_time)?.amount)
-}
-
 /// Performs the oracle-backed bluechip→USD conversion and returns the
 /// full ConversionResponse (not just the amount). Callers that need to
 /// subsequently convert USD back to bluechip can derive the second value
 /// from the `rate_used` field without re-querying — see P4-M6. Threads
-/// the same price snapshot through the entire commit flow.
+/// the same price snapshot through the entire commit flow, so every
+/// commit path issues at most one oracle query (verified across
+/// `execute_commit_logic`, `process_threshold_crossing_with_excess`,
+/// `process_pre_threshold_commit`, `process_post_threshold_commit`).
 pub fn get_oracle_conversion_with_staleness(
     deps: Deps,
     bluechip_amount: Uint128,
@@ -91,15 +86,3 @@ pub fn usd_to_bluechip_at_rate(usd_amount: Uint128, rate: Uint128) -> StdResult<
         })
 }
 
-pub fn get_bluechip_value(deps: Deps, usd_amount: Uint128) -> StdResult<Uint128> {
-    let factory_address = POOL_INFO.load(deps.storage)?;
-
-    let response: ConversionResponse = deps.querier.query_wasm_smart(
-        factory_address.factory_addr,
-        &FactoryQueryWrapper::InternalBlueChipOracleQuery(FactoryQueryMsg::ConvertUsdToBluechip {
-            amount: usd_amount,
-        }),
-    )?;
-
-    Ok(response.amount)
-}

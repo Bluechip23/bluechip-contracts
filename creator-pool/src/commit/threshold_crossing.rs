@@ -30,10 +30,10 @@ use crate::generic_helpers::{
 };
 use crate::msg::CommitFeeInfo;
 use crate::state::{
-    CommitLimitInfo, PoolFeeState, PoolInfo, PoolSpecs, PoolState, ThresholdPayoutAmounts,
-    COMMIT_LEDGER, IS_THRESHOLD_HIT, NATIVE_RAISED_FROM_COMMIT, POOL_ANALYTICS, POOL_FEE_STATE,
-    POOL_STATE, POST_THRESHOLD_COOLDOWN_BLOCKS, POST_THRESHOLD_COOLDOWN_UNTIL_BLOCK,
-    THRESHOLD_PROCESSING, USD_RAISED_FROM_COMMIT,
+    CommitLimitInfo, PoolAnalytics, PoolFeeState, PoolInfo, PoolSpecs, PoolState,
+    ThresholdPayoutAmounts, COMMIT_LEDGER, IS_THRESHOLD_HIT, NATIVE_RAISED_FROM_COMMIT,
+    POOL_FEE_STATE, POOL_STATE, POST_THRESHOLD_COOLDOWN_BLOCKS,
+    POST_THRESHOLD_COOLDOWN_UNTIL_BLOCK, THRESHOLD_PROCESSING, USD_RAISED_FROM_COMMIT,
 };
 use crate::swap_helper::{
     assert_max_spread, compute_swap, update_price_accumulator, usd_to_bluechip_at_rate,
@@ -62,6 +62,7 @@ pub(super) fn process_threshold_crossing_with_excess(
     mut messages: Vec<CosmosMsg>,
     belief_price: Option<Decimal>,
     max_spread: Option<Decimal>,
+    analytics: &mut PoolAnalytics,
 ) -> Result<Response, ContractError> {
     // Reuse the rate captured at commit() entry rather than re-querying the
     // oracle (P4-M6). usd_to_bluechip_at_rate is the inverse of the
@@ -232,9 +233,10 @@ pub(super) fn process_threshold_crossing_with_excess(
 
     THRESHOLD_PROCESSING.save(deps.storage, &false)?;
 
-    // Update analytics
-    let mut analytics = POOL_ANALYTICS.may_load(deps.storage)?.unwrap_or_default();
-    analytics.total_commit_count += 1;
+    // Update analytics — `total_commit_count` is incremented and persisted
+    // by the dispatcher (`commit::execute_commit_logic`); this handler
+    // only mutates the swap-specific fields on the shared `&mut analytics`
+    // when an excess swap actually occurred.
     if !capped_excess.is_zero() && !return_amt.is_zero() {
         analytics.total_swap_count += 1;
         analytics.total_volume_0 = analytics.total_volume_0.saturating_add(capped_excess);
@@ -242,7 +244,6 @@ pub(super) fn process_threshold_crossing_with_excess(
         analytics.last_trade_block = env.block.height;
         analytics.last_trade_timestamp = env.block.time.seconds();
     }
-    POOL_ANALYTICS.save(deps.storage, &analytics)?;
 
     // `pool_state` (outer &mut ref) already reflects the committed on-chain
     // state after trigger_threshold_payout + the optional excess-swap block

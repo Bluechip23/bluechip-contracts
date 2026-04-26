@@ -16,8 +16,8 @@ use crate::error::ContractError;
 use crate::generic::{check_rate_limit, enforce_transaction_deadline};
 use crate::liquidity_helpers::{
     build_fee_transfer_msgs, calc_capped_fees_with_clip, calculate_fee_size_multiplier,
-    calculate_fees_owed_split, check_ratio_deviation, check_slippage, sync_position_on_transfer,
-    verify_position_ownership,
+    calculate_fees_owed_split_pair, check_ratio_deviation, check_slippage,
+    sync_position_on_transfer, verify_position_ownership,
 };
 use crate::state::{
     PoolSpecs, CREATOR_FEE_POT, LIQUIDITY_POSITIONS, OWNER_POSITIONS, POOL_ANALYTICS,
@@ -239,38 +239,24 @@ pub fn remove_partial_liquidity(
     }
     let current_reserve0 = pool_state.reserve0;
     let current_reserve1 = pool_state.reserve1;
-    // Only calculate fees on the portion being removed. Split returns
-    // `(adjusted, clipped)`; the clipped slice is routed to the creator
-    // pot below so it isn't orphaned in fee_reserve.
-    let (fees_owed_0, clipped_0) = calculate_fees_owed_split(
-        liquidity_to_remove,
-        pool_fee_state.fee_growth_global_0,
-        liquidity_position.fee_growth_inside_0_last,
-        liquidity_position.fee_size_multiplier,
-    )?;
-
-    let (fees_owed_1, clipped_1) = calculate_fees_owed_split(
-        liquidity_to_remove,
-        pool_fee_state.fee_growth_global_1,
-        liquidity_position.fee_growth_inside_1_last,
-        liquidity_position.fee_size_multiplier,
-    )?;
-
-    // Preserve fees on the remaining portion so resetting the snapshot
-    // below doesn't discard them. Only the adjusted (LP-facing) portion
-    // is preserved; the clipped slice of the remaining liquidity will
-    // accrue through the standard fee_growth snapshot on the next
-    // collect and route to the pot at that time.
+    // Compute split fees for both the removed portion (LP payout) and
+    // the preserved portion (rolled into the position's `unclaimed_fees`)
+    // in a single helper call per token. The clipped slice of the
+    // removed portion is routed to the creator pot below; the preserved
+    // clip is intentionally dropped — it accrues through the standard
+    // `fee_growth` snapshot on the next collect.
     let remaining_liquidity = liquidity_position
         .liquidity
         .checked_sub(liquidity_to_remove)?;
-    let (preserved_fees_0, _preserved_clip_0) = calculate_fees_owed_split(
+    let (fees_owed_0, clipped_0, preserved_fees_0) = calculate_fees_owed_split_pair(
+        liquidity_to_remove,
         remaining_liquidity,
         pool_fee_state.fee_growth_global_0,
         liquidity_position.fee_growth_inside_0_last,
         liquidity_position.fee_size_multiplier,
     )?;
-    let (preserved_fees_1, _preserved_clip_1) = calculate_fees_owed_split(
+    let (fees_owed_1, clipped_1, preserved_fees_1) = calculate_fees_owed_split_pair(
+        liquidity_to_remove,
         remaining_liquidity,
         pool_fee_state.fee_growth_global_1,
         liquidity_position.fee_growth_inside_1_last,
