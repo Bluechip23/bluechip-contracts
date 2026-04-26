@@ -53,16 +53,33 @@ pub const ROTATION_INTERVAL: u64 = 3600;
 /// the sample set.
 pub const MAX_TWAP_DRIFT_BPS: u64 = 3000;
 
-// Minimum number of threshold-crossed creator pools (in addition to the
-// anchor ATOM/bluechip pool) required before the factory is willing to
-// return a TWAP-derived bluechip USD price. Until at least this many
-// creator pools have crossed threshold, every price query falls back to
-// the single anchor pool alone — which is trivially manipulable by
-// anyone who can move that one pool. Raising the floor forces the oracle
-// to error ("insufficient data") during the bootstrap window instead of
-// serving a single-pool-dominated price that is effectively attacker-
-// controlled. Callers (commit, conversion queries) then freeze until the
-// ecosystem has enough pools to dilute any single actor's influence.
+// Aspirational floor: the number of threshold-crossed creator pools the
+// design intends to require before the TWAP is meaningfully diversified
+// across multiple pools (in addition to the anchor ATOM/bluechip pool).
+//
+// IMPORTANT — NOT ENFORCED: this constant is referenced only by the
+// bootstrap-acceptance comment block in `get_bluechip_usd_price_with_meta`
+// (see lines ~1075-1100). The oracle does NOT currently refuse to serve
+// a price when fewer than this many creator pools are eligible. We
+// explicitly accept a single-pool-dominated price during the bootstrap
+// window because every commit needs an oracle price to compute its USD
+// value, but no creator pool can cross its threshold until commits
+// succeed — enforcing the floor would deadlock the protocol on day one.
+//
+// Defense-in-depth that bounds the bootstrap manipulation risk:
+//   - `MIN_POOL_LIQUIDITY` (line 31) raises the cost of moving the anchor.
+//   - The anchor pool is curated and seeded by the deployment team.
+//   - The H11 TWAP circuit breaker caps per-update drift to
+//     `MAX_TWAP_DRIFT_BPS` (30%) on every update *after* the first.
+//   - Downstream consumers (commit, swap) layer their own slippage and
+//     spread protections.
+//
+// The risk window is "first oracle update plus the few updates until
+// MIN_ELIGIBLE_POOLS_FOR_TWAP creator pools have crossed threshold." If
+// you ever do want this to be a hard floor, the place to enforce it is
+// in `calculate_weighted_price_with_atom` (return `InsufficientData` when
+// `successful_pools < MIN_ELIGIBLE_POOLS_FOR_TWAP`) plus a bootstrap-mode
+// switch on the price reader so the protocol can still launch.
 pub const MIN_ELIGIBLE_POOLS_FOR_TWAP: usize = 3;
 pub const INTERNAL_ORACLE: Item<BlueChipPriceInternalOracle> = Item::new("internal_oracle");
 const PRICE_PRECISION: u128 = 1_000_000;
@@ -684,16 +701,33 @@ pub fn calculate_weighted_price_with_atom(
                     idx == 1
                 } else {
                     // Anchor pool or stale snapshot — fall back to scan.
+                    //
+                    // Two pool shapes can land here:
+                    //   (a) Creator pool: `[Native(bluechip), CreatorToken(...)]`.
+                    //       `pool_token_info[0]` is `Native`, so the `Native` arm
+                    //       fires and returns `false` (bluechip is at index 0).
+                    //   (b) Anchor pool: `[Native(bluechip), Native(atom)]` OR
+                    //       `[Native(atom), Native(bluechip)]` — `execute_set_anchor_pool`
+                    //       accepts either order. Match the index-0 denom against
+                    //       the canonical bluechip denom; if it matches, bluechip
+                    //       is first; otherwise (i.e. atom is first), bluechip
+                    //       is second.
+                    //
+                    // The pre-fix `matches!(... CreatorToken { .. })` pattern was
+                    // structurally `false` for any Native/Native pair, which silently
+                    // inverted the anchor's reserve selection whenever the operator
+                    // created the anchor with `[Native(atom), Native(bluechip)]`.
+                    let canonical_bluechip = factory_config.bluechip_denom.as_str();
                     let mut found = false;
                     for (_id, pool_details) in POOLS_BY_ID
                         .range(deps.storage, None, None, Order::Ascending)
                         .flatten()
                     {
                         if pool_details.creator_pool_addr.as_str() == pool_address.as_str() {
-                            found = matches!(
-                                pool_details.pool_token_info[0],
-                                TokenType::CreatorToken { .. }
-                            );
+                            found = match &pool_details.pool_token_info[0] {
+                                TokenType::CreatorToken { .. } => true,
+                                TokenType::Native { denom } => denom != canonical_bluechip,
+                            };
                             break;
                         }
                     }

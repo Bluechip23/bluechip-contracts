@@ -2745,15 +2745,19 @@ fn test_both_reserves_checked() {
         Err(ContractError::InsufficientReserves {})
     ));
 
-    // Test with low reserve1
+    // Test with low reserve1. Use a different sender than the first call —
+    // execute_simple_swap now runs the rate-limit check (hoisted from
+    // simple_swap so it can share the PoolCtx POOL_SPECS load), which would
+    // otherwise reject the same-sender second call with TooFrequentCommits
+    // before reaching the reserve guard this test exercises.
     setup_pool_with_reserves(&mut deps, Uint128::new(10), Uint128::new(9999));
     POOL_PAUSED.remove(&mut deps.storage); // Reset pause state
 
     let result2 = execute_simple_swap(
         &mut deps.as_mut(),
         mock_env(),
-        message_info(&Addr::unchecked("user"), &[]),
-        Addr::unchecked("user"),
+        message_info(&Addr::unchecked("user2"), &[]),
+        Addr::unchecked("user2"),
         TokenInfo {
             info: TokenType::Native {
                 denom: "ubluechip".to_string(),

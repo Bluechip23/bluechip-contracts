@@ -144,7 +144,11 @@ pub fn remove_all_liquidity(
         ("action", "remove_liquidity".to_string()),
         ("position_id", position_id),
         ("withdrawer", info.sender.to_string()),
-        ("liquidity_removed", liquidity_position.liquidity.to_string()),
+        // Report the actual removed amount, not `liquidity_position.liquidity`
+        // — on the first-depositor branch the latter has been overwritten
+        // with `locked_liquidity` (MINIMUM_LIQUIDITY), which would mis-report
+        // every first-depositor exit to indexers and frontends.
+        ("liquidity_removed", removable_liquidity.to_string()),
         ("principal_0", user_share_0.to_string()),
         ("principal_1", user_share_1.to_string()),
         ("fees_0", fees_owed_0.to_string()),

@@ -112,10 +112,15 @@ pub fn calculate_and_mint_bluechip(
                 funds: vec![],
             }));
         } else {
+            // Read the canonical bluechip denom from factory config rather
+            // than hardcoding "ubluechip" — the field is documented as the
+            // chain bank denom and a deployment on a chain using a
+            // different denom (e.g. an IBC-wrapped variant) would have
+            // failed the bank send here.
             msgs.push(CosmosMsg::Bank(BankMsg::Send {
                 to_address: config.bluechip_wallet_address.to_string(),
                 amount: vec![Coin {
-                    denom: "ubluechip".to_string(),
+                    denom: config.bluechip_denom.clone(),
                     amount: mint_amount,
                 }],
             }));

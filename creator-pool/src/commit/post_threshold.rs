@@ -74,11 +74,18 @@ pub(super) fn process_post_threshold_commit(
         return Err(ContractError::ZeroAmount {});
     }
 
+    // `assert_max_spread` measures `expected_return - return_amount` against
+    // `max_spread`. Pass the gross-of-commission return so the spread check
+    // matches the convention used by `pool_core::swap::execute_simple_swap`
+    // and `process_threshold_crossing_with_excess`. The previous net-of-
+    // commission argument made this path stricter than the equivalent
+    // SimpleSwap, causing identical-params commits to revert where swaps
+    // succeeded.
     assert_max_spread(
         belief_price,
         max_spread,
         swap_amount,
-        return_amt,
+        return_amt.checked_add(commission_amt)?,
         spread_amt,
     )?;
 
