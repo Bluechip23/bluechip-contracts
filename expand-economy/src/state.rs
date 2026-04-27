@@ -6,16 +6,22 @@ use cw_storage_plus::Item;
 /// units). Bounds the worst-case daily drain if the configured factory
 /// address is ever compromised: even with full factory control, an
 /// attacker can extract at most this much per day, capped by the
-/// expand-economy's own balance. Tuned for "big enough to cover normal
-/// threshold-crossing schedule (~one per N hours), small enough to make
-/// a key-compromise attack uneconomic."
+/// expand-economy's own balance.
 ///
-/// 100_000 ubluechip = 0.1 bluechip in base-decimal units. Threshold
-/// mints are a few hundred bluechip per pool early on, tapering toward
-/// zero. The cap is sized to allow ~1000 small mints/day before
-/// rate-limiting kicks in — well above the natural protocol rate, well
-/// below the "drain-the-reservoir" attack rate.
-pub const DAILY_EXPANSION_CAP: Uint128 = Uint128::new(100_000);
+/// 100_000_000_000 ubluechip = 100,000 bluechip in base-decimal units
+/// (assumes the canonical 6-decimal denom). The factory's
+/// `calculate_mint_amount` polynomial returns up to ~500 bluechip per
+/// pool for the very first threshold-crossing and tapers toward zero
+/// thereafter, so this cap leaves headroom for ~200 early-pool mints
+/// per 24h — well above the natural protocol rate, well below the
+/// "drain-the-reservoir" attack rate.
+///
+/// History: this constant previously read `100_000` (= 0.1 bluechip),
+/// which was 5000× too small to cover even a single legitimate
+/// threshold-crossing mint. The first pool to cross threshold would
+/// have reverted with `DailyExpansionCapExceeded`, leaving the pool
+/// stuck at near-threshold forever.
+pub const DAILY_EXPANSION_CAP: Uint128 = Uint128::new(100_000_000_000);
 pub const DAILY_WINDOW_SECONDS: u64 = 86_400;
 
 /// Snapshot of recent RequestExpansion volume for the rolling cap. We
