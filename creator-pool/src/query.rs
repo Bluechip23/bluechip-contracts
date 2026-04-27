@@ -10,12 +10,12 @@
 pub use pool_core::query::*;
 
 use crate::msg::{
-    CommitStatus, CommitterInfo, FactoryNotifyStatusResponse, LastCommittedResponse,
-    PoolAnalyticsResponse, PoolCommitResponse, QueryMsg,
+    CommitStatus, CommitterInfo, DistributionStateResponse, FactoryNotifyStatusResponse,
+    LastCommittedResponse, PoolAnalyticsResponse, PoolCommitResponse, QueryMsg,
 };
 use crate::state::{
-    COMMIT_INFO, COMMIT_LIMIT_INFO, IS_THRESHOLD_HIT, NATIVE_RAISED_FROM_COMMIT,
-    PENDING_FACTORY_NOTIFY, USD_RAISED_FROM_COMMIT,
+    COMMIT_INFO, COMMIT_LIMIT_INFO, DISTRIBUTION_STALL_TIMEOUT_SECONDS, DISTRIBUTION_STATE,
+    IS_THRESHOLD_HIT, NATIVE_RAISED_FROM_COMMIT, PENDING_FACTORY_NOTIFY, USD_RAISED_FROM_COMMIT,
 };
 use cosmwasm_std::{
     entry_point, to_json_binary, Addr, Binary, Deps, Env, Order, StdResult, Uint128,
@@ -95,6 +95,7 @@ pub fn query(deps: Deps, env: Env, msg: QueryMsg) -> StdResult<Binary> {
             limit,
         )?),
         QueryMsg::FactoryNotifyStatus {} => to_json_binary(&query_factory_notify_status(deps)?),
+        QueryMsg::DistributionState {} => to_json_binary(&query_distribution_state(deps, &env)?),
 
         // Hybrid — wrapper computes creator-only pieces, pool-core assembles
         QueryMsg::Analytics {} => to_json_binary(&query_analytics(deps)?),
@@ -106,6 +107,40 @@ pub fn query_factory_notify_status(deps: Deps) -> StdResult<FactoryNotifyStatusR
         .may_load(deps.storage)?
         .unwrap_or(false);
     Ok(FactoryNotifyStatusResponse { pending })
+}
+
+/// Returns `None` when no distribution is in progress (pre-threshold or
+/// fully completed and cleaned up). Returns `Some(...)` with the live
+/// `DistributionState` plus `seconds_since_update` and `is_stalled`
+/// computed against `DISTRIBUTION_STALL_TIMEOUT_SECONDS`. Replaces the
+/// previously-discarded `consecutive_failures = 99` marker as the
+/// observable stall signal — this query is what admin dashboards should
+/// poll to detect "this pool needs RecoverPoolStuckStates."
+pub fn query_distribution_state(
+    deps: Deps,
+    env: &Env,
+) -> StdResult<Option<DistributionStateResponse>> {
+    let Some(state) = DISTRIBUTION_STATE.may_load(deps.storage)? else {
+        return Ok(None);
+    };
+    let seconds_since_update = env
+        .block
+        .time
+        .seconds()
+        .saturating_sub(state.last_updated.seconds());
+    let is_stalled = seconds_since_update > DISTRIBUTION_STALL_TIMEOUT_SECONDS;
+    Ok(Some(DistributionStateResponse {
+        is_distributing: state.is_distributing,
+        distributions_remaining: state.distributions_remaining,
+        last_processed_key: state.last_processed_key,
+        started_at: state.started_at,
+        last_updated: state.last_updated,
+        seconds_since_update,
+        is_stalled,
+        consecutive_failures: state.consecutive_failures,
+        total_to_distribute: state.total_to_distribute,
+        total_committed_usd: state.total_committed_usd,
+    }))
 }
 
 pub fn query_check_threshold_limit(deps: Deps) -> StdResult<CommitStatus> {

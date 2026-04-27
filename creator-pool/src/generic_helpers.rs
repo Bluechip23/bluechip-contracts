@@ -271,8 +271,16 @@ pub fn process_distribution_batch(
         .seconds()
         .saturating_sub(dist_state.last_updated.seconds());
     if time_since_update > DISTRIBUTION_STALL_TIMEOUT_SECONDS {
-        dist_state.consecutive_failures = 99; // Mark as failed
-        DISTRIBUTION_STATE.save(storage, &dist_state)?;
+        // Surfaces the stall as a tx error to the keeper. We do NOT write
+        // a marker into DISTRIBUTION_STATE here — CosmWasm reverts every
+        // staged storage write when a handler returns Err, so any save
+        // immediately before this return would be discarded along with
+        // the tx. Operators detect stalls via:
+        //   1. The QueryMsg::DistributionState query, which exposes a
+        //      computed `is_stalled` flag against this same threshold.
+        //   2. The error text below in failed-tx receipts.
+        //   3. `recover_distribution` (admin.rs) which gates on
+        //      `time_since_update >= 3600` independently of any marker.
         return Err(StdError::generic_err(
             "Distribution timeout - requires manual recovery",
         ));
