@@ -830,8 +830,10 @@ pub fn setup_pool_storage(deps: &mut OwnedDeps<MockStorage, MockApi, MockQuerier
         .save(&mut deps.storage, &commit_fee_info)
         .unwrap();
 
+    // Mirrors production instantiate semantics: `oracle_addr` is set to
+    // the factory address by default (factory hosts the internal oracle).
     let oracle_info = OracleInfo {
-        oracle_addr: Addr::unchecked("oracle_contract"),
+        oracle_addr: Addr::unchecked("factory_contract"),
     };
     ORACLE_INFO.save(&mut deps.storage, &oracle_info).unwrap();
 

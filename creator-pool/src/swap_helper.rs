@@ -5,7 +5,7 @@
 //! imports like `use crate::swap_helper::compute_swap;` keep resolving.
 pub use pool_core::swap::*;
 
-use crate::state::POOL_INFO;
+use crate::state::{ORACLE_INFO, POOL_INFO};
 use cosmwasm_schema::cw_serde;
 use cosmwasm_std::{Deps, StdError, StdResult, Uint128};
 use pool_factory_interfaces::{ConversionResponse, FactoryQueryMsg};
@@ -47,15 +47,30 @@ pub const ORACLE_PRICE_PRECISION: u128 = 1_000_000;
 /// commit path issues at most one oracle query (verified across
 /// `execute_commit_logic`, `process_threshold_crossing_with_excess`,
 /// `process_pre_threshold_commit`, `process_post_threshold_commit`).
+///
+/// Reads the oracle endpoint from `ORACLE_INFO.oracle_addr`, which is
+/// initialized at instantiate to the factory address (the factory hosts
+/// the internal price oracle today) and is operator-rotatable via
+/// `UpdateConfigFromFactory { oracle_address }`. Pointing this at a
+/// different contract is forward-compat with future oracle designs
+/// (separate oracle wasm, multi-source averaging, randomized source
+/// selection) — the only requirement is that the target wasm respond to
+/// `FactoryQueryWrapper::InternalBlueChipOracleQuery(ConvertBluechipToUsd)`
+/// with a `ConversionResponse`. Falls back to `POOL_INFO.factory_addr`
+/// only if `ORACLE_INFO` is somehow missing (defensive — instantiate
+/// always sets it, but cheap to tolerate a stale storage layout).
 pub fn get_oracle_conversion_with_staleness(
     deps: Deps,
     bluechip_amount: Uint128,
     current_block_time: u64,
 ) -> StdResult<ConversionResponse> {
-    let factory_address = POOL_INFO.load(deps.storage)?;
+    let oracle_addr = match ORACLE_INFO.may_load(deps.storage)? {
+        Some(info) => info.oracle_addr,
+        None => POOL_INFO.load(deps.storage)?.factory_addr,
+    };
 
     let response: ConversionResponse = deps.querier.query_wasm_smart(
-        factory_address.factory_addr.clone(),
+        oracle_addr,
         &FactoryQueryWrapper::InternalBlueChipOracleQuery(FactoryQueryMsg::ConvertBluechipToUsd {
             amount: bluechip_amount,
         }),
