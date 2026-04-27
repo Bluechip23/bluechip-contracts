@@ -446,26 +446,30 @@ pub fn verify_position_ownership(
     Ok(())
 }
 
-/// Detects NFT transfers and resets fee checkpoints so the new owner
-/// cannot claim fees that accrued before the transfer.
+/// Updates `position.owner` and the `OWNER_POSITIONS` index when the
+/// CW721 has changed hands. Fee state is preserved as-is — accrued
+/// `unclaimed_fees_*` and `fee_growth_inside_*_last` belong to the
+/// position itself, not the wallet that happened to hold the NFT when
+/// they accrued. Whoever holds the NFT at `collect_fees` time receives
+/// whatever the position has accumulated. Standard position-NFT model
+/// (Uniswap V3 et al.); also keeps the `fee_reserve == sum-owed`
+/// invariant tight, since `remove_partial_liquidity` saves preserved
+/// fees into `unclaimed_fees_*` without debiting the reserve.
+///
+/// Returns `true` if ownership actually changed (caller may want to log
+/// or short-circuit on no-op transfers); `false` otherwise.
 pub fn sync_position_on_transfer(
     storage: &mut dyn Storage,
     position: &mut Position,
     position_id: &str,
     current_owner: &Addr,
-    pool_fee_state: &PoolFeeState,
+    _pool_fee_state: &PoolFeeState,
 ) -> Result<bool, ContractError> {
     if position.owner == *current_owner {
         return Ok(false);
     }
 
     let old_owner = position.owner.clone();
-
-    position.fee_growth_inside_0_last = pool_fee_state.fee_growth_global_0;
-    position.fee_growth_inside_1_last = pool_fee_state.fee_growth_global_1;
-    position.unclaimed_fees_0 = Uint128::zero();
-    position.unclaimed_fees_1 = Uint128::zero();
-
     position.owner = current_owner.clone();
 
     OWNER_POSITIONS.remove(storage, (&old_owner, position_id));
