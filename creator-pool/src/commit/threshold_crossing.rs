@@ -163,6 +163,19 @@ pub(super) fn process_threshold_crossing_with_excess(
             commission_amt = comm;
         }
 
+        // Dust-swap guard: mirror the rejection in `simple_swap` and
+        // `process_post_threshold_commit`. If `compute_swap` truncated
+        // `return_amt` to zero against a tiny excess on the freshly-seeded
+        // pool, the rest of this branch would absorb `capped_excess` into
+        // reserve0 (line below) without sending any creator tokens back to
+        // the user — silently donating their excess to LPs. Failing loudly
+        // here forces the user to size their commit so the excess is large
+        // enough to yield a non-zero swap, or accept the refund-only path
+        // by overshooting further than 3% of the seed reserve.
+        if !capped_excess.is_zero() && return_amt.is_zero() {
+            return Err(ContractError::ZeroAmount {});
+        }
+
         if !capped_excess.is_zero() {
             // Unconditional slippage protection on the threshold-crossing
             // excess swap. Previously gated on max_spread.is_some(), which

@@ -5,7 +5,7 @@
 //! imports like `use crate::swap_helper::compute_swap;` keep resolving.
 pub use pool_core::swap::*;
 
-use crate::state::POOL_INFO;
+use crate::state::{ORACLE_INFO, POOL_INFO};
 use cosmwasm_schema::cw_serde;
 use cosmwasm_std::{Deps, StdError, StdResult, Uint128};
 use pool_factory_interfaces::{ConversionResponse, FactoryQueryMsg};
@@ -15,14 +15,22 @@ enum FactoryQueryWrapper {
     InternalBlueChipOracleQuery(FactoryQueryMsg),
 }
 
-// Pool-side acceptance window for the factory oracle's ConversionResponse.
-// Tightened from 600s (10 min) to 90s. The factory's own staleness
-// threshold is the same; keeping the two windows aligned prevents a
-// scenario where the factory is already about to reject a price but the
-// pool is still happy to use it. Combined effect: once Pyth is stale,
-// every pool freezes commits/conversions within 90s instead of pretending
-// the last known price is still authoritative for up to 10 minutes.
-pub const MAX_ORACLE_STALENESS_SECONDS: u64 = 90;
+// Pool-side acceptance window for the factory oracle's `ConversionResponse`.
+// Sized to the factory's oracle update interval (`UPDATE_INTERVAL = 300s`,
+// the *minimum* gap between successive `UpdateOraclePrice` calls — keepers
+// physically cannot refresh sooner) plus a 60s grace buffer for keeper
+// scheduling jitter. The factory's `convert_with_oracle` returns
+// `ConversionResponse.timestamp = bluechip_price_cache.last_update`, which
+// only advances when a keeper successfully refreshes the cache. With a
+// strict 90s window here against a 300s update cadence, ~70% of every
+// 5-minute cycle would reject every commit with "Oracle price is stale"
+// even on a fully healthy system.
+//
+// The acceptable Pyth staleness is enforced separately on the factory side
+// via `MAX_PRICE_AGE_SECONDS_BEFORE_STALE`; that check guards the upstream
+// price feed. This pool-side check guards the cache-read freshness, which
+// is a strict superset of the same age in the worst case.
+pub const MAX_ORACLE_STALENESS_SECONDS: u64 = 360;
 
 /// Must match factory::internal_bluechip_price_oracle::PRICE_PRECISION.
 /// Duplicated here rather than imported because the pool crate intentionally
@@ -39,15 +47,30 @@ pub const ORACLE_PRICE_PRECISION: u128 = 1_000_000;
 /// commit path issues at most one oracle query (verified across
 /// `execute_commit_logic`, `process_threshold_crossing_with_excess`,
 /// `process_pre_threshold_commit`, `process_post_threshold_commit`).
+///
+/// Reads the oracle endpoint from `ORACLE_INFO.oracle_addr`, which is
+/// initialized at instantiate to the factory address (the factory hosts
+/// the internal price oracle today) and is operator-rotatable via
+/// `UpdateConfigFromFactory { oracle_address }`. Pointing this at a
+/// different contract is forward-compat with future oracle designs
+/// (separate oracle wasm, multi-source averaging, randomized source
+/// selection) — the only requirement is that the target wasm respond to
+/// `FactoryQueryWrapper::InternalBlueChipOracleQuery(ConvertBluechipToUsd)`
+/// with a `ConversionResponse`. Falls back to `POOL_INFO.factory_addr`
+/// only if `ORACLE_INFO` is somehow missing (defensive — instantiate
+/// always sets it, but cheap to tolerate a stale storage layout).
 pub fn get_oracle_conversion_with_staleness(
     deps: Deps,
     bluechip_amount: Uint128,
     current_block_time: u64,
 ) -> StdResult<ConversionResponse> {
-    let factory_address = POOL_INFO.load(deps.storage)?;
+    let oracle_addr = match ORACLE_INFO.may_load(deps.storage)? {
+        Some(info) => info.oracle_addr,
+        None => POOL_INFO.load(deps.storage)?.factory_addr,
+    };
 
     let response: ConversionResponse = deps.querier.query_wasm_smart(
-        factory_address.factory_addr.clone(),
+        oracle_addr,
         &FactoryQueryWrapper::InternalBlueChipOracleQuery(FactoryQueryMsg::ConvertBluechipToUsd {
             amount: bluechip_amount,
         }),

@@ -57,8 +57,6 @@ pub fn execute(
         ExecuteMsg::ExecuteMultiHop {
             operations,
             minimum_receive,
-            belief_price,
-            max_spread,
             deadline,
             recipient,
         } => execute_multi_hop(
@@ -67,8 +65,6 @@ pub fn execute(
             info,
             operations,
             minimum_receive,
-            belief_price,
-            max_spread,
             deadline,
             recipient,
         ),
@@ -81,18 +77,7 @@ pub fn execute(
             operation,
             hop_index,
             to,
-            belief_price,
-            max_spread,
-        } => execute_swap_operation(
-            deps,
-            env,
-            info,
-            operation,
-            hop_index,
-            to,
-            belief_price,
-            max_spread,
-        ),
+        } => execute_swap_operation(deps, env, info, operation, hop_index, to),
         ExecuteMsg::AssertReceived {
             ask_info,
             recipient,

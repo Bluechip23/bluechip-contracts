@@ -674,24 +674,46 @@ fn test_migrate_accepts_small_fees() {
 
 // ==================== Additional Regression Tests ====================
 
-/// Verify that sync_position_on_transfer resets fee checkpoints when
-/// position ownership changes, preventing the new owner from claiming fees
-/// that accrued before the transfer.
+/// Verify that sync_position_on_transfer preserves fee state across an
+/// NFT ownership change. Accrued `unclaimed_fees_*` and the
+/// `fee_growth_inside_*_last` checkpoint belong to the position; the new
+/// owner inherits them and can collect via the standard `CollectFees`
+/// path. Confirms the `fee_reserve == sum-owed` invariant is not broken
+/// by the transfer (the older "zero-on-transfer" behavior orphaned
+/// `unclaimed_fees_*` that `remove_partial_liquidity` saves into the
+/// position without debiting `fee_reserve_*`).
 #[test]
-fn test_nft_transfer_resets_fee_checkpoints() {
+fn test_nft_transfer_preserves_fee_state() {
     let mut deps = mock_dependencies();
     setup_pool_post_threshold(&mut deps);
 
     // Create a position owned by Alice with fee growth snapshots at zero
     create_test_position(&mut deps, 1, "alice", Uint128::new(10_000_000));
 
-    // Simulate fees accruing: advance global fee growth
+    // Simulate fees accruing: advance global fee growth and stamp the
+    // position with non-zero unclaimed_fees (mirrors what
+    // remove_partial_liquidity does — preserves fees into the position
+    // without debiting fee_reserve, so they MUST carry over to the new
+    // NFT holder).
     let mut fee_state = POOL_FEE_STATE.load(&deps.storage).unwrap();
     fee_state.fee_growth_global_0 = Decimal::from_str("50").unwrap();
     fee_state.fee_growth_global_1 = Decimal::from_str("75").unwrap();
     fee_state.fee_reserve_0 = Uint128::new(1_000_000_000_000);
     fee_state.fee_reserve_1 = Uint128::new(1_000_000_000_000);
     POOL_FEE_STATE.save(&mut deps.storage, &fee_state).unwrap();
+
+    let mut position = LIQUIDITY_POSITIONS.load(&deps.storage, "1").unwrap();
+    let prior_growth_0 = Decimal::from_str("10").unwrap();
+    let prior_growth_1 = Decimal::from_str("12").unwrap();
+    let preserved_unclaimed_0 = Uint128::new(123_456);
+    let preserved_unclaimed_1 = Uint128::new(789_012);
+    position.fee_growth_inside_0_last = prior_growth_0;
+    position.fee_growth_inside_1_last = prior_growth_1;
+    position.unclaimed_fees_0 = preserved_unclaimed_0;
+    position.unclaimed_fees_1 = preserved_unclaimed_1;
+    LIQUIDITY_POSITIONS
+        .save(&mut deps.storage, "1", &position)
+        .unwrap();
 
     // Simulate NFT transfer: Bob is now the CW721 owner, but position still
     // has Alice as `position.owner`. Call sync_position_on_transfer as Bob.
@@ -704,17 +726,25 @@ fn test_nft_transfer_resets_fee_checkpoints() {
 
     assert!(transferred, "Should detect ownership transfer");
     assert_eq!(position.owner, bob);
-    // Fee snapshots should be reset to current globals — Bob gets no pre-transfer fees
+
+    // Fee state must be PRESERVED (not reset). The position carries its
+    // accrued fees with it; Bob inherits them and can claim via CollectFees.
     assert_eq!(
-        position.fee_growth_inside_0_last,
-        fee_state.fee_growth_global_0
+        position.fee_growth_inside_0_last, prior_growth_0,
+        "fee_growth_inside_0_last must not be reset on transfer"
     );
     assert_eq!(
-        position.fee_growth_inside_1_last,
-        fee_state.fee_growth_global_1
+        position.fee_growth_inside_1_last, prior_growth_1,
+        "fee_growth_inside_1_last must not be reset on transfer"
     );
-    assert_eq!(position.unclaimed_fees_0, Uint128::zero());
-    assert_eq!(position.unclaimed_fees_1, Uint128::zero());
+    assert_eq!(
+        position.unclaimed_fees_0, preserved_unclaimed_0,
+        "unclaimed_fees_0 must not be zeroed on transfer"
+    );
+    assert_eq!(
+        position.unclaimed_fees_1, preserved_unclaimed_1,
+        "unclaimed_fees_1 must not be zeroed on transfer"
+    );
 
     // OWNER_POSITIONS should be updated
     assert!(OWNER_POSITIONS

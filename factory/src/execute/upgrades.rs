@@ -203,7 +203,7 @@ pub fn execute_cancel_pool_upgrade(
 
 pub fn execute_continue_pool_upgrade(
     deps: DepsMut,
-    _env: Env,
+    env: Env,
     info: MessageInfo,
 ) -> Result<Response, ContractError> {
     // Admin-only now. Previously this was self-called from
@@ -214,6 +214,28 @@ pub fn execute_continue_pool_upgrade(
     ensure_admin(deps.as_ref(), &info)?;
 
     let mut upgrade = PENDING_POOL_UPGRADE.load(deps.storage)?;
+
+    // Honor the same 48h `ADMIN_TIMELOCK_SECONDS` window `apply` enforces.
+    // Without this gate, an admin could `Propose -> Continue` directly and
+    // migrate batches before the community observation window elapses.
+    if env.block.time < upgrade.effective_after {
+        return Err(ContractError::TimelockNotExpired {
+            effective_after: upgrade.effective_after,
+        });
+    }
+
+    // Require `apply` to have run at least once. `upgraded_count > 0` is the
+    // only on-chain signal that the timelock check fired and the first
+    // batch was processed under that gate; gating `Continue` on it forces
+    // the canonical sequence `Propose -> wait 48h -> ExecutePoolUpgrade ->
+    // ContinuePoolUpgrade*` and rejects a `Propose -> Continue` shortcut
+    // even in the (unlikely) case `effective_after` has elapsed.
+    if upgrade.upgraded_count == 0 {
+        return Err(ContractError::Std(StdError::generic_err(
+            "Must call ExecutePoolUpgrade first to start the upgrade. \
+             ContinuePoolUpgrade only resumes an in-progress batch.",
+        )));
+    }
 
     let remaining_pools: Vec<u64> = upgrade
         .pools_to_upgrade

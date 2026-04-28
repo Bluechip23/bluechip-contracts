@@ -756,9 +756,33 @@ fn test_distribution_timeout_triggers_error() {
     assert!(res.is_err());
     assert!(res.unwrap_err().to_string().contains("timeout"));
 
-    // State should be marked as failed
-    let updated = DISTRIBUTION_STATE.load(&deps.storage).unwrap();
-    assert_eq!(updated.consecutive_failures, 99);
+    // The on-chain stall signal is the QueryMsg::DistributionState query,
+    // not a marker written into DISTRIBUTION_STATE itself. CosmWasm reverts
+    // every staged storage write when a handler returns Err, so attempting
+    // to set `consecutive_failures = 99` immediately before the Err return
+    // would be discarded along with the failed tx (the prior version of
+    // this test relied on MockStorage NOT enforcing that revert, which
+    // masked the dead code on real chains).
+    //
+    // Verify the new observability path: query_distribution_state should
+    // report `is_stalled = true` and `seconds_since_update` past the
+    // 24h timeout, giving admin dashboards the structured signal they
+    // need to call RecoverPoolStuckStates::StuckDistribution.
+    use crate::query::query_distribution_state;
+    let mut env_for_query = mock_env();
+    env_for_query.block.time = old_time.plus_seconds(crate::state::DISTRIBUTION_STALL_TIMEOUT_SECONDS + 1);
+    let response = query_distribution_state(deps.as_ref(), &env_for_query)
+        .unwrap()
+        .expect("DISTRIBUTION_STATE should still exist (the failed tx reverted any state changes)");
+    assert!(
+        response.is_stalled,
+        "is_stalled should be true past DISTRIBUTION_STALL_TIMEOUT_SECONDS"
+    );
+    assert!(response.seconds_since_update > crate::state::DISTRIBUTION_STALL_TIMEOUT_SECONDS);
+    assert_eq!(
+        response.consecutive_failures, 0,
+        "consecutive_failures must NOT have moved off 0 — the timeout branch's pre-Err save would revert on a real chain, and the new code no longer attempts it at all"
+    );
 }
 
 /// Regression: just BELOW the timeout, ContinueDistribution must succeed.

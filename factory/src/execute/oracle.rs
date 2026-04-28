@@ -230,34 +230,70 @@ pub fn execute_set_anchor_pool(
     })?;
     let pool_addr = pool_details.creator_pool_addr.clone();
 
+    let factory_config = FACTORYINSTANTIATEINFO.load(deps.storage)?;
+
+    // Run the strict anchor checks against the chosen pool.
+    validate_anchor_pool_choice(
+        &pool_details,
+        &factory_config.bluechip_denom,
+        &factory_config.atom_denom,
+    )?;
+
+    // Update the anchor address on the factory config in-place. We don't
+    // go through the timelock path here — that's the entire point of the
+    // one-shot.
+    FACTORYINSTANTIATEINFO.update(deps.storage, |mut cfg| -> StdResult<_> {
+        cfg.atom_bluechip_anchor_pool_address = pool_addr.clone();
+        Ok(cfg)
+    })?;
+
+    let pools_in_oracle = refresh_internal_oracle_for_anchor_change(
+        &mut deps,
+        &env,
+        &pool_addr,
+    )?;
+
+    crate::state::INITIAL_ANCHOR_SET.save(deps.storage, &true)?;
+
+    Ok(Response::new()
+        .add_attribute("action", "set_anchor_pool")
+        .add_attribute("pool_id", pool_id.to_string())
+        .add_attribute("pool_addr", pool_addr.to_string())
+        .add_attribute("pools_in_oracle_after_refresh", pools_in_oracle.to_string()))
+}
+
+/// Strict shape check for an anchor-pool candidate. The anchor MUST be a
+/// `PoolKind::Standard` pool whose `pool_token_info` is a Native/Native
+/// pair of exactly `(bluechip_denom, atom_denom)` in either order.
+/// Anything else (bluechip + arbitrary IBC denom, bluechip + CW20, atom +
+/// CW20, etc.) is rejected so a compromised admin key can't point the
+/// anchor at a pool whose price has no relation to the Pyth ATOM/USD
+/// feed the rest of the oracle math depends on.
+///
+/// Shared between `execute_set_anchor_pool` and the
+/// `ProposeConfigUpdate -> UpdateConfig` path so the same invariants
+/// apply on both routes.
+pub(crate) fn validate_anchor_pool_choice(
+    pool_details: &crate::pool_struct::PoolDetails,
+    bluechip_denom: &str,
+    atom_denom: &str,
+) -> Result<(), ContractError> {
     if pool_details.pool_kind != pool_factory_interfaces::PoolKind::Standard {
         return Err(ContractError::Std(StdError::generic_err(
             "Anchor pool must be a standard pool",
         )));
     }
 
-    let factory_config = FACTORYINSTANTIATEINFO.load(deps.storage)?;
-    let canonical = &factory_config.bluechip_denom;
-    let atom_denom = &factory_config.atom_denom;
-
     // Defense for old serialized records that round-trip with an empty
-    // `atom_denom` via the field's `#[serde(default)]`. New deployments
-    // get this checked at instantiate (`validate_factory_config`); the
-    // gate here covers the migration window.
+    // `atom_denom` via the field's `#[serde(default)]`.
     if atom_denom.trim().is_empty() {
         return Err(ContractError::Std(StdError::generic_err(
             "atom_denom is not configured; propose a factory config update setting \
              `atom_denom` (e.g. \"uatom\" or your chain's IBC-wrapped atom denom) \
-             before calling SetAnchorPool.",
+             before configuring an anchor pool.",
         )));
     }
 
-    // Strict shape: the anchor MUST be a Native/Native pair of exactly
-    // (bluechip_denom, atom_denom) — order doesn't matter. Anything
-    // else (bluechip + arbitrary IBC denom, bluechip + CW20, atom +
-    // CW20, etc.) is rejected so a compromised admin key can't point
-    // the anchor at a pool whose price has no relation to the Pyth
-    // ATOM/USD feed the rest of the oracle math depends on.
     use crate::asset::TokenType;
     let denoms: Vec<&str> = pool_details
         .pool_token_info
@@ -269,30 +305,48 @@ pub fn execute_set_anchor_pool(
         .collect();
 
     let valid_pair = denoms.len() == 2
-        && ((denoms[0] == canonical && denoms[1] == atom_denom)
-            || (denoms[0] == atom_denom && denoms[1] == canonical));
+        && ((denoms[0] == bluechip_denom && denoms[1] == atom_denom)
+            || (denoms[0] == atom_denom && denoms[1] == bluechip_denom));
     if !valid_pair {
         return Err(ContractError::Std(StdError::generic_err(format!(
             "Anchor pool must be a Native/Native pair of exactly (bluechip \"{}\", \
              atom \"{}\") in either order; got pool with assets {:?}",
-            canonical, atom_denom, pool_details.pool_token_info
+            bluechip_denom, atom_denom, pool_details.pool_token_info
         ))));
     }
+    Ok(())
+}
 
-    // Update the anchor address on the factory config in-place. We don't
-    // go through the timelock path here — that's the entire point of the
-    // one-shot.
-    FACTORYINSTANTIATEINFO.update(deps.storage, |mut cfg| -> StdResult<_> {
-        cfg.atom_bluechip_anchor_pool_address = pool_addr.clone();
-        Ok(cfg)
-    })?;
+/// Look up a registered pool by its contract address. Returns the
+/// `PoolDetails` if present, or `None` if no pool in `POOLS_BY_ID` has
+/// that `creator_pool_addr`. Linear scan; fires at most once per
+/// `propose` / `apply` of an anchor change, so the cost is fine.
+pub(crate) fn lookup_pool_by_addr(
+    deps: cosmwasm_std::Deps,
+    pool_addr: &cosmwasm_std::Addr,
+) -> StdResult<Option<crate::pool_struct::PoolDetails>> {
+    use cosmwasm_std::Order;
+    for entry in POOLS_BY_ID.range(deps.storage, None, None, Order::Ascending) {
+        let (_id, details) = entry?;
+        if &details.creator_pool_addr == pool_addr {
+            return Ok(Some(details));
+        }
+    }
+    Ok(None)
+}
 
-    // Refresh the oracle's selected pool set so the next UpdateOraclePrice
-    // call queries the new anchor (the placeholder might already be in
-    // selected_pools from initialize_internal_bluechip_oracle, and queries
-    // against it would fail). Also clear the price cache so downstream
-    // consumers can't accidentally consume a stale value derived from the
-    // placeholder — last_price was zero anyway, but defense-in-depth.
+/// Refresh `INTERNAL_ORACLE` after the anchor pool has changed. Mirrors
+/// the cleanup `execute_set_anchor_pool` performs on its one-shot path so
+/// the timelocked `ProposeConfigUpdate -> UpdateConfig` flow does not leave
+/// the oracle pointing at a stale anchor.
+///
+/// Returns the number of pools the oracle is now sampling (anchor + N
+/// random eligible creator pools), useful for response attributes.
+pub(crate) fn refresh_internal_oracle_for_anchor_change(
+    deps: &mut DepsMut,
+    env: &Env,
+    new_anchor_addr: &cosmwasm_std::Addr,
+) -> Result<usize, ContractError> {
     let mut oracle = crate::internal_bluechip_price_oracle::INTERNAL_ORACLE.load(deps.storage)?;
     let new_pools = crate::internal_bluechip_price_oracle::select_random_pools_with_atom(
         deps.branch(),
@@ -300,19 +354,12 @@ pub fn execute_set_anchor_pool(
         crate::internal_bluechip_price_oracle::ORACLE_POOL_COUNT,
     )?;
     oracle.selected_pools = new_pools.clone();
-    oracle.atom_pool_contract_address = pool_addr.clone();
+    oracle.atom_pool_contract_address = new_anchor_addr.clone();
     oracle.last_rotation = env.block.time.seconds();
     oracle.pool_cumulative_snapshots.clear();
     oracle.bluechip_price_cache.last_price = Uint128::zero();
     oracle.bluechip_price_cache.last_update = 0;
     oracle.bluechip_price_cache.twap_observations.clear();
     crate::internal_bluechip_price_oracle::INTERNAL_ORACLE.save(deps.storage, &oracle)?;
-
-    crate::state::INITIAL_ANCHOR_SET.save(deps.storage, &true)?;
-
-    Ok(Response::new()
-        .add_attribute("action", "set_anchor_pool")
-        .add_attribute("pool_id", pool_id.to_string())
-        .add_attribute("pool_addr", pool_addr.to_string())
-        .add_attribute("pools_in_oracle_after_refresh", new_pools.len().to_string()))
+    Ok(new_pools.len())
 }

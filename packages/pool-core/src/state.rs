@@ -246,8 +246,21 @@ pub const CREATOR_FEE_POT: Item<CreatorFeePot> = Item::new("creator_fee_pot");
 // recipient; standard pool instantiate saves a zero-valued placeholder.
 pub const COMMITFEEINFO: Item<CommitFeeInfo> = Item::new("fee_info");
 
-// Oracle address struct — `oracle_addr` field is effectively dead code
-// per audit H9; kept as-is for now to preserve storage layout.
+// Oracle endpoint the pool queries for `ConvertBluechipToUsd`. Initialized
+// at instantiate to `msg.used_factory_addr` (the factory contract hosts
+// the internal price oracle today, so by default oracle == factory) and
+// rotatable via `UpdateConfigFromFactory { oracle_address }`. Read by
+// `creator-pool::swap_helper::get_oracle_conversion_with_staleness`,
+// which is the only oracle-query call site in the pool.
+//
+// Forward-compat: pointing this at a different wasm address lets an
+// operator decouple "where pricing comes from" from "what's the trusted
+// factory" without redeploying every pool — useful for future oracle
+// designs (separate oracle wasm, multi-source averaging, randomized
+// source selection) and as a recovery lever if the factory's internal
+// oracle is ever found to misbehave. The target wasm must respond to
+// `FactoryQueryWrapper::InternalBlueChipOracleQuery(ConvertBluechipToUsd)`
+// with a `ConversionResponse`.
 pub const ORACLE_INFO: Item<OracleInfo> = Item::new("oracle_info");
 
 // Block at which post-threshold trading is allowed to resume after a

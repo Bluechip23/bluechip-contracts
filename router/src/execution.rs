@@ -35,8 +35,8 @@
 
 use cosmwasm_schema::cw_serde;
 use cosmwasm_std::{
-    from_json, to_json_binary, Addr, Binary, Coin, CosmosMsg, Decimal, DepsMut, Env, MessageInfo,
-    Reply, ReplyOn, Response, StdError, SubMsg, SubMsgResult, Timestamp, Uint128, WasmMsg,
+    from_json, to_json_binary, Addr, Binary, Coin, CosmosMsg, DepsMut, Env, MessageInfo, Reply,
+    ReplyOn, Response, StdError, SubMsg, SubMsgResult, Timestamp, Uint128, WasmMsg,
 };
 use cw20::{Cw20ExecuteMsg, Cw20ReceiveMsg};
 use pool_factory_interfaces::asset::{TokenInfo, TokenType};
@@ -63,15 +63,12 @@ struct HopReplyPayload {
 ///
 /// The caller must attach exactly one coin matching the first hop's
 /// declared offer denom; that coin's amount is used as the route input.
-#[allow(clippy::too_many_arguments)]
 pub fn execute_multi_hop(
     deps: DepsMut,
     env: Env,
     info: MessageInfo,
     operations: Vec<SwapOperation>,
     minimum_receive: Uint128,
-    belief_price: Option<Decimal>,
-    max_spread: Option<Decimal>,
     deadline: Option<Timestamp>,
     recipient: Option<String>,
 ) -> Result<Response, RouterError> {
@@ -92,8 +89,6 @@ pub fn execute_multi_hop(
         offer_amount,
         operations,
         minimum_receive,
-        belief_price,
-        max_spread,
         deadline,
         recipient,
     )
@@ -113,8 +108,6 @@ pub fn execute_receive_cw20(
         Cw20HookMsg::ExecuteMultiHop {
             operations,
             minimum_receive,
-            belief_price,
-            max_spread,
             deadline,
             recipient,
         } => {
@@ -142,8 +135,6 @@ pub fn execute_receive_cw20(
                 cw20_msg.amount,
                 operations,
                 minimum_receive,
-                belief_price,
-                max_spread,
                 deadline,
                 recipient,
             )
@@ -154,7 +145,6 @@ pub fn execute_receive_cw20(
 /// Shared route setup. Validates the route, captures the recipient's
 /// pre-route balance of the final ask token, and builds the per-hop
 /// self-call sequence plus the final assertion call.
-#[allow(clippy::too_many_arguments)]
 fn start_multi_hop(
     deps: DepsMut,
     env: Env,
@@ -162,8 +152,6 @@ fn start_multi_hop(
     offer_amount: Uint128,
     operations: Vec<SwapOperation>,
     minimum_receive: Uint128,
-    belief_price: Option<Decimal>,
-    max_spread: Option<Decimal>,
     deadline: Option<Timestamp>,
     recipient: Option<String>,
 ) -> Result<Response, RouterError> {
@@ -201,8 +189,6 @@ fn start_multi_hop(
             operation: op.clone(),
             hop_index: idx as u32,
             to,
-            belief_price,
-            max_spread,
         };
         let payload: Binary = to_json_binary(&HopReplyPayload {
             hop_index: idx as u32,
@@ -253,7 +239,12 @@ fn start_multi_hop(
 /// Reads the router's current balance of the offer token (which equals
 /// either the user's deposit on hop 0 or the previous hop's output on
 /// hops 1..N), then dispatches the underlying pool swap targeting `to`.
-#[allow(clippy::too_many_arguments)]
+///
+/// The underlying pool message is built with `belief_price = None` and
+/// `max_spread = None` unconditionally — see the module-level
+/// `ExecuteMsg` doc-comment in `msg.rs` for why per-hop slippage knobs
+/// are not exposed at the multi-hop level (`minimum_receive` is the
+/// canonical end-to-end gate).
 pub fn execute_swap_operation(
     deps: DepsMut,
     env: Env,
@@ -261,8 +252,6 @@ pub fn execute_swap_operation(
     operation: SwapOperation,
     hop_index: u32,
     to: String,
-    belief_price: Option<Decimal>,
-    max_spread: Option<Decimal>,
 ) -> Result<Response, RouterError> {
     if info.sender != env.contract.address {
         return Err(RouterError::Unauthorized);
@@ -280,13 +269,7 @@ pub fn execute_swap_operation(
         });
     }
 
-    let pool_msg = build_pool_swap_msg(
-        &operation,
-        offer_balance,
-        to_addr.to_string(),
-        belief_price,
-        max_spread,
-    )?;
+    let pool_msg = build_pool_swap_msg(&operation, offer_balance, to_addr.to_string())?;
 
     Ok(Response::new()
         .add_message(pool_msg)
@@ -411,12 +394,16 @@ pub fn validate_route(operations: &[SwapOperation]) -> Result<(), RouterError> {
     Ok(())
 }
 
+/// Builds the underlying pool swap message for one hop. Per-hop
+/// slippage gates (`belief_price`, `max_spread`) are intentionally
+/// pinned to `None` here — see the module / `ExecuteMsg` doc-comment
+/// for why they cannot be made meaningful across heterogeneous
+/// multi-hop pairs. End-to-end slippage is enforced via
+/// `minimum_receive` in `execute_assert_received`.
 fn build_pool_swap_msg(
     operation: &SwapOperation,
     offer_amount: Uint128,
     to: String,
-    belief_price: Option<Decimal>,
-    max_spread: Option<Decimal>,
 ) -> Result<CosmosMsg, RouterError> {
     match &operation.offer_asset_info {
         TokenType::Native { denom } => {
@@ -425,8 +412,8 @@ fn build_pool_swap_msg(
                     info: operation.offer_asset_info.clone(),
                     amount: offer_amount,
                 },
-                belief_price,
-                max_spread,
+                belief_price: None,
+                max_spread: None,
                 to: Some(to),
                 transaction_deadline: None,
             };
@@ -441,8 +428,8 @@ fn build_pool_swap_msg(
         }
         TokenType::CreatorToken { contract_addr } => {
             let hook = PoolSwapCw20HookMsg::Swap {
-                belief_price,
-                max_spread,
+                belief_price: None,
+                max_spread: None,
                 to: Some(to),
                 transaction_deadline: None,
             };

@@ -188,6 +188,36 @@ pub enum QueryMsg {
     // Useful for keepers and ops dashboards watching for stuck pools.
     #[returns(FactoryNotifyStatusResponse)]
     FactoryNotifyStatus {},
+    // Reports the live state of post-threshold committer payouts so admin
+    // dashboards can detect a stalled distribution. Returns `None` when
+    // no distribution is active (pre-threshold, or fully completed and
+    // cleaned up). Returns `Some(...)` with a computed `is_stalled` flag
+    // (true when the per-pool 24h DISTRIBUTION_STALL_TIMEOUT_SECONDS has
+    // elapsed since the last batch advanced).
+    #[returns(Option<DistributionStateResponse>)]
+    DistributionState {},
+}
+
+#[cw_serde]
+pub struct DistributionStateResponse {
+    pub is_distributing: bool,
+    pub distributions_remaining: u32,
+    pub last_processed_key: Option<Addr>,
+    pub started_at: Timestamp,
+    pub last_updated: Timestamp,
+    /// Block-time seconds since `last_updated` advanced. Computed at
+    /// query time so dashboards don't have to do their own block-time
+    /// math.
+    pub seconds_since_update: u64,
+    /// True when `seconds_since_update > DISTRIBUTION_STALL_TIMEOUT_SECONDS`.
+    /// The on-chain handler (`process_distribution_batch`) will reject
+    /// every keeper call with `"Distribution timeout - requires manual
+    /// recovery"` while this flag is true; admin should call
+    /// `RecoverPoolStuckStates::StuckDistribution` to reset the cursor.
+    pub is_stalled: bool,
+    pub consecutive_failures: u32,
+    pub total_to_distribute: Uint128,
+    pub total_committed_usd: Uint128,
 }
 
 #[cw_serde]

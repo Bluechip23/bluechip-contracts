@@ -323,8 +323,6 @@ fn happy_path_two_hop_creator_to_creator() {
         msg: to_json_binary(&Cw20HookMsg::ExecuteMultiHop {
             operations: route,
             minimum_receive: Uint128::new(1),
-            belief_price: None,
-            max_spread: None,
             deadline: None,
             recipient: None,
         })
@@ -380,8 +378,6 @@ fn single_hop_native_passthrough() {
             &RouterExecuteMsg::ExecuteMultiHop {
                 operations: route,
                 minimum_receive: Uint128::new(1),
-                belief_price: None,
-                max_spread: None,
                 deadline: None,
                 recipient: None,
             },
@@ -425,8 +421,6 @@ fn slippage_exceeded_reverts_route() {
                 operations: route,
                 // Demand absurdly more than the pool can possibly return.
                 minimum_receive: Uint128::new(u128::MAX / 2),
-                belief_price: None,
-                max_spread: None,
                 deadline: None,
                 recipient: None,
             },
@@ -479,8 +473,6 @@ fn max_hops_exceeded_rejected() {
             &RouterExecuteMsg::ExecuteMultiHop {
                 operations: route,
                 minimum_receive: Uint128::new(1),
-                belief_price: None,
-                max_spread: None,
                 deadline: None,
                 recipient: None,
             },
@@ -513,8 +505,6 @@ fn deadline_expired_rejected() {
             &RouterExecuteMsg::ExecuteMultiHop {
                 operations: route,
                 minimum_receive: Uint128::new(1),
-                belief_price: None,
-                max_spread: None,
                 deadline: Some(Timestamp::from_seconds(1)),
                 recipient: None,
             },
@@ -551,8 +541,6 @@ fn same_input_output_rejected() {
             &RouterExecuteMsg::ExecuteMultiHop {
                 operations: route,
                 minimum_receive: Uint128::new(1),
-                belief_price: None,
-                max_spread: None,
                 deadline: None,
                 recipient: None,
             },
@@ -601,8 +589,6 @@ fn zero_liquidity_pool_in_path_errors_with_hop_context() {
             &RouterExecuteMsg::ExecuteMultiHop {
                 operations: route,
                 minimum_receive: Uint128::new(1),
-                belief_price: None,
-                max_spread: None,
                 deadline: None,
                 recipient: None,
             },
@@ -653,8 +639,6 @@ fn router_holds_zero_after_successful_route() {
         msg: to_json_binary(&Cw20HookMsg::ExecuteMultiHop {
             operations: route,
             minimum_receive: Uint128::new(1),
-            belief_price: None,
-            max_spread: None,
             deadline: None,
             recipient: None,
         })
@@ -718,8 +702,6 @@ fn simulate_matches_execute() {
         msg: to_json_binary(&Cw20HookMsg::ExecuteMultiHop {
             operations: route,
             minimum_receive: Uint128::new(1),
-            belief_price: None,
-            max_spread: None,
             deadline: None,
             recipient: None,
         })
@@ -817,8 +799,6 @@ fn commit_phase_pool_rejected_in_execution() {
             &RouterExecuteMsg::ExecuteMultiHop {
                 operations: route,
                 minimum_receive: Uint128::new(1),
-                belief_price: None,
-                max_spread: None,
                 deadline: None,
                 recipient: None,
             },

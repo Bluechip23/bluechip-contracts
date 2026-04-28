@@ -30,6 +30,14 @@ pub struct InstantiateMsg {
 }
 
 /// Mutating entry points.
+///
+/// Note: end-to-end slippage is enforced via `minimum_receive` on the
+/// final ask token, NOT via per-hop `belief_price` / `max_spread`. A
+/// single per-pair belief price is meaningless across hops on heterogeneous
+/// pairs (units differ between `A/bluechip` and `bluechip/B`), so the
+/// router does not accept those parameters and always passes `None` for
+/// them on the underlying pool calls. Frontends should size
+/// `minimum_receive` from the simulation result (see `SimulateMultiHop`).
 #[cw_serde]
 pub enum ExecuteMsg {
     /// Run a multi-hop swap whose first hop offers the native bluechip
@@ -39,8 +47,6 @@ pub enum ExecuteMsg {
     ExecuteMultiHop {
         operations: Vec<SwapOperation>,
         minimum_receive: Uint128,
-        belief_price: Option<Decimal>,
-        max_spread: Option<Decimal>,
         deadline: Option<Timestamp>,
         recipient: Option<String>,
     },
@@ -64,8 +70,6 @@ pub enum ExecuteMsg {
         operation: SwapOperation,
         hop_index: u32,
         to: String,
-        belief_price: Option<Decimal>,
-        max_spread: Option<Decimal>,
     },
     /// Internal: final slippage assertion. Compares the recipient's
     /// post-route balance against the captured pre-route balance plus
@@ -89,8 +93,6 @@ pub enum Cw20HookMsg {
     ExecuteMultiHop {
         operations: Vec<SwapOperation>,
         minimum_receive: Uint128,
-        belief_price: Option<Decimal>,
-        max_spread: Option<Decimal>,
         deadline: Option<Timestamp>,
         recipient: Option<String>,
     },

@@ -12,7 +12,7 @@ use cosmwasm_std::{to_json_binary, CosmosMsg, DepsMut, Env, MessageInfo, Respons
 use crate::admin::ensure_not_drained;
 use crate::error::ContractError;
 use crate::generic_helpers::process_distribution_batch;
-use crate::state::{DISTRIBUTION_STATE, POOL_INFO};
+use crate::state::{DISTRIBUTION_STATE, POOL_INFO, POOL_PAUSED};
 
 pub fn execute_continue_distribution(
     deps: DepsMut,
@@ -25,6 +25,18 @@ pub fn execute_continue_distribution(
     // up front fails early with the canonical error and avoids the keeper
     // ever issuing a tx against a drained pool.
     ensure_not_drained(deps.storage)?;
+
+    // Honor admin pause. Distribution is permissionless (any keeper may
+    // call it), but it mints creator tokens to committers — exactly the
+    // kind of state-mutating activity an admin pause is meant to halt
+    // while investigating suspicious behavior. Every other liquidity-
+    // touching path goes through `check_pool_writable`, which checks
+    // both pause AND drain; this brings distribution under the same
+    // uniform halt semantics. Pause is reversible by the factory, so
+    // legitimate distribution resumes once the admin clears the pause.
+    if POOL_PAUSED.may_load(deps.storage)?.unwrap_or(false) {
+        return Err(ContractError::PoolPausedLowLiquidity {});
+    }
 
     let dist_state = DISTRIBUTION_STATE.load(deps.storage)?;
     if !dist_state.is_distributing {

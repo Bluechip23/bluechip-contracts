@@ -22,6 +22,14 @@ use super::ensure_admin;
 /// `FactoryInstantiate` payload. Shared between `instantiate` and
 /// `execute_propose_factory_config_update` so the same rules apply to
 /// the initial config and any subsequent config proposal.
+///
+/// When called from the propose-update path, additionally enforces the
+/// strict anchor-pool shape check (registry presence, `PoolKind::Standard`,
+/// exact `[Native(bluechip), Native(atom)]` pair) — but only once the
+/// one-shot `SetAnchorPool` has fired (`INITIAL_ANCHOR_SET == true`).
+/// At instantiate time the anchor address is the deploy-time placeholder
+/// and `INITIAL_ANCHOR_SET` is `false`, so the strict check is skipped
+/// (it would fail by design — placeholder isn't a pool).
 pub(crate) fn validate_factory_config(
     deps: cosmwasm_std::Deps,
     config: &FactoryInstantiate,
@@ -55,11 +63,51 @@ pub(crate) fn validate_factory_config(
             "atom_denom must differ from bluechip_denom",
         )));
     }
+
+    // Strict anchor-pool validation on the post-bootstrap path. Without
+    // this gate, the propose/update flow would let an admin point the
+    // anchor at any well-formed address — including a non-pool contract
+    // or a pool that isn't a (bluechip, atom) Native/Native pair.
+    // `execute_set_anchor_pool` enforces the same invariants on its
+    // one-shot path; this runs the equivalent check on the timelocked
+    // path so the two flows can't disagree on what an "anchor" is.
+    let initial_anchor_set = crate::state::INITIAL_ANCHOR_SET
+        .may_load(deps.storage)?
+        .unwrap_or(false);
+    if initial_anchor_set {
+        // Compare against the currently-stored anchor; only validate when
+        // the proposal actually tries to change it. Same-anchor proposals
+        // (e.g., changes to other fields like fees) skip the round-trip.
+        let current = FACTORYINSTANTIATEINFO
+            .may_load(deps.storage)?
+            .map(|c| c.atom_bluechip_anchor_pool_address);
+        let changing = current
+            .as_ref()
+            .map(|a| a != &config.atom_bluechip_anchor_pool_address)
+            .unwrap_or(true);
+        if changing {
+            let pool_details = super::oracle::lookup_pool_by_addr(
+                deps,
+                &config.atom_bluechip_anchor_pool_address,
+            )?
+            .ok_or_else(|| {
+                ContractError::Std(StdError::generic_err(format!(
+                    "Proposed anchor pool address {} is not a registered pool",
+                    config.atom_bluechip_anchor_pool_address
+                )))
+            })?;
+            super::oracle::validate_anchor_pool_choice(
+                &pool_details,
+                &config.bluechip_denom,
+                &config.atom_denom,
+            )?;
+        }
+    }
     Ok(())
 }
 
 pub fn execute_update_factory_config(
-    deps: DepsMut,
+    mut deps: DepsMut,
     env: Env,
     info: MessageInfo,
 ) -> Result<Response, ContractError> {
@@ -72,9 +120,43 @@ pub fn execute_update_factory_config(
             effective_after: pending.effective_after,
         });
     }
+
+    // Re-validate at apply time. Between propose (48h ago) and apply,
+    // on-chain state can have moved — most notably, `SetAnchorPool`
+    // may have fired in the meantime, so the validation that ran at
+    // propose time used a different `current` anchor than what is now
+    // stored. Re-running it here catches stale-proposal hazards before
+    // the state lands.
+    validate_factory_config(deps.as_ref(), &pending.new_config)?;
+
+    // Detect anchor change against the currently-stored anchor and, if
+    // the apply will mutate it, refresh `INTERNAL_ORACLE` so it samples
+    // the new anchor and clears the stale price cache. Without this,
+    // the oracle would keep querying the old anchor address (which may
+    // be defunct) until the next rotation interval and could either
+    // freeze with `MissingAtomPool` or serve stale/wrong prices.
+    let prior_anchor = FACTORYINSTANTIATEINFO
+        .may_load(deps.storage)?
+        .map(|c| c.atom_bluechip_anchor_pool_address);
+    let new_anchor = pending.new_config.atom_bluechip_anchor_pool_address.clone();
+    let anchor_changed = prior_anchor.as_ref() != Some(&new_anchor);
+
     FACTORYINSTANTIATEINFO.save(deps.storage, &pending.new_config)?;
     PENDING_CONFIG.remove(deps.storage);
-    Ok(Response::new().add_attribute("action", "execute_update_config"))
+
+    let mut response = Response::new().add_attribute("action", "execute_update_config");
+    if anchor_changed {
+        let pools_in_oracle = super::oracle::refresh_internal_oracle_for_anchor_change(
+            &mut deps,
+            &env,
+            &new_anchor,
+        )?;
+        response = response
+            .add_attribute("anchor_changed", "true")
+            .add_attribute("new_anchor_addr", new_anchor.to_string())
+            .add_attribute("pools_in_oracle_after_refresh", pools_in_oracle.to_string());
+    }
+    Ok(response)
 }
 
 pub fn execute_propose_factory_config_update(
