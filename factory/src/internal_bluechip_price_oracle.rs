@@ -1026,11 +1026,31 @@ pub fn query_pyth_atom_usd_price(deps: Deps, env: &Env) -> StdResult<Uint128> {
             id: feed_id.clone(),
         };
 
-        // Try the standard query first, fallback to GetPrice for local/mock oracle
+        // M-7: the `GetPrice` fallback is only meaningful for the mock
+        // oracle (which is selected via the `mock` cargo feature). In
+        // production a Pyth query failure must surface as `Err` so the
+        // cache-fallback path inside `get_bluechip_usd_price_with_meta`
+        // can decide whether to bridge the outage from the cached price
+        // or refuse to serve. Silently falling back to a different RPC
+        // shape on the same contract previously meant that an operator
+        // who accidentally pointed `pyth_contract_addr_for_conversions`
+        // at a mock-flavoured oracle in production would silently
+        // receive mock prices.
+        //
+        // Behaviour by build flavour:
+        //   - prod (default): error propagates → caller's cache
+        //     fallback fires.
+        //   - `mock` feature: keep the GetPrice fallback so the test
+        //     mockoracle keeps working.
+        #[cfg(not(feature = "mock"))]
+        let response: PriceFeedResponse = {
+            let _ = feed_id; // silence unused-variable in prod build
+            deps.querier.query_wasm_smart(pyth_addr, &query_msg)?
+        };
+        #[cfg(feature = "mock")]
         let response: PriceFeedResponse =
             match deps.querier.query_wasm_smart(pyth_addr.clone(), &query_msg) {
                 Ok(res) => res,
-                //used for mock oracle
                 Err(_) => {
                     let fallback_msg = PythQueryMsg::GetPrice { price_id: feed_id };
                     deps.querier.query_wasm_smart(pyth_addr, &fallback_msg)?
@@ -1450,11 +1470,39 @@ pub fn execute_force_rotate_pools(
         select_random_pools_with_atom(deps.branch(), env.clone(), ORACLE_POOL_COUNT)?;
     oracle.selected_pools = new_pools.clone();
     oracle.last_rotation = env.block.time.seconds();
+    // M-8: clear cumulative snapshots and the price cache so the new
+    // sample set starts from a clean slate. Pre-fix, force-rotate left
+    // both intact:
+    //   - Stale `pool_cumulative_snapshots` for pools no longer in
+    //     `selected_pools` lingered in storage until the next periodic
+    //     rotation.
+    //   - The very next `update_internal_oracle_price` saw most newly-
+    //     selected creator pools as having no prior snapshot and
+    //     skipped them, leaving the anchor to dominate the TWAP for
+    //     one cycle.
+    //   - The retained `last_price` from the pre-rotation set (which
+    //     may have been the very thing the operator was force-rotating
+    //     to escape) anchored the circuit breaker on the next update.
+    //
+    // Treat force-rotate as a full oracle reset, identical to the
+    // anchor-change path: clear snapshots + observations, zero
+    // `last_price`/`last_update`, re-arm the H-2 warm-up gate so
+    // downstream consumers refuse to serve a price until enough new
+    // observations have accumulated.
+    oracle.pool_cumulative_snapshots.clear();
+    oracle.bluechip_price_cache.last_price = Uint128::zero();
+    oracle.bluechip_price_cache.last_update = 0;
+    oracle.bluechip_price_cache.twap_observations.clear();
+    oracle.warmup_remaining = ANCHOR_CHANGE_WARMUP_OBSERVATIONS;
 
     INTERNAL_ORACLE.save(deps.storage, &oracle)?;
     crate::state::PENDING_ORACLE_ROTATION.remove(deps.storage);
 
     Ok(Response::new()
         .add_attribute("action", "force_rotate_pools")
-        .add_attribute("pools_count", new_pools.len().to_string()))
+        .add_attribute("pools_count", new_pools.len().to_string())
+        .add_attribute(
+            "warmup_remaining",
+            ANCHOR_CHANGE_WARMUP_OBSERVATIONS.to_string(),
+        ))
 }

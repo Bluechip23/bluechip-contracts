@@ -52,7 +52,6 @@ fn default_factory_config() -> FactoryInstantiate {
     FactoryInstantiate {
         cw721_nft_contract_id: 58,
         factory_admin_address: admin_addr(),
-        commit_amount_for_threshold_bluechip: Uint128::zero(),
         commit_threshold_limit_usd: Uint128::new(25_000_000_000),
         pyth_contract_addr_for_conversions: MockApi::default().addr_make("oracle0000").to_string(),
         pyth_atom_usd_price_feed_id: "ORCL".to_string(),
@@ -1151,5 +1150,181 @@ fn test_h2_warmup_only_decrements_on_price_publishing_updates() {
         after, initial,
         "snapshot-only update must NOT decrement warm-up; otherwise an attacker \
          could exhaust the warm-up by triggering empty rounds"
+    );
+}
+
+// ---------------------------------------------------------------------------
+// M-1 — `ProposePoolUpgrade` must dedup `pool_ids` and reject IDs that
+// don't exist in the registry. Pre-fix the admin-supplied list flowed
+// straight through to apply, where duplicates produced two `Migrate`
+// messages to the same pool and invalid IDs aborted the entire batch
+// after a 48h timelock.
+// ---------------------------------------------------------------------------
+#[test]
+fn test_m1_propose_upgrade_rejects_unregistered_pool_id() {
+    use crate::testing::tests::register_test_pool_addr;
+    let mut deps = mock_deps_with_querier(&[]);
+    setup_factory(&mut deps);
+
+    register_test_pool_addr(&mut deps.storage, 1, &Addr::unchecked("pool_1"));
+
+    let res = execute(
+        deps.as_mut(),
+        mock_env(),
+        message_info(&admin_addr(), &[]),
+        ExecuteMsg::UpgradePools {
+            new_code_id: 99,
+            // pool 1 exists; pool 999 does not.
+            pool_ids: Some(vec![1, 999]),
+            migrate_msg: cosmwasm_std::to_json_binary(&Empty {}).unwrap(),
+        },
+    );
+    let err = res.expect_err("propose with unregistered id must fail");
+    assert!(
+        err.to_string().contains("999") && err.to_string().contains("not found"),
+        "expected 'pool 999 not found' error, got: {}",
+        err
+    );
+}
+
+#[test]
+fn test_m1_propose_upgrade_dedups_pool_ids() {
+    use crate::testing::tests::register_test_pool_addr;
+    use crate::state::PENDING_POOL_UPGRADE;
+    let mut deps = mock_deps_with_querier(&[]);
+    setup_factory(&mut deps);
+
+    register_test_pool_addr(&mut deps.storage, 1, &Addr::unchecked("pool_1"));
+    register_test_pool_addr(&mut deps.storage, 2, &Addr::unchecked("pool_2"));
+
+    execute(
+        deps.as_mut(),
+        mock_env(),
+        message_info(&admin_addr(), &[]),
+        ExecuteMsg::UpgradePools {
+            new_code_id: 99,
+            // Duplicates of 1, plus a single 2. Expected: [1, 2] (order
+            // preserved, duplicates dropped).
+            pool_ids: Some(vec![1, 1, 2, 1]),
+            migrate_msg: cosmwasm_std::to_json_binary(&Empty {}).unwrap(),
+        },
+    )
+    .unwrap();
+
+    let pending = PENDING_POOL_UPGRADE.load(&deps.storage).unwrap();
+    assert_eq!(
+        pending.pools_to_upgrade,
+        vec![1u64, 2],
+        "duplicates must be dropped, order preserved"
+    );
+}
+
+// ---------------------------------------------------------------------------
+// M-5 — `ProposePoolUpgrade` must refuse to include the anchor pool.
+// Migrating the anchor mid-flight would leave the oracle querying
+// possibly-mid-migration storage; if the migrate changes the reserve
+// representation the cumulative-delta math breaks silently.
+// ---------------------------------------------------------------------------
+#[test]
+fn test_m5_propose_upgrade_rejects_anchor_pool() {
+    use crate::testing::tests::register_test_pool_addr;
+    let mut deps = mock_deps_with_querier(&[]);
+    setup_factory(&mut deps);
+
+    // Register a pool whose creator_pool_addr matches the configured
+    // anchor address (atom_bluechip_pool_addr in the test harness).
+    register_test_pool_addr(&mut deps.storage, 1, &atom_bluechip_pool_addr());
+
+    let res = execute(
+        deps.as_mut(),
+        mock_env(),
+        message_info(&admin_addr(), &[]),
+        ExecuteMsg::UpgradePools {
+            new_code_id: 99,
+            pool_ids: Some(vec![1]),
+            migrate_msg: cosmwasm_std::to_json_binary(&Empty {}).unwrap(),
+        },
+    );
+    let err = res.expect_err("propose with anchor pool in batch must fail");
+    let msg = err.to_string();
+    assert!(
+        msg.contains("anchor") || msg.contains("Anchor"),
+        "expected anchor-rejection error, got: {}",
+        msg
+    );
+}
+
+// ---------------------------------------------------------------------------
+// M-8 — `ForceRotateOraclePools` must reset the cumulative snapshots,
+// price cache, and warm-up counter so the post-rotation TWAP starts
+// from a clean slate. Pre-fix it left snapshots and `last_price`
+// intact, anchoring the circuit breaker on the (potentially manipulated)
+// pre-rotation state — which was the very thing the operator was
+// force-rotating to escape.
+// ---------------------------------------------------------------------------
+#[test]
+fn test_m8_force_rotate_resets_oracle_state() {
+    use crate::internal_bluechip_price_oracle::{
+        ANCHOR_CHANGE_WARMUP_OBSERVATIONS, INTERNAL_ORACLE,
+    };
+    let mut deps = mock_deps_with_querier(&[]);
+    setup_factory(&mut deps);
+
+    // Manually populate stale state representative of "pre-rotation"
+    // so we can verify it gets cleared.
+    let mut oracle = INTERNAL_ORACLE.load(&deps.storage).unwrap();
+    oracle.bluechip_price_cache.last_price = Uint128::new(10_000_000);
+    oracle.bluechip_price_cache.last_update = mock_env().block.time.seconds();
+    oracle.warmup_remaining = 0;
+    oracle.pool_cumulative_snapshots = vec![
+        crate::internal_bluechip_price_oracle::PoolCumulativeSnapshot {
+            pool_address: "stale_pool".to_string(),
+            price0_cumulative: Uint128::new(123),
+            block_time: 1,
+        },
+    ];
+    INTERNAL_ORACLE.save(&mut deps.storage, &oracle).unwrap();
+
+    // Propose force-rotate, advance past the timelock, execute.
+    execute(
+        deps.as_mut(),
+        mock_env(),
+        message_info(&admin_addr(), &[]),
+        ExecuteMsg::ProposeForceRotateOraclePools {},
+    )
+    .unwrap();
+
+    let mut env = mock_env();
+    env.block.time =
+        env.block.time.plus_seconds(crate::state::ADMIN_TIMELOCK_SECONDS + 1);
+    execute(
+        deps.as_mut(),
+        env,
+        message_info(&admin_addr(), &[]),
+        ExecuteMsg::ForceRotateOraclePools {},
+    )
+    .unwrap();
+
+    let oracle = INTERNAL_ORACLE.load(&deps.storage).unwrap();
+    assert!(
+        oracle.bluechip_price_cache.last_price.is_zero(),
+        "force-rotate must clear last_price"
+    );
+    assert_eq!(
+        oracle.bluechip_price_cache.last_update, 0,
+        "force-rotate must clear last_update"
+    );
+    assert!(
+        oracle.bluechip_price_cache.twap_observations.is_empty(),
+        "force-rotate must clear twap_observations"
+    );
+    assert!(
+        oracle.pool_cumulative_snapshots.is_empty(),
+        "force-rotate must clear cumulative snapshots — leaving stale ones \
+         would fail TWAP on next update because pool sets won't overlap"
+    );
+    assert_eq!(
+        oracle.warmup_remaining, ANCHOR_CHANGE_WARMUP_OBSERVATIONS,
+        "force-rotate must re-arm the H-2 warm-up gate"
     );
 }

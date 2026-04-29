@@ -25,7 +25,6 @@ fn test_repro_token_sort_order_bug() {
     let config = FactoryInstantiate {
         factory_admin_address: make_addr("admin"),
         cw721_nft_contract_id: 1,
-        commit_amount_for_threshold_bluechip: Uint128::zero(),
         commit_threshold_limit_usd: Uint128::new(100),
         pyth_contract_addr_for_conversions: "pyth".to_string(),
         pyth_atom_usd_price_feed_id: "id".to_string(),

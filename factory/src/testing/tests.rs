@@ -53,7 +53,6 @@ fn create_default_instantiate_msg() -> FactoryInstantiate {
     FactoryInstantiate {
         factory_admin_address: admin_addr(),
         cw721_nft_contract_id: 58,
-        commit_amount_for_threshold_bluechip: Uint128::zero(),
         commit_threshold_limit_usd: Uint128::new(25_000_000_000),
         pyth_contract_addr_for_conversions: MockApi::default().addr_make("oracle0000").to_string(),
         pyth_atom_usd_price_feed_id: "ubluechip".to_string(),
@@ -207,7 +206,6 @@ fn proper_initialization() {
     let msg = FactoryInstantiate {
         factory_admin_address: the_admin.clone(),
         cw721_nft_contract_id: 58,
-        commit_amount_for_threshold_bluechip: Uint128::zero(),
         commit_threshold_limit_usd: Uint128::new(100),
         pyth_contract_addr_for_conversions: MockApi::default().addr_make("oracle0000").to_string(),
         pyth_atom_usd_price_feed_id: "ORCL".to_string(),
@@ -376,7 +374,6 @@ fn create_pair() {
     let msg = FactoryInstantiate {
         factory_admin_address: the_admin.clone(),
         cw721_nft_contract_id: 58,
-        commit_amount_for_threshold_bluechip: Uint128::zero(),
         commit_threshold_limit_usd: Uint128::new(25_000_000_000),
         pyth_contract_addr_for_conversions: MockApi::default().addr_make("oracle0000").to_string(),
         pyth_atom_usd_price_feed_id: "BLUECHIP".to_string(),
@@ -444,7 +441,6 @@ fn test_create_pair_with_custom_params() {
     let msg = FactoryInstantiate {
         factory_admin_address: admin_addr(),
         cw721_nft_contract_id: 58,
-        commit_amount_for_threshold_bluechip: Uint128::zero(),
         commit_threshold_limit_usd: Uint128::new(25_000_000_000),
         pyth_contract_addr_for_conversions: MockApi::default().addr_make("oracle0000").to_string(),
         pyth_atom_usd_price_feed_id: "BLUECHIP".to_string(),
@@ -647,7 +643,6 @@ fn test_complete_pool_creation_flow() {
     let msg = FactoryInstantiate {
         factory_admin_address: admin_addr(),
         cw721_nft_contract_id: 58,
-        commit_amount_for_threshold_bluechip: Uint128::zero(),
         commit_threshold_limit_usd: Uint128::new(25_000_000_000),
         pyth_contract_addr_for_conversions: MockApi::default().addr_make("oracle0000").to_string(),
         pyth_atom_usd_price_feed_id: "BLUECHIP".to_string(),
@@ -786,7 +781,6 @@ fn test_config() {
     let config = FactoryInstantiate {
         factory_admin_address: Addr::unchecked("admin1..."),
         cw721_nft_contract_id: 58,
-        commit_amount_for_threshold_bluechip: Uint128::zero(),
         commit_threshold_limit_usd: Uint128::new(25_000_000_000),
         pyth_contract_addr_for_conversions: MockApi::default().addr_make("oracle0000").to_string(),
         pyth_atom_usd_price_feed_id: "ORCL".to_string(),
@@ -828,7 +822,6 @@ fn test_reply_handling() {
     let msg = FactoryInstantiate {
         factory_admin_address: the_admin.clone(),
         cw721_nft_contract_id: 58,
-        commit_amount_for_threshold_bluechip: Uint128::zero(),
         commit_threshold_limit_usd: Uint128::new(100),
         pyth_contract_addr_for_conversions: MockApi::default().addr_make("oracle0000").to_string(),
         pyth_atom_usd_price_feed_id: "ORCL".to_string(),
@@ -1705,7 +1698,6 @@ fn test_query_pyth_atom_usd_price_success() {
     let config = FactoryInstantiate {
         factory_admin_address: admin_addr(),
         cw721_nft_contract_id: 58,
-        commit_amount_for_threshold_bluechip: Uint128::zero(),
         commit_threshold_limit_usd: Uint128::new(100),
         pyth_contract_addr_for_conversions: MockApi::default().addr_make("pyth_oracle").to_string(),
         pyth_atom_usd_price_feed_id: "ATOM_USD".to_string(),
@@ -1751,7 +1743,6 @@ fn test_query_pyth_atom_usd_price_default() {
     let config = FactoryInstantiate {
         factory_admin_address: admin_addr(),
         cw721_nft_contract_id: 58,
-        commit_amount_for_threshold_bluechip: Uint128::zero(),
         commit_threshold_limit_usd: Uint128::new(100),
         pyth_contract_addr_for_conversions: MockApi::default().addr_make("pyth_oracle").to_string(),
         pyth_atom_usd_price_feed_id: "ATOM_USD".to_string(),
@@ -1787,7 +1778,6 @@ fn test_query_pyth_extreme_atom_prices() {
     let config = FactoryInstantiate {
         factory_admin_address: admin_addr(),
         cw721_nft_contract_id: 58,
-        commit_amount_for_threshold_bluechip: Uint128::zero(),
         commit_threshold_limit_usd: Uint128::new(100),
         pyth_contract_addr_for_conversions: MockApi::default().addr_make("pyth_oracle").to_string(),
         pyth_atom_usd_price_feed_id: "ATOM_USD".to_string(),
@@ -1842,7 +1832,6 @@ fn test_get_bluechip_usd_price_with_pyth() {
     let config = FactoryInstantiate {
         factory_admin_address: admin_addr(),
         cw721_nft_contract_id: 58,
-        commit_amount_for_threshold_bluechip: Uint128::zero(),
         commit_threshold_limit_usd: Uint128::new(100),
         pyth_contract_addr_for_conversions: MockApi::default().addr_make("pyth_oracle").to_string(),
         pyth_atom_usd_price_feed_id: "ATOM_USD".to_string(),
@@ -1914,7 +1903,6 @@ fn test_bluechip_usd_price_with_different_atom_prices() {
     let config = FactoryInstantiate {
         factory_admin_address: admin_addr(),
         cw721_nft_contract_id: 58,
-        commit_amount_for_threshold_bluechip: Uint128::zero(),
         commit_threshold_limit_usd: Uint128::new(100),
         pyth_contract_addr_for_conversions: MockApi::default().addr_make("pyth_oracle").to_string(),
         pyth_atom_usd_price_feed_id: "ATOM_USD".to_string(),
@@ -1989,7 +1977,6 @@ fn test_conversion_functions_with_pyth() {
     let config = FactoryInstantiate {
         factory_admin_address: admin_addr(),
         cw721_nft_contract_id: 58,
-        commit_amount_for_threshold_bluechip: Uint128::zero(),
         commit_threshold_limit_usd: Uint128::new(100),
         pyth_contract_addr_for_conversions: MockApi::default().addr_make("pyth_oracle").to_string(),
         pyth_atom_usd_price_feed_id: "ATOM_USD".to_string(),
@@ -2074,7 +2061,6 @@ fn test_bluechip_minting_on_threshold_crossing() {
     let msg = FactoryInstantiate {
         factory_admin_address: admin_addr(),
         cw721_nft_contract_id: 58,
-        commit_amount_for_threshold_bluechip: Uint128::zero(),
         commit_threshold_limit_usd: Uint128::new(25_000_000_000),
         pyth_contract_addr_for_conversions: MockApi::default().addr_make("oracle0000").to_string(),
         pyth_atom_usd_price_feed_id: "BLUECHIP".to_string(),
@@ -2174,7 +2160,6 @@ fn test_no_mint_when_amount_is_zero() {
     let msg = FactoryInstantiate {
         factory_admin_address: admin_addr(),
         cw721_nft_contract_id: 58,
-        commit_amount_for_threshold_bluechip: Uint128::zero(),
         commit_threshold_limit_usd: Uint128::new(25_000_000_000),
         pyth_contract_addr_for_conversions: MockApi::default().addr_make("oracle0000").to_string(),
         pyth_atom_usd_price_feed_id: "BLUECHIP".to_string(),

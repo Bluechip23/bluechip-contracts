@@ -141,7 +141,18 @@ pub struct PendingPoolConfig {
 #[cw_serde]
 pub struct FactoryInstantiate {
     pub factory_admin_address: Addr,
-    pub commit_amount_for_threshold_bluechip: Uint128,
+    // M-2: `commit_amount_for_threshold_bluechip` removed. The field was
+    // never read anywhere in the contract — only written from deploy
+    // scripts and tests, and ignored at every consumer. Keeping it
+    // around invited a future change to silently start consuming
+    // operator-supplied stale values.
+    //
+    // cw_serde does NOT add `deny_unknown_fields`, so already-stored
+    // FactoryInstantiate records carrying this field will deserialize
+    // cleanly into the new shape (the unknown key is ignored). Deploy
+    // scripts that pass the field on instantiate also continue to
+    // succeed — JSON deserialization at the contract boundary
+    // tolerates extra keys.
     pub commit_threshold_limit_usd: Uint128,
     pub pyth_contract_addr_for_conversions: String,
     pub pyth_atom_usd_price_feed_id: String,

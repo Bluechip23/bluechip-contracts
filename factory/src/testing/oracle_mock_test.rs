@@ -22,7 +22,6 @@ fn default_init() -> FactoryInstantiate {
     FactoryInstantiate {
         factory_admin_address: addr("admin"),
         cw721_nft_contract_id: 58,
-        commit_amount_for_threshold_bluechip: Uint128::zero(),
         commit_threshold_limit_usd: Uint128::new(25_000_000_000),
         // The factory queries this contract for BLUECHIP_USD in mock mode.
         // Address just has to be valid bech32; the mock querier handles the call.
