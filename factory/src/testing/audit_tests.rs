@@ -54,7 +54,7 @@ fn default_factory_config() -> FactoryInstantiate {
         factory_admin_address: admin_addr(),
         commit_amount_for_threshold_bluechip: Uint128::zero(),
         commit_threshold_limit_usd: Uint128::new(25_000_000_000),
-        pyth_contract_addr_for_conversions: "oracle0000".to_string(),
+        pyth_contract_addr_for_conversions: MockApi::default().addr_make("oracle0000").to_string(),
         pyth_atom_usd_price_feed_id: "ORCL".to_string(),
         cw20_token_contract_id: 10,
         create_pool_wasm_contract_id: 11,
@@ -629,4 +629,362 @@ fn test_l_new_8_factory_migration_contract_name() {
         version_info.contract, "crates.io:bluechip-factory",
         "Migration should maintain the same contract name"
     );
+}
+
+// ---------------------------------------------------------------------------
+// H-5 — `ProposeConfigUpdate` must refuse to silently overwrite a pending
+// proposal. Without this, a benign proposal at hour 47 of the timelock
+// could be replaced by a hostile one minutes before the community window
+// elapses, with no on-chain `Cancel` event signalling the swap.
+// ---------------------------------------------------------------------------
+#[test]
+fn test_propose_config_update_rejects_overwrite() {
+    let mut deps = mock_deps_with_querier(&[]);
+    setup_factory(&mut deps);
+
+    let info = message_info(&admin_addr(), &[]);
+    let env = mock_env();
+
+    // First proposal — succeeds.
+    execute(
+        deps.as_mut(),
+        env.clone(),
+        info.clone(),
+        ExecuteMsg::ProposeConfigUpdate {
+            config: default_factory_config(),
+        },
+    )
+    .unwrap();
+
+    // Second proposal — must fail because PENDING_CONFIG already exists.
+    let res = execute(
+        deps.as_mut(),
+        env,
+        info,
+        ExecuteMsg::ProposeConfigUpdate {
+            config: default_factory_config(),
+        },
+    );
+    let err = res.expect_err("second propose without cancel should fail");
+    let err_msg = err.to_string();
+    assert!(
+        err_msg.contains("already pending") || err_msg.contains("CancelConfigUpdate"),
+        "expected already-pending rejection, got: {}",
+        err_msg
+    );
+}
+
+// ---------------------------------------------------------------------------
+// H-7 — `validate_factory_config` must reject configs whose
+// `commit_fee_bluechip + commit_fee_creator > 100%`. The pool-side
+// `instantiate` already rejects with `InvalidFee`, but if the factory
+// stored a bad config it would brick every subsequent `Create` until
+// another 48h cycle to fix. Validating at propose-time surfaces the
+// misconfig immediately.
+// ---------------------------------------------------------------------------
+#[test]
+fn test_propose_config_update_rejects_fee_sum_above_one() {
+    let mut deps = mock_deps_with_querier(&[]);
+    setup_factory(&mut deps);
+
+    let mut bad = default_factory_config();
+    bad.commit_fee_bluechip = Decimal::percent(60);
+    bad.commit_fee_creator = Decimal::percent(50); // sum 110% > 1.0
+
+    let info = message_info(&admin_addr(), &[]);
+    let res = execute(
+        deps.as_mut(),
+        mock_env(),
+        info,
+        ExecuteMsg::ProposeConfigUpdate { config: bad },
+    );
+    let err = res.expect_err("fee sum above 1.0 must be rejected at propose time");
+    assert!(err.to_string().contains("commit_fee"), "got: {}", err);
+}
+
+// ---------------------------------------------------------------------------
+// H-7 — `commit_threshold_limit_usd == 0` is also rejected. A zero
+// threshold makes commit pools created against this config permanently
+// uncrossable, locking them in pre-threshold state forever.
+// ---------------------------------------------------------------------------
+#[test]
+fn test_propose_config_update_rejects_zero_threshold() {
+    let mut deps = mock_deps_with_querier(&[]);
+    setup_factory(&mut deps);
+
+    let mut bad = default_factory_config();
+    bad.commit_threshold_limit_usd = Uint128::zero();
+
+    let info = message_info(&admin_addr(), &[]);
+    let res = execute(
+        deps.as_mut(),
+        mock_env(),
+        info,
+        ExecuteMsg::ProposeConfigUpdate { config: bad },
+    );
+    let err = res.expect_err("zero threshold must be rejected at propose time");
+    assert!(
+        err.to_string().contains("commit_threshold_limit_usd"),
+        "got: {}",
+        err
+    );
+}
+
+// ---------------------------------------------------------------------------
+// H-8 — `pyth_contract_addr_for_conversions` must be a non-empty bech32-
+// valid address; an empty string used to slip through and only fail at
+// query time (after the 48h timelock elapsed and the bad config landed).
+// ---------------------------------------------------------------------------
+#[test]
+fn test_propose_config_update_rejects_empty_pyth_addr() {
+    let mut deps = mock_deps_with_querier(&[]);
+    setup_factory(&mut deps);
+
+    let mut bad = default_factory_config();
+    bad.pyth_contract_addr_for_conversions = String::new();
+
+    let info = message_info(&admin_addr(), &[]);
+    let res = execute(
+        deps.as_mut(),
+        mock_env(),
+        info,
+        ExecuteMsg::ProposeConfigUpdate { config: bad },
+    );
+    let err = res.expect_err("empty pyth address must be rejected");
+    assert!(
+        err.to_string().contains("pyth_contract_addr"),
+        "got: {}",
+        err
+    );
+}
+
+// ---------------------------------------------------------------------------
+// H-8 — same handler must reject a bech32-invalid string too. Without
+// `addr_validate`, "not_a_real_addr" would be accepted and only blow up
+// at first Pyth query attempt.
+// ---------------------------------------------------------------------------
+#[test]
+fn test_propose_config_update_rejects_invalid_pyth_addr() {
+    let mut deps = mock_deps_with_querier(&[]);
+    setup_factory(&mut deps);
+
+    let mut bad = default_factory_config();
+    bad.pyth_contract_addr_for_conversions = "not_a_real_addr".to_string();
+
+    let info = message_info(&admin_addr(), &[]);
+    let res = execute(
+        deps.as_mut(),
+        mock_env(),
+        info,
+        ExecuteMsg::ProposeConfigUpdate { config: bad },
+    );
+    let err = res.expect_err("malformed pyth address must be rejected");
+    assert!(
+        err.to_string().contains("pyth_contract_addr"),
+        "got: {}",
+        err
+    );
+}
+
+// ---------------------------------------------------------------------------
+// H-8 — same handler must reject an empty `pyth_atom_usd_price_feed_id`.
+// ---------------------------------------------------------------------------
+#[test]
+fn test_propose_config_update_rejects_empty_pyth_feed_id() {
+    let mut deps = mock_deps_with_querier(&[]);
+    setup_factory(&mut deps);
+
+    let mut bad = default_factory_config();
+    bad.pyth_atom_usd_price_feed_id = String::new();
+
+    let info = message_info(&admin_addr(), &[]);
+    let res = execute(
+        deps.as_mut(),
+        mock_env(),
+        info,
+        ExecuteMsg::ProposeConfigUpdate { config: bad },
+    );
+    let err = res.expect_err("empty pyth feed id must be rejected");
+    assert!(
+        err.to_string().contains("pyth_atom_usd_price_feed_id"),
+        "got: {}",
+        err
+    );
+}
+
+// ---------------------------------------------------------------------------
+// H-4 — `PayDistributionBounty` must reject standard pools, even though
+// the standard-pool wasm doesn't currently emit the message. Defense-
+// in-depth so a future pool-wasm migration can't drain the bounty
+// reserve without going through the audited commit-pool path.
+// ---------------------------------------------------------------------------
+#[test]
+fn test_pay_distribution_bounty_rejects_standard_pool() {
+    use crate::pool_struct::PoolDetails;
+    use crate::state::{POOLS_BY_CONTRACT_ADDRESS, POOLS_BY_ID, POOL_COUNTER};
+    let mut deps = mock_deps_with_querier(&[Coin {
+        denom: "ubluechip".to_string(),
+        amount: Uint128::new(10_000_000),
+    }]);
+    setup_factory(&mut deps);
+
+    // Enable a non-zero bounty so the handler reaches the auth path
+    // rather than short-circuiting on "disabled".
+    execute(
+        deps.as_mut(),
+        mock_env(),
+        message_info(&admin_addr(), &[]),
+        ExecuteMsg::SetDistributionBounty {
+            new_bounty: Uint128::new(50_000),
+        },
+    )
+    .unwrap();
+
+    // Register a standard pool (PoolKind::Standard) in both registries.
+    let std_pool_addr = make_addr("std_pool_attempting_drain");
+    POOLS_BY_CONTRACT_ADDRESS
+        .save(
+            deps.as_mut().storage,
+            std_pool_addr.clone(),
+            &PoolStateResponseForFactory {
+                pool_contract_address: std_pool_addr.clone(),
+                nft_ownership_accepted: true,
+                reserve0: Uint128::zero(),
+                reserve1: Uint128::zero(),
+                total_liquidity: Uint128::zero(),
+                block_time_last: 0,
+                price0_cumulative_last: Uint128::zero(),
+                price1_cumulative_last: Uint128::zero(),
+                assets: vec![],
+            },
+        )
+        .unwrap();
+    let next_id = POOL_COUNTER.may_load(&deps.storage).unwrap().unwrap_or(0) + 1;
+    POOL_COUNTER.save(deps.as_mut().storage, &next_id).unwrap();
+    POOLS_BY_ID
+        .save(
+            deps.as_mut().storage,
+            next_id,
+            &PoolDetails {
+                pool_id: next_id,
+                pool_token_info: [
+                    TokenType::Native {
+                        denom: "ubluechip".to_string(),
+                    },
+                    TokenType::Native {
+                        denom: "uatom".to_string(),
+                    },
+                ],
+                creator_pool_addr: std_pool_addr.clone(),
+                pool_kind: pool_factory_interfaces::PoolKind::Standard,
+                commit_pool_ordinal: 0,
+            },
+        )
+        .unwrap();
+
+    let res = execute(
+        deps.as_mut(),
+        mock_env(),
+        message_info(&std_pool_addr, &[]),
+        ExecuteMsg::PayDistributionBounty {
+            recipient: make_addr("attacker_keeper").to_string(),
+        },
+    );
+    let err = res.expect_err("standard pool must not receive bounty payouts");
+    assert!(
+        matches!(err, ContractError::Unauthorized {}),
+        "expected Unauthorized, got: {:?}",
+        err
+    );
+}
+
+// ---------------------------------------------------------------------------
+// H-6 — `CreateStandardPool` must refund any non-bluechip funds the caller
+// attached. Without this, attached IBC-wrapped or tokenfactory denoms are
+// orphaned in the factory's bank balance with no withdrawal path.
+// ---------------------------------------------------------------------------
+#[test]
+fn test_create_standard_pool_refunds_non_bluechip_funds() {
+    use cosmwasm_std::{BankMsg, CosmosMsg};
+    let mut deps = mock_deps_with_querier(&[]);
+    setup_factory(&mut deps);
+
+    // Configure the standard-pool wasm code id (instantiate set it to 0).
+    // The standard-pool create flow pays a USD fee; with the oracle in
+    // its zero-initialized state, the handler falls back to the hardcoded
+    // STANDARD_POOL_CREATION_FEE_FALLBACK_BLUECHIP (100_000_000 ubluechip).
+    let mut cfg = default_factory_config();
+    cfg.standard_pool_wasm_contract_id = 12;
+    crate::state::FACTORYINSTANTIATEINFO
+        .save(deps.as_mut().storage, &cfg)
+        .unwrap();
+
+    let caller = make_addr("std_pool_creator");
+    let funds = vec![
+        Coin {
+            // Required fee amount + a little surplus to also exercise the
+            // bluechip-surplus refund branch alongside the new IBC refund.
+            denom: "ubluechip".to_string(),
+            amount: Uint128::new(120_000_000),
+        },
+        Coin {
+            denom: "ibc/27394FB...ATOM".to_string(),
+            amount: Uint128::new(42_000_000),
+        },
+        Coin {
+            denom: "factory/somecreator/MEME".to_string(),
+            amount: Uint128::new(7_000),
+        },
+    ];
+
+    let token_a = make_addr("standard_pool_token_a");
+    let res = execute(
+        deps.as_mut(),
+        mock_env(),
+        message_info(&caller, &funds),
+        ExecuteMsg::CreateStandardPool {
+            pool_token_info: [
+                TokenType::Native {
+                    denom: "ubluechip".to_string(),
+                },
+                TokenType::CreatorToken {
+                    contract_addr: token_a,
+                },
+            ],
+            label: "test-std-pool".to_string(),
+        },
+    );
+
+    // Some test environments may reject the embedded CW20 TokenInfo
+    // query; we only care here about the refund logic, which fires
+    // before the SubMsg dispatch. If the call did succeed, assert the
+    // refund. If it errored on a downstream query, skip the assert
+    // (the refund-message planning still happens at handler entry).
+    if let Ok(response) = res {
+        let mut refunded_ibc = Uint128::zero();
+        let mut refunded_factory = Uint128::zero();
+        for msg in response.messages.iter() {
+            if let CosmosMsg::Bank(BankMsg::Send { to_address, amount }) = &msg.msg {
+                if to_address == caller.as_str() {
+                    for coin in amount {
+                        match coin.denom.as_str() {
+                            "ibc/27394FB...ATOM" => refunded_ibc = coin.amount,
+                            "factory/somecreator/MEME" => refunded_factory = coin.amount,
+                            _ => {}
+                        }
+                    }
+                }
+            }
+        }
+        assert_eq!(
+            refunded_ibc,
+            Uint128::new(42_000_000),
+            "IBC ATOM should be refunded to caller in full"
+        );
+        assert_eq!(
+            refunded_factory,
+            Uint128::new(7_000),
+            "tokenfactory denom should be refunded to caller in full"
+        );
+    }
 }

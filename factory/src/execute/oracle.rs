@@ -118,9 +118,21 @@ pub fn execute_pay_distribution_bounty(
     info: MessageInfo,
     recipient: String,
 ) -> Result<Response, ContractError> {
-    // Auth: caller must be a registered pool. POOLS_BY_CONTRACT_ADDRESS is
-    // populated at pool creation and keyed by the pool's contract address.
+    // Auth: caller must be a registered COMMIT pool. POOLS_BY_CONTRACT_ADDRESS
+    // is populated at pool creation and keyed by the pool's contract address;
+    // it contains both commit and standard pools, so the registry-presence
+    // check alone would let any registered pool drain the factory's bounty
+    // reserve. Only commit pools run distributions, so we additionally
+    // require `pool_kind == Commit` as defense-in-depth: if a future
+    // migration of either pool wasm ever introduced a hostile or buggy
+    // path that called `PayDistributionBounty`, this gate prevents standard
+    // pools from triggering a payout entirely.
     if !POOLS_BY_CONTRACT_ADDRESS.has(deps.storage, info.sender.clone()) {
+        return Err(ContractError::Unauthorized {});
+    }
+    let pool_details = lookup_pool_by_addr(deps.as_ref(), &info.sender)?
+        .ok_or(ContractError::Unauthorized {})?;
+    if pool_details.pool_kind != pool_factory_interfaces::PoolKind::Commit {
         return Err(ContractError::Unauthorized {});
     }
 

@@ -399,9 +399,30 @@ pub(crate) fn execute_create_standard_pool(
         messages.push(CosmosMsg::Bank(cosmwasm_std::BankMsg::Send {
             to_address: info.sender.to_string(),
             amount: vec![cosmwasm_std::Coin {
-                denom: bluechip_denom,
+                denom: bluechip_denom.clone(),
                 amount: surplus,
             }],
+        }));
+    }
+
+    // Refund any non-bluechip funds the caller attached. The fee path only
+    // consumes `bluechip_denom`; without this loop, anything else
+    // (`uatom`, IBC-wrapped denoms, tokenfactory tokens accidentally
+    // included by a frontend) would be deposited into the factory's bank
+    // balance with no withdrawal mechanism — orphaned forever on success.
+    // Failure is already safe via reply_on_success atomic revert; this
+    // covers the success path.
+    let mut refund_extras: Vec<cosmwasm_std::Coin> = info
+        .funds
+        .iter()
+        .filter(|c| c.denom != bluechip_denom && !c.amount.is_zero())
+        .cloned()
+        .collect();
+    refund_extras.sort_by(|a, b| a.denom.cmp(&b.denom));
+    if !refund_extras.is_empty() {
+        messages.push(CosmosMsg::Bank(cosmwasm_std::BankMsg::Send {
+            to_address: info.sender.to_string(),
+            amount: refund_extras,
         }));
     }
 

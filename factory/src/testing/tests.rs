@@ -55,7 +55,7 @@ fn create_default_instantiate_msg() -> FactoryInstantiate {
         cw721_nft_contract_id: 58,
         commit_amount_for_threshold_bluechip: Uint128::zero(),
         commit_threshold_limit_usd: Uint128::new(25_000_000_000),
-        pyth_contract_addr_for_conversions: "oracle0000".to_string(),
+        pyth_contract_addr_for_conversions: MockApi::default().addr_make("oracle0000").to_string(),
         pyth_atom_usd_price_feed_id: "ubluechip".to_string(),
         cw20_token_contract_id: 10,
         create_pool_wasm_contract_id: 11,
@@ -135,7 +135,7 @@ fn proper_initialization() {
         cw721_nft_contract_id: 58,
         commit_amount_for_threshold_bluechip: Uint128::zero(),
         commit_threshold_limit_usd: Uint128::new(100),
-        pyth_contract_addr_for_conversions: "oracle0000".to_string(),
+        pyth_contract_addr_for_conversions: MockApi::default().addr_make("oracle0000").to_string(),
         pyth_atom_usd_price_feed_id: "ORCL".to_string(),
         cw20_token_contract_id: 10,
         create_pool_wasm_contract_id: 11,
@@ -296,7 +296,7 @@ fn create_pair() {
         cw721_nft_contract_id: 58,
         commit_amount_for_threshold_bluechip: Uint128::zero(),
         commit_threshold_limit_usd: Uint128::new(25_000_000_000),
-        pyth_contract_addr_for_conversions: "oracle0000".to_string(),
+        pyth_contract_addr_for_conversions: MockApi::default().addr_make("oracle0000").to_string(),
         pyth_atom_usd_price_feed_id: "BLUECHIP".to_string(),
         cw20_token_contract_id: 10,
         create_pool_wasm_contract_id: 11,
@@ -364,7 +364,7 @@ fn test_create_pair_with_custom_params() {
         cw721_nft_contract_id: 58,
         commit_amount_for_threshold_bluechip: Uint128::zero(),
         commit_threshold_limit_usd: Uint128::new(25_000_000_000),
-        pyth_contract_addr_for_conversions: "oracle0000".to_string(),
+        pyth_contract_addr_for_conversions: MockApi::default().addr_make("oracle0000").to_string(),
         pyth_atom_usd_price_feed_id: "BLUECHIP".to_string(),
         cw20_token_contract_id: 10,
         create_pool_wasm_contract_id: 11,
@@ -563,7 +563,7 @@ fn test_complete_pool_creation_flow() {
         cw721_nft_contract_id: 58,
         commit_amount_for_threshold_bluechip: Uint128::zero(),
         commit_threshold_limit_usd: Uint128::new(25_000_000_000),
-        pyth_contract_addr_for_conversions: "oracle0000".to_string(),
+        pyth_contract_addr_for_conversions: MockApi::default().addr_make("oracle0000").to_string(),
         pyth_atom_usd_price_feed_id: "BLUECHIP".to_string(),
         cw20_token_contract_id: 10,
         create_pool_wasm_contract_id: 11,
@@ -698,7 +698,7 @@ fn test_config() {
         cw721_nft_contract_id: 58,
         commit_amount_for_threshold_bluechip: Uint128::zero(),
         commit_threshold_limit_usd: Uint128::new(25_000_000_000),
-        pyth_contract_addr_for_conversions: "oracle0000".to_string(),
+        pyth_contract_addr_for_conversions: MockApi::default().addr_make("oracle0000").to_string(),
         pyth_atom_usd_price_feed_id: "ORCL".to_string(),
         cw20_token_contract_id: 1,
         create_pool_wasm_contract_id: 1,
@@ -740,7 +740,7 @@ fn test_reply_handling() {
         cw721_nft_contract_id: 58,
         commit_amount_for_threshold_bluechip: Uint128::zero(),
         commit_threshold_limit_usd: Uint128::new(100),
-        pyth_contract_addr_for_conversions: "oracle0000".to_string(),
+        pyth_contract_addr_for_conversions: MockApi::default().addr_make("oracle0000").to_string(),
         pyth_atom_usd_price_feed_id: "ORCL".to_string(),
         cw20_token_contract_id: 10,
         create_pool_wasm_contract_id: 11,
@@ -1579,7 +1579,7 @@ fn test_query_pyth_atom_usd_price_success() {
         cw721_nft_contract_id: 58,
         commit_amount_for_threshold_bluechip: Uint128::zero(),
         commit_threshold_limit_usd: Uint128::new(100),
-        pyth_contract_addr_for_conversions: "pyth_oracle".to_string(),
+        pyth_contract_addr_for_conversions: MockApi::default().addr_make("pyth_oracle").to_string(),
         pyth_atom_usd_price_feed_id: "ATOM_USD".to_string(),
         cw20_token_contract_id: 10,
         create_pool_wasm_contract_id: 11,
@@ -1625,7 +1625,7 @@ fn test_query_pyth_atom_usd_price_default() {
         cw721_nft_contract_id: 58,
         commit_amount_for_threshold_bluechip: Uint128::zero(),
         commit_threshold_limit_usd: Uint128::new(100),
-        pyth_contract_addr_for_conversions: "pyth_oracle".to_string(),
+        pyth_contract_addr_for_conversions: MockApi::default().addr_make("pyth_oracle").to_string(),
         pyth_atom_usd_price_feed_id: "ATOM_USD".to_string(),
         cw20_token_contract_id: 10,
         create_pool_wasm_contract_id: 11,
@@ -1661,7 +1661,7 @@ fn test_query_pyth_extreme_atom_prices() {
         cw721_nft_contract_id: 58,
         commit_amount_for_threshold_bluechip: Uint128::zero(),
         commit_threshold_limit_usd: Uint128::new(100),
-        pyth_contract_addr_for_conversions: "pyth_oracle".to_string(),
+        pyth_contract_addr_for_conversions: MockApi::default().addr_make("pyth_oracle").to_string(),
         pyth_atom_usd_price_feed_id: "ATOM_USD".to_string(),
         cw20_token_contract_id: 10,
         create_pool_wasm_contract_id: 11,
@@ -1716,7 +1716,7 @@ fn test_get_bluechip_usd_price_with_pyth() {
         cw721_nft_contract_id: 58,
         commit_amount_for_threshold_bluechip: Uint128::zero(),
         commit_threshold_limit_usd: Uint128::new(100),
-        pyth_contract_addr_for_conversions: "pyth_oracle".to_string(),
+        pyth_contract_addr_for_conversions: MockApi::default().addr_make("pyth_oracle").to_string(),
         pyth_atom_usd_price_feed_id: "ATOM_USD".to_string(),
         cw20_token_contract_id: 10,
         create_pool_wasm_contract_id: 11,
@@ -1787,7 +1787,7 @@ fn test_bluechip_usd_price_with_different_atom_prices() {
         cw721_nft_contract_id: 58,
         commit_amount_for_threshold_bluechip: Uint128::zero(),
         commit_threshold_limit_usd: Uint128::new(100),
-        pyth_contract_addr_for_conversions: "pyth_oracle".to_string(),
+        pyth_contract_addr_for_conversions: MockApi::default().addr_make("pyth_oracle").to_string(),
         pyth_atom_usd_price_feed_id: "ATOM_USD".to_string(),
         cw20_token_contract_id: 10,
         create_pool_wasm_contract_id: 11,
@@ -1861,7 +1861,7 @@ fn test_conversion_functions_with_pyth() {
         cw721_nft_contract_id: 58,
         commit_amount_for_threshold_bluechip: Uint128::zero(),
         commit_threshold_limit_usd: Uint128::new(100),
-        pyth_contract_addr_for_conversions: "pyth_oracle".to_string(),
+        pyth_contract_addr_for_conversions: MockApi::default().addr_make("pyth_oracle").to_string(),
         pyth_atom_usd_price_feed_id: "ATOM_USD".to_string(),
         cw20_token_contract_id: 10,
         create_pool_wasm_contract_id: 11,
@@ -1945,7 +1945,7 @@ fn test_bluechip_minting_on_threshold_crossing() {
         cw721_nft_contract_id: 58,
         commit_amount_for_threshold_bluechip: Uint128::zero(),
         commit_threshold_limit_usd: Uint128::new(25_000_000_000),
-        pyth_contract_addr_for_conversions: "oracle0000".to_string(),
+        pyth_contract_addr_for_conversions: MockApi::default().addr_make("oracle0000").to_string(),
         pyth_atom_usd_price_feed_id: "BLUECHIP".to_string(),
         cw20_token_contract_id: 10,
         create_pool_wasm_contract_id: 11,
@@ -2041,7 +2041,7 @@ fn test_no_mint_when_amount_is_zero() {
         cw721_nft_contract_id: 58,
         commit_amount_for_threshold_bluechip: Uint128::zero(),
         commit_threshold_limit_usd: Uint128::new(25_000_000_000),
-        pyth_contract_addr_for_conversions: "oracle0000".to_string(),
+        pyth_contract_addr_for_conversions: MockApi::default().addr_make("oracle0000").to_string(),
         pyth_atom_usd_price_feed_id: "BLUECHIP".to_string(),
         cw20_token_contract_id: 10,
         create_pool_wasm_contract_id: 11,
@@ -3499,6 +3499,34 @@ fn register_test_pool(deps: &mut OwnedDeps<MockStorage, MockApi, WasmMockQuerier
                 price0_cumulative_last: Uint128::zero(),
                 price1_cumulative_last: Uint128::zero(),
                 assets: vec![],
+            },
+        )
+        .unwrap();
+    // Also seed POOLS_BY_ID. The factory's `execute_pay_distribution_bounty`
+    // looks up the calling pool's `pool_kind` via `lookup_pool_by_addr` to
+    // gate by `PoolKind::Commit`, so the test fixture must register the
+    // pool in POOLS_BY_ID too — `POOLS_BY_CONTRACT_ADDRESS` alone is not
+    // enough. Pool id is allocated via POOL_COUNTER so it doesn't collide
+    // with any pools already created by `instantiate` / `execute(Create)`.
+    let next_id = POOL_COUNTER.may_load(&deps.storage).unwrap().unwrap_or(0) + 1;
+    POOL_COUNTER.save(deps.as_mut().storage, &next_id).unwrap();
+    POOLS_BY_ID
+        .save(
+            deps.as_mut().storage,
+            next_id,
+            &PoolDetails {
+                pool_id: next_id,
+                pool_token_info: [
+                    TokenType::Native {
+                        denom: "ubluechip".to_string(),
+                    },
+                    TokenType::CreatorToken {
+                        contract_addr: Addr::unchecked("test_token"),
+                    },
+                ],
+                creator_pool_addr: addr.clone(),
+                pool_kind: pool_factory_interfaces::PoolKind::Commit,
+                commit_pool_ordinal: 0,
             },
         )
         .unwrap();
