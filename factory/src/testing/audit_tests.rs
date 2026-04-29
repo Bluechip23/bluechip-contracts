@@ -386,6 +386,21 @@ fn test_m_new_3_rotation_skips_pools_without_prior_snapshot() {
         )
         .unwrap();
 
+    // H-3: anchor pool needs `block_time_last` and `price1_cumulative_last`
+    // ahead of the prev_snapshot below (cumulative=50_000, block_time=500)
+    // so the TWAP path produces `cumulative_delta > 0` and `time_delta > 0`.
+    // setup_factory's default zeros would have triggered the (now-removed)
+    // anchor spot fallback.
+    let atom_addr_obj = atom_bluechip_pool_addr();
+    let mut atom_state = POOLS_BY_CONTRACT_ADDRESS
+        .load(&deps.storage, atom_addr_obj.clone())
+        .unwrap();
+    atom_state.block_time_last = 1000;
+    atom_state.price1_cumulative_last = Uint128::new(60_000);
+    POOLS_BY_CONTRACT_ADDRESS
+        .save(&mut deps.storage, atom_addr_obj, &atom_state)
+        .unwrap();
+
     let pool_addresses = vec![atom_addr.clone(), creator_addr.clone()];
 
     // Provide a previous snapshot ONLY for the atom pool (simulates rotation
@@ -417,17 +432,23 @@ fn test_m_new_3_rotation_skips_pools_without_prior_snapshot() {
     );
 
     // The weighted price should come only from the atom pool (since creator
-    // pool was skipped). This means weighted_price == atom_pool_price.
+    // pool was skipped). Post-H-3 the function returns Option for prices —
+    // unwrap and assert price came from the anchor only.
+    let weighted = weighted_price.expect("anchor TWAP should produce a price");
+    let atom = atom_price.expect("anchor pool price should be Some");
     assert_eq!(
-        weighted_price, atom_price,
+        weighted, atom,
         "Price should come only from atom pool since creator pool had no prior snapshot"
     );
 }
 
-/// When prev_snapshots is completely empty (bootstrap / first-ever update),
-/// all pools should fall back to spot price — not be skipped.
+/// H-3: when `prev_snapshots` is completely empty (bootstrap / first-ever
+/// update), the oracle MUST refuse to publish a price (no spot fallback)
+/// but MUST still record snapshots so the next round has prior data to
+/// compute a TWAP from. Pre-fix this returned a manipulable spot reading;
+/// post-fix the price components are `None` and the snapshot is recorded.
 #[test]
-fn test_m_new_3_bootstrap_uses_spot_price_for_all() {
+fn test_h3_bootstrap_returns_none_price_but_records_snapshot() {
     let mut deps = mock_deps_with_querier(&[]);
     setup_factory(&mut deps);
 
@@ -436,26 +457,84 @@ fn test_m_new_3_bootstrap_uses_spot_price_for_all() {
     let pool_addresses = vec![atom_addr.clone()];
     let prev_snapshots: Vec<PoolCumulativeSnapshot> = vec![];
 
-    let result =
-        calculate_weighted_price_with_atom(deps.as_ref(), &pool_addresses, &prev_snapshots);
+    let (weighted_price, atom_price, new_snapshots) =
+        calculate_weighted_price_with_atom(deps.as_ref(), &pool_addresses, &prev_snapshots)
+            .expect("bootstrap must succeed (snapshots-only) instead of erroring");
 
-    // Should succeed using spot price (bootstrap case)
+    // No price this round — H-3 removed the spot fallback. Caller will
+    // persist `new_snapshots` and the next round computes a real TWAP.
     assert!(
-        result.is_ok(),
-        "Bootstrap case should use spot price: {:?}",
-        result.err()
+        weighted_price.is_none(),
+        "bootstrap must NOT publish a spot-derived price; got: {:?}",
+        weighted_price
     );
-
-    let (weighted_price, _atom_price, new_snapshots) = result.unwrap();
     assert!(
-        !weighted_price.is_zero(),
-        "Should produce a non-zero price from spot reserves"
+        atom_price.is_none(),
+        "bootstrap must NOT publish a spot-derived atom price; got: {:?}",
+        atom_price
     );
     assert_eq!(
         new_snapshots.len(),
         1,
-        "Should record snapshot for next cycle"
+        "snapshot must still be recorded so next round can compute TWAP"
     );
+}
+
+/// H-3: even with the anchor sampled and meeting MIN_POOL_LIQUIDITY,
+/// if the anchor's cumulative_delta is zero (no swap since the last
+/// sample) the oracle MUST refuse to publish — pre-fix it would have
+/// fallen back to single-block spot reserves on the anchor.
+#[test]
+fn test_h3_anchor_no_cumulative_delta_returns_none_price() {
+    use crate::state::POOLS_BY_CONTRACT_ADDRESS;
+    let mut deps = mock_deps_with_querier(&[]);
+    setup_factory(&mut deps);
+
+    let atom_addr = atom_bluechip_pool_addr();
+
+    // Override the test querier to return a state with the same cumulative
+    // and block_time as the prior snapshot — i.e., no activity since.
+    POOLS_BY_CONTRACT_ADDRESS
+        .save(
+            &mut deps.storage,
+            atom_addr.clone(),
+            &PoolStateResponseForFactory {
+                pool_contract_address: atom_addr.clone(),
+                nft_ownership_accepted: true,
+                reserve0: Uint128::new(50_000_000_000),
+                reserve1: Uint128::new(10_000_000_000),
+                total_liquidity: Uint128::new(60_000_000_000),
+                block_time_last: 1_000,
+                price0_cumulative_last: Uint128::new(500_000),
+                price1_cumulative_last: Uint128::new(100_000),
+                assets: vec![],
+            },
+        )
+        .unwrap();
+
+    let pool_addresses = vec![atom_addr.to_string()];
+    // Prior snapshot identical to the current state — cumulative_delta = 0,
+    // time_delta = 0. Pre-H-3 this would have triggered the anchor spot
+    // fallback. Post-H-3 it must not.
+    let prev_snapshots = vec![PoolCumulativeSnapshot {
+        pool_address: atom_addr.to_string(),
+        price0_cumulative: Uint128::new(500_000),
+        block_time: 1_000,
+    }];
+
+    let (weighted_price, atom_price, new_snapshots) =
+        calculate_weighted_price_with_atom(deps.as_ref(), &pool_addresses, &prev_snapshots)
+            .expect("must return Ok with None prices, not Err");
+
+    assert!(
+        weighted_price.is_none(),
+        "anchor stale-cumulative must NOT trigger spot fallback; got: {:?}",
+        weighted_price
+    );
+    assert!(atom_price.is_none(), "atom price must be None when cumulative didn't advance");
+    // Snapshot should still be recorded so the next round can compute TWAP
+    // once the anchor has activity.
+    assert_eq!(new_snapshots.len(), 1);
 }
 
 #[test]
@@ -987,4 +1066,90 @@ fn test_create_standard_pool_refunds_non_bluechip_funds() {
             "tokenfactory denom should be refunded to caller in full"
         );
     }
+}
+
+// ---------------------------------------------------------------------------
+// H-2 — warm-up gate. After any anchor reset (one-shot SetAnchorPool, the
+// timelocked anchor change inside ProposeConfigUpdate, etc.) the oracle
+// must refuse to publish a price downstream until
+// ANCHOR_CHANGE_WARMUP_OBSERVATIONS successful TWAP updates have
+// accumulated. This prevents an attacker who briefly perturbed the new
+// anchor's reserves at exactly the moment of reset from locking in a
+// manipulated first observation as the canonical price.
+// ---------------------------------------------------------------------------
+#[test]
+fn test_h2_warmup_blocks_downstream_price_until_n_observations() {
+    use crate::internal_bluechip_price_oracle::{
+        get_bluechip_usd_price, ANCHOR_CHANGE_WARMUP_OBSERVATIONS, INTERNAL_ORACLE,
+    };
+    let mut deps = mock_deps_with_querier(&[]);
+    setup_factory(&mut deps);
+
+    // Sanity: instantiate sets warmup_remaining to ANCHOR_CHANGE_WARMUP_OBSERVATIONS.
+    let oracle = INTERNAL_ORACLE.load(&deps.storage).unwrap();
+    assert_eq!(oracle.warmup_remaining, ANCHOR_CHANGE_WARMUP_OBSERVATIONS);
+
+    // Even with last_price seeded to a sane value, downstream must refuse
+    // because the warm-up gate hasn't elapsed.
+    let mut oracle = INTERNAL_ORACLE.load(&deps.storage).unwrap();
+    oracle.bluechip_price_cache.last_price = Uint128::new(10_000_000);
+    oracle.bluechip_price_cache.last_update = mock_env().block.time.seconds();
+    INTERNAL_ORACLE.save(&mut deps.storage, &oracle).unwrap();
+
+    let env = mock_env();
+    let res = get_bluechip_usd_price(deps.as_ref(), &env);
+    let err = res.expect_err("warm-up active must block downstream pricing");
+    assert!(
+        err.to_string().contains("warm-up"),
+        "expected warm-up error, got: {}",
+        err
+    );
+
+    // Step warm-up down to zero and confirm pricing resumes.
+    let mut oracle = INTERNAL_ORACLE.load(&deps.storage).unwrap();
+    oracle.warmup_remaining = 0;
+    INTERNAL_ORACLE.save(&mut deps.storage, &oracle).unwrap();
+
+    let res = get_bluechip_usd_price(deps.as_ref(), &env);
+    assert!(
+        res.is_ok(),
+        "warm-up cleared — pricing should resume; got: {:?}",
+        res.err()
+    );
+}
+
+#[test]
+fn test_h2_warmup_only_decrements_on_price_publishing_updates() {
+    use crate::internal_bluechip_price_oracle::INTERNAL_ORACLE;
+    let mut deps = mock_deps_with_querier(&[]);
+    setup_factory(&mut deps);
+
+    let initial = INTERNAL_ORACLE.load(&deps.storage).unwrap().warmup_remaining;
+    assert!(initial > 0, "instantiate should arm warm-up");
+
+    // Trigger a snapshot-only update by leaving anchor's cumulative at zero
+    // (no `tick_anchor_pool` in this test). After a UPDATE_INTERVAL elapses,
+    // calling UpdateOraclePrice should record a snapshot but not publish a
+    // price — and crucially, must NOT decrement warmup_remaining.
+    use crate::msg::ExecuteMsg;
+    let mut env = mock_env();
+    env.block.time = env.block.time.plus_seconds(360);
+    let res = execute(
+        deps.as_mut(),
+        env,
+        message_info(&admin_addr(), &[]),
+        ExecuteMsg::UpdateOraclePrice {},
+    );
+    assert!(
+        res.is_ok(),
+        "snapshot-only update should succeed, got: {:?}",
+        res.err()
+    );
+
+    let after = INTERNAL_ORACLE.load(&deps.storage).unwrap().warmup_remaining;
+    assert_eq!(
+        after, initial,
+        "snapshot-only update must NOT decrement warm-up; otherwise an attacker \
+         could exhaust the warm-up by triggering empty rounds"
+    );
 }

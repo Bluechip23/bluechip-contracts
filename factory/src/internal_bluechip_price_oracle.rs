@@ -93,7 +93,32 @@ pub struct BlueChipPriceInternalOracle {
     pub bluechip_price_cache: PriceCache,
     pub update_interval: u64,
     pub pool_cumulative_snapshots: Vec<PoolCumulativeSnapshot>,
+    /// Warm-up gate (H-2). Number of additional successful TWAP observations
+    /// the oracle still needs before downstream price queries
+    /// (`get_bluechip_usd_price_with_meta`) will serve a price. Set to a
+    /// non-zero value whenever the price cache is reset (anchor change,
+    /// timelocked config update that swaps the anchor) so the very-first
+    /// post-reset observation cannot be locked in as the canonical price
+    /// by an attacker who briefly perturbed the new anchor's reserves.
+    /// Decremented by one per successful price-publishing oracle update;
+    /// failed (snapshot-only) updates do NOT decrement it because they
+    /// don't advance the TWAP. While `> 0`, downstream conversions
+    /// return `Err(InsufficientData)`. `#[serde(default)]` keeps oracle
+    /// records written before this field existed deserializing as zero
+    /// (no warm-up active), preserving the post-migration invariant
+    /// that running pre-warm-up oracles continue to serve prices.
+    #[serde(default)]
+    pub warmup_remaining: u32,
 }
+
+/// Number of successful price-publishing oracle updates required after the
+/// price cache is reset (anchor change) before downstream conversions
+/// resume. With UPDATE_INTERVAL = 300s, this is 6 × 5min = 30 min of
+/// real cumulative-delta evidence before any commit/swap can be priced
+/// against the new anchor. Sized so a sustained ~30-min spot perturbation
+/// would be required to bias the warm-up TWAP — a much larger commitment
+/// than the prior single-block manipulation window.
+pub const ANCHOR_CHANGE_WARMUP_OBSERVATIONS: u32 = 6;
 #[cw_serde]
 pub struct PriceCache {
     pub last_price: Uint128,
@@ -207,6 +232,7 @@ pub fn select_random_pools_with_atom(
                     cached_pyth_timestamp: 0,
                 },
                 update_interval: UPDATE_INTERVAL,
+                warmup_remaining: 0,
             });
     let mut hasher = Sha256::new();
     hasher.update(env.block.time.seconds().to_be_bytes());
@@ -279,6 +305,11 @@ pub fn initialize_internal_bluechip_oracle(
             cached_pyth_timestamp: 0,
         },
         update_interval: UPDATE_INTERVAL,
+        // Initial bootstrap warm-up. Treated identically to an anchor
+        // change: the very first observations carry no historical TWAP
+        // weight, so we refuse to serve a price downstream until enough
+        // real cumulative-delta evidence has accumulated.
+        warmup_remaining: ANCHOR_CHANGE_WARMUP_OBSERVATIONS,
     };
 
     INTERNAL_ORACLE.save(deps.storage, &oracle)?;
@@ -508,12 +539,44 @@ pub fn update_internal_oracle_price(
             .pool_cumulative_snapshots
             .retain(|s| pools_to_use.contains(&s.pool_address));
     }
-    let (weighted_price, atom_price, new_snapshots) = calculate_weighted_price_with_atom(
-        deps.as_ref(),
-        &pools_to_use,
-        &oracle.pool_cumulative_snapshots,
-    )?;
+    let (maybe_weighted_price, maybe_atom_price, new_snapshots) =
+        calculate_weighted_price_with_atom(
+            deps.as_ref(),
+            &pools_to_use,
+            &oracle.pool_cumulative_snapshots,
+        )?;
+    // Always persist the new snapshots so the next round has prior data
+    // to compute a TWAP from, even when this round couldn't produce a
+    // price (bootstrap, anchor inactive, etc.). Pre-H-3 code returned
+    // Err on those paths and reverted the snapshot save, leaving the
+    // oracle stuck.
     oracle.pool_cumulative_snapshots = new_snapshots;
+
+    let (weighted_price, atom_price) = match (maybe_weighted_price, maybe_atom_price) {
+        (Some(w), Some(a)) => (w, a),
+        _ => {
+            // No TWAP could be produced this round. Snapshots have already
+            // been recorded; persist them and return success so the next
+            // oracle update has prior data. Don't push an observation,
+            // don't decrement warmup_remaining, don't pay the keeper
+            // bounty (snapshot-only updates aren't price-publishing
+            // work). The pool-side staleness gate
+            // (MAX_ORACLE_STALENESS_SECONDS) will eventually start
+            // rejecting commits if the no-TWAP condition persists; that
+            // fail-closed behaviour is the intended pressure on
+            // operators to investigate.
+            INTERNAL_ORACLE.save(deps.storage, &oracle)?;
+            return Ok(Response::new()
+                .add_attribute("action", "update_oracle")
+                .add_attribute("price_published", "false")
+                .add_attribute(
+                    "reason",
+                    "insufficient_twap_data_snapshots_recorded_for_next_round",
+                )
+                .add_attribute("pools_used", pools_to_use.len().to_string()));
+        }
+    };
+
     oracle
         .bluechip_price_cache
         .twap_observations
@@ -578,6 +641,13 @@ pub fn update_internal_oracle_price(
         oracle.bluechip_price_cache.cached_pyth_timestamp = current_time;
     }
 
+    // Decrement the H-2 warm-up counter. Only price-publishing updates
+    // count — snapshot-only updates returned earlier and don't tick
+    // this down, otherwise an attacker could exhaust the warm-up by
+    // triggering empty rounds.
+    let warmup_remaining_before = oracle.warmup_remaining;
+    oracle.warmup_remaining = oracle.warmup_remaining.saturating_sub(1);
+
     INTERNAL_ORACLE.save(deps.storage, &oracle)?;
 
     // Keeper bounty: pay the caller out of the factory's native balance.
@@ -592,7 +662,15 @@ pub fn update_internal_oracle_price(
     let mut response = Response::new()
         .add_attribute("action", "update_oracle")
         .add_attribute("twap_price", twap_price.to_string())
-        .add_attribute("pools_used", pools_to_use.len().to_string());
+        .add_attribute("pools_used", pools_to_use.len().to_string())
+        .add_attribute(
+            "warmup_remaining_before",
+            warmup_remaining_before.to_string(),
+        )
+        .add_attribute(
+            "warmup_remaining_after",
+            oracle.warmup_remaining.to_string(),
+        );
 
     if !bounty_usd.is_zero() {
         // Convert USD -> bluechip via the just-updated TWAP. If the
@@ -650,11 +728,34 @@ fn bluechip_index_lookup(deps: Deps, pool_address: &str) -> StdResult<Option<u8>
 }
 
 // Calculates a liquidity-weighted price across sampled pools using cumulative
+// TWAPs. Returns `(maybe_weighted_price, maybe_atom_price, new_snapshots)`:
+//
+//   - `maybe_*` are `None` whenever this round can't produce a real TWAP
+//     (bootstrap / no-anchor-activity / no successful creator pools). In
+//     that case the oracle update handler must SAVE `new_snapshots` and
+//     skip the observation push so the next round has fresh prior data
+//     to compute a TWAP from. The previous Err-on-insufficient-data
+//     behaviour reverted the whole tx and discarded snapshots, leaving
+//     the oracle permanently unable to bootstrap once spot fallbacks
+//     were removed.
+//
+//   - `new_snapshots` is always populated for every sampled pool that
+//     answered a `GetPoolState` query and met `MIN_POOL_LIQUIDITY`,
+//     regardless of whether its price contributed to the weighted sum
+//     this round.
+//
+// SPOT PRICE IS NEVER USED. All three former spot-fallback branches
+// (anchor-stale-cumulative, bootstrap, anchor-missing-from-prev) now
+// `continue` instead. A single-block `reserve0/reserve1` read is trivially
+// manipulable by a sufficiently-funded attacker; rather than mixing it
+// into the TWAP and contaminating downstream USD conversions for the
+// next ~1h TWAP_WINDOW, we refuse to publish until the AMM has produced
+// real cumulative-delta evidence over a real time window.
 pub fn calculate_weighted_price_with_atom(
     deps: Deps,
     pool_addresses: &[String],
     prev_snapshots: &[PoolCumulativeSnapshot],
-) -> Result<(Uint128, Uint128, Vec<PoolCumulativeSnapshot>), ContractError> {
+) -> Result<(Option<Uint128>, Option<Uint128>, Vec<PoolCumulativeSnapshot>), ContractError> {
     let factory_config = FACTORYINSTANTIATEINFO
         .load(deps.storage)
         .map_err(ContractError::Std)?;
@@ -734,11 +835,13 @@ pub fn calculate_weighted_price_with_atom(
                     found
                 };
 
-                // Resolve reserves once based on token ordering
-                let (bluechip_reserve, other_reserve) = if is_bluechip_second {
-                    (pool_state.reserve1, pool_state.reserve0)
+                // Resolve bluechip reserve based on token ordering. The
+                // other-side reserve is no longer needed (former spot
+                // fallbacks consumed it; H-3 removed all of them).
+                let bluechip_reserve = if is_bluechip_second {
+                    pool_state.reserve1
                 } else {
-                    (pool_state.reserve0, pool_state.reserve1)
+                    pool_state.reserve0
                 };
 
                 // Save cumulative snapshot for next update cycle.
@@ -756,25 +859,14 @@ pub fn calculate_weighted_price_with_atom(
                     block_time: pool_state.block_time_last,
                 });
 
-                // H3 hardening: distinguish anchor vs. creator pools when
-                // the cumulative accumulator hasn't advanced.
-                //
-                // - Creator pools are the real attack surface here: they vary
-                //   wildly in liquidity, an attacker can shop for the quietest
-                //   one, and spot price is single-block manipulable. We skip
-                //   any creator pool with zero cumulative-delta; it rejoins
-                //   the weighted sum on the next update once real trading
-                //   activity advances its accumulator.
-                //
-                // - The anchor (ATOM/bluechip) pool is curated by the
-                //   deployment team and expected to stay highly liquid.
-                //   Manipulating it takes materially more capital than a
-                //   random creator pool, and without it the oracle can't
-                //   compute a price at all. We keep the spot-price fallback
-                //   here so a temporarily inactive anchor doesn't freeze the
-                //   whole oracle — at the cost of leaving a narrow, high-cost
-                //   spot-manipulation vector on the anchor specifically.
-                let is_anchor = pool_address == &atom_pool_address;
+                // No spot fallback anywhere — every branch that previously
+                // fell back to `calculate_price_from_reserves` now `continue`s
+                // and lets this round produce no price for that pool. The
+                // snapshot above still lands so the next round has prior
+                // data even though we don't publish today. `is_anchor`
+                // distinction was previously needed to gate the spot
+                // fallback; with all spot paths removed it's no longer
+                // needed inside the price-derivation block.
                 let price = if let Some(prev) = prev_snapshots
                     .iter()
                     .find(|s| s.pool_address == *pool_address)
@@ -795,32 +887,22 @@ pub fn calculate_weighted_price_with_atom(
                             .map_err(|_| {
                                 ContractError::Std(StdError::generic_err("TWAP division error"))
                             })?
-                    } else if is_anchor {
-                        // Anchor-only spot fallback. See comment block above.
-                        calculate_price_from_reserves(bluechip_reserve, other_reserve)?
                     } else {
-                        // Creator pool with no TWAP evidence this round — skip.
+                        // No cumulative-delta evidence this round (no swap
+                        // since the last sample). Skip — including the
+                        // anchor. The previous spot-fallback branch let an
+                        // attacker who could move anchor reserves for one
+                        // block dictate the published price; we'd rather
+                        // refuse to publish than serve a manipulable read.
                         continue;
                     }
-                } else if prev_snapshots.is_empty() {
-                    // Bootstrap case: very first oracle update in the factory's
-                    // entire lifetime — no prior snapshots exist for any pool.
-                    // After this call prev_snapshots will be non-empty forever,
-                    // so the spot price is only ever used once, system-wide,
-                    // and before any significant protocol activity.
-                    calculate_price_from_reserves(bluechip_reserve, other_reserve)?
-                } else if is_anchor {
-                    // Anchor was somehow missing from prev_snapshots despite
-                    // prev_snapshots being non-empty (e.g. first update after
-                    // an admin migration that cleared the snapshot set but
-                    // populated it for creator pools). Spot-fallback the
-                    // anchor so the update can still produce a price.
-                    calculate_price_from_reserves(bluechip_reserve, other_reserve)?
                 } else {
-                    // Post-rotation: this creator pool is newly selected and
-                    // has no prior snapshot. Skip it from price weighting.
-                    // The snapshot was already recorded above, so TWAP data
-                    // will be available on the next update.
+                    // No prior snapshot for this pool — either the very
+                    // first oracle update or a freshly-rotated pool. Skip
+                    // (snapshot was just recorded above, so the next round
+                    // can compute a real TWAP). The prior bootstrap and
+                    // anchor-missing-from-prev branches both used spot
+                    // here; both removed.
                     continue;
                 };
 
@@ -859,20 +941,13 @@ pub fn calculate_weighted_price_with_atom(
         }
     }
 
-    if !has_atom_pool {
-        return Err(ContractError::Std(StdError::generic_err(
-            "ATOM pool price could not be calculated",
-        )));
-    }
-
-    if successful_pools == 0 {
-        return Err(ContractError::InsufficientData {});
-    }
-
-    if total_weight.is_zero() {
-        return Err(ContractError::Std(StdError::generic_err(
-            "Total weight is zero",
-        )));
+    // No anchor TWAP this round — return None for prices but KEEP the
+    // populated `new_snapshots` so the caller can persist them and the
+    // next round has prior data to compute a TWAP from. Returning Err
+    // here would revert the snapshots and leave the oracle permanently
+    // stuck at bootstrap.
+    if !has_atom_pool || successful_pools == 0 || total_weight.is_zero() {
+        return Ok((None, None, new_snapshots));
     }
     let weighted_average = weighted_sum
         .checked_div(total_weight)
@@ -881,7 +956,7 @@ pub fn calculate_weighted_price_with_atom(
     let final_price = Uint128::try_from(weighted_average)
         .map_err(|_| ContractError::Std(StdError::generic_err("Price conversion overflow")))?;
 
-    Ok((final_price, atom_pool_price, new_snapshots))
+    Ok((Some(final_price), Some(atom_pool_price), new_snapshots))
 }
 
 pub fn calculate_twap(observations: &[PriceObservation]) -> Result<Uint128, ContractError> {
@@ -1072,6 +1147,21 @@ fn get_bluechip_usd_price_with_meta(deps: Deps, env: &Env) -> StdResult<(Uint128
     let oracle = INTERNAL_ORACLE
         .load(deps.storage)
         .map_err(|_| StdError::generic_err("Internal oracle not initialized"))?;
+
+    // H-2 warm-up gate. After bootstrap or any anchor change the oracle
+    // cache is reset, and the very-first post-reset observation is
+    // single-block-manipulable. Refuse to serve a price downstream
+    // until ANCHOR_CHANGE_WARMUP_OBSERVATIONS price-publishing updates
+    // have accumulated. Commits/swaps revert during this window. Once
+    // warmup_remaining hits zero, normal pricing resumes.
+    if oracle.warmup_remaining > 0 {
+        return Err(StdError::generic_err(format!(
+            "Oracle warm-up in progress after anchor reset: {} more successful TWAP \
+             updates required before pricing resumes (H-2)",
+            oracle.warmup_remaining
+        )));
+    }
+
     let cache = &oracle.bluechip_price_cache;
     let last_update = cache.last_update;
 
@@ -1244,23 +1334,6 @@ pub fn get_price_with_staleness_check(
     }
 
     Ok(oracle.bluechip_price_cache.last_price)
-}
-
-fn calculate_price_from_reserves(
-    reserve0: Uint128, // bluechip
-    reserve1: Uint128, // other token
-) -> Result<Uint128, ContractError> {
-    if reserve1.is_zero() {
-        return Err(ContractError::Std(StdError::generic_err("Zero reserves")));
-    }
-
-    let price = reserve0
-        .checked_mul(Uint128::from(PRICE_PRECISION))
-        .map_err(|_| ContractError::Std(StdError::generic_err("Price calculation overflow")))?
-        .checked_div(reserve1)
-        .map_err(|_| ContractError::Std(StdError::generic_err("Price division error")))?;
-
-    Ok(price)
 }
 
 fn query_pool_safe(

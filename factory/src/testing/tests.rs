@@ -16,8 +16,8 @@ use crate::execute::{
 };
 use crate::internal_bluechip_price_oracle::{
     bluechip_to_usd, calculate_twap, get_bluechip_usd_price, query_pyth_atom_usd_price,
-    usd_to_bluechip, BlueChipPriceInternalOracle, PriceCache, PriceObservation, INTERNAL_ORACLE,
-    MOCK_PYTH_PRICE,
+    usd_to_bluechip, BlueChipPriceInternalOracle, PoolCumulativeSnapshot, PriceCache,
+    PriceObservation, INTERNAL_ORACLE, MOCK_PYTH_PRICE,
 };
 use crate::mock_querier::{mock_dependencies, WasmMockQuerier};
 use crate::msg::{CreatorTokenInfo, ExecuteMsg};
@@ -123,6 +123,80 @@ pub fn setup_atom_pool(deps: &mut OwnedDeps<MockStorage, MockApi, WasmMockQuerie
         .unwrap();
 }
 
+/// Advance the anchor pool's block_time_last + price1_cumulative_last so
+/// the next `UpdateOraclePrice` call sees a non-zero `cumulative_delta`
+/// against the prior snapshot. Use between successive UpdateOraclePrice
+/// calls in tests that expect multiple observations to land — the static
+/// mock querier doesn't evolve pool state, so without this every update
+/// after the first sees `cumulative_delta == 0` and produces no
+/// observation. Advances at the anchor's 10:1 reserve ratio (≡ 10_000_000
+/// in 1e6 precision), matching `prime_oracle_for_first_update`'s seed.
+pub fn tick_anchor_pool(
+    deps: &mut OwnedDeps<MockStorage, MockApi, WasmMockQuerier>,
+    new_block_time: u64,
+) {
+    let atom_addr = atom_bluechip_pool_addr();
+    let mut state = POOLS_BY_CONTRACT_ADDRESS
+        .load(&deps.storage, atom_addr.clone())
+        .unwrap();
+    let dt = new_block_time.saturating_sub(state.block_time_last);
+    // Cumulative grows at rate (reserve0/reserve1) * 1 per second = 10 per
+    // second for the 1T:100B anchor. price1_cumulative_last is what the
+    // oracle reads for is_bluechip_second = false (anchor with bluechip
+    // at index 0).
+    state.block_time_last = new_block_time;
+    state.price1_cumulative_last =
+        state.price1_cumulative_last + Uint128::from(10u64 * dt);
+    POOLS_BY_CONTRACT_ADDRESS
+        .save(&mut deps.storage, atom_addr, &state)
+        .unwrap();
+}
+
+/// Test helper for the post-H-3 oracle. With spot fallbacks removed, the
+/// very first `UpdateOraclePrice` call no longer publishes a price — it
+/// just records snapshots so the second call can compute a TWAP. Most
+/// existing tests want "first update produces a price"; this helper
+/// makes that work by:
+///
+///   1. Advancing the anchor pool's `block_time_last` and bumping
+///      `price1_cumulative_last` to a value consistent with its 10:1
+///      reserve ratio (so a TWAP from a zero-baseline yields 10_000_000,
+///      matching the pre-fix spot-derived price).
+///   2. Pre-seeding `oracle.pool_cumulative_snapshots` with a zero-baseline
+///      entry for the anchor, so on the next `UpdateOraclePrice` call the
+///      diff is `(1000 - 0) / (100 - 0) = 10_000_000` (in 1e6 precision).
+///   3. Clearing `warmup_remaining` so downstream price queries served
+///      from the test-seeded `last_price` aren't blocked by the H-2 gate.
+///
+/// Call AFTER `instantiate(...)` (the helper assumes INTERNAL_ORACLE
+/// already exists). Tests that explicitly want to exercise the
+/// snapshots-only first-update behavior should NOT call this helper.
+pub fn prime_oracle_for_first_update(
+    deps: &mut OwnedDeps<MockStorage, MockApi, WasmMockQuerier>,
+) {
+    let atom_addr = atom_bluechip_pool_addr();
+    let mut state = POOLS_BY_CONTRACT_ADDRESS
+        .load(&deps.storage, atom_addr.clone())
+        .unwrap();
+    // Reserves 1T:100B ⇒ bluechip-per-atom = 10.0 (≡ 10_000_000 in 1e6 precision).
+    // Over a 100s synthetic window the cumulative grows to 1000 (raw).
+    // TWAP = (1000 − 0) × 1e6 / (100 − 0) = 10_000_000.
+    state.block_time_last = 100;
+    state.price1_cumulative_last = Uint128::new(1_000);
+    POOLS_BY_CONTRACT_ADDRESS
+        .save(&mut deps.storage, atom_addr.clone(), &state)
+        .unwrap();
+
+    let mut oracle = INTERNAL_ORACLE.load(&deps.storage).unwrap();
+    oracle.pool_cumulative_snapshots = vec![PoolCumulativeSnapshot {
+        pool_address: atom_addr.to_string(),
+        price0_cumulative: Uint128::zero(),
+        block_time: 0,
+    }];
+    oracle.warmup_remaining = 0;
+    INTERNAL_ORACLE.save(&mut deps.storage, &oracle).unwrap();
+}
+
 #[test]
 fn proper_initialization() {
     let mut deps = mock_dependencies(&[]);
@@ -208,6 +282,10 @@ fn test_oracle_initialization_with_no_other_pools() {
     let info = message_info(&admin_addr(), &[]);
 
     instantiate(deps.as_mut(), env.clone(), info, msg).unwrap();
+    // H-3: spot fallback removed. Pre-seed prior snapshots + clear H-2
+    // warm-up so the first UpdateOraclePrice call can produce a TWAP
+    // (matches the pre-fix bootstrap-spot-derived price).
+    prime_oracle_for_first_update(&mut deps);
 
     let oracle = INTERNAL_ORACLE.load(&deps.storage).unwrap();
     assert_eq!(
@@ -262,6 +340,10 @@ fn test_oracle_initialization_with_multiple_pools() {
     let info = message_info(&admin_addr(), &[]);
 
     instantiate(deps.as_mut(), env.clone(), info, msg).unwrap();
+    // H-3: spot fallback removed. Pre-seed prior snapshots + clear H-2
+    // warm-up so the first UpdateOraclePrice call can produce a TWAP
+    // (matches the pre-fix bootstrap-spot-derived price).
+    prime_oracle_for_first_update(&mut deps);
 
     // Verify oracle selected multiple pools. With 5 eligible creator pools
     // seeded above plus the ATOM anchor, selection fits entirely within the
@@ -500,6 +582,10 @@ fn test_multiple_pool_creation() {
     let env = mock_env();
     let info = message_info(&admin_addr(), &[]);
     instantiate(deps.as_mut(), env.clone(), info, msg).unwrap();
+    // H-3: spot fallback removed. Pre-seed prior snapshots + clear H-2
+    // warm-up so the first UpdateOraclePrice call can produce a TWAP
+    // (matches the pre-fix bootstrap-spot-derived price).
+    prime_oracle_for_first_update(&mut deps);
 
     // Create 3 pools and verify they're created with unique IDs
     let mut created_pool_ids = Vec::new();
@@ -583,6 +669,10 @@ fn test_complete_pool_creation_flow() {
     let env = mock_env();
     let info = message_info(&admin_addr(), &[]);
     instantiate(deps.as_mut(), env.clone(), info, msg).unwrap();
+    // H-3: spot fallback removed. Pre-seed prior snapshots + clear H-2
+    // warm-up so the first UpdateOraclePrice call can produce a TWAP
+    // (matches the pre-fix bootstrap-spot-derived price).
+    prime_oracle_for_first_update(&mut deps);
 
     // Create the pool message
     let pool_msg = CreatePool { pool_token_info: [
@@ -863,6 +953,10 @@ fn test_oracle_execute_update_price() {
     let env = mock_env();
     let info = message_info(&admin_addr(), &[]);
     instantiate(deps.as_mut(), env.clone(), info, msg).unwrap();
+    // H-3: spot fallback removed. Pre-seed prior snapshots + clear H-2
+    // warm-up so the first UpdateOraclePrice call can produce a TWAP
+    // (matches the pre-fix bootstrap-spot-derived price).
+    prime_oracle_for_first_update(&mut deps);
 
     let mut oracle = INTERNAL_ORACLE.load(&deps.storage).unwrap();
     oracle.bluechip_price_cache.last_update = env.block.time.seconds();
@@ -924,6 +1018,10 @@ fn test_oracle_force_rotate_pools() {
     let env = mock_env();
     let info = message_info(&admin_addr(), &[]);
     instantiate(deps.as_mut(), env.clone(), info, msg).unwrap();
+    // H-3: spot fallback removed. Pre-seed prior snapshots + clear H-2
+    // warm-up so the first UpdateOraclePrice call can produce a TWAP
+    // (matches the pre-fix bootstrap-spot-derived price).
+    prime_oracle_for_first_update(&mut deps);
 
     let oracle = INTERNAL_ORACLE.load(&deps.storage).unwrap();
     let initial_pools = oracle.selected_pools.clone();
@@ -1154,11 +1252,18 @@ fn test_oracle_twap_observations_are_timestamped() {
     let env = mock_env();
     let info = message_info(&admin_addr(), &[]);
     instantiate(deps.as_mut(), env.clone(), info, msg).unwrap();
+    // H-3: spot fallback removed. Pre-seed prior snapshots + clear H-2
+    // warm-up so the first UpdateOraclePrice call can produce a TWAP
+    // (matches the pre-fix bootstrap-spot-derived price).
+    prime_oracle_for_first_update(&mut deps);
 
     // First update
     let mut env1 = env.clone();
     env1.block.time = env1.block.time.plus_seconds(360);
     let time1 = env1.block.time.seconds();
+    // H-3: simulate anchor activity between the prior snapshot
+    // (block_time=100) and this update so cumulative_delta > 0.
+    tick_anchor_pool(&mut deps, 100 + 360);
     execute(
         deps.as_mut(),
         env1.clone(),
@@ -1171,6 +1276,8 @@ fn test_oracle_twap_observations_are_timestamped() {
     let mut env2 = env1.clone();
     env2.block.time = env2.block.time.plus_seconds(600);
     let time2 = env2.block.time.seconds();
+    // Advance anchor activity another 600s for the second update.
+    tick_anchor_pool(&mut deps, 100 + 360 + 600);
     execute(
         deps.as_mut(),
         env2.clone(),
@@ -1208,9 +1315,18 @@ fn test_oracle_twap_observations_max_length() {
     let mut env = mock_env();
     let info = message_info(&admin_addr(), &[]);
     instantiate(deps.as_mut(), env.clone(), info, msg).unwrap();
+    // H-3: spot fallback removed. Pre-seed prior snapshots + clear H-2
+    // warm-up so the first UpdateOraclePrice call can produce a TWAP
+    // (matches the pre-fix bootstrap-spot-derived price).
+    prime_oracle_for_first_update(&mut deps);
 
     for i in 1..=15 {
         env.block.time = env.block.time.plus_seconds(360);
+        // H-3: tick the anchor's cumulative forward each iteration so the
+        // mock pool state appears to evolve between oracle updates.
+        // Without this every update after the first sees zero
+        // cumulative_delta and produces no observation.
+        tick_anchor_pool(&mut deps, 100 + 360 * i as u64);
 
         execute(
             deps.as_mut(),
@@ -1392,6 +1508,10 @@ fn test_oracle_aggregates_multiple_pool_prices() {
     let env = mock_env();
     let info = message_info(&admin_addr(), &[]);
     instantiate(deps.as_mut(), env.clone(), info, msg).unwrap();
+    // H-3: spot fallback removed. Pre-seed prior snapshots + clear H-2
+    // warm-up so the first UpdateOraclePrice call can produce a TWAP
+    // (matches the pre-fix bootstrap-spot-derived price).
+    prime_oracle_for_first_update(&mut deps);
 
     let mut future_env = env.clone();
     future_env.block.time = future_env.block.time.plus_seconds(360);
@@ -1471,6 +1591,10 @@ fn test_oracle_filters_outlier_pool_prices() {
     let env = mock_env();
     let info = message_info(&admin_addr(), &[]);
     instantiate(deps.as_mut(), env.clone(), info, msg).unwrap();
+    // H-3: spot fallback removed. Pre-seed prior snapshots + clear H-2
+    // warm-up so the first UpdateOraclePrice call can produce a TWAP
+    // (matches the pre-fix bootstrap-spot-derived price).
+    prime_oracle_for_first_update(&mut deps);
 
     // Check which pools were selected
     let oracle_before = INTERNAL_ORACLE.load(&deps.storage).unwrap();
@@ -1557,6 +1681,10 @@ fn test_oracle_handles_pools_with_different_liquidities() {
     let env = mock_env();
     let info = message_info(&admin_addr(), &[]);
     instantiate(deps.as_mut(), env.clone(), info, msg).unwrap();
+    // H-3: spot fallback removed. Pre-seed prior snapshots + clear H-2
+    // warm-up so the first UpdateOraclePrice call can produce a TWAP
+    // (matches the pre-fix bootstrap-spot-derived price).
+    prime_oracle_for_first_update(&mut deps);
 
     // Update price
     let mut future_env = env.clone();
@@ -1757,6 +1885,7 @@ fn test_get_bluechip_usd_price_with_pyth() {
         rotation_interval: 3600,
         last_rotation: 0,
         pool_cumulative_snapshots: vec![],
+        warmup_remaining: 0,
     };
     INTERNAL_ORACLE
         .save(deps.as_mut().storage, &oracle)
@@ -1822,6 +1951,7 @@ fn test_bluechip_usd_price_with_different_atom_prices() {
         rotation_interval: 3600,
         last_rotation: 0,
         pool_cumulative_snapshots: vec![],
+        warmup_remaining: 0,
     };
     INTERNAL_ORACLE
         .save(deps.as_mut().storage, &oracle)
@@ -1901,6 +2031,7 @@ fn test_conversion_functions_with_pyth() {
         rotation_interval: 3600,
         last_rotation: 0,
         pool_cumulative_snapshots: vec![],
+        warmup_remaining: 0,
     };
     INTERNAL_ORACLE
         .save(deps.as_mut().storage, &oracle)
@@ -1965,6 +2096,10 @@ fn test_bluechip_minting_on_threshold_crossing() {
     let env = mock_env();
     let info = message_info(&admin_addr(), &[]);
     instantiate(deps.as_mut(), env.clone(), info, msg).unwrap();
+    // H-3: spot fallback removed. Pre-seed prior snapshots + clear H-2
+    // warm-up so the first UpdateOraclePrice call can produce a TWAP
+    // (matches the pre-fix bootstrap-spot-derived price).
+    prime_oracle_for_first_update(&mut deps);
 
     // Create first pool - should NOT mint (minting moved to threshold crossing)
     let create_msg = ExecuteMsg::Create {
@@ -2233,6 +2368,10 @@ fn test_oracle_update_pays_bounty_when_funded() {
         create_default_instantiate_msg(),
     )
     .unwrap();
+    // H-3: spot fallback removed. Pre-seed prior snapshots + clear H-2
+    // warm-up so the first UpdateOraclePrice call can produce a TWAP
+    // (matches the pre-fix bootstrap-spot-derived price).
+    prime_oracle_for_first_update(&mut deps);
 
     // Admin sets a bounty
     execute(
@@ -2312,6 +2451,10 @@ fn test_oracle_update_skips_bounty_when_underfunded() {
         create_default_instantiate_msg(),
     )
     .unwrap();
+    // H-3: spot fallback removed. Pre-seed prior snapshots + clear H-2
+    // warm-up so the first UpdateOraclePrice call can produce a TWAP
+    // (matches the pre-fix bootstrap-spot-derived price).
+    prime_oracle_for_first_update(&mut deps);
 
     execute(
         deps.as_mut(),
@@ -2364,6 +2507,10 @@ fn test_force_rotate_requires_propose_first() {
         create_default_instantiate_msg(),
     )
     .unwrap();
+    // H-3: spot fallback removed. Pre-seed prior snapshots + clear H-2
+    // warm-up so the first UpdateOraclePrice call can produce a TWAP
+    // (matches the pre-fix bootstrap-spot-derived price).
+    prime_oracle_for_first_update(&mut deps);
 
     let err = execute(
         deps.as_mut(),
@@ -2452,6 +2599,10 @@ fn test_force_rotate_cancel_non_admin_rejected() {
         create_default_instantiate_msg(),
     )
     .unwrap();
+    // H-3: spot fallback removed. Pre-seed prior snapshots + clear H-2
+    // warm-up so the first UpdateOraclePrice call can produce a TWAP
+    // (matches the pre-fix bootstrap-spot-derived price).
+    prime_oracle_for_first_update(&mut deps);
 
     // Admin proposes so there's a pending entry.
     execute(
@@ -2634,6 +2785,10 @@ fn test_force_rotate_propose_non_admin_rejected() {
         create_default_instantiate_msg(),
     )
     .unwrap();
+    // H-3: spot fallback removed. Pre-seed prior snapshots + clear H-2
+    // warm-up so the first UpdateOraclePrice call can produce a TWAP
+    // (matches the pre-fix bootstrap-spot-derived price).
+    prime_oracle_for_first_update(&mut deps);
 
     let err = execute(
         deps.as_mut(),
@@ -2825,6 +2980,10 @@ fn test_oracle_update_bounty_equals_balance_boundary() {
         create_default_instantiate_msg(),
     )
     .unwrap();
+    // H-3: spot fallback removed. Pre-seed prior snapshots + clear H-2
+    // warm-up so the first UpdateOraclePrice call can produce a TWAP
+    // (matches the pre-fix bootstrap-spot-derived price).
+    prime_oracle_for_first_update(&mut deps);
 
     execute(
         deps.as_mut(),
@@ -2890,6 +3049,10 @@ fn test_oracle_update_bounty_one_less_than_amount_skipped() {
         create_default_instantiate_msg(),
     )
     .unwrap();
+    // H-3: spot fallback removed. Pre-seed prior snapshots + clear H-2
+    // warm-up so the first UpdateOraclePrice call can produce a TWAP
+    // (matches the pre-fix bootstrap-spot-derived price).
+    prime_oracle_for_first_update(&mut deps);
 
     execute(
         deps.as_mut(),
@@ -2963,6 +3126,10 @@ fn test_oracle_update_cooldown_blocks_second_call_even_with_bounty() {
         create_default_instantiate_msg(),
     )
     .unwrap();
+    // H-3: spot fallback removed. Pre-seed prior snapshots + clear H-2
+    // warm-up so the first UpdateOraclePrice call can produce a TWAP
+    // (matches the pre-fix bootstrap-spot-derived price).
+    prime_oracle_for_first_update(&mut deps);
 
     execute(
         deps.as_mut(),
@@ -3036,6 +3203,10 @@ fn test_oracle_update_no_bounty_when_disabled() {
         create_default_instantiate_msg(),
     )
     .unwrap();
+    // H-3: spot fallback removed. Pre-seed prior snapshots + clear H-2
+    // warm-up so the first UpdateOraclePrice call can produce a TWAP
+    // (matches the pre-fix bootstrap-spot-derived price).
+    prime_oracle_for_first_update(&mut deps);
 
     let mut future_env = env.clone();
     future_env.block.time = future_env.block.time.plus_seconds(360);
@@ -3295,6 +3466,12 @@ fn setup_oracle_with_cached_pyth(
         create_default_instantiate_msg(),
     )
     .unwrap();
+    // H-3: spot fallback removed. Pre-seed prior snapshots + clear H-2
+    // warm-up so the first UpdateOraclePrice call can produce a TWAP
+    // (matches the pre-fix bootstrap-spot-derived price). `deps` is
+    // already a `&mut OwnedDeps<...>` parameter here, so pass it
+    // directly rather than re-borrowing.
+    prime_oracle_for_first_update(deps);
 
     let cached_ts = env.block.time.seconds().saturating_sub(cached_age_seconds);
     let mut oracle = INTERNAL_ORACLE.load(&deps.storage).unwrap();
@@ -3302,6 +3479,9 @@ fn setup_oracle_with_cached_pyth(
     oracle.bluechip_price_cache.last_update = env.block.time.seconds();
     oracle.bluechip_price_cache.cached_pyth_price = cached_pyth_price;
     oracle.bluechip_price_cache.cached_pyth_timestamp = cached_ts;
+    // Tests bypass UpdateOraclePrice and seed last_price directly — clear
+    // the H-2 warm-up gate so downstream price-serving paths don't refuse.
+    oracle.warmup_remaining = 0;
     INTERNAL_ORACLE.save(&mut deps.storage, &oracle).unwrap();
 }
 
@@ -3542,6 +3722,10 @@ fn seed_oracle_price_for_bounty_tests(
     let mut oracle = INTERNAL_ORACLE.load(&deps.storage).unwrap();
     oracle.bluechip_price_cache.last_price = Uint128::new(10_000_000);
     oracle.bluechip_price_cache.last_update = mock_env().block.time.seconds();
+    // Tests that seed `last_price` directly are bypassing UpdateOraclePrice;
+    // they must also clear the H-2 warm-up gate or `usd_to_bluechip` /
+    // `bluechip_to_usd` will refuse to serve their seeded price downstream.
+    oracle.warmup_remaining = 0;
     INTERNAL_ORACLE.save(&mut deps.storage, &oracle).unwrap();
 }
 
@@ -3575,6 +3759,10 @@ fn test_set_distribution_bounty_admin_only() {
         create_default_instantiate_msg(),
     )
     .unwrap();
+    // H-3: spot fallback removed. Pre-seed prior snapshots + clear H-2
+    // warm-up so the first UpdateOraclePrice call can produce a TWAP
+    // (matches the pre-fix bootstrap-spot-derived price).
+    prime_oracle_for_first_update(&mut deps);
 
     // Non-admin rejected.
     let err = execute(
@@ -3620,6 +3808,10 @@ fn test_set_distribution_bounty_rejects_above_cap() {
         create_default_instantiate_msg(),
     )
     .unwrap();
+    // H-3: spot fallback removed. Pre-seed prior snapshots + clear H-2
+    // warm-up so the first UpdateOraclePrice call can produce a TWAP
+    // (matches the pre-fix bootstrap-spot-derived price).
+    prime_oracle_for_first_update(&mut deps);
 
     let over = crate::state::MAX_DISTRIBUTION_BOUNTY_USD + Uint128::one();
     let err = execute(
@@ -3647,6 +3839,10 @@ fn test_pay_distribution_bounty_rejects_non_pool_caller() {
         create_default_instantiate_msg(),
     )
     .unwrap();
+    // H-3: spot fallback removed. Pre-seed prior snapshots + clear H-2
+    // warm-up so the first UpdateOraclePrice call can produce a TWAP
+    // (matches the pre-fix bootstrap-spot-derived price).
+    prime_oracle_for_first_update(&mut deps);
 
     // Configure non-zero bounty so the auth check is the only gate.
     execute(
@@ -3696,6 +3892,10 @@ fn test_pay_distribution_bounty_pays_registered_pool() {
         create_default_instantiate_msg(),
     )
     .unwrap();
+    // H-3: spot fallback removed. Pre-seed prior snapshots + clear H-2
+    // warm-up so the first UpdateOraclePrice call can produce a TWAP
+    // (matches the pre-fix bootstrap-spot-derived price).
+    prime_oracle_for_first_update(&mut deps);
     seed_oracle_price_for_bounty_tests(&mut deps);
 
     execute(
@@ -3751,6 +3951,10 @@ fn test_pay_distribution_bounty_skips_when_disabled() {
         create_default_instantiate_msg(),
     )
     .unwrap();
+    // H-3: spot fallback removed. Pre-seed prior snapshots + clear H-2
+    // warm-up so the first UpdateOraclePrice call can produce a TWAP
+    // (matches the pre-fix bootstrap-spot-derived price).
+    prime_oracle_for_first_update(&mut deps);
 
     // Bounty stays at zero (default). A registered pool calling
     // PayDistributionBounty must succeed but emit no BankMsg.
@@ -3794,6 +3998,10 @@ fn test_pay_distribution_bounty_skips_when_underfunded() {
         create_default_instantiate_msg(),
     )
     .unwrap();
+    // H-3: spot fallback removed. Pre-seed prior snapshots + clear H-2
+    // warm-up so the first UpdateOraclePrice call can produce a TWAP
+    // (matches the pre-fix bootstrap-spot-derived price).
+    prime_oracle_for_first_update(&mut deps);
     seed_oracle_price_for_bounty_tests(&mut deps);
 
     execute(
@@ -3856,6 +4064,10 @@ fn test_distribution_bounty_converts_via_oracle_price() {
         create_default_instantiate_msg(),
     )
     .unwrap();
+    // H-3: spot fallback removed. Pre-seed prior snapshots + clear H-2
+    // warm-up so the first UpdateOraclePrice call can produce a TWAP
+    // (matches the pre-fix bootstrap-spot-derived price).
+    prime_oracle_for_first_update(&mut deps);
     seed_oracle_price_for_bounty_tests(&mut deps);
 
     execute(
@@ -3922,6 +4134,10 @@ fn test_distribution_bounty_pays_less_bluechip_when_bluechip_appreciates() {
         create_default_instantiate_msg(),
     )
     .unwrap();
+    // H-3: spot fallback removed. Pre-seed prior snapshots + clear H-2
+    // warm-up so the first UpdateOraclePrice call can produce a TWAP
+    // (matches the pre-fix bootstrap-spot-derived price).
+    prime_oracle_for_first_update(&mut deps);
 
     // Seed oracle so 1 bluechip = $2.00.
     // last_price = bluechip_per_atom_twap. With atom_usd_price = $10,
@@ -3931,6 +4147,7 @@ fn test_distribution_bounty_pays_less_bluechip_when_bluechip_appreciates() {
     let mut oracle = INTERNAL_ORACLE.load(&deps.storage).unwrap();
     oracle.bluechip_price_cache.last_price = Uint128::new(5_000_000);
     oracle.bluechip_price_cache.last_update = env.block.time.seconds();
+    oracle.warmup_remaining = 0; // bypass H-2 warm-up — test seeds last_price directly
     INTERNAL_ORACLE.save(&mut deps.storage, &oracle).unwrap();
 
     execute(
@@ -3990,6 +4207,10 @@ fn test_distribution_bounty_skips_when_oracle_unavailable() {
         create_default_instantiate_msg(),
     )
     .unwrap();
+    // H-3: spot fallback removed. Pre-seed prior snapshots + clear H-2
+    // warm-up so the first UpdateOraclePrice call can produce a TWAP
+    // (matches the pre-fix bootstrap-spot-derived price).
+    prime_oracle_for_first_update(&mut deps);
     // Deliberately do NOT seed oracle price — last_price stays zero so
     // get_bluechip_usd_price errors with "TWAP price is zero".
 
@@ -4043,6 +4264,10 @@ fn test_set_distribution_bounty_cap_enforced() {
         create_default_instantiate_msg(),
     )
     .unwrap();
+    // H-3: spot fallback removed. Pre-seed prior snapshots + clear H-2
+    // warm-up so the first UpdateOraclePrice call can produce a TWAP
+    // (matches the pre-fix bootstrap-spot-derived price).
+    prime_oracle_for_first_update(&mut deps);
 
     // The cap exactly is accepted.
     execute(

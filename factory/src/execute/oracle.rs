@@ -372,6 +372,15 @@ pub(crate) fn refresh_internal_oracle_for_anchor_change(
     oracle.bluechip_price_cache.last_price = Uint128::zero();
     oracle.bluechip_price_cache.last_update = 0;
     oracle.bluechip_price_cache.twap_observations.clear();
+    // H-2: arm the warm-up counter on every anchor reset. With the spot
+    // fallbacks removed in H-3, the very-first post-reset price comes
+    // from a TWAP computed against snapshots taken on this very call;
+    // until enough additional successful updates accumulate, downstream
+    // pricing is held off rather than allowing a single attacker-influenced
+    // observation to be served as authoritative. See the warm-up gate
+    // in `get_bluechip_usd_price_with_meta`.
+    oracle.warmup_remaining =
+        crate::internal_bluechip_price_oracle::ANCHOR_CHANGE_WARMUP_OBSERVATIONS;
     crate::internal_bluechip_price_oracle::INTERNAL_ORACLE.save(deps.storage, &oracle)?;
     Ok(new_pools.len())
 }
