@@ -66,7 +66,7 @@ fn pay_distribution_bounty_skip(
 }
 
 /// Admin-only. Sets the per-call USD bounty (6 decimals, e.g. 5_000 = $0.005)
-/// paid to oracle keepers. Capped by MAX_ORACLE_UPDATE_BOUNTY_USD ($1).
+/// paid to oracle keepers. Capped by MAX_ORACLE_UPDATE_BOUNTY_USD ($0.10).
 /// At payout time the value is converted to bluechip via the internal oracle.
 pub fn execute_set_oracle_update_bounty(
     deps: DepsMut,
@@ -85,7 +85,7 @@ pub fn execute_set_oracle_update_bounty(
 
 /// Admin-only. Sets the per-batch USD bounty (6 decimals, e.g. 50_000 = $0.05)
 /// paid to keepers calling pool.ContinueDistribution. Capped by
-/// MAX_DISTRIBUTION_BOUNTY_USD ($1). Converted to bluechip at payout time.
+/// MAX_DISTRIBUTION_BOUNTY_USD ($0.10). Converted to bluechip at payout time.
 pub fn execute_set_distribution_bounty(
     deps: DepsMut,
     info: MessageInfo,

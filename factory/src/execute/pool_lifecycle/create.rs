@@ -16,7 +16,8 @@ use crate::error::ContractError;
 use crate::msg::{CreatorTokenInfo, TokenInstantiateMsg};
 use crate::pool_struct::{CreatePool, TempPoolCreation};
 use crate::state::{
-    CreationStatus, COMMIT_POOL_COUNTER, FACTORYINSTANTIATEINFO, POOL_COUNTER,
+    CreationStatus, COMMIT_POOL_COUNTER, COMMIT_POOL_CREATE_RATE_LIMIT_SECONDS,
+    FACTORYINSTANTIATEINFO, LAST_COMMIT_POOL_CREATE_AT, POOL_COUNTER,
     POOL_CREATION_CONTEXT, PoolCreationContext, PoolCreationState,
 };
 
@@ -126,6 +127,18 @@ pub(crate) fn validate_creator_token_info(
             "Token symbol must contain only uppercase ASCII letters (A-Z) and digits (0-9)",
         )));
     }
+    // L-7: require at least one letter. Pure-digit symbols ("123", "001")
+    // pass the character-class check above but render as malformed in
+    // most CW20 frontends and confuse human readers (looks like a token
+    // ID, not a ticker). Mainline tickers are letters + optional digits;
+    // gating on ≥1 letter rules out the cosmetic-bug shape without
+    // restricting legitimate naming.
+    if !token_info.symbol.chars().any(|c| c.is_ascii_uppercase()) {
+        return Err(ContractError::Std(StdError::generic_err(
+            "Token symbol must contain at least one uppercase ASCII letter (A-Z); \
+             all-digit symbols are not allowed",
+        )));
+    }
 
     Ok(())
 }
@@ -148,6 +161,25 @@ pub(crate) fn execute_create_creator_pool(
     // (dispatched to the new standard-pool wasm via the
     // `standard_pool_wasm_contract_id` code_id added in 4c). The old
     // `is_standard_pool: Some(true)` bypass on `CreatePool` is gone.
+
+    // I-6: per-address rate limit. Reject if `info.sender` already
+    // created a commit pool within the last
+    // COMMIT_POOL_CREATE_RATE_LIMIT_SECONDS. Stamps the new timestamp
+    // before any SubMsg dispatch, so a failed reply chain (which
+    // reverts the whole tx atomically) also reverts the stamp —
+    // no permanent rate-limit state leaks from failed creates.
+    let now = env.block.time;
+    if let Some(last) = LAST_COMMIT_POOL_CREATE_AT.may_load(deps.storage, info.sender.clone())? {
+        let next_allowed = last.plus_seconds(COMMIT_POOL_CREATE_RATE_LIMIT_SECONDS);
+        if now < next_allowed {
+            return Err(ContractError::Std(StdError::generic_err(format!(
+                "Rate-limited: this address can create another commit pool after {} \
+                 (last create at {}, cooldown {}s)",
+                next_allowed, last, COMMIT_POOL_CREATE_RATE_LIMIT_SECONDS
+            ))));
+        }
+    }
+    LAST_COMMIT_POOL_CREATE_AT.save(deps.storage, info.sender.clone(), &now)?;
 
     let creator_attr = info.sender.to_string();
     let pool_counter = POOL_COUNTER.may_load(deps.storage)?.unwrap_or(0);
@@ -319,6 +351,20 @@ pub(crate) fn execute_create_standard_pool(
         return Err(ContractError::Std(StdError::generic_err(
             "label must be non-empty",
         )));
+    }
+    // L-4: bound label length up front. The label is propagated to the
+    // pool wasm's instantiate `label` field and emitted as an attribute;
+    // both have SDK-level limits (512 bytes typical) but failing there
+    // surfaces deep in the reply chain rather than at message ingress.
+    // 128 chars is plenty for human-readable identifiers and well clear
+    // of any chain-side cap.
+    const MAX_LABEL_LEN: usize = 128;
+    if label.chars().count() > MAX_LABEL_LEN {
+        return Err(ContractError::Std(StdError::generic_err(format!(
+            "label too long: {} chars (max {})",
+            label.chars().count(),
+            MAX_LABEL_LEN
+        ))));
     }
 
     // Compute required fee. USD-denominated config converted to bluechip

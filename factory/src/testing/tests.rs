@@ -587,10 +587,20 @@ fn test_multiple_pool_creation() {
     let mut created_pool_ids = Vec::new();
 
     for i in 1u64..=3u64 {
+        // I-6: per-address rate limit (1h between creates from the same
+        // address). Advance the clock past the cooldown for each iteration
+        // so this test exercises the multi-pool registry path rather than
+        // the rate-limit guard (which has its own dedicated tests).
+        let mut iter_env = env.clone();
+        iter_env.block.time = iter_env
+            .block
+            .time
+            .plus_seconds((i - 1) * (crate::state::COMMIT_POOL_CREATE_RATE_LIMIT_SECONDS + 1));
+
         // Create pool
         let create_msg = create_pool_msg(&format!("Token{}", i));
         let info = message_info(&admin_addr(), &[]);
-        let res = execute(deps.as_mut(), env.clone(), info, create_msg).unwrap();
+        let res = execute(deps.as_mut(), iter_env, info, create_msg).unwrap();
 
         assert!(
             res.attributes.iter().any(|attr| attr.key == "pool_id"),

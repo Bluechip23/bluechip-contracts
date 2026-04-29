@@ -646,7 +646,23 @@ fn test_m_new_5_multi_pool_creator_no_registry_collision() {
         },
     };
 
-    execute(deps.as_mut(), env.clone(), admin_info, create_msg_2).unwrap();
+    // I-6: per-address rate limit (1h between creates from the same
+    // address). Advance the clock past the cooldown so this test
+    // exercises the registry-collision path rather than the rate-limit
+    // guard (which has its own dedicated tests).
+    let mut env_after_cooldown = env.clone();
+    env_after_cooldown.block.time = env_after_cooldown
+        .block
+        .time
+        .plus_seconds(crate::state::COMMIT_POOL_CREATE_RATE_LIMIT_SECONDS + 1);
+
+    execute(
+        deps.as_mut(),
+        env_after_cooldown.clone(),
+        admin_info,
+        create_msg_2,
+    )
+    .unwrap();
     let pool_id_2 = POOL_COUNTER.load(&deps.storage).unwrap();
     assert_ne!(pool_id_1, pool_id_2, "Second pool should get a new ID");
 
@@ -654,15 +670,15 @@ fn test_m_new_5_multi_pool_creator_no_registry_collision() {
     let token_2 = make_addr("token_addr_2");
     let token_reply =
         create_instantiate_reply(encode_reply_id(pool_id_2, SET_TOKENS), token_2.as_str());
-    pool_creation_reply(deps.as_mut(), env.clone(), token_reply).unwrap();
+    pool_creation_reply(deps.as_mut(), env_after_cooldown.clone(), token_reply).unwrap();
     let nft_2 = make_addr("nft_addr_2");
     let nft_reply =
         create_instantiate_reply(encode_reply_id(pool_id_2, MINT_CREATE_POOL), nft_2.as_str());
-    pool_creation_reply(deps.as_mut(), env.clone(), nft_reply).unwrap();
+    pool_creation_reply(deps.as_mut(), env_after_cooldown.clone(), nft_reply).unwrap();
     let pool_2 = make_addr("pool_addr_2");
     let pool_reply =
         create_instantiate_reply(encode_reply_id(pool_id_2, FINALIZE_POOL), pool_2.as_str());
-    pool_creation_reply(deps.as_mut(), env.clone(), pool_reply).unwrap();
+    pool_creation_reply(deps.as_mut(), env_after_cooldown, pool_reply).unwrap();
 
     // Verify pool 2 registry info
     let pool_2_details = POOLS_BY_ID.load(&deps.storage, pool_id_2).unwrap();
@@ -1327,4 +1343,248 @@ fn test_m8_force_rotate_resets_oracle_state() {
         oracle.warmup_remaining, ANCHOR_CHANGE_WARMUP_OBSERVATIONS,
         "force-rotate must re-arm the H-2 warm-up gate"
     );
+}
+
+// ---------------------------------------------------------------------------
+// C-2 / I-5 — `PoolDetails.pool_token_info[1].contract_addr` must equal the
+// freshly-instantiated CW20 address after a successful commit-pool create.
+// Pre-fix, `mint_create_pool` rewrote a LOCAL clone of the pair while the
+// original `ctx.temp.temp_pool_info.pool_token_info` retained the literal
+// `CREATOR_TOKEN_SENTINEL` placeholder, which `finalize_pool` then
+// persisted into POOLS_BY_ID — leaving every commit pool's registry
+// entry with the placeholder string. This test pins the post-fix
+// invariant: registry's CreatorToken address matches the SubMsg-instantiated
+// CW20.
+// ---------------------------------------------------------------------------
+#[test]
+fn test_c2_pool_details_persists_real_creator_token_address() {
+    use crate::execute::pool_lifecycle::create::CREATOR_TOKEN_SENTINEL;
+
+    let mut deps = mock_deps_with_querier(&[]);
+    setup_factory(&mut deps);
+
+    let env = mock_env();
+    let admin_info = message_info(&admin_addr(), &[]);
+
+    // Caller-supplied pair carries the SENTINEL — the factory mints the
+    // CW20 itself and rewrites the address downstream.
+    let create_msg = ExecuteMsg::Create {
+        pool_msg: CreatePool {
+            pool_token_info: [
+                TokenType::Native {
+                    denom: "ubluechip".to_string(),
+                },
+                TokenType::CreatorToken {
+                    contract_addr: Addr::unchecked(CREATOR_TOKEN_SENTINEL),
+                },
+            ],
+        },
+        token_info: CreatorTokenInfo {
+            name: "TestToken".to_string(),
+            symbol: "TEST".to_string(),
+            decimal: 6,
+        },
+    };
+
+    execute(deps.as_mut(), env.clone(), admin_info, create_msg).unwrap();
+    let pool_id = POOL_COUNTER.load(&deps.storage).unwrap();
+
+    // Walk the reply chain. The address fed into SET_TOKENS is the one
+    // we expect to find in POOLS_BY_ID at the end.
+    let real_token_addr = make_addr("freshly_instantiated_cw20");
+    let token_reply = create_instantiate_reply(
+        encode_reply_id(pool_id, SET_TOKENS),
+        real_token_addr.as_str(),
+    );
+    pool_creation_reply(deps.as_mut(), env.clone(), token_reply).unwrap();
+    let nft_addr = make_addr("freshly_instantiated_cw721");
+    let nft_reply =
+        create_instantiate_reply(encode_reply_id(pool_id, MINT_CREATE_POOL), nft_addr.as_str());
+    pool_creation_reply(deps.as_mut(), env.clone(), nft_reply).unwrap();
+    let pool_addr = make_addr("freshly_instantiated_pool");
+    let pool_reply =
+        create_instantiate_reply(encode_reply_id(pool_id, FINALIZE_POOL), pool_addr.as_str());
+    pool_creation_reply(deps.as_mut(), env, pool_reply).unwrap();
+
+    // The fix: PoolDetails.pool_token_info[1] must be the REAL CW20,
+    // not the sentinel placeholder.
+    let details = POOLS_BY_ID.load(&deps.storage, pool_id).unwrap();
+    let creator_token_addr = match &details.pool_token_info[1] {
+        TokenType::CreatorToken { contract_addr } => contract_addr.clone(),
+        _ => panic!(
+            "expected CreatorToken at pool_token_info[1], got: {:?}",
+            details.pool_token_info[1]
+        ),
+    };
+    assert_ne!(
+        creator_token_addr.as_str(),
+        CREATOR_TOKEN_SENTINEL,
+        "C-2 regression: PoolDetails persisted the sentinel instead of the real CW20 address"
+    );
+    assert_eq!(
+        creator_token_addr, real_token_addr,
+        "PoolDetails CreatorToken address must equal the SubMsg-instantiated CW20"
+    );
+
+    // The asset_strings stored in POOLS_BY_CONTRACT_ADDRESS (used by
+    // off-chain query consumers) is derived from pool_token_info — it
+    // must also have the real address, not the sentinel.
+    let snapshot = POOLS_BY_CONTRACT_ADDRESS
+        .load(&deps.storage, pool_addr)
+        .unwrap();
+    assert!(
+        snapshot.assets.iter().any(|a| a == real_token_addr.as_str()),
+        "POOLS_BY_CONTRACT_ADDRESS.assets must include the real CW20 address; got: {:?}",
+        snapshot.assets
+    );
+    assert!(
+        !snapshot
+            .assets
+            .iter()
+            .any(|a| a == CREATOR_TOKEN_SENTINEL),
+        "POOLS_BY_CONTRACT_ADDRESS.assets must not retain the sentinel; got: {:?}",
+        snapshot.assets
+    );
+}
+
+// ---------------------------------------------------------------------------
+// L-4 — `CreateStandardPool` rejects labels longer than the bound.
+// ---------------------------------------------------------------------------
+#[test]
+fn test_l4_create_standard_pool_rejects_oversized_label() {
+    let mut deps = mock_deps_with_querier(&[]);
+    setup_factory(&mut deps);
+    // Configure standard-pool wasm so the handler reaches label validation.
+    let mut cfg = default_factory_config();
+    cfg.standard_pool_wasm_contract_id = 12;
+    crate::state::FACTORYINSTANTIATEINFO
+        .save(&mut deps.storage, &cfg)
+        .unwrap();
+
+    let oversized = "x".repeat(129);
+    let res = execute(
+        deps.as_mut(),
+        mock_env(),
+        message_info(&admin_addr(), &[]),
+        ExecuteMsg::CreateStandardPool {
+            pool_token_info: [
+                TokenType::Native {
+                    denom: "ubluechip".to_string(),
+                },
+                TokenType::Native {
+                    denom: "uatom".to_string(),
+                },
+            ],
+            label: oversized,
+        },
+    );
+    let err = res.expect_err("oversized label must be rejected");
+    assert!(
+        err.to_string().contains("label too long"),
+        "expected length-rejection error, got: {}",
+        err
+    );
+}
+
+// ---------------------------------------------------------------------------
+// L-7 — `validate_creator_token_info` rejects all-numeric symbols.
+// ---------------------------------------------------------------------------
+#[test]
+fn test_l7_create_rejects_all_numeric_symbol() {
+    let mut deps = mock_deps_with_querier(&[]);
+    setup_factory(&mut deps);
+
+    let res = execute(
+        deps.as_mut(),
+        mock_env(),
+        message_info(&admin_addr(), &[]),
+        ExecuteMsg::Create {
+            pool_msg: CreatePool {
+                pool_token_info: [
+                    TokenType::Native {
+                        denom: "ubluechip".to_string(),
+                    },
+                    TokenType::CreatorToken {
+                        contract_addr: Addr::unchecked(
+                            crate::execute::pool_lifecycle::create::CREATOR_TOKEN_SENTINEL,
+                        ),
+                    },
+                ],
+            },
+            token_info: CreatorTokenInfo {
+                name: "All-digit symbol token".to_string(),
+                symbol: "12345".to_string(),
+                decimal: 6,
+            },
+        },
+    );
+    let err = res.expect_err("all-numeric symbol must be rejected");
+    assert!(
+        err.to_string().contains("at least one uppercase ASCII letter"),
+        "expected letter-required error, got: {}",
+        err
+    );
+}
+
+// ---------------------------------------------------------------------------
+// I-6 — per-address rate limit on commit-pool creation. Pre-fix, anyone
+// could spam consecutive Create calls. Now the same address must wait
+// `COMMIT_POOL_CREATE_RATE_LIMIT_SECONDS` between successful creates.
+// ---------------------------------------------------------------------------
+#[test]
+fn test_i6_commit_pool_create_rate_limit_per_address() {
+    use crate::execute::pool_lifecycle::create::CREATOR_TOKEN_SENTINEL;
+    let mut deps = mock_deps_with_querier(&[]);
+    setup_factory(&mut deps);
+
+    let make_msg = |sym: &str| ExecuteMsg::Create {
+        pool_msg: CreatePool {
+            pool_token_info: [
+                TokenType::Native {
+                    denom: "ubluechip".to_string(),
+                },
+                TokenType::CreatorToken {
+                    contract_addr: Addr::unchecked(CREATOR_TOKEN_SENTINEL),
+                },
+            ],
+        },
+        token_info: CreatorTokenInfo {
+            name: format!("Token {}", sym),
+            symbol: sym.to_string(),
+            decimal: 6,
+        },
+    };
+
+    let env = mock_env();
+    let info = message_info(&admin_addr(), &[]);
+
+    // First create: succeeds.
+    execute(deps.as_mut(), env.clone(), info.clone(), make_msg("AAA")).unwrap();
+
+    // Second create from the same address, same block: rate-limited.
+    let res = execute(deps.as_mut(), env.clone(), info.clone(), make_msg("BBB"));
+    let err = res.expect_err("rapid second create from same address must be rate-limited");
+    assert!(
+        err.to_string().contains("Rate-limited"),
+        "expected rate-limit error, got: {}",
+        err
+    );
+
+    // From a DIFFERENT address in the same block: allowed (per-address gate).
+    let other = make_addr("other_creator");
+    execute(
+        deps.as_mut(),
+        env.clone(),
+        message_info(&other, &[]),
+        make_msg("CCC"),
+    )
+    .unwrap();
+
+    // After the cooldown elapses, the original address can create again.
+    let mut later_env = env.clone();
+    later_env.block.time = later_env
+        .block
+        .time
+        .plus_seconds(crate::state::COMMIT_POOL_CREATE_RATE_LIMIT_SECONDS + 1);
+    execute(deps.as_mut(), later_env, info, make_msg("DDD")).unwrap();
 }
