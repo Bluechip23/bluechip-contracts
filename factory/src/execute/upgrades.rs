@@ -42,13 +42,76 @@ pub fn execute_propose_pool_upgrade(
         )));
     }
 
-    let pools_to_upgrade = if let Some(ids) = pool_ids {
-        ids
+    // Pool list resolution + validation. Three rules, all enforced at
+    // propose time so a malformed admin-supplied list fails immediately
+    // rather than 48h later at apply (where the failure cascades into
+    // "cancel + re-propose + wait 48h again"):
+    //
+    //   1. Caller-supplied IDs are deduplicated. Duplicates would emit
+    //      two `WasmMsg::Migrate` to the same pool — the first migrates,
+    //      the second runs the migrate handler against the already-new
+    //      code with the same migrate_msg, producing whatever the new
+    //      code's handler does on a second invocation (probably
+    //      undefined behaviour, certainly not what the admin intended).
+    //   2. Every supplied ID must reference a registered pool. An
+    //      invalid ID would error inside `build_upgrade_batch` at apply
+    //      time and revert the entire batch.
+    //   3. M-5: the anchor pool is rejected. Migrating it mid-flight
+    //      would leave the oracle querying `GetPoolState` against
+    //      possibly-mid-migration storage; if the migrate changes
+    //      the reserve representation the cumulative-delta math
+    //      breaks silently. Operators must propose a new anchor first
+    //      (CreateStandardPool + 48h ProposeConfigUpdate / one-shot
+    //      SetAnchorPool semantics), repoint the factory at it, then
+    //      migrate the old anchor in a dedicated cycle.
+    //
+    // None means "all pools" — same dedup/existence is implicit
+    // (POOLS_BY_ID.keys already returns unique, registered IDs) but
+    // we still need to filter the anchor.
+    let pools_to_upgrade: Vec<u64> = if let Some(ids) = pool_ids {
+        // Dedup while preserving order: first occurrence wins, later
+        // duplicates dropped. Sort+dedup would also work but reorders
+        // the admin's intended migration sequence.
+        let mut seen = std::collections::HashSet::with_capacity(ids.len());
+        let mut deduped: Vec<u64> = Vec::with_capacity(ids.len());
+        for id in ids.into_iter() {
+            if seen.insert(id) {
+                deduped.push(id);
+            }
+        }
+        // Existence check.
+        for id in deduped.iter() {
+            if !POOLS_BY_ID.has(deps.storage, *id) {
+                return Err(ContractError::Std(StdError::generic_err(format!(
+                    "Pool {} not found in registry — cannot include in upgrade batch",
+                    id
+                ))));
+            }
+        }
+        deduped
     } else {
         POOLS_BY_ID
             .keys(deps.storage, None, None, Order::Ascending)
             .collect::<StdResult<Vec<_>>>()?
     };
+
+    // Anchor-pool exclusion (M-5). Resolve the configured anchor address
+    // once, walk the proposed list, refuse if the anchor pool is in it.
+    let factory_config = crate::state::FACTORYINSTANTIATEINFO.load(deps.storage)?;
+    let anchor_addr = factory_config.atom_bluechip_anchor_pool_address.clone();
+    for id in pools_to_upgrade.iter() {
+        let details = POOLS_BY_ID.load(deps.storage, *id)?;
+        if details.creator_pool_addr == anchor_addr {
+            return Err(ContractError::Std(StdError::generic_err(format!(
+                "Pool {} is the configured anchor pool ({}). Migrating the \
+                 anchor mid-flight would leave the oracle querying \
+                 possibly-mid-migration storage. Repoint the factory at a new \
+                 anchor (CreateStandardPool → 48h ProposeConfigUpdate) before \
+                 migrating this pool.",
+                id, anchor_addr
+            ))));
+        }
+    }
 
     let effective_after = env.block.time.plus_seconds(ADMIN_TIMELOCK_SECONDS);
 

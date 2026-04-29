@@ -1,5 +1,7 @@
 use crate::asset::TokenType;
-use crate::internal_bluechip_price_oracle::calculate_weighted_price_with_atom;
+use crate::internal_bluechip_price_oracle::{
+    calculate_weighted_price_with_atom, PoolCumulativeSnapshot,
+};
 use crate::mock_querier::mock_dependencies;
 use crate::pool_struct::PoolDetails;
 use crate::state::{
@@ -23,7 +25,6 @@ fn test_repro_token_sort_order_bug() {
     let config = FactoryInstantiate {
         factory_admin_address: make_addr("admin"),
         cw721_nft_contract_id: 1,
-        commit_amount_for_threshold_bluechip: Uint128::zero(),
         commit_threshold_limit_usd: Uint128::new(100),
         pyth_contract_addr_for_conversions: "pyth".to_string(),
         pyth_atom_usd_price_feed_id: "id".to_string(),
@@ -65,25 +66,39 @@ fn test_repro_token_sort_order_bug() {
         .save(deps.as_mut().storage, 1, &pool_details)
         .unwrap();
 
-    // Setup ATOM Pool
+    // Setup ATOM Pool. Cumulative price1 = (reserve0/reserve1) × time = 1 × 100 = 100,
+    // so a TWAP over the next 100s yields 1.0 (1e6 precision). For the
+    // inverted-order test below we'll repoint reserves and price0_cumulative
+    // to exercise the is_bluechip_second branch.
     let atom_pool_state = PoolStateResponseForFactory {
         pool_contract_address: atom_pool.clone(),
         nft_ownership_accepted: true,
         reserve0: Uint128::new(100_000_000_000),
         reserve1: Uint128::new(100_000_000_000),
         total_liquidity: Uint128::new(200_000_000_000),
-        block_time_last: 0,
-        price0_cumulative_last: Uint128::zero(),
-        price1_cumulative_last: Uint128::zero(),
+        block_time_last: 100,
+        price0_cumulative_last: Uint128::new(100),
+        price1_cumulative_last: Uint128::new(100),
         assets: vec!["BC".to_string(), "atom_addr_123".to_string()],
     };
     POOLS_BY_CONTRACT_ADDRESS
         .save(deps.as_mut().storage, atom_pool.clone(), &atom_pool_state)
         .unwrap();
 
-    // Calculate Price - Expected 1.0 (1_000_000 precision)
+    // Prior snapshot at t=0, cumulative=0 — yields cumulative_delta=100 over
+    // time_delta=100, i.e. TWAP = 100 × 1e6 / 100 = 1_000_000.
+    let prev_snapshots = vec![PoolCumulativeSnapshot {
+        pool_address: atom_pool.to_string(),
+        price0_cumulative: Uint128::zero(),
+        block_time: 0,
+    }];
+
+    // Calculate Price - Expected 1.0 (1_000_000 precision). H-3: function
+    // now returns Option<Uint128> for prices; unwrap.
     let pools = vec![atom_pool.to_string()];
-    let (price, _, _) = calculate_weighted_price_with_atom(deps.as_ref(), &pools, &[]).unwrap();
+    let (price, _, _) =
+        calculate_weighted_price_with_atom(deps.as_ref(), &pools, &prev_snapshots).unwrap();
+    let price = price.expect("anchor TWAP must be Some when cumulative advanced");
     assert_eq!(
         price.u128(),
         1_000_000,
@@ -111,15 +126,19 @@ fn test_repro_token_sort_order_bug() {
         .save(deps.as_mut().storage, 1, &inverted_pool_details)
         .unwrap();
 
+    // For inverted shape, oracle reads price0_cumulative_last (because
+    // is_bluechip_second = true). Set it to 50 over a 100s window to yield
+    // bluechip-per-atom TWAP of 0.5 (500_000 in 1e6 precision), matching
+    // the 200B atom : 100B bluechip reserve ratio.
     let inverted_state = PoolStateResponseForFactory {
         pool_contract_address: atom_pool.clone(),
         nft_ownership_accepted: true,
         reserve0: Uint128::new(200_000_000_000),
         reserve1: Uint128::new(100_000_000_000),
         total_liquidity: Uint128::new(300_000_000_000),
-        block_time_last: 0,
-        price0_cumulative_last: Uint128::zero(),
-        price1_cumulative_last: Uint128::zero(),
+        block_time_last: 100,
+        price0_cumulative_last: Uint128::new(50),
+        price1_cumulative_last: Uint128::new(200),
         assets: vec!["atom_addr_123".to_string(), "BC".to_string()],
     };
     POOLS_BY_CONTRACT_ADDRESS
@@ -127,7 +146,9 @@ fn test_repro_token_sort_order_bug() {
         .unwrap();
 
     let (price_inverted, _, _) =
-        calculate_weighted_price_with_atom(deps.as_ref(), &pools, &[]).unwrap();
+        calculate_weighted_price_with_atom(deps.as_ref(), &pools, &prev_snapshots).unwrap();
+    let price_inverted =
+        price_inverted.expect("inverted-shape anchor TWAP must be Some when cumulative advanced");
     assert_eq!(
         price_inverted.u128(),
         500_000,

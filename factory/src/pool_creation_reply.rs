@@ -189,9 +189,35 @@ pub fn finalize_pool(
         .clone()
         .ok_or_else(|| ContractError::Std(StdError::generic_err("missing nft address")))?;
 
+    // C-2: rebuild `pool_token_info` from the SOURCE OF TRUTH for the
+    // creator-token address, which is `ctx.temp.creator_token_addr`
+    // (set in `set_tokens` when the CW20 was instantiated). The original
+    // `ctx.temp.temp_pool_info.pool_token_info` still carries the literal
+    // `CREATOR_TOKEN_SENTINEL` placeholder string the user supplied at
+    // create time — it was never written back from the local
+    // `updated_asset_infos` clone in `mint_create_pool`. Persisting it
+    // unchanged into `POOLS_BY_ID` left every commit pool's registry
+    // entry with the placeholder address in the CreatorToken slot,
+    // breaking `query_creator_token_info` and any other consumer that
+    // reads the CW20 address out of the registry.
+    //
+    // Reconstructing here from `creator_token_addr` is unambiguous —
+    // the validator at `validate_pool_token_info` enforces a strict
+    // [Native(bluechip), CreatorToken(sentinel)] shape, so the bluechip
+    // side is always at index 0 and the only field that needs the
+    // real address is the CreatorToken at index 1. `TokenType` is
+    // already imported at the top of this module.
+    let bluechip_side = ctx.temp.temp_pool_info.pool_token_info[0].clone();
+    let pool_token_info = [
+        bluechip_side,
+        TokenType::CreatorToken {
+            contract_addr: token_address.clone(),
+        },
+    ];
+
     let pool_details = PoolDetails {
         pool_id,
-        pool_token_info: ctx.temp.temp_pool_info.pool_token_info.clone(),
+        pool_token_info,
         creator_pool_addr: pool_address.clone(),
         // This reply handler is specifically for the commit-pool creation
         // chain (triggered by ExecuteMsg::Create). Standard pools have

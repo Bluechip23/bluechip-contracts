@@ -66,7 +66,7 @@ fn pay_distribution_bounty_skip(
 }
 
 /// Admin-only. Sets the per-call USD bounty (6 decimals, e.g. 5_000 = $0.005)
-/// paid to oracle keepers. Capped by MAX_ORACLE_UPDATE_BOUNTY_USD ($1).
+/// paid to oracle keepers. Capped by MAX_ORACLE_UPDATE_BOUNTY_USD ($0.10).
 /// At payout time the value is converted to bluechip via the internal oracle.
 pub fn execute_set_oracle_update_bounty(
     deps: DepsMut,
@@ -85,7 +85,7 @@ pub fn execute_set_oracle_update_bounty(
 
 /// Admin-only. Sets the per-batch USD bounty (6 decimals, e.g. 50_000 = $0.05)
 /// paid to keepers calling pool.ContinueDistribution. Capped by
-/// MAX_DISTRIBUTION_BOUNTY_USD ($1). Converted to bluechip at payout time.
+/// MAX_DISTRIBUTION_BOUNTY_USD ($0.10). Converted to bluechip at payout time.
 pub fn execute_set_distribution_bounty(
     deps: DepsMut,
     info: MessageInfo,
@@ -118,9 +118,21 @@ pub fn execute_pay_distribution_bounty(
     info: MessageInfo,
     recipient: String,
 ) -> Result<Response, ContractError> {
-    // Auth: caller must be a registered pool. POOLS_BY_CONTRACT_ADDRESS is
-    // populated at pool creation and keyed by the pool's contract address.
+    // Auth: caller must be a registered COMMIT pool. POOLS_BY_CONTRACT_ADDRESS
+    // is populated at pool creation and keyed by the pool's contract address;
+    // it contains both commit and standard pools, so the registry-presence
+    // check alone would let any registered pool drain the factory's bounty
+    // reserve. Only commit pools run distributions, so we additionally
+    // require `pool_kind == Commit` as defense-in-depth: if a future
+    // migration of either pool wasm ever introduced a hostile or buggy
+    // path that called `PayDistributionBounty`, this gate prevents standard
+    // pools from triggering a payout entirely.
     if !POOLS_BY_CONTRACT_ADDRESS.has(deps.storage, info.sender.clone()) {
+        return Err(ContractError::Unauthorized {});
+    }
+    let pool_details = lookup_pool_by_addr(deps.as_ref(), &info.sender)?
+        .ok_or(ContractError::Unauthorized {})?;
+    if pool_details.pool_kind != pool_factory_interfaces::PoolKind::Commit {
         return Err(ContractError::Unauthorized {});
     }
 
@@ -360,6 +372,15 @@ pub(crate) fn refresh_internal_oracle_for_anchor_change(
     oracle.bluechip_price_cache.last_price = Uint128::zero();
     oracle.bluechip_price_cache.last_update = 0;
     oracle.bluechip_price_cache.twap_observations.clear();
+    // H-2: arm the warm-up counter on every anchor reset. With the spot
+    // fallbacks removed in H-3, the very-first post-reset price comes
+    // from a TWAP computed against snapshots taken on this very call;
+    // until enough additional successful updates accumulate, downstream
+    // pricing is held off rather than allowing a single attacker-influenced
+    // observation to be served as authoritative. See the warm-up gate
+    // in `get_bluechip_usd_price_with_meta`.
+    oracle.warmup_remaining =
+        crate::internal_bluechip_price_oracle::ANCHOR_CHANGE_WARMUP_OBSERVATIONS;
     crate::internal_bluechip_price_oracle::INTERNAL_ORACLE.save(deps.storage, &oracle)?;
     Ok(new_pools.len())
 }

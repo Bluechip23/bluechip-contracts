@@ -63,6 +63,26 @@ pub const FIRST_THRESHOLD_TIMESTAMP: Item<Timestamp> = Item::new("first_pool_tim
 pub const POOL_THRESHOLD_MINTED: Map<u64, bool> = Map::new("pool_threshold_minted");
 pub const PENDING_POOL_CONFIG: Map<u64, PendingPoolConfig> = Map::new("pending_pool_config");
 
+// I-6: per-address rate limit on commit-pool creation. Records the
+// timestamp of each creator's last successful `Create` so the next
+// call from the same `info.sender` is rejected if it lands within
+// `COMMIT_POOL_CREATE_RATE_LIMIT_SECONDS` of the prior. Defends against
+// trivial spam-creates that inflate the commit-pool ordinal and
+// gas-amplify any future per-pool storage scan. Per-address, not
+// global: legitimate operators creating many pools from a single
+// admin EOA still need to wait the cooldown each time, but coordinated
+// multi-address spam still has to fund + sign from each address it
+// rotates through.
+pub const LAST_COMMIT_POOL_CREATE_AT: Map<Addr, Timestamp> =
+    Map::new("last_commit_pool_create_at");
+
+/// Minimum seconds between consecutive `Create` calls from the same
+/// `info.sender`. 3600s = 1h. Reasonable for legitimate creator-pool
+/// flows (you launch one token at a time) and asymmetric enough against
+/// spam that even a fully-funded attacker would need to rotate through
+/// thousands of addresses to materially inflate `commit_pool_ordinal`.
+pub const COMMIT_POOL_CREATE_RATE_LIMIT_SECONDS: u64 = 3600;
+
 // Keeper bounty paid to whoever successfully calls UpdateOraclePrice.
 // Stored as a USD value (6 decimals: 1_000_000 = $1.00). At payout time
 // the factory converts USD to bluechip via the internal oracle so the
@@ -141,7 +161,18 @@ pub struct PendingPoolConfig {
 #[cw_serde]
 pub struct FactoryInstantiate {
     pub factory_admin_address: Addr,
-    pub commit_amount_for_threshold_bluechip: Uint128,
+    // M-2: `commit_amount_for_threshold_bluechip` removed. The field was
+    // never read anywhere in the contract — only written from deploy
+    // scripts and tests, and ignored at every consumer. Keeping it
+    // around invited a future change to silently start consuming
+    // operator-supplied stale values.
+    //
+    // cw_serde does NOT add `deny_unknown_fields`, so already-stored
+    // FactoryInstantiate records carrying this field will deserialize
+    // cleanly into the new shape (the unknown key is ignored). Deploy
+    // scripts that pass the field on instantiate also continue to
+    // succeed — JSON deserialization at the contract boundary
+    // tolerates extra keys.
     pub commit_threshold_limit_usd: Uint128,
     pub pyth_contract_addr_for_conversions: String,
     pub pyth_atom_usd_price_feed_id: String,

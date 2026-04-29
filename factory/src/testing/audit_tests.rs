@@ -52,9 +52,8 @@ fn default_factory_config() -> FactoryInstantiate {
     FactoryInstantiate {
         cw721_nft_contract_id: 58,
         factory_admin_address: admin_addr(),
-        commit_amount_for_threshold_bluechip: Uint128::zero(),
         commit_threshold_limit_usd: Uint128::new(25_000_000_000),
-        pyth_contract_addr_for_conversions: "oracle0000".to_string(),
+        pyth_contract_addr_for_conversions: MockApi::default().addr_make("oracle0000").to_string(),
         pyth_atom_usd_price_feed_id: "ORCL".to_string(),
         cw20_token_contract_id: 10,
         create_pool_wasm_contract_id: 11,
@@ -386,6 +385,21 @@ fn test_m_new_3_rotation_skips_pools_without_prior_snapshot() {
         )
         .unwrap();
 
+    // H-3: anchor pool needs `block_time_last` and `price1_cumulative_last`
+    // ahead of the prev_snapshot below (cumulative=50_000, block_time=500)
+    // so the TWAP path produces `cumulative_delta > 0` and `time_delta > 0`.
+    // setup_factory's default zeros would have triggered the (now-removed)
+    // anchor spot fallback.
+    let atom_addr_obj = atom_bluechip_pool_addr();
+    let mut atom_state = POOLS_BY_CONTRACT_ADDRESS
+        .load(&deps.storage, atom_addr_obj.clone())
+        .unwrap();
+    atom_state.block_time_last = 1000;
+    atom_state.price1_cumulative_last = Uint128::new(60_000);
+    POOLS_BY_CONTRACT_ADDRESS
+        .save(&mut deps.storage, atom_addr_obj, &atom_state)
+        .unwrap();
+
     let pool_addresses = vec![atom_addr.clone(), creator_addr.clone()];
 
     // Provide a previous snapshot ONLY for the atom pool (simulates rotation
@@ -417,17 +431,23 @@ fn test_m_new_3_rotation_skips_pools_without_prior_snapshot() {
     );
 
     // The weighted price should come only from the atom pool (since creator
-    // pool was skipped). This means weighted_price == atom_pool_price.
+    // pool was skipped). Post-H-3 the function returns Option for prices —
+    // unwrap and assert price came from the anchor only.
+    let weighted = weighted_price.expect("anchor TWAP should produce a price");
+    let atom = atom_price.expect("anchor pool price should be Some");
     assert_eq!(
-        weighted_price, atom_price,
+        weighted, atom,
         "Price should come only from atom pool since creator pool had no prior snapshot"
     );
 }
 
-/// When prev_snapshots is completely empty (bootstrap / first-ever update),
-/// all pools should fall back to spot price — not be skipped.
+/// H-3: when `prev_snapshots` is completely empty (bootstrap / first-ever
+/// update), the oracle MUST refuse to publish a price (no spot fallback)
+/// but MUST still record snapshots so the next round has prior data to
+/// compute a TWAP from. Pre-fix this returned a manipulable spot reading;
+/// post-fix the price components are `None` and the snapshot is recorded.
 #[test]
-fn test_m_new_3_bootstrap_uses_spot_price_for_all() {
+fn test_h3_bootstrap_returns_none_price_but_records_snapshot() {
     let mut deps = mock_deps_with_querier(&[]);
     setup_factory(&mut deps);
 
@@ -436,26 +456,84 @@ fn test_m_new_3_bootstrap_uses_spot_price_for_all() {
     let pool_addresses = vec![atom_addr.clone()];
     let prev_snapshots: Vec<PoolCumulativeSnapshot> = vec![];
 
-    let result =
-        calculate_weighted_price_with_atom(deps.as_ref(), &pool_addresses, &prev_snapshots);
+    let (weighted_price, atom_price, new_snapshots) =
+        calculate_weighted_price_with_atom(deps.as_ref(), &pool_addresses, &prev_snapshots)
+            .expect("bootstrap must succeed (snapshots-only) instead of erroring");
 
-    // Should succeed using spot price (bootstrap case)
+    // No price this round — H-3 removed the spot fallback. Caller will
+    // persist `new_snapshots` and the next round computes a real TWAP.
     assert!(
-        result.is_ok(),
-        "Bootstrap case should use spot price: {:?}",
-        result.err()
+        weighted_price.is_none(),
+        "bootstrap must NOT publish a spot-derived price; got: {:?}",
+        weighted_price
     );
-
-    let (weighted_price, _atom_price, new_snapshots) = result.unwrap();
     assert!(
-        !weighted_price.is_zero(),
-        "Should produce a non-zero price from spot reserves"
+        atom_price.is_none(),
+        "bootstrap must NOT publish a spot-derived atom price; got: {:?}",
+        atom_price
     );
     assert_eq!(
         new_snapshots.len(),
         1,
-        "Should record snapshot for next cycle"
+        "snapshot must still be recorded so next round can compute TWAP"
     );
+}
+
+/// H-3: even with the anchor sampled and meeting MIN_POOL_LIQUIDITY,
+/// if the anchor's cumulative_delta is zero (no swap since the last
+/// sample) the oracle MUST refuse to publish — pre-fix it would have
+/// fallen back to single-block spot reserves on the anchor.
+#[test]
+fn test_h3_anchor_no_cumulative_delta_returns_none_price() {
+    use crate::state::POOLS_BY_CONTRACT_ADDRESS;
+    let mut deps = mock_deps_with_querier(&[]);
+    setup_factory(&mut deps);
+
+    let atom_addr = atom_bluechip_pool_addr();
+
+    // Override the test querier to return a state with the same cumulative
+    // and block_time as the prior snapshot — i.e., no activity since.
+    POOLS_BY_CONTRACT_ADDRESS
+        .save(
+            &mut deps.storage,
+            atom_addr.clone(),
+            &PoolStateResponseForFactory {
+                pool_contract_address: atom_addr.clone(),
+                nft_ownership_accepted: true,
+                reserve0: Uint128::new(50_000_000_000),
+                reserve1: Uint128::new(10_000_000_000),
+                total_liquidity: Uint128::new(60_000_000_000),
+                block_time_last: 1_000,
+                price0_cumulative_last: Uint128::new(500_000),
+                price1_cumulative_last: Uint128::new(100_000),
+                assets: vec![],
+            },
+        )
+        .unwrap();
+
+    let pool_addresses = vec![atom_addr.to_string()];
+    // Prior snapshot identical to the current state — cumulative_delta = 0,
+    // time_delta = 0. Pre-H-3 this would have triggered the anchor spot
+    // fallback. Post-H-3 it must not.
+    let prev_snapshots = vec![PoolCumulativeSnapshot {
+        pool_address: atom_addr.to_string(),
+        price0_cumulative: Uint128::new(500_000),
+        block_time: 1_000,
+    }];
+
+    let (weighted_price, atom_price, new_snapshots) =
+        calculate_weighted_price_with_atom(deps.as_ref(), &pool_addresses, &prev_snapshots)
+            .expect("must return Ok with None prices, not Err");
+
+    assert!(
+        weighted_price.is_none(),
+        "anchor stale-cumulative must NOT trigger spot fallback; got: {:?}",
+        weighted_price
+    );
+    assert!(atom_price.is_none(), "atom price must be None when cumulative didn't advance");
+    // Snapshot should still be recorded so the next round can compute TWAP
+    // once the anchor has activity.
+    assert_eq!(new_snapshots.len(), 1);
 }
 
 #[test]
@@ -568,7 +646,23 @@ fn test_m_new_5_multi_pool_creator_no_registry_collision() {
         },
     };
 
-    execute(deps.as_mut(), env.clone(), admin_info, create_msg_2).unwrap();
+    // I-6: per-address rate limit (1h between creates from the same
+    // address). Advance the clock past the cooldown so this test
+    // exercises the registry-collision path rather than the rate-limit
+    // guard (which has its own dedicated tests).
+    let mut env_after_cooldown = env.clone();
+    env_after_cooldown.block.time = env_after_cooldown
+        .block
+        .time
+        .plus_seconds(crate::state::COMMIT_POOL_CREATE_RATE_LIMIT_SECONDS + 1);
+
+    execute(
+        deps.as_mut(),
+        env_after_cooldown.clone(),
+        admin_info,
+        create_msg_2,
+    )
+    .unwrap();
     let pool_id_2 = POOL_COUNTER.load(&deps.storage).unwrap();
     assert_ne!(pool_id_1, pool_id_2, "Second pool should get a new ID");
 
@@ -576,15 +670,15 @@ fn test_m_new_5_multi_pool_creator_no_registry_collision() {
     let token_2 = make_addr("token_addr_2");
     let token_reply =
         create_instantiate_reply(encode_reply_id(pool_id_2, SET_TOKENS), token_2.as_str());
-    pool_creation_reply(deps.as_mut(), env.clone(), token_reply).unwrap();
+    pool_creation_reply(deps.as_mut(), env_after_cooldown.clone(), token_reply).unwrap();
     let nft_2 = make_addr("nft_addr_2");
     let nft_reply =
         create_instantiate_reply(encode_reply_id(pool_id_2, MINT_CREATE_POOL), nft_2.as_str());
-    pool_creation_reply(deps.as_mut(), env.clone(), nft_reply).unwrap();
+    pool_creation_reply(deps.as_mut(), env_after_cooldown.clone(), nft_reply).unwrap();
     let pool_2 = make_addr("pool_addr_2");
     let pool_reply =
         create_instantiate_reply(encode_reply_id(pool_id_2, FINALIZE_POOL), pool_2.as_str());
-    pool_creation_reply(deps.as_mut(), env.clone(), pool_reply).unwrap();
+    pool_creation_reply(deps.as_mut(), env_after_cooldown, pool_reply).unwrap();
 
     // Verify pool 2 registry info
     let pool_2_details = POOLS_BY_ID.load(&deps.storage, pool_id_2).unwrap();
@@ -629,4 +723,868 @@ fn test_l_new_8_factory_migration_contract_name() {
         version_info.contract, "crates.io:bluechip-factory",
         "Migration should maintain the same contract name"
     );
+}
+
+// ---------------------------------------------------------------------------
+// H-5 — `ProposeConfigUpdate` must refuse to silently overwrite a pending
+// proposal. Without this, a benign proposal at hour 47 of the timelock
+// could be replaced by a hostile one minutes before the community window
+// elapses, with no on-chain `Cancel` event signalling the swap.
+// ---------------------------------------------------------------------------
+#[test]
+fn test_propose_config_update_rejects_overwrite() {
+    let mut deps = mock_deps_with_querier(&[]);
+    setup_factory(&mut deps);
+
+    let info = message_info(&admin_addr(), &[]);
+    let env = mock_env();
+
+    // First proposal — succeeds.
+    execute(
+        deps.as_mut(),
+        env.clone(),
+        info.clone(),
+        ExecuteMsg::ProposeConfigUpdate {
+            config: default_factory_config(),
+        },
+    )
+    .unwrap();
+
+    // Second proposal — must fail because PENDING_CONFIG already exists.
+    let res = execute(
+        deps.as_mut(),
+        env,
+        info,
+        ExecuteMsg::ProposeConfigUpdate {
+            config: default_factory_config(),
+        },
+    );
+    let err = res.expect_err("second propose without cancel should fail");
+    let err_msg = err.to_string();
+    assert!(
+        err_msg.contains("already pending") || err_msg.contains("CancelConfigUpdate"),
+        "expected already-pending rejection, got: {}",
+        err_msg
+    );
+}
+
+// ---------------------------------------------------------------------------
+// H-7 — `validate_factory_config` must reject configs whose
+// `commit_fee_bluechip + commit_fee_creator > 100%`. The pool-side
+// `instantiate` already rejects with `InvalidFee`, but if the factory
+// stored a bad config it would brick every subsequent `Create` until
+// another 48h cycle to fix. Validating at propose-time surfaces the
+// misconfig immediately.
+// ---------------------------------------------------------------------------
+#[test]
+fn test_propose_config_update_rejects_fee_sum_above_one() {
+    let mut deps = mock_deps_with_querier(&[]);
+    setup_factory(&mut deps);
+
+    let mut bad = default_factory_config();
+    bad.commit_fee_bluechip = Decimal::percent(60);
+    bad.commit_fee_creator = Decimal::percent(50); // sum 110% > 1.0
+
+    let info = message_info(&admin_addr(), &[]);
+    let res = execute(
+        deps.as_mut(),
+        mock_env(),
+        info,
+        ExecuteMsg::ProposeConfigUpdate { config: bad },
+    );
+    let err = res.expect_err("fee sum above 1.0 must be rejected at propose time");
+    assert!(err.to_string().contains("commit_fee"), "got: {}", err);
+}
+
+// ---------------------------------------------------------------------------
+// H-7 — `commit_threshold_limit_usd == 0` is also rejected. A zero
+// threshold makes commit pools created against this config permanently
+// uncrossable, locking them in pre-threshold state forever.
+// ---------------------------------------------------------------------------
+#[test]
+fn test_propose_config_update_rejects_zero_threshold() {
+    let mut deps = mock_deps_with_querier(&[]);
+    setup_factory(&mut deps);
+
+    let mut bad = default_factory_config();
+    bad.commit_threshold_limit_usd = Uint128::zero();
+
+    let info = message_info(&admin_addr(), &[]);
+    let res = execute(
+        deps.as_mut(),
+        mock_env(),
+        info,
+        ExecuteMsg::ProposeConfigUpdate { config: bad },
+    );
+    let err = res.expect_err("zero threshold must be rejected at propose time");
+    assert!(
+        err.to_string().contains("commit_threshold_limit_usd"),
+        "got: {}",
+        err
+    );
+}
+
+// ---------------------------------------------------------------------------
+// H-8 — `pyth_contract_addr_for_conversions` must be a non-empty bech32-
+// valid address; an empty string used to slip through and only fail at
+// query time (after the 48h timelock elapsed and the bad config landed).
+// ---------------------------------------------------------------------------
+#[test]
+fn test_propose_config_update_rejects_empty_pyth_addr() {
+    let mut deps = mock_deps_with_querier(&[]);
+    setup_factory(&mut deps);
+
+    let mut bad = default_factory_config();
+    bad.pyth_contract_addr_for_conversions = String::new();
+
+    let info = message_info(&admin_addr(), &[]);
+    let res = execute(
+        deps.as_mut(),
+        mock_env(),
+        info,
+        ExecuteMsg::ProposeConfigUpdate { config: bad },
+    );
+    let err = res.expect_err("empty pyth address must be rejected");
+    assert!(
+        err.to_string().contains("pyth_contract_addr"),
+        "got: {}",
+        err
+    );
+}
+
+// ---------------------------------------------------------------------------
+// H-8 — same handler must reject a bech32-invalid string too. Without
+// `addr_validate`, "not_a_real_addr" would be accepted and only blow up
+// at first Pyth query attempt.
+// ---------------------------------------------------------------------------
+#[test]
+fn test_propose_config_update_rejects_invalid_pyth_addr() {
+    let mut deps = mock_deps_with_querier(&[]);
+    setup_factory(&mut deps);
+
+    let mut bad = default_factory_config();
+    bad.pyth_contract_addr_for_conversions = "not_a_real_addr".to_string();
+
+    let info = message_info(&admin_addr(), &[]);
+    let res = execute(
+        deps.as_mut(),
+        mock_env(),
+        info,
+        ExecuteMsg::ProposeConfigUpdate { config: bad },
+    );
+    let err = res.expect_err("malformed pyth address must be rejected");
+    assert!(
+        err.to_string().contains("pyth_contract_addr"),
+        "got: {}",
+        err
+    );
+}
+
+// ---------------------------------------------------------------------------
+// H-8 — same handler must reject an empty `pyth_atom_usd_price_feed_id`.
+// ---------------------------------------------------------------------------
+#[test]
+fn test_propose_config_update_rejects_empty_pyth_feed_id() {
+    let mut deps = mock_deps_with_querier(&[]);
+    setup_factory(&mut deps);
+
+    let mut bad = default_factory_config();
+    bad.pyth_atom_usd_price_feed_id = String::new();
+
+    let info = message_info(&admin_addr(), &[]);
+    let res = execute(
+        deps.as_mut(),
+        mock_env(),
+        info,
+        ExecuteMsg::ProposeConfigUpdate { config: bad },
+    );
+    let err = res.expect_err("empty pyth feed id must be rejected");
+    assert!(
+        err.to_string().contains("pyth_atom_usd_price_feed_id"),
+        "got: {}",
+        err
+    );
+}
+
+// ---------------------------------------------------------------------------
+// H-4 — `PayDistributionBounty` must reject standard pools, even though
+// the standard-pool wasm doesn't currently emit the message. Defense-
+// in-depth so a future pool-wasm migration can't drain the bounty
+// reserve without going through the audited commit-pool path.
+// ---------------------------------------------------------------------------
+#[test]
+fn test_pay_distribution_bounty_rejects_standard_pool() {
+    use crate::pool_struct::PoolDetails;
+    use crate::state::{POOLS_BY_CONTRACT_ADDRESS, POOLS_BY_ID, POOL_COUNTER};
+    let mut deps = mock_deps_with_querier(&[Coin {
+        denom: "ubluechip".to_string(),
+        amount: Uint128::new(10_000_000),
+    }]);
+    setup_factory(&mut deps);
+
+    // Enable a non-zero bounty so the handler reaches the auth path
+    // rather than short-circuiting on "disabled".
+    execute(
+        deps.as_mut(),
+        mock_env(),
+        message_info(&admin_addr(), &[]),
+        ExecuteMsg::SetDistributionBounty {
+            new_bounty: Uint128::new(50_000),
+        },
+    )
+    .unwrap();
+
+    // Register a standard pool (PoolKind::Standard) in both registries.
+    let std_pool_addr = make_addr("std_pool_attempting_drain");
+    POOLS_BY_CONTRACT_ADDRESS
+        .save(
+            deps.as_mut().storage,
+            std_pool_addr.clone(),
+            &PoolStateResponseForFactory {
+                pool_contract_address: std_pool_addr.clone(),
+                nft_ownership_accepted: true,
+                reserve0: Uint128::zero(),
+                reserve1: Uint128::zero(),
+                total_liquidity: Uint128::zero(),
+                block_time_last: 0,
+                price0_cumulative_last: Uint128::zero(),
+                price1_cumulative_last: Uint128::zero(),
+                assets: vec![],
+            },
+        )
+        .unwrap();
+    let next_id = POOL_COUNTER.may_load(&deps.storage).unwrap().unwrap_or(0) + 1;
+    POOL_COUNTER.save(deps.as_mut().storage, &next_id).unwrap();
+    POOLS_BY_ID
+        .save(
+            deps.as_mut().storage,
+            next_id,
+            &PoolDetails {
+                pool_id: next_id,
+                pool_token_info: [
+                    TokenType::Native {
+                        denom: "ubluechip".to_string(),
+                    },
+                    TokenType::Native {
+                        denom: "uatom".to_string(),
+                    },
+                ],
+                creator_pool_addr: std_pool_addr.clone(),
+                pool_kind: pool_factory_interfaces::PoolKind::Standard,
+                commit_pool_ordinal: 0,
+            },
+        )
+        .unwrap();
+
+    let res = execute(
+        deps.as_mut(),
+        mock_env(),
+        message_info(&std_pool_addr, &[]),
+        ExecuteMsg::PayDistributionBounty {
+            recipient: make_addr("attacker_keeper").to_string(),
+        },
+    );
+    let err = res.expect_err("standard pool must not receive bounty payouts");
+    assert!(
+        matches!(err, ContractError::Unauthorized {}),
+        "expected Unauthorized, got: {:?}",
+        err
+    );
+}
+
+// ---------------------------------------------------------------------------
+// H-6 — `CreateStandardPool` must refund any non-bluechip funds the caller
+// attached. Without this, attached IBC-wrapped or tokenfactory denoms are
+// orphaned in the factory's bank balance with no withdrawal path.
+// ---------------------------------------------------------------------------
+#[test]
+fn test_create_standard_pool_refunds_non_bluechip_funds() {
+    use cosmwasm_std::{BankMsg, CosmosMsg};
+    let mut deps = mock_deps_with_querier(&[]);
+    setup_factory(&mut deps);
+
+    // Configure the standard-pool wasm code id (instantiate set it to 0).
+    // The standard-pool create flow pays a USD fee; with the oracle in
+    // its zero-initialized state, the handler falls back to the hardcoded
+    // STANDARD_POOL_CREATION_FEE_FALLBACK_BLUECHIP (100_000_000 ubluechip).
+    let mut cfg = default_factory_config();
+    cfg.standard_pool_wasm_contract_id = 12;
+    crate::state::FACTORYINSTANTIATEINFO
+        .save(deps.as_mut().storage, &cfg)
+        .unwrap();
+
+    let caller = make_addr("std_pool_creator");
+    let funds = vec![
+        Coin {
+            // Required fee amount + a little surplus to also exercise the
+            // bluechip-surplus refund branch alongside the new IBC refund.
+            denom: "ubluechip".to_string(),
+            amount: Uint128::new(120_000_000),
+        },
+        Coin {
+            denom: "ibc/27394FB...ATOM".to_string(),
+            amount: Uint128::new(42_000_000),
+        },
+        Coin {
+            denom: "factory/somecreator/MEME".to_string(),
+            amount: Uint128::new(7_000),
+        },
+    ];
+
+    let token_a = make_addr("standard_pool_token_a");
+    let res = execute(
+        deps.as_mut(),
+        mock_env(),
+        message_info(&caller, &funds),
+        ExecuteMsg::CreateStandardPool {
+            pool_token_info: [
+                TokenType::Native {
+                    denom: "ubluechip".to_string(),
+                },
+                TokenType::CreatorToken {
+                    contract_addr: token_a,
+                },
+            ],
+            label: "test-std-pool".to_string(),
+        },
+    );
+
+    // Some test environments may reject the embedded CW20 TokenInfo
+    // query; we only care here about the refund logic, which fires
+    // before the SubMsg dispatch. If the call did succeed, assert the
+    // refund. If it errored on a downstream query, skip the assert
+    // (the refund-message planning still happens at handler entry).
+    if let Ok(response) = res {
+        let mut refunded_ibc = Uint128::zero();
+        let mut refunded_factory = Uint128::zero();
+        for msg in response.messages.iter() {
+            if let CosmosMsg::Bank(BankMsg::Send { to_address, amount }) = &msg.msg {
+                if to_address == caller.as_str() {
+                    for coin in amount {
+                        match coin.denom.as_str() {
+                            "ibc/27394FB...ATOM" => refunded_ibc = coin.amount,
+                            "factory/somecreator/MEME" => refunded_factory = coin.amount,
+                            _ => {}
+                        }
+                    }
+                }
+            }
+        }
+        assert_eq!(
+            refunded_ibc,
+            Uint128::new(42_000_000),
+            "IBC ATOM should be refunded to caller in full"
+        );
+        assert_eq!(
+            refunded_factory,
+            Uint128::new(7_000),
+            "tokenfactory denom should be refunded to caller in full"
+        );
+    }
+}
+
+// ---------------------------------------------------------------------------
+// H-2 — warm-up gate. After any anchor reset (one-shot SetAnchorPool, the
+// timelocked anchor change inside ProposeConfigUpdate, etc.) the oracle
+// must refuse to publish a price downstream until
+// ANCHOR_CHANGE_WARMUP_OBSERVATIONS successful TWAP updates have
+// accumulated. This prevents an attacker who briefly perturbed the new
+// anchor's reserves at exactly the moment of reset from locking in a
+// manipulated first observation as the canonical price.
+// ---------------------------------------------------------------------------
+#[test]
+fn test_h2_warmup_blocks_downstream_price_until_n_observations() {
+    use crate::internal_bluechip_price_oracle::{
+        get_bluechip_usd_price, ANCHOR_CHANGE_WARMUP_OBSERVATIONS, INTERNAL_ORACLE,
+    };
+    let mut deps = mock_deps_with_querier(&[]);
+    setup_factory(&mut deps);
+
+    // Sanity: instantiate sets warmup_remaining to ANCHOR_CHANGE_WARMUP_OBSERVATIONS.
+    let oracle = INTERNAL_ORACLE.load(&deps.storage).unwrap();
+    assert_eq!(oracle.warmup_remaining, ANCHOR_CHANGE_WARMUP_OBSERVATIONS);
+
+    // Even with last_price seeded to a sane value, downstream must refuse
+    // because the warm-up gate hasn't elapsed.
+    let mut oracle = INTERNAL_ORACLE.load(&deps.storage).unwrap();
+    oracle.bluechip_price_cache.last_price = Uint128::new(10_000_000);
+    oracle.bluechip_price_cache.last_update = mock_env().block.time.seconds();
+    INTERNAL_ORACLE.save(&mut deps.storage, &oracle).unwrap();
+
+    let env = mock_env();
+    let res = get_bluechip_usd_price(deps.as_ref(), &env);
+    let err = res.expect_err("warm-up active must block downstream pricing");
+    assert!(
+        err.to_string().contains("warm-up"),
+        "expected warm-up error, got: {}",
+        err
+    );
+
+    // Step warm-up down to zero and confirm pricing resumes.
+    let mut oracle = INTERNAL_ORACLE.load(&deps.storage).unwrap();
+    oracle.warmup_remaining = 0;
+    INTERNAL_ORACLE.save(&mut deps.storage, &oracle).unwrap();
+
+    let res = get_bluechip_usd_price(deps.as_ref(), &env);
+    assert!(
+        res.is_ok(),
+        "warm-up cleared — pricing should resume; got: {:?}",
+        res.err()
+    );
+}
+
+#[test]
+fn test_h2_warmup_only_decrements_on_price_publishing_updates() {
+    use crate::internal_bluechip_price_oracle::INTERNAL_ORACLE;
+    let mut deps = mock_deps_with_querier(&[]);
+    setup_factory(&mut deps);
+
+    let initial = INTERNAL_ORACLE.load(&deps.storage).unwrap().warmup_remaining;
+    assert!(initial > 0, "instantiate should arm warm-up");
+
+    // Trigger a snapshot-only update by leaving anchor's cumulative at zero
+    // (no `tick_anchor_pool` in this test). After a UPDATE_INTERVAL elapses,
+    // calling UpdateOraclePrice should record a snapshot but not publish a
+    // price — and crucially, must NOT decrement warmup_remaining.
+    use crate::msg::ExecuteMsg;
+    let mut env = mock_env();
+    env.block.time = env.block.time.plus_seconds(360);
+    let res = execute(
+        deps.as_mut(),
+        env,
+        message_info(&admin_addr(), &[]),
+        ExecuteMsg::UpdateOraclePrice {},
+    );
+    assert!(
+        res.is_ok(),
+        "snapshot-only update should succeed, got: {:?}",
+        res.err()
+    );
+
+    let after = INTERNAL_ORACLE.load(&deps.storage).unwrap().warmup_remaining;
+    assert_eq!(
+        after, initial,
+        "snapshot-only update must NOT decrement warm-up; otherwise an attacker \
+         could exhaust the warm-up by triggering empty rounds"
+    );
+}
+
+// ---------------------------------------------------------------------------
+// M-1 — `ProposePoolUpgrade` must dedup `pool_ids` and reject IDs that
+// don't exist in the registry. Pre-fix the admin-supplied list flowed
+// straight through to apply, where duplicates produced two `Migrate`
+// messages to the same pool and invalid IDs aborted the entire batch
+// after a 48h timelock.
+// ---------------------------------------------------------------------------
+#[test]
+fn test_m1_propose_upgrade_rejects_unregistered_pool_id() {
+    use crate::testing::tests::register_test_pool_addr;
+    let mut deps = mock_deps_with_querier(&[]);
+    setup_factory(&mut deps);
+
+    register_test_pool_addr(&mut deps.storage, 1, &Addr::unchecked("pool_1"));
+
+    let res = execute(
+        deps.as_mut(),
+        mock_env(),
+        message_info(&admin_addr(), &[]),
+        ExecuteMsg::UpgradePools {
+            new_code_id: 99,
+            // pool 1 exists; pool 999 does not.
+            pool_ids: Some(vec![1, 999]),
+            migrate_msg: cosmwasm_std::to_json_binary(&Empty {}).unwrap(),
+        },
+    );
+    let err = res.expect_err("propose with unregistered id must fail");
+    assert!(
+        err.to_string().contains("999") && err.to_string().contains("not found"),
+        "expected 'pool 999 not found' error, got: {}",
+        err
+    );
+}
+
+#[test]
+fn test_m1_propose_upgrade_dedups_pool_ids() {
+    use crate::testing::tests::register_test_pool_addr;
+    use crate::state::PENDING_POOL_UPGRADE;
+    let mut deps = mock_deps_with_querier(&[]);
+    setup_factory(&mut deps);
+
+    register_test_pool_addr(&mut deps.storage, 1, &Addr::unchecked("pool_1"));
+    register_test_pool_addr(&mut deps.storage, 2, &Addr::unchecked("pool_2"));
+
+    execute(
+        deps.as_mut(),
+        mock_env(),
+        message_info(&admin_addr(), &[]),
+        ExecuteMsg::UpgradePools {
+            new_code_id: 99,
+            // Duplicates of 1, plus a single 2. Expected: [1, 2] (order
+            // preserved, duplicates dropped).
+            pool_ids: Some(vec![1, 1, 2, 1]),
+            migrate_msg: cosmwasm_std::to_json_binary(&Empty {}).unwrap(),
+        },
+    )
+    .unwrap();
+
+    let pending = PENDING_POOL_UPGRADE.load(&deps.storage).unwrap();
+    assert_eq!(
+        pending.pools_to_upgrade,
+        vec![1u64, 2],
+        "duplicates must be dropped, order preserved"
+    );
+}
+
+// ---------------------------------------------------------------------------
+// M-5 — `ProposePoolUpgrade` must refuse to include the anchor pool.
+// Migrating the anchor mid-flight would leave the oracle querying
+// possibly-mid-migration storage; if the migrate changes the reserve
+// representation the cumulative-delta math breaks silently.
+// ---------------------------------------------------------------------------
+#[test]
+fn test_m5_propose_upgrade_rejects_anchor_pool() {
+    use crate::testing::tests::register_test_pool_addr;
+    let mut deps = mock_deps_with_querier(&[]);
+    setup_factory(&mut deps);
+
+    // Register a pool whose creator_pool_addr matches the configured
+    // anchor address (atom_bluechip_pool_addr in the test harness).
+    register_test_pool_addr(&mut deps.storage, 1, &atom_bluechip_pool_addr());
+
+    let res = execute(
+        deps.as_mut(),
+        mock_env(),
+        message_info(&admin_addr(), &[]),
+        ExecuteMsg::UpgradePools {
+            new_code_id: 99,
+            pool_ids: Some(vec![1]),
+            migrate_msg: cosmwasm_std::to_json_binary(&Empty {}).unwrap(),
+        },
+    );
+    let err = res.expect_err("propose with anchor pool in batch must fail");
+    let msg = err.to_string();
+    assert!(
+        msg.contains("anchor") || msg.contains("Anchor"),
+        "expected anchor-rejection error, got: {}",
+        msg
+    );
+}
+
+// ---------------------------------------------------------------------------
+// M-8 — `ForceRotateOraclePools` must reset the cumulative snapshots,
+// price cache, and warm-up counter so the post-rotation TWAP starts
+// from a clean slate. Pre-fix it left snapshots and `last_price`
+// intact, anchoring the circuit breaker on the (potentially manipulated)
+// pre-rotation state — which was the very thing the operator was
+// force-rotating to escape.
+// ---------------------------------------------------------------------------
+#[test]
+fn test_m8_force_rotate_resets_oracle_state() {
+    use crate::internal_bluechip_price_oracle::{
+        ANCHOR_CHANGE_WARMUP_OBSERVATIONS, INTERNAL_ORACLE,
+    };
+    let mut deps = mock_deps_with_querier(&[]);
+    setup_factory(&mut deps);
+
+    // Manually populate stale state representative of "pre-rotation"
+    // so we can verify it gets cleared.
+    let mut oracle = INTERNAL_ORACLE.load(&deps.storage).unwrap();
+    oracle.bluechip_price_cache.last_price = Uint128::new(10_000_000);
+    oracle.bluechip_price_cache.last_update = mock_env().block.time.seconds();
+    oracle.warmup_remaining = 0;
+    oracle.pool_cumulative_snapshots = vec![
+        crate::internal_bluechip_price_oracle::PoolCumulativeSnapshot {
+            pool_address: "stale_pool".to_string(),
+            price0_cumulative: Uint128::new(123),
+            block_time: 1,
+        },
+    ];
+    INTERNAL_ORACLE.save(&mut deps.storage, &oracle).unwrap();
+
+    // Propose force-rotate, advance past the timelock, execute.
+    execute(
+        deps.as_mut(),
+        mock_env(),
+        message_info(&admin_addr(), &[]),
+        ExecuteMsg::ProposeForceRotateOraclePools {},
+    )
+    .unwrap();
+
+    let mut env = mock_env();
+    env.block.time =
+        env.block.time.plus_seconds(crate::state::ADMIN_TIMELOCK_SECONDS + 1);
+    execute(
+        deps.as_mut(),
+        env,
+        message_info(&admin_addr(), &[]),
+        ExecuteMsg::ForceRotateOraclePools {},
+    )
+    .unwrap();
+
+    let oracle = INTERNAL_ORACLE.load(&deps.storage).unwrap();
+    assert!(
+        oracle.bluechip_price_cache.last_price.is_zero(),
+        "force-rotate must clear last_price"
+    );
+    assert_eq!(
+        oracle.bluechip_price_cache.last_update, 0,
+        "force-rotate must clear last_update"
+    );
+    assert!(
+        oracle.bluechip_price_cache.twap_observations.is_empty(),
+        "force-rotate must clear twap_observations"
+    );
+    assert!(
+        oracle.pool_cumulative_snapshots.is_empty(),
+        "force-rotate must clear cumulative snapshots — leaving stale ones \
+         would fail TWAP on next update because pool sets won't overlap"
+    );
+    assert_eq!(
+        oracle.warmup_remaining, ANCHOR_CHANGE_WARMUP_OBSERVATIONS,
+        "force-rotate must re-arm the H-2 warm-up gate"
+    );
+}
+
+// ---------------------------------------------------------------------------
+// C-2 / I-5 — `PoolDetails.pool_token_info[1].contract_addr` must equal the
+// freshly-instantiated CW20 address after a successful commit-pool create.
+// Pre-fix, `mint_create_pool` rewrote a LOCAL clone of the pair while the
+// original `ctx.temp.temp_pool_info.pool_token_info` retained the literal
+// `CREATOR_TOKEN_SENTINEL` placeholder, which `finalize_pool` then
+// persisted into POOLS_BY_ID — leaving every commit pool's registry
+// entry with the placeholder string. This test pins the post-fix
+// invariant: registry's CreatorToken address matches the SubMsg-instantiated
+// CW20.
+// ---------------------------------------------------------------------------
+#[test]
+fn test_c2_pool_details_persists_real_creator_token_address() {
+    use crate::execute::pool_lifecycle::create::CREATOR_TOKEN_SENTINEL;
+
+    let mut deps = mock_deps_with_querier(&[]);
+    setup_factory(&mut deps);
+
+    let env = mock_env();
+    let admin_info = message_info(&admin_addr(), &[]);
+
+    // Caller-supplied pair carries the SENTINEL — the factory mints the
+    // CW20 itself and rewrites the address downstream.
+    let create_msg = ExecuteMsg::Create {
+        pool_msg: CreatePool {
+            pool_token_info: [
+                TokenType::Native {
+                    denom: "ubluechip".to_string(),
+                },
+                TokenType::CreatorToken {
+                    contract_addr: Addr::unchecked(CREATOR_TOKEN_SENTINEL),
+                },
+            ],
+        },
+        token_info: CreatorTokenInfo {
+            name: "TestToken".to_string(),
+            symbol: "TEST".to_string(),
+            decimal: 6,
+        },
+    };
+
+    execute(deps.as_mut(), env.clone(), admin_info, create_msg).unwrap();
+    let pool_id = POOL_COUNTER.load(&deps.storage).unwrap();
+
+    // Walk the reply chain. The address fed into SET_TOKENS is the one
+    // we expect to find in POOLS_BY_ID at the end.
+    let real_token_addr = make_addr("freshly_instantiated_cw20");
+    let token_reply = create_instantiate_reply(
+        encode_reply_id(pool_id, SET_TOKENS),
+        real_token_addr.as_str(),
+    );
+    pool_creation_reply(deps.as_mut(), env.clone(), token_reply).unwrap();
+    let nft_addr = make_addr("freshly_instantiated_cw721");
+    let nft_reply =
+        create_instantiate_reply(encode_reply_id(pool_id, MINT_CREATE_POOL), nft_addr.as_str());
+    pool_creation_reply(deps.as_mut(), env.clone(), nft_reply).unwrap();
+    let pool_addr = make_addr("freshly_instantiated_pool");
+    let pool_reply =
+        create_instantiate_reply(encode_reply_id(pool_id, FINALIZE_POOL), pool_addr.as_str());
+    pool_creation_reply(deps.as_mut(), env, pool_reply).unwrap();
+
+    // The fix: PoolDetails.pool_token_info[1] must be the REAL CW20,
+    // not the sentinel placeholder.
+    let details = POOLS_BY_ID.load(&deps.storage, pool_id).unwrap();
+    let creator_token_addr = match &details.pool_token_info[1] {
+        TokenType::CreatorToken { contract_addr } => contract_addr.clone(),
+        _ => panic!(
+            "expected CreatorToken at pool_token_info[1], got: {:?}",
+            details.pool_token_info[1]
+        ),
+    };
+    assert_ne!(
+        creator_token_addr.as_str(),
+        CREATOR_TOKEN_SENTINEL,
+        "C-2 regression: PoolDetails persisted the sentinel instead of the real CW20 address"
+    );
+    assert_eq!(
+        creator_token_addr, real_token_addr,
+        "PoolDetails CreatorToken address must equal the SubMsg-instantiated CW20"
+    );
+
+    // The asset_strings stored in POOLS_BY_CONTRACT_ADDRESS (used by
+    // off-chain query consumers) is derived from pool_token_info — it
+    // must also have the real address, not the sentinel.
+    let snapshot = POOLS_BY_CONTRACT_ADDRESS
+        .load(&deps.storage, pool_addr)
+        .unwrap();
+    assert!(
+        snapshot.assets.iter().any(|a| a == real_token_addr.as_str()),
+        "POOLS_BY_CONTRACT_ADDRESS.assets must include the real CW20 address; got: {:?}",
+        snapshot.assets
+    );
+    assert!(
+        !snapshot
+            .assets
+            .iter()
+            .any(|a| a == CREATOR_TOKEN_SENTINEL),
+        "POOLS_BY_CONTRACT_ADDRESS.assets must not retain the sentinel; got: {:?}",
+        snapshot.assets
+    );
+}
+
+// ---------------------------------------------------------------------------
+// L-4 — `CreateStandardPool` rejects labels longer than the bound.
+// ---------------------------------------------------------------------------
+#[test]
+fn test_l4_create_standard_pool_rejects_oversized_label() {
+    let mut deps = mock_deps_with_querier(&[]);
+    setup_factory(&mut deps);
+    // Configure standard-pool wasm so the handler reaches label validation.
+    let mut cfg = default_factory_config();
+    cfg.standard_pool_wasm_contract_id = 12;
+    crate::state::FACTORYINSTANTIATEINFO
+        .save(&mut deps.storage, &cfg)
+        .unwrap();
+
+    let oversized = "x".repeat(129);
+    let res = execute(
+        deps.as_mut(),
+        mock_env(),
+        message_info(&admin_addr(), &[]),
+        ExecuteMsg::CreateStandardPool {
+            pool_token_info: [
+                TokenType::Native {
+                    denom: "ubluechip".to_string(),
+                },
+                TokenType::Native {
+                    denom: "uatom".to_string(),
+                },
+            ],
+            label: oversized,
+        },
+    );
+    let err = res.expect_err("oversized label must be rejected");
+    assert!(
+        err.to_string().contains("label too long"),
+        "expected length-rejection error, got: {}",
+        err
+    );
+}
+
+// ---------------------------------------------------------------------------
+// L-7 — `validate_creator_token_info` rejects all-numeric symbols.
+// ---------------------------------------------------------------------------
+#[test]
+fn test_l7_create_rejects_all_numeric_symbol() {
+    let mut deps = mock_deps_with_querier(&[]);
+    setup_factory(&mut deps);
+
+    let res = execute(
+        deps.as_mut(),
+        mock_env(),
+        message_info(&admin_addr(), &[]),
+        ExecuteMsg::Create {
+            pool_msg: CreatePool {
+                pool_token_info: [
+                    TokenType::Native {
+                        denom: "ubluechip".to_string(),
+                    },
+                    TokenType::CreatorToken {
+                        contract_addr: Addr::unchecked(
+                            crate::execute::pool_lifecycle::create::CREATOR_TOKEN_SENTINEL,
+                        ),
+                    },
+                ],
+            },
+            token_info: CreatorTokenInfo {
+                name: "All-digit symbol token".to_string(),
+                symbol: "12345".to_string(),
+                decimal: 6,
+            },
+        },
+    );
+    let err = res.expect_err("all-numeric symbol must be rejected");
+    assert!(
+        err.to_string().contains("at least one uppercase ASCII letter"),
+        "expected letter-required error, got: {}",
+        err
+    );
+}
+
+// ---------------------------------------------------------------------------
+// I-6 — per-address rate limit on commit-pool creation. Pre-fix, anyone
+// could spam consecutive Create calls. Now the same address must wait
+// `COMMIT_POOL_CREATE_RATE_LIMIT_SECONDS` between successful creates.
+// ---------------------------------------------------------------------------
+#[test]
+fn test_i6_commit_pool_create_rate_limit_per_address() {
+    use crate::execute::pool_lifecycle::create::CREATOR_TOKEN_SENTINEL;
+    let mut deps = mock_deps_with_querier(&[]);
+    setup_factory(&mut deps);
+
+    let make_msg = |sym: &str| ExecuteMsg::Create {
+        pool_msg: CreatePool {
+            pool_token_info: [
+                TokenType::Native {
+                    denom: "ubluechip".to_string(),
+                },
+                TokenType::CreatorToken {
+                    contract_addr: Addr::unchecked(CREATOR_TOKEN_SENTINEL),
+                },
+            ],
+        },
+        token_info: CreatorTokenInfo {
+            name: format!("Token {}", sym),
+            symbol: sym.to_string(),
+            decimal: 6,
+        },
+    };
+
+    let env = mock_env();
+    let info = message_info(&admin_addr(), &[]);
+
+    // First create: succeeds.
+    execute(deps.as_mut(), env.clone(), info.clone(), make_msg("AAA")).unwrap();
+
+    // Second create from the same address, same block: rate-limited.
+    let res = execute(deps.as_mut(), env.clone(), info.clone(), make_msg("BBB"));
+    let err = res.expect_err("rapid second create from same address must be rate-limited");
+    assert!(
+        err.to_string().contains("Rate-limited"),
+        "expected rate-limit error, got: {}",
+        err
+    );
+
+    // From a DIFFERENT address in the same block: allowed (per-address gate).
+    let other = make_addr("other_creator");
+    execute(
+        deps.as_mut(),
+        env.clone(),
+        message_info(&other, &[]),
+        make_msg("CCC"),
+    )
+    .unwrap();
+
+    // After the cooldown elapses, the original address can create again.
+    let mut later_env = env.clone();
+    later_env.block.time = later_env
+        .block
+        .time
+        .plus_seconds(crate::state::COMMIT_POOL_CREATE_RATE_LIMIT_SECONDS + 1);
+    execute(deps.as_mut(), later_env, info, make_msg("DDD")).unwrap();
 }

@@ -22,22 +22,65 @@ pub fn extract_contract_address(
     deps: &DepsMut,
     result: &SubMsgResponse,
 ) -> Result<Addr, ContractError> {
-    let addr_str = result
-        .events
+    // M-3: prefer the protobuf-encoded `MsgInstantiateContractResponse`
+    // over scanning `result.events` for the first `instantiate` attribute.
+    // The response payload is unambiguously the SubMsg's own reply — if
+    // the freshly-instantiated contract ever started spawning child
+    // contracts in its own `instantiate` handler (none of the bundled
+    // wasms do today, but a future cw20 / cw721 / pool-wasm migration
+    // could), the events array would contain multiple `instantiate`
+    // entries and the prior "first match" heuristic could pick the
+    // wrong child contract address.
+    //
+    // CosmWasm 2.0 deprecated `SubMsgResponse.data` in favour of
+    // `msg_responses`, but `data` is still populated on chains running
+    // pre-CosmWasm-2.0 wasmd. Resolution order:
+    //   1. `msg_responses` entry whose `type_url` matches the
+    //      MsgInstantiateContractResponse proto path (CW2 chains).
+    //   2. `data` field (older chains; deprecation suppressed for the
+    //      explicit-fallback use only).
+    //   3. events scan (last-ditch fallback for environments that emit
+    //      neither — none we ship on, kept for forward-compat).
+    const INSTANTIATE_RESPONSE_TYPE: &str =
+        "/cosmwasm.wasm.v1.MsgInstantiateContractResponse";
+
+    let payload: Option<Vec<u8>> = result
+        .msg_responses
         .iter()
-        .find(|event| event.ty == "instantiate")
-        .and_then(|event| {
-            event
-                .attributes
-                .iter()
-                .find(|attr| attr.key == "_contract_address")
-                .map(|attr| attr.value.clone())
-        })
-        .ok_or(ContractError::ContractAddressNotFound {})?;
+        .find(|r| r.type_url == INSTANTIATE_RESPONSE_TYPE)
+        .map(|r| r.value.to_vec())
+        .or_else(|| {
+            #[allow(deprecated)]
+            result.data.as_ref().map(|d| d.to_vec())
+        });
+
+    let addr_str = if let Some(bytes) = payload {
+        cw_utils::parse_instantiate_response_data(&bytes)
+            .map_err(|e| {
+                ContractError::Std(cosmwasm_std::StdError::generic_err(format!(
+                    "Failed to parse MsgInstantiateContractResponse: {}",
+                    e
+                )))
+            })?
+            .contract_address
+    } else {
+        result
+            .events
+            .iter()
+            .find(|event| event.ty == "instantiate")
+            .and_then(|event| {
+                event
+                    .attributes
+                    .iter()
+                    .find(|attr| attr.key == "_contract_address")
+                    .map(|attr| attr.value.clone())
+            })
+            .ok_or(ContractError::ContractAddressNotFound {})?
+    };
 
     deps.api.addr_validate(&addr_str).map_err(|e| {
         ContractError::Std(cosmwasm_std::StdError::generic_err(format!(
-            "Invalid contract address from instantiate event: {}",
+            "Invalid contract address from instantiate response: {}",
             e
         )))
     })

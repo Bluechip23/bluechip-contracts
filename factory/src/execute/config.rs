@@ -41,6 +41,62 @@ pub(crate) fn validate_factory_config(
     if let Some(ref mint_addr) = config.bluechip_mint_contract_address {
         deps.api.addr_validate(mint_addr.as_str())?;
     }
+
+    // Validate the Pyth contract address — it's stored as `String` rather
+    // than `Addr`, so without this check an empty string or bech32-invalid
+    // string would only surface deep inside `query_pyth_atom_usd_price`
+    // (after a 48h timelock has already lapsed). Worse, an attacker-
+    // controlled but bech32-valid address would silently be accepted as
+    // the price feed; we can't prevent admin compromise but we can at
+    // least reject malformed inputs at propose time.
+    if config.pyth_contract_addr_for_conversions.trim().is_empty() {
+        return Err(ContractError::Std(StdError::generic_err(
+            "pyth_contract_addr_for_conversions must be non-empty",
+        )));
+    }
+    deps.api
+        .addr_validate(config.pyth_contract_addr_for_conversions.as_str())
+        .map_err(|e| {
+            ContractError::Std(StdError::generic_err(format!(
+                "pyth_contract_addr_for_conversions is not a valid address: {}",
+                e
+            )))
+        })?;
+    if config.pyth_atom_usd_price_feed_id.trim().is_empty() {
+        return Err(ContractError::Std(StdError::generic_err(
+            "pyth_atom_usd_price_feed_id must be non-empty",
+        )));
+    }
+
+    // Commit fees split bluechip + creator out of every commit. Their sum
+    // must not exceed 100% — anything more would either underflow at
+    // payout time or cause the pool's instantiate to reject (`InvalidFee`),
+    // bricking new pool creation until another full 48h timelock cycle to
+    // fix. Pool's instantiate enforces the same invariant; checking here
+    // as well surfaces the misconfig at propose time.
+    let fee_sum = config
+        .commit_fee_bluechip
+        .checked_add(config.commit_fee_creator)
+        .map_err(|_| {
+            ContractError::Std(StdError::generic_err("commit fee sum overflow"))
+        })?;
+    if fee_sum > cosmwasm_std::Decimal::one() {
+        return Err(ContractError::Std(StdError::generic_err(format!(
+            "commit_fee_bluechip + commit_fee_creator must be <= 1.0; got {}",
+            fee_sum
+        ))));
+    }
+
+    // A zero USD threshold would make the pool's commit threshold
+    // uncrossable — every commit-pool created against this config would
+    // permanently sit pre-threshold, never minting, never opening swaps.
+    // Reject explicitly rather than letting that misconfig ride through
+    // a 48h timelock.
+    if config.commit_threshold_limit_usd.is_zero() {
+        return Err(ContractError::Std(StdError::generic_err(
+            "commit_threshold_limit_usd must be non-zero",
+        )));
+    }
     if config.bluechip_denom.trim().is_empty() {
         return Err(ContractError::Std(StdError::generic_err(
             "bluechip_denom must be non-empty",
@@ -166,6 +222,21 @@ pub fn execute_propose_factory_config_update(
     config: FactoryInstantiate,
 ) -> Result<Response, ContractError> {
     ensure_admin(deps.as_ref(), &info)?;
+
+    // Reject when a config proposal is already pending. Without this, a
+    // re-propose silently overwrites the prior pending config and resets
+    // the 48h timelock — a benign-looking change observed by the
+    // community could be swapped for a hostile one minutes before the
+    // window elapses, and watchers polling `PENDING_CONFIG` would just
+    // see "still pending" without any explicit cancellation event.
+    // Mirrors the pool-config / pool-upgrade propose handlers, which
+    // already require an explicit `Cancel` before re-proposing.
+    if PENDING_CONFIG.may_load(deps.storage)?.is_some() {
+        return Err(ContractError::Std(StdError::generic_err(
+            "A factory config update is already pending. Cancel it first via CancelConfigUpdate.",
+        )));
+    }
+
     // Validate at propose time so any mistake surfaces 48h earlier than it
     // otherwise would (the existing config keeps flowing until the timelock
     // elapses and the admin calls UpdateConfig, but a malformed proposal

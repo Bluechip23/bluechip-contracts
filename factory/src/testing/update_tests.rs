@@ -49,9 +49,8 @@ fn test_propose_and_execute_update_config() {
     let msg = FactoryInstantiate {
         cw721_nft_contract_id: 58,
         factory_admin_address: the_admin.clone(),
-        commit_amount_for_threshold_bluechip: Uint128::zero(),
         commit_threshold_limit_usd: Uint128::new(100),
-        pyth_contract_addr_for_conversions: "oracle0000".to_string(),
+        pyth_contract_addr_for_conversions: MockApi::default().addr_make("oracle0000").to_string(),
         pyth_atom_usd_price_feed_id: "ORCL".to_string(),
         cw20_token_contract_id: 10,
         create_pool_wasm_contract_id: 11,
@@ -615,9 +614,8 @@ fn setup_factory_custom(deps: &mut OwnedDeps<MockStorage, MockApi, WasmMockQueri
 fn default_factory_instantiate_msg() -> FactoryInstantiate {
     FactoryInstantiate {
         factory_admin_address: admin_addr(),
-        commit_amount_for_threshold_bluechip: Uint128::new(25_000_000_000),
         commit_threshold_limit_usd: Uint128::new(25_000_000_000),
-        pyth_contract_addr_for_conversions: "oracle".to_string(),
+        pyth_contract_addr_for_conversions: MockApi::default().addr_make("oracle").to_string(),
         pyth_atom_usd_price_feed_id: "feed".to_string(),
         cw20_token_contract_id: 10,
         cw721_nft_contract_id: 20,
