@@ -123,7 +123,6 @@ pub fn instantiate(
     let pool_specs = PoolSpecs {
         lp_fee: Decimal::permille(3), // 0.3% LP fee
         min_commit_interval: 13,      // seconds; used by swap rate limit
-        usd_payment_tolerance_bps: 0, // unused for standard pools
     };
 
     // Zero-valued placeholder. Two reasons we save it:

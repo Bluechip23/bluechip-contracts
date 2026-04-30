@@ -27,7 +27,8 @@ pub struct CreatePool {
 pub struct PoolConfigUpdate {
     pub lp_fee: Option<Decimal>,
     pub min_commit_interval: Option<u64>,
-    pub usd_payment_tolerance_bps: Option<u16>,
+    // `usd_payment_tolerance_bps` removed (was admin-tunable but never
+    // read by any execution path). Mirror of `pool_core::msg::PoolConfigUpdate`.
     pub oracle_address: Option<String>,
 }
 

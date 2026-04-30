@@ -325,17 +325,6 @@ pub fn execute_update_config_from_factory(
         attributes.push(("min_commit_interval", "updated"));
     }
 
-    if let Some(tolerance) = update.usd_payment_tolerance_bps {
-        if tolerance > 1000 {
-            return Err(ContractError::Std(StdError::generic_err(
-                "usd_payment_tolerance_bps must not exceed 1000 (10%)",
-            )));
-        }
-        specs.usd_payment_tolerance_bps = tolerance;
-        specs_changed = true;
-        attributes.push(("usd_payment_tolerance_bps", "updated"));
-    }
-
     if specs_changed {
         POOL_SPECS.save(deps.storage, &specs)?;
     }

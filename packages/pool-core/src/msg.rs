@@ -30,7 +30,8 @@ pub struct CommitFeeInfo {
 pub struct PoolConfigUpdate {
     pub lp_fee: Option<Decimal>,
     pub min_commit_interval: Option<u64>,
-    pub usd_payment_tolerance_bps: Option<u16>,
+    // `usd_payment_tolerance_bps` removed — see `PoolSpecs` doc-comment
+    // in `pool-core::state` for rationale.
     pub oracle_address: Option<String>,
 }
 

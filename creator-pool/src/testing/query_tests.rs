@@ -80,7 +80,6 @@ fn setup_pool_with_querier() -> OwnedDeps<MockStorage, MockApi, mock_querier::Wa
     let pool_specs = PoolSpecs {
         lp_fee: Decimal::percent(3) / Uint128::new(10),
         min_commit_interval: 60,
-        usd_payment_tolerance_bps: 100,
     };
     POOL_SPECS.save(&mut deps.storage, &pool_specs).unwrap();
 

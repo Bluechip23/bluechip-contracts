@@ -250,7 +250,6 @@ fn test_update_specific_pool_from_registry() {
     let pool_config = PoolConfigUpdate {
         lp_fee: None,
         min_commit_interval: None,
-        usd_payment_tolerance_bps: None,
         oracle_address: None,
     };
 

@@ -115,7 +115,15 @@ pub struct ExpectedFactory {
 pub struct PoolSpecs {
     pub lp_fee: Decimal,
     pub min_commit_interval: u64,
-    pub usd_payment_tolerance_bps: u16,
+    // `usd_payment_tolerance_bps` removed: it was admin-tunable but never
+    // read by any execution path, leaving operators with the impression
+    // they were configuring a USD-payment slippage knob that had zero
+    // effect on commit valuation. cw_serde tolerates unknown fields on
+    // deserialize, so already-stored PoolSpecs records carrying it
+    // round-trip cleanly into the new shape and the field is dropped on
+    // the next save. If a USD-vs-oracle slippage protection is ever
+    // wanted, wire it up explicitly with a fresh field rather than
+    // resurrecting this stale config.
 }
 
 #[cw_serde]

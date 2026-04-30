@@ -142,9 +142,8 @@ pub fn instantiate(
     };
 
     let pool_specs = PoolSpecs {
-        lp_fee: Decimal::permille(3),   // 0.3% LP fee
-        min_commit_interval: 13,        // seconds
-        usd_payment_tolerance_bps: 100, // 1% tolerance
+        lp_fee: Decimal::permille(3), // 0.3% LP fee
+        min_commit_interval: 13,      // seconds
     };
 
     let commit_config = CommitLimitInfo {

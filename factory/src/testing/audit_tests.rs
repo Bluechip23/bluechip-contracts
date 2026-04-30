@@ -253,7 +253,6 @@ fn test_update_pool_config_sends_message_to_pool() {
     let update = PoolConfigUpdate {
         lp_fee: Some(Decimal::percent(5)),
         min_commit_interval: Some(120),
-        usd_payment_tolerance_bps: None,
         oracle_address: None,
     };
 
@@ -297,7 +296,6 @@ fn test_update_pool_config_unauthorized() {
     let update = PoolConfigUpdate {
         lp_fee: Some(Decimal::percent(5)),
         min_commit_interval: None,
-        usd_payment_tolerance_bps: None,
         oracle_address: None,
     };
 
@@ -322,7 +320,6 @@ fn test_update_pool_config_nonexistent_pool() {
     let update = PoolConfigUpdate {
         lp_fee: None,
         min_commit_interval: None,
-        usd_payment_tolerance_bps: None,
         oracle_address: None,
     };
 
