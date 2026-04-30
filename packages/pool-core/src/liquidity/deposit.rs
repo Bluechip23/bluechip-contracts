@@ -126,6 +126,41 @@ pub(crate) fn prepare_deposit(
 ) -> Result<DepositPrep, ContractError> {
     let pool_info = POOL_INFO.load(deps.storage)?;
 
+    // H-2: reject any attached coin whose denom isn't one of the pool's
+    // configured native sides. Prior to this gate, `collect_deposit_side`
+    // read only the matching denom out of `info.funds` and silently left
+    // any extras (e.g. accidentally-attached gas tokens, IBC denoms,
+    // tokenfactory tokens) in the pool's bank balance — orphaned forever
+    // because no handler emits outgoing transfers in those denoms.
+    //
+    // The valid set is the set of `Native { denom }` entries in the
+    // pool's `asset_infos`. CW20 sides don't accept native funds, so
+    // they don't contribute. For Native/CW20 pools (commit pools, most
+    // standard pools) only one denom is valid; for Native/Native pools
+    // (e.g., the ATOM/bluechip anchor) two denoms are valid.
+    let valid_denoms: Vec<&str> = pool_info
+        .pool_info
+        .asset_infos
+        .iter()
+        .filter_map(|ai| match ai {
+            TokenType::Native { denom } => Some(denom.as_str()),
+            TokenType::CreatorToken { .. } => None,
+        })
+        .collect();
+    if let Some(extra) = info
+        .funds
+        .iter()
+        .find(|c| !valid_denoms.iter().any(|d| *d == c.denom))
+    {
+        return Err(ContractError::Std(StdError::generic_err(format!(
+            "Unexpected funds: denom \"{}\" is not one of this pool's native asset denoms \
+             ({:?}). Attached funds in non-pool denoms would be orphaned in the pool's \
+             bank balance with no withdrawal path. Resubmit attaching only the pool's \
+             configured native denom(s).",
+            extra.denom, valid_denoms
+        ))));
+    }
+
     let (liquidity, actual_amount0, actual_amount1) =
         calc_liquidity_for_deposit(deps, amount0, amount1)?;
 

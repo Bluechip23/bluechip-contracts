@@ -2650,15 +2650,15 @@ fn test_add_liquidity_unpauses_pool() {
     setup_pool_with_reserves(&mut deps, Uint128::new(5000), Uint128::new(5000));
     POOL_PAUSED.save(&mut deps.storage, &true).unwrap();
 
+    // Native side only — token1 is a CW20 and flows via TransferFrom,
+    // not native attached funds. The H-2 reject-extras gate rejects any
+    // attached coin whose denom isn't one of the pool's native sides.
     let result = execute_deposit_liquidity(
         deps.as_mut(),
         mock_env(),
         message_info(
             &Addr::unchecked("provider"),
-            &[
-                Coin::new(50_000u128, "ubluechip"),
-                Coin::new(50_000u128, "token1_contract"),
-            ],
+            &[Coin::new(50_000u128, "ubluechip")],
         ),
         Addr::unchecked("provider"),
         Uint128::new(50_000),
@@ -2694,15 +2694,14 @@ fn test_add_liquidity_doesnt_unpause_if_still_below_threshold() {
     setup_pool_with_reserves(&mut deps, Uint128::new(100), Uint128::new(100));
     POOL_PAUSED.save(&mut deps.storage, &true).unwrap();
 
+    // Native side only — H-2 rejects any attached coin whose denom
+    // isn't one of the pool's native sides; token1 is CW20.
     let result = execute_deposit_liquidity(
         deps.as_mut(),
         mock_env(),
         message_info(
             &Addr::unchecked("provider"),
-            &[
-                Coin::new(500u128, "ubluechip"),
-                Coin::new(500u128, "token1"),
-            ],
+            &[Coin::new(500u128, "ubluechip")],
         ),
         Addr::unchecked("provider"),
         Uint128::new(500),

@@ -969,3 +969,173 @@ fn test_emergency_withdraw_clears_distribution() {
     // Pool should be permanently drained
     assert!(EMERGENCY_DRAINED.load(&deps.storage).unwrap());
 }
+
+// ---------------------------------------------------------------------------
+// H-1 — `Commit` must reject multi-denom funds via `must_pay`. Pre-fix,
+// attaching `[ubluechip: amount, ibc/...: Y]` would let the bluechip-side
+// equality check pass while the IBC side was silently absorbed into the
+// pool's bank balance with no withdrawal path. This test exercises the
+// fix: commit with extras must be rejected.
+// ---------------------------------------------------------------------------
+#[test]
+fn test_h1_commit_rejects_multi_denom_funds() {
+    use crate::msg::CommitFeeInfo;
+    use crate::state::CommitLimitInfo;
+    use crate::state::{COMMITFEEINFO, COMMIT_LIMIT_INFO, IS_THRESHOLD_HIT};
+    use cosmwasm_std::{to_json_binary, Binary, ContractResult, SystemError, SystemResult, WasmQuery};
+    use pool_factory_interfaces::ConversionResponse;
+
+    let mut deps = mock_dependencies();
+    setup_pool_storage(&mut deps);
+
+    COMMITFEEINFO
+        .save(
+            &mut deps.storage,
+            &CommitFeeInfo {
+                bluechip_wallet_address: Addr::unchecked("bluechip_wallet"),
+                creator_wallet_address: Addr::unchecked("creator_wallet"),
+                commit_fee_bluechip: Decimal::percent(1),
+                commit_fee_creator: Decimal::percent(5),
+            },
+        )
+        .unwrap();
+    COMMIT_LIMIT_INFO
+        .save(
+            &mut deps.storage,
+            &CommitLimitInfo {
+                commit_amount_for_threshold_usd: Uint128::new(25_000_000_000),
+                max_bluechip_lock_per_pool: Uint128::new(10_000_000_000),
+                creator_excess_liquidity_lock_days: 14,
+            },
+        )
+        .unwrap();
+    IS_THRESHOLD_HIT.save(&mut deps.storage, &false).unwrap();
+
+    // Mock the oracle so usd_value computation passes before the
+    // funds-validation gate fires.
+    deps.querier.update_wasm(move |query| match query {
+        WasmQuery::Smart { msg: _, .. } => {
+            let response = ConversionResponse {
+                amount: Uint128::new(100_000_000), // commit's USD value
+                rate_used: Uint128::new(1_000_000),
+                timestamp: 1571797419u64, // matches mock_env block time
+            };
+            SystemResult::Ok(ContractResult::Ok(to_json_binary(&response).unwrap()))
+        }
+        _ => SystemResult::Err(SystemError::InvalidRequest {
+            error: "Unknown query".to_string(),
+            request: Binary::default(),
+        }),
+    });
+
+    let env = mock_env();
+    let user = Addr::unchecked("committer");
+    let amount = Uint128::new(100_000_000);
+
+    // Attaching ubluechip + a stray IBC denom must reject. Pre-H-1 this
+    // call would have silently absorbed the IBC funds into the pool.
+    let result = execute(
+        deps.as_mut(),
+        env,
+        message_info(
+            &user,
+            &[
+                Coin::new(amount.u128(), "ubluechip"),
+                Coin::new(42_000_000u128, "ibc/27394FB...ATOM"),
+            ],
+        ),
+        ExecuteMsg::Commit {
+            asset: TokenInfo {
+                info: TokenType::Native {
+                    denom: "ubluechip".to_string(),
+                },
+                amount,
+            },
+            transaction_deadline: None,
+            belief_price: None,
+            max_spread: None,
+        },
+    );
+
+    let err = result.expect_err("multi-denom commit must be rejected");
+    let msg = err.to_string();
+    assert!(
+        msg.contains("Invalid commit funds")
+            || msg.contains("must_pay")
+            || msg.contains("additional denoms")
+            || msg.contains("Sent more than one denomination")
+            || msg.contains("Multiple denominations")
+            || msg.contains("multiple"),
+        "expected multi-denom rejection error, got: {}",
+        msg
+    );
+}
+
+// ---------------------------------------------------------------------------
+// H-2 — `prepare_deposit` must reject any attached coin whose denom
+// isn't one of the pool's configured native sides. Pre-fix, an attached
+// foreign denom would be silently kept in the pool's bank balance.
+// ---------------------------------------------------------------------------
+#[test]
+fn test_h2_deposit_rejects_non_pool_native_denom() {
+    let mut deps = mock_dependencies();
+    setup_pool_post_threshold(&mut deps);
+
+    let result = execute_deposit_liquidity(
+        deps.as_mut(),
+        mock_env(),
+        message_info(
+            &Addr::unchecked("provider"),
+            &[
+                Coin::new(50_000u128, "ubluechip"),
+                Coin::new(42_000u128, "ibc/27394FB...ATOM"),
+            ],
+        ),
+        Addr::unchecked("provider"),
+        Uint128::new(50_000),
+        Uint128::new(50_000),
+        None,
+        None,
+        None,
+    );
+
+    let err = result.expect_err("deposit with non-pool-native denom must reject");
+    let msg = err.to_string();
+    assert!(
+        msg.contains("Unexpected funds") && msg.contains("ibc/27394FB...ATOM"),
+        "expected unexpected-funds error mentioning the bad denom, got: {}",
+        msg
+    );
+}
+
+// ---------------------------------------------------------------------------
+// H-2 — verify the gate accepts a clean deposit (only pool-native denoms).
+// Defends against an over-broad fix that rejects legitimate deposits too.
+// ---------------------------------------------------------------------------
+#[test]
+fn test_h2_deposit_accepts_clean_native_funds() {
+    let mut deps = mock_dependencies();
+    setup_pool_post_threshold(&mut deps);
+
+    // ubluechip alone — the only native side of this Native/CW20 pool.
+    let result = execute_deposit_liquidity(
+        deps.as_mut(),
+        mock_env(),
+        message_info(
+            &Addr::unchecked("provider"),
+            &[Coin::new(50_000u128, "ubluechip")],
+        ),
+        Addr::unchecked("provider"),
+        Uint128::new(50_000),
+        Uint128::new(50_000),
+        None,
+        None,
+        None,
+    );
+
+    assert!(
+        result.is_ok(),
+        "clean ubluechip-only deposit must succeed; got: {:?}",
+        result.err()
+    );
+}

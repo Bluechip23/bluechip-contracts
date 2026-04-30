@@ -191,19 +191,32 @@ fn execute_commit_logic(
 
     match &asset.info {
         TokenType::Native { denom } if denom == &bluechip_denom => {
-            // Strict exact-match on attached funds. Underpayment is
-            // obviously rejected; overpayment was previously absorbed
-            // silently into the pool's bank balance with no entry in
-            // NATIVE_RAISED_FROM_COMMIT or COMMIT_LEDGER, stranding the
-            // surplus in pre-threshold and bypassing reserve accounting
-            // post-threshold. Matching the exact-amount semantics that
-            // `simple_swap` already enforces via `confirm_sent_native_balance`.
-            let sent = info
-                .funds
-                .iter()
-                .find(|c| c.denom == denom.as_str())
-                .map(|c| c.amount)
-                .unwrap_or_default();
+            // Strict exact-match on attached funds via `cw_utils::must_pay`.
+            //
+            // `must_pay` enforces a stronger invariant than the previous
+            // `find(denom).amount.unwrap_or_default()` pattern:
+            //
+            //   1. Funds list must be exactly one coin (rejects multi-denom).
+            //      Pre-fix, an attacker (or careless frontend) could attach
+            //      `[ubluechip: amount, ibc/...: Y]` and the IBC denom
+            //      would be silently absorbed into the pool's bank balance
+            //      with no recovery path — H-1 from the creator-pool audit.
+            //   2. Coin amount must be non-zero.
+            //   3. Coin denom must match the canonical bluechip denom.
+            //
+            // The post-condition `sent == amount` then catches under/
+            // overpayment in the bluechip side, preserving the original
+            // exact-amount semantics that `simple_swap` already enforces
+            // via `confirm_sent_native_balance` (which delegates to
+            // must_pay too).
+            let sent = cw_utils::must_pay(&info, denom.as_str()).map_err(|e| {
+                ContractError::Std(StdError::generic_err(format!(
+                    "Invalid commit funds: {}. Commit must attach exactly the bluechip \
+                     denom — additional denoms (e.g., gas tokens, IBC assets) would be \
+                     stranded in the pool with no withdrawal path.",
+                    e
+                )))
+            })?;
             if sent != amount {
                 return Err(ContractError::MismatchAmount {});
             }
