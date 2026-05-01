@@ -52,11 +52,14 @@ fn instantiate_saves_all_required_state() {
     // handlers open to traffic immediately.
     assert!(IS_THRESHOLD_HIT.load(&deps.storage).unwrap());
 
-    // COMMITFEEINFO seeded as zero-valued placeholder with the factory
-    // as drain recipient (emergency_withdraw_core_drain reads
-    // bluechip_wallet_address off this Item).
+    // H-S1: COMMITFEEINFO.bluechip_wallet_address is sourced from the
+    // factory's configured wallet (StandardPoolInstantiateMsg.
+    // bluechip_wallet_address), NOT the factory contract address itself
+    // — the factory has no withdrawal mechanism, so a drain recipient
+    // pointing at it would permanently lock funds.
     let fee_info = COMMITFEEINFO.load(&deps.storage).unwrap();
-    assert_eq!(fee_info.bluechip_wallet_address, addrs.factory);
+    assert_eq!(fee_info.bluechip_wallet_address, addrs.bluechip_wallet);
+    assert_ne!(fee_info.bluechip_wallet_address, addrs.factory);
     assert_eq!(fee_info.commit_fee_bluechip, Decimal::zero());
 }
 

@@ -27,6 +27,7 @@ pub struct FixtureAddrs {
     pub position_nft: Addr,
     pub creator_token: Addr,
     pub pool_owner: Addr,
+    pub bluechip_wallet: Addr,
 }
 
 pub fn fixture_addrs() -> FixtureAddrs {
@@ -36,6 +37,7 @@ pub fn fixture_addrs() -> FixtureAddrs {
         position_nft: api.addr_make("nft_contract"),
         creator_token: api.addr_make("creator_token"),
         pool_owner: api.addr_make("pool_owner"),
+        bluechip_wallet: api.addr_make("bluechip_wallet"),
     }
 }
 
@@ -88,6 +90,7 @@ pub fn standard_instantiate_msg(addrs: &FixtureAddrs) -> StandardPoolInstantiate
         ],
         used_factory_addr: addrs.factory.clone(),
         position_nft_address: addrs.position_nft.clone(),
+        bluechip_wallet_address: addrs.bluechip_wallet.clone(),
     }
 }
 

@@ -141,4 +141,10 @@ pub struct StandardPoolInstantiateMsg {
     pub pool_token_info: [TokenType; 2],
     pub used_factory_addr: Addr,
     pub position_nft_address: Addr,
+    /// Wallet that receives drained funds when an emergency withdraw
+    /// completes. Sourced from the factory's `bluechip_wallet_address`
+    /// at instantiate time. Must NOT default to the factory address —
+    /// the factory has no withdrawal mechanism, so funds drained to it
+    /// would be permanently locked (H-S1).
+    pub bluechip_wallet_address: Addr,
 }

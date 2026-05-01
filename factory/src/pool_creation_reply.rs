@@ -291,6 +291,11 @@ pub fn mint_standard_nft(
         pool_token_info: ctx.pool_token_info.clone(),
         used_factory_addr: env.contract.address.clone(),
         position_nft_address: nft_address.clone(),
+        // H-S1: real wallet address sourced from factory config so that
+        // an emergency drain on a standard pool sends funds to a
+        // controllable wallet instead of the factory contract (which
+        // has no withdrawal mechanism).
+        bluechip_wallet_address: factory_config.bluechip_wallet_address.clone(),
     };
     // Dual-code_id routing (H14 4c): standard pools instantiate
     // against the separate standard-pool wasm, sending a flat

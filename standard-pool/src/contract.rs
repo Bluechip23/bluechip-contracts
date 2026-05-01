@@ -125,16 +125,18 @@ pub fn instantiate(
         min_commit_interval: 13,      // seconds; used by swap rate limit
     };
 
-    // Zero-valued placeholder. Two reasons we save it:
+    // Zero-valued fee placeholder. Two reasons we save it:
     //   - emergency_withdraw_core_drain reads `bluechip_wallet_address`
-    //     as the drain recipient.
+    //     as the drain recipient. It MUST be a wallet (not the factory
+    //     contract) — the factory has no withdrawal path, so funds sent
+    //     there are permanently locked (H-S1).
     //   - query_fee_info dereferences COMMITFEEINFO unconditionally.
-    // Factory address is a safe default for both wallet fields — fees
-    // are always zero on a standard pool, so no live flow depends on
-    // these values.
+    // The fee rates are zero on a standard pool, so the creator wallet
+    // is never paid out in normal flow; we still store the factory's
+    // configured bluechip wallet there as a safe placeholder.
     let fee_info = CommitFeeInfo {
-        bluechip_wallet_address: msg.used_factory_addr.clone(),
-        creator_wallet_address: msg.used_factory_addr.clone(),
+        bluechip_wallet_address: msg.bluechip_wallet_address.clone(),
+        creator_wallet_address: msg.bluechip_wallet_address.clone(),
         commit_fee_bluechip: Decimal::zero(),
         commit_fee_creator: Decimal::zero(),
     };

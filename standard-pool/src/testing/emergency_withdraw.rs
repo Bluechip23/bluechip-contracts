@@ -126,12 +126,20 @@ fn phase2_drains_reserves_and_emits_transfers() {
     )
     .unwrap();
 
-    // Drain recipient = COMMITFEEINFO.bluechip_wallet_address, which
-    // instantiate set to the factory address.
+    // H-S1: drain recipient = COMMITFEEINFO.bluechip_wallet_address,
+    // which instantiate sourced from the factory's configured wallet
+    // (NOT the factory address itself).
     assert!(res
         .attributes
         .iter()
-        .any(|a| a.key == "recipient" && a.value == addrs.factory.to_string()));
+        .any(|a| a.key == "recipient" && a.value == addrs.bluechip_wallet.to_string()));
+    assert!(
+        !res.attributes
+            .iter()
+            .any(|a| a.key == "recipient" && a.value == addrs.factory.to_string()),
+        "drain recipient must NOT be the factory contract — funds sent to the \
+         factory have no withdrawal path and would be permanently locked"
+    );
 
     // Post-drain state: reserves zeroed, drain flag flipped.
     let state_after = POOL_STATE.load(&deps.storage).unwrap();
@@ -149,12 +157,13 @@ fn phase2_drains_reserves_and_emits_transfers() {
     let audit = EMERGENCY_WITHDRAWAL.load(&deps.storage).unwrap();
     assert_eq!(audit.amount0, state_before.reserve0);
     assert_eq!(audit.amount1, state_before.reserve1);
-    assert_eq!(audit.recipient, addrs.factory);
+    assert_eq!(audit.recipient, addrs.bluechip_wallet);
 
-    // Response carries the two transfer messages.
+    // Response carries the two transfer messages, both addressed to the
+    // configured bluechip wallet (NOT the factory).
     let bank_sent = res.messages.iter().any(|sub| match &sub.msg {
         CosmosMsg::Bank(cosmwasm_std::BankMsg::Send { to_address, .. }) => {
-            to_address == addrs.factory.as_str()
+            to_address == addrs.bluechip_wallet.as_str()
         }
         _ => false,
     });
@@ -162,10 +171,84 @@ fn phase2_drains_reserves_and_emits_transfers() {
         CosmosMsg::Wasm(WasmMsg::Execute { contract_addr, msg, .. }) => {
             contract_addr == addrs.creator_token.as_str()
                 && String::from_utf8_lossy(msg.as_slice()).contains("transfer")
+                && String::from_utf8_lossy(msg.as_slice())
+                    .contains(addrs.bluechip_wallet.as_str())
         }
         _ => false,
     });
-    assert!(bank_sent && cw20_sent, "drain must emit both transfers");
+    assert!(
+        bank_sent && cw20_sent,
+        "drain must emit both transfers to bluechip_wallet"
+    );
+}
+
+/// H-S1 regression: with the wallet routed through
+/// `StandardPoolInstantiateMsg.bluechip_wallet_address`, an emergency
+/// drain MUST send the funds to that wallet, never to the factory
+/// contract. This guards against a regression where the field defaults
+/// back to `used_factory_addr` (as the pre-fix code did), which would
+/// permanently lock the drained funds inside the factory.
+#[test]
+fn drain_recipient_is_bluechip_wallet_not_factory() {
+    let (mut deps, addrs) = instantiate_default_pool();
+    seed(&mut deps, &addrs.pool_owner);
+
+    // Phase 1.
+    execute(
+        deps.as_mut(),
+        mock_env(),
+        message_info(&addrs.factory, &[]),
+        ExecuteMsg::EmergencyWithdraw {},
+    )
+    .unwrap();
+
+    let mut env = mock_env();
+    env.block.time = env.block.time.plus_seconds(25 * 3600);
+    let res = execute(
+        deps.as_mut(),
+        env,
+        message_info(&addrs.factory, &[]),
+        ExecuteMsg::EmergencyWithdraw {},
+    )
+    .unwrap();
+
+    // Sanity: the two distinguishable addresses do differ in the fixture.
+    assert_ne!(addrs.bluechip_wallet, addrs.factory);
+
+    // Every outgoing payment MUST be addressed to the bluechip wallet.
+    for sub in res.messages.iter() {
+        match &sub.msg {
+            CosmosMsg::Bank(cosmwasm_std::BankMsg::Send { to_address, .. }) => {
+                assert_eq!(to_address, addrs.bluechip_wallet.as_str());
+                assert_ne!(
+                    to_address,
+                    addrs.factory.as_str(),
+                    "bank drain to factory contract address would lock funds"
+                );
+            }
+            CosmosMsg::Wasm(WasmMsg::Execute { msg, .. }) => {
+                let body = String::from_utf8_lossy(msg.as_slice());
+                assert!(
+                    body.contains(addrs.bluechip_wallet.as_str()),
+                    "cw20 transfer body must reference bluechip_wallet, got {}",
+                    body
+                );
+                assert!(
+                    !body.contains(&format!(
+                        "\"recipient\":\"{}\"",
+                        addrs.factory.as_str()
+                    )),
+                    "cw20 transfer must not target the factory contract"
+                );
+            }
+            _ => {}
+        }
+    }
+
+    // Audit record locks in the wallet-routed recipient too.
+    let audit = EMERGENCY_WITHDRAWAL.load(&deps.storage).unwrap();
+    assert_eq!(audit.recipient, addrs.bluechip_wallet);
+    assert_ne!(audit.recipient, addrs.factory);
 }
 
 #[test]
