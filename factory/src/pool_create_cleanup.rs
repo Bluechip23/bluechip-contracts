@@ -12,25 +12,23 @@ use crate::error::ContractError;
 // — including any prior successful reply handlers' writes, and the CW20/CW721
 // instantiations themselves.
 //
-// As a result there is nothing to clean up on failure, and the previous
-// `cleanup_temp_state` / `create_cleanup_messages` / `handle_cleanup_reply`
-// machinery was structurally unreachable (dead code). It has been removed.
-// If a future change converts any step to `reply_always` / `reply_on_error`,
-// explicit cleanup must be reintroduced at that step.
+// As a result there is nothing to clean up on failure. If a future change
+// converts any step to `reply_always` / `reply_on_error`, explicit cleanup
+// must be reintroduced at that step.
 
 pub fn extract_contract_address(
     deps: &DepsMut,
     result: &SubMsgResponse,
 ) -> Result<Addr, ContractError> {
-    // M-3: prefer the protobuf-encoded `MsgInstantiateContractResponse`
+    // Prefer the protobuf-encoded `MsgInstantiateContractResponse`
     // over scanning `result.events` for the first `instantiate` attribute.
     // The response payload is unambiguously the SubMsg's own reply — if
     // the freshly-instantiated contract ever started spawning child
     // contracts in its own `instantiate` handler (none of the bundled
     // wasms do today, but a future cw20 / cw721 / pool-wasm migration
     // could), the events array would contain multiple `instantiate`
-    // entries and the prior "first match" heuristic could pick the
-    // wrong child contract address.
+    // entries and a "first match" heuristic could pick the wrong
+    // child contract address.
     //
     // CosmWasm 2.0 deprecated `SubMsgResponse.data` in favour of
     // `msg_responses`, but `data` is still populated on chains running

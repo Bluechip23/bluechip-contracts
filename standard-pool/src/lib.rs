@@ -3,7 +3,7 @@
 //! phase, no threshold, no distribution; immediately tradeable and
 //! depositable at creation.
 //!
-//! ECONOMIC SCOPE (M-S3).
+//! ECONOMIC SCOPE.
 //! Standard pools are completely OUTSIDE the bluechip
 //! expand-economy / mint-decay flow:
 //!   - They never cross a commit threshold (there is no `Commit`
@@ -20,10 +20,10 @@
 //!
 //! The arbitrary-asset shape standard pools allow (any tokenfactory
 //! denom, any third-party CW20 paired against bluechip) is also why
-//! H-S2 wires SubMsg-based deposit balance verification on this
-//! contract — a fee-on-transfer / rebasing CW20 must not corrupt
-//! reserve accounting. Creator-pool's CW20 is freshly minted by the
-//! factory and is structurally trusted, so it skips that path.
+//! this contract wires SubMsg-based deposit balance verification —
+//! a fee-on-transfer / rebasing CW20 must not corrupt reserve
+//! accounting. Creator-pool's CW20 is freshly minted by the factory
+//! and is structurally trusted, so it skips that path.
 //!
 //! The vast majority of this crate's logic lives in `pool_core`. The
 //! modules below are thin entry-point wrappers: they define the

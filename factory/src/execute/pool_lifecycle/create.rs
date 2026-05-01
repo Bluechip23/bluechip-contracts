@@ -127,7 +127,7 @@ pub(crate) fn validate_creator_token_info(
             "Token symbol must contain only uppercase ASCII letters (A-Z) and digits (0-9)",
         )));
     }
-    // L-7: require at least one letter. Pure-digit symbols ("123", "001")
+    // Require at least one letter. Pure-digit symbols ("123", "001")
     // pass the character-class check above but render as malformed in
     // most CW20 frontends and confuse human readers (looks like a token
     // ID, not a ticker). Mainline tickers are letters + optional digits;
@@ -157,12 +157,7 @@ pub(crate) fn execute_create_creator_pool(
     let factory_cw20 = FACTORYINSTANTIATEINFO.load(deps.storage)?;
     validate_pool_token_info(&pool_msg.pool_token_info, &factory_cw20.bluechip_denom)?;
 
-    // Standard pools now go through `ExecuteMsg::CreateStandardPool`
-    // (dispatched to the new standard-pool wasm via the
-    // `standard_pool_wasm_contract_id` code_id added in 4c). The old
-    // `is_standard_pool: Some(true)` bypass on `CreatePool` is gone.
-
-    // I-6: per-address rate limit. Reject if `info.sender` already
+    // Per-address rate limit. Reject if `info.sender` already
     // created a commit pool within the last
     // COMMIT_POOL_CREATE_RATE_LIMIT_SECONDS. Stamps the new timestamp
     // before any SubMsg dispatch, so a failed reply chain (which
@@ -255,8 +250,8 @@ pub(crate) fn execute_create_creator_pool(
 ///     (`Bluechip("uatom")` + `Bluechip("uatom")`) or same address on both
 ///     sides (`CreatorToken("cosmos1...")` ×2) is rejected.
 ///   - `Bluechip { denom }`: denom must be non-empty. We do NOT enforce the
-///     canonical bluechip_denom check from H3 here — standard pools can
-///     include arbitrary native or IBC denoms (this is how the ATOM/bluechip
+///     canonical bluechip_denom check here — standard pools can include
+///     arbitrary native or IBC denoms (this is how the ATOM/bluechip
 ///     anchor pool is built).
 ///   - `CreatorToken { contract_addr }`: address must bech32-validate, AND
 ///     the address must answer a `Cw20QueryMsg::TokenInfo {}` query (so we
@@ -352,7 +347,7 @@ pub(crate) fn execute_create_standard_pool(
             "label must be non-empty",
         )));
     }
-    // L-4: bound label length up front. The label is propagated to the
+    // Bound label length up front. The label is propagated to the
     // pool wasm's instantiate `label` field and emitted as an attribute;
     // both have SDK-level limits (512 bytes typical) but failing there
     // surfaces deep in the reply chain rather than at message ingress.

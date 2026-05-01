@@ -69,7 +69,7 @@ pub const MAX_TWAP_DRIFT_BPS: u64 = 3000;
 // Defense-in-depth that bounds the bootstrap manipulation risk:
 //   - `MIN_POOL_LIQUIDITY` (line 31) raises the cost of moving the anchor.
 //   - The anchor pool is curated and seeded by the deployment team.
-//   - The H11 TWAP circuit breaker caps per-update drift to
+//   - The TWAP circuit breaker caps per-update drift to
 //     `MAX_TWAP_DRIFT_BPS` (30%) on every update *after* the first.
 //   - Downstream consumers (commit, swap) layer their own slippage and
 //     spread protections.
@@ -93,20 +93,19 @@ pub struct BlueChipPriceInternalOracle {
     pub bluechip_price_cache: PriceCache,
     pub update_interval: u64,
     pub pool_cumulative_snapshots: Vec<PoolCumulativeSnapshot>,
-    /// Warm-up gate (H-2). Number of additional successful TWAP observations
-    /// the oracle still needs before downstream price queries
-    /// (`get_bluechip_usd_price_with_meta`) will serve a price. Set to a
-    /// non-zero value whenever the price cache is reset (anchor change,
-    /// timelocked config update that swaps the anchor) so the very-first
-    /// post-reset observation cannot be locked in as the canonical price
-    /// by an attacker who briefly perturbed the new anchor's reserves.
-    /// Decremented by one per successful price-publishing oracle update;
-    /// failed (snapshot-only) updates do NOT decrement it because they
-    /// don't advance the TWAP. While `> 0`, downstream conversions
-    /// return `Err(InsufficientData)`. `#[serde(default)]` keeps oracle
-    /// records written before this field existed deserializing as zero
-    /// (no warm-up active), preserving the post-migration invariant
-    /// that running pre-warm-up oracles continue to serve prices.
+    /// Warm-up gate. Number of additional successful TWAP observations
+    /// required before downstream price queries
+    /// (`get_bluechip_usd_price_with_meta`) will serve a price. Set
+    /// non-zero whenever the price cache is reset (anchor change,
+    /// timelocked config update that swaps the anchor) so the
+    /// very-first post-reset observation can't be locked in as the
+    /// canonical price by an attacker who briefly perturbed the new
+    /// anchor's reserves. Decremented per successful price-publishing
+    /// update; failed (snapshot-only) updates do NOT decrement
+    /// because they don't advance the TWAP. While `> 0`, downstream
+    /// conversions return `Err(InsufficientData)`. `#[serde(default)]`
+    /// keeps records written before this field existed deserializing
+    /// as zero (no warm-up active).
     #[serde(default)]
     pub warmup_remaining: u32,
 }
@@ -547,9 +546,8 @@ pub fn update_internal_oracle_price(
         )?;
     // Always persist the new snapshots so the next round has prior data
     // to compute a TWAP from, even when this round couldn't produce a
-    // price (bootstrap, anchor inactive, etc.). Pre-H-3 code returned
-    // Err on those paths and reverted the snapshot save, leaving the
-    // oracle stuck.
+    // price (bootstrap, anchor inactive, etc.). Returning Err on those
+    // paths would revert the snapshot save and leave the oracle stuck.
     oracle.pool_cumulative_snapshots = new_snapshots;
 
     let (weighted_price, atom_price) = match (maybe_weighted_price, maybe_atom_price) {
@@ -641,7 +639,7 @@ pub fn update_internal_oracle_price(
         oracle.bluechip_price_cache.cached_pyth_timestamp = current_time;
     }
 
-    // Decrement the H-2 warm-up counter. Only price-publishing updates
+    // Decrement the warm-up counter. Only price-publishing updates
     // count — snapshot-only updates returned earlier and don't tick
     // this down, otherwise an attacker could exhaust the warm-up by
     // triggering empty rounds.
@@ -835,9 +833,7 @@ pub fn calculate_weighted_price_with_atom(
                     found
                 };
 
-                // Resolve bluechip reserve based on token ordering. The
-                // other-side reserve is no longer needed (former spot
-                // fallbacks consumed it; H-3 removed all of them).
+                // Resolve bluechip reserve based on token ordering.
                 let bluechip_reserve = if is_bluechip_second {
                     pool_state.reserve1
                 } else {
@@ -1026,16 +1022,15 @@ pub fn query_pyth_atom_usd_price(deps: Deps, env: &Env) -> StdResult<Uint128> {
             id: feed_id.clone(),
         };
 
-        // M-7: the `GetPrice` fallback is only meaningful for the mock
-        // oracle (which is selected via the `mock` cargo feature). In
-        // production a Pyth query failure must surface as `Err` so the
+        // The `GetPrice` fallback is only meaningful for the mock
+        // oracle (selected via the `mock` cargo feature). In production
+        // a Pyth query failure must surface as `Err` so the
         // cache-fallback path inside `get_bluechip_usd_price_with_meta`
         // can decide whether to bridge the outage from the cached price
-        // or refuse to serve. Silently falling back to a different RPC
-        // shape on the same contract previously meant that an operator
-        // who accidentally pointed `pyth_contract_addr_for_conversions`
-        // at a mock-flavoured oracle in production would silently
-        // receive mock prices.
+        // or refuse to serve. Without the cfg-gate, an operator who
+        // accidentally pointed `pyth_contract_addr_for_conversions` at
+        // a mock-flavoured oracle in production would silently receive
+        // mock prices.
         //
         // Behaviour by build flavour:
         //   - prod (default): error propagates → caller's cache
@@ -1168,7 +1163,7 @@ fn get_bluechip_usd_price_with_meta(deps: Deps, env: &Env) -> StdResult<(Uint128
         .load(deps.storage)
         .map_err(|_| StdError::generic_err("Internal oracle not initialized"))?;
 
-    // H-2 warm-up gate. After bootstrap or any anchor change the oracle
+    // Warm-up gate. After bootstrap or any anchor change the oracle
     // cache is reset, and the very-first post-reset observation is
     // single-block-manipulable. Refuse to serve a price downstream
     // until ANCHOR_CHANGE_WARMUP_OBSERVATIONS price-publishing updates
@@ -1177,7 +1172,7 @@ fn get_bluechip_usd_price_with_meta(deps: Deps, env: &Env) -> StdResult<(Uint128
     if oracle.warmup_remaining > 0 {
         return Err(StdError::generic_err(format!(
             "Oracle warm-up in progress after anchor reset: {} more successful TWAP \
-             updates required before pricing resumes (H-2)",
+             updates required before pricing resumes",
             oracle.warmup_remaining
         )));
     }
@@ -1470,25 +1465,15 @@ pub fn execute_force_rotate_pools(
         select_random_pools_with_atom(deps.branch(), env.clone(), ORACLE_POOL_COUNT)?;
     oracle.selected_pools = new_pools.clone();
     oracle.last_rotation = env.block.time.seconds();
-    // M-8: clear cumulative snapshots and the price cache so the new
-    // sample set starts from a clean slate. Pre-fix, force-rotate left
-    // both intact:
-    //   - Stale `pool_cumulative_snapshots` for pools no longer in
-    //     `selected_pools` lingered in storage until the next periodic
-    //     rotation.
-    //   - The very next `update_internal_oracle_price` saw most newly-
-    //     selected creator pools as having no prior snapshot and
-    //     skipped them, leaving the anchor to dominate the TWAP for
-    //     one cycle.
-    //   - The retained `last_price` from the pre-rotation set (which
-    //     may have been the very thing the operator was force-rotating
-    //     to escape) anchored the circuit breaker on the next update.
-    //
     // Treat force-rotate as a full oracle reset, identical to the
     // anchor-change path: clear snapshots + observations, zero
-    // `last_price`/`last_update`, re-arm the H-2 warm-up gate so
+    // `last_price`/`last_update`, re-arm the warm-up gate so
     // downstream consumers refuse to serve a price until enough new
-    // observations have accumulated.
+    // observations accumulate. Without this, stale snapshots for
+    // pools no longer in `selected_pools` linger, the next update
+    // skips newly-selected pools that have no prior snapshot, and
+    // the retained `last_price` from the pre-rotation set anchors
+    // the circuit breaker — defeating the purpose of force-rotate.
     oracle.pool_cumulative_snapshots.clear();
     oracle.bluechip_price_cache.last_price = Uint128::zero();
     oracle.bluechip_price_cache.last_update = 0;

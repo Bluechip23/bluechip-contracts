@@ -113,7 +113,7 @@ pub fn trigger_threshold_payout(
 
     let mut other_msgs: Vec<CosmosMsg> = Vec::new();
 
-    // M-7: accept the position-NFT ownership at threshold-cross time
+    // Accept the position-NFT ownership at threshold-cross time
     // rather than lazily on first deposit. Closes the "ownership pending"
     // window between factory's `TransferOwnership` (at pool finalize)
     // and the first LP's deposit, during which a (compromised) factory

@@ -15,13 +15,8 @@ use cw_storage_plus::Item;
 /// thereafter, so this cap leaves headroom for ~200 early-pool mints
 /// per 24h — well above the natural protocol rate, well below the
 /// "drain-the-reservoir" attack rate.
-///
-/// History: this constant previously read `100_000` (= 0.1 bluechip),
-/// which was 5000× too small to cover even a single legitimate
-/// threshold-crossing mint. The first pool to cross threshold would
-/// have reverted with `DailyExpansionCapExceeded`, leaving the pool
-/// stuck at near-threshold forever.
 pub const DAILY_EXPANSION_CAP: Uint128 = Uint128::new(100_000_000_000);
+/// Length of the rolling cap window in seconds (24 hours).
 pub const DAILY_WINDOW_SECONDS: u64 = 86_400;
 
 /// Snapshot of recent RequestExpansion volume for the rolling cap. We
@@ -38,6 +33,7 @@ pub struct ExpansionWindow {
     pub spent_in_window: Uint128,
 }
 
+/// Persisted rolling-window state for `RequestExpansion` cap accounting.
 pub const EXPANSION_WINDOW: Item<ExpansionWindow> = Item::new("expansion_window");
 
 #[cw_serde]
@@ -51,6 +47,7 @@ pub struct Config {
     pub bluechip_denom: String,
 }
 
+/// Persisted contract `Config` (factory address, owner, bluechip denom).
 pub const CONFIG: Item<Config> = Item::new("config");
 
 /// Default `bluechip_denom` for `InstantiateMsg` when the field is omitted.
@@ -66,8 +63,11 @@ pub struct PendingWithdrawal {
     pub execute_after: Timestamp,
 }
 
+/// Timelock between `ProposeWithdrawal` and `ExecuteWithdrawal` (48 hours).
 pub const WITHDRAW_TIMELOCK_SECONDS: u64 = 172_800;
+/// Timelock between `ProposeConfigUpdate` and `ExecuteConfigUpdate` (48 hours).
 pub const CONFIG_TIMELOCK_SECONDS: u64 = 172_800;
+/// Pending withdrawal awaiting timelock expiry.
 pub const PENDING_WITHDRAWAL: Item<PendingWithdrawal> = Item::new("pending_withdrawal");
 
 #[cw_serde]
@@ -81,4 +81,5 @@ pub struct PendingConfigUpdate {
     pub bluechip_denom: Option<String>,
     pub effective_after: Timestamp,
 }
+/// Pending config update awaiting timelock expiry.
 pub const PENDING_CONFIG_UPDATE: Item<PendingConfigUpdate> = Item::new("pending_config_update");

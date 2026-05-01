@@ -21,7 +21,7 @@ use crate::state::{
 /// compile-time dependency on the `factory` crate (the two communicate
 /// only over wasm message boundaries).
 ///
-/// M-EE-2: deliberately uses plain `#[derive(serde::Serialize)]` +
+/// Deliberately uses plain `#[derive(serde::Serialize)]` +
 /// explicit `rename_all = "snake_case"` rather than `#[cw_serde]`. The
 /// query message we send to the factory must match
 /// `factory::query::QueryMsg::Factory {}` on the wire — `cw_serde`
@@ -38,7 +38,7 @@ enum FactoryQuery {
 /// Wire-compatible subset of `factory::msg::FactoryInstantiateResponse`
 /// — only the field this contract reads.
 ///
-/// M-EE-2: switched from `#[cw_serde]` to plain `#[derive(serde::Deserialize)]`.
+/// Uses plain `#[derive(serde::Deserialize)]` rather than `#[cw_serde]`.
 /// `cw_serde` is documented in cosmwasm-schema 2.x today as NOT setting
 /// `deny_unknown_fields`, but that's a tooling default that could
 /// reasonably flip in a future release — and if it ever does, every
@@ -74,7 +74,7 @@ fn load_config_as_owner(storage: &dyn Storage, sender: &Addr) -> Result<Config, 
     Ok(config)
 }
 
-/// M-EE-3 — validate a Cosmos SDK native bank denom against the documented
+/// Validate a Cosmos SDK native bank denom against the documented
 /// format rules: 3–128 characters, must start with an ASCII letter, and
 /// the rest must be alphanumeric or one of `/`, `:`, `.`, `_`, `-`.
 /// Mirrors the cosmos-sdk `IsValidDenom` regex
@@ -168,12 +168,9 @@ pub fn instantiate(
     let bluechip_denom = msg
         .bluechip_denom
         .unwrap_or_else(|| DEFAULT_BLUECHIP_DENOM.to_string());
-    // M-EE-3: validate against the cosmos-sdk denom format rules at
+    // Validate against the cosmos-sdk denom format rules at
     // instantiate so a typo'd denom fails here rather than 48 hours
-    // later via the timelocked propose / apply path. The previous
-    // "non-empty after trim" check let `"Bluechip"`, `"u bluechip"`,
-    // `"1u"`, etc. through and they would have bricked every
-    // subsequent `RequestExpansion`.
+    // later via the timelocked propose / apply path.
     validate_native_denom(&bluechip_denom)?;
 
     let config = Config {
@@ -200,7 +197,7 @@ pub fn execute(
     info: MessageInfo,
     msg: ExecuteMsg,
 ) -> Result<Response, ContractError> {
-    // M-EE-1: every execute path on this contract is non-payable.
+    // Every execute path on this contract is non-payable.
     //   - `RequestExpansion` is sent by the factory with funds: vec![];
     //     attaching coins inflates the contract's bank balance without
     //     updating EXPANSION_WINDOW.spent_in_window, biasing the cap
@@ -410,13 +407,10 @@ pub fn execute_propose_config_update(
     if let Some(ref addr) = owner {
         deps.api.addr_validate(addr)?;
     }
-    // M-EE-3: full cosmos-sdk denom format validation at propose time.
+    // Full cosmos-sdk denom format validation at propose time.
     // Operator typos surface 48h earlier than they otherwise would
     // (when someone tries to apply and every subsequent
-    // `RequestExpansion` breaks). Replaces the previous "non-empty
-    // after trim" check, which let through e.g. `"Bluechip"`,
-    // `"u bluechip"`, `"1ubluechip"`, all of which the bank module
-    // rejects but only after the 48h timelock has lapsed.
+    // `RequestExpansion` breaks).
     if let Some(ref d) = bluechip_denom {
         validate_native_denom(d)?;
     }
@@ -464,7 +458,7 @@ pub fn execute_apply_config_update(
         config.owner = deps.api.addr_validate(&new_owner)?;
     }
     if let Some(new_denom) = pending.bluechip_denom {
-        // M-EE-3: full denom format validation was already enforced at
+        // Full denom format validation was already enforced at
         // propose time; re-check here as defense-in-depth in case a
         // future migration ever inserts a PendingConfigUpdate directly,
         // bypassing propose. Cheap to repeat (no I/O), and locks the
@@ -614,13 +608,13 @@ pub fn query(deps: Deps, env: Env, msg: QueryMsg) -> StdResult<Binary> {
 }
 
 // ---------------------------------------------------------------------------
-// Migrate (C-EE-1)
+// Migrate
 // ---------------------------------------------------------------------------
 
-/// C-EE-1 — without this entry point the chain rejects every
+/// Without this entry point the chain rejects every
 /// `MsgMigrateContract` at runtime with "no migrate function exported",
 /// which would leave this contract effectively immutable despite cw2
-/// being initialised at instantiate time. Mirrors the M-3 downgrade
+/// being initialised at instantiate time. Mirrors the downgrade
 /// guard the pool / factory contracts already use:
 ///
 ///   - parse the cw2-stored version + the compile-time CONTRACT_VERSION
@@ -685,9 +679,9 @@ fn query_config(deps: Deps) -> StdResult<ConfigResponse> {
 // `fn`-private / non-`pub` by design — they're internal plumbing for
 // the cross-validation + denom-format paths and shouldn't be part of
 // this contract's public API. The audit-tests in `crate::audit_tests`
-// need to exercise them directly (M-EE-2 round-trip + M-EE-3 unit
-// tests on the validator), so we expose them through a `cfg(test)`
-// module rather than weakening the production visibility.
+// need to exercise them directly (round-trip + unit tests on the
+// validator), so we expose them through a `cfg(test)` module rather
+// than weakening the production visibility.
 
 #[cfg(test)]
 pub mod testing {
@@ -695,7 +689,7 @@ pub mod testing {
     use crate::error::ContractError;
     use serde::Deserialize;
 
-    /// M-EE-2: re-export of the private subset struct so tests can
+    /// Re-export of the private subset struct so tests can
     /// deserialize a synthetic factory response directly. Repeats the
     /// shape rather than re-exposing the original to keep the
     /// production type private.
@@ -718,7 +712,7 @@ pub mod testing {
         // Both deserialize the same JSON to the same field set today.
     };
 
-    /// M-EE-3: re-export of the validator for unit tests.
+    /// Re-export of the validator for unit tests.
     pub fn validate_native_denom_for_test(denom: &str) -> Result<(), ContractError> {
         super::validate_native_denom(denom)
     }

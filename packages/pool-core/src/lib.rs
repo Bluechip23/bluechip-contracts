@@ -29,9 +29,6 @@
 //!     with commit-phase state and handlers.
 //!   - `standard-pool` — plain xyk pool. Thin wrapper that delegates
 //!     every op to functions here.
-//!
-//! STATUS: skeleton. Code extraction from `pool/` happens in subsequent
-//! commits (see H14 split-series plan).
 
 pub mod error;
 pub mod state;
@@ -43,7 +40,7 @@ pub mod liquidity_helpers;
 pub mod liquidity;
 pub mod admin;
 pub mod query;
-/// H-S2 — SubMsg-based deposit balance verification reply handler.
+/// SubMsg-based deposit balance verification reply handler.
 /// Standard-pool's `reply` entry point dispatches `DEPOSIT_VERIFY_REPLY_ID`
 /// here to confirm the actual CW20 balance delta on the pool matches the
 /// credited deposit amount. See module docs for the threat model.

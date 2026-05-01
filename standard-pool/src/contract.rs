@@ -2,12 +2,11 @@
 //! migrate.
 //!
 //! Query dispatch lives in `crate::query`. The `reply` entry point
-//! handles a single id today — `DEPOSIT_VERIFY_REPLY_ID` (H-S2) — used
-//! by the SubMsg-based CW20 balance verification on deposits and
+//! handles a single id today — `DEPOSIT_VERIFY_REPLY_ID` — used by
+//! the SubMsg-based CW20 balance verification on deposits and
 //! add-to-position. Position-NFT ownership is still accepted lazily on
-//! the first deposit via `pool_state.nft_ownership_accepted` (Option X
-//! from the 4b-ii design review); no separate reply id is needed for
-//! that path.
+//! the first deposit via `pool_state.nft_ownership_accepted`; no
+//! separate reply id is needed for that path.
 
 use crate::error::ContractError;
 use crate::msg::{ExecuteMsg, MigrateMsg};
@@ -39,7 +38,9 @@ use pool_core::state::{
 use pool_core::swap::{execute_swap_cw20, simple_swap};
 use pool_factory_interfaces::StandardPoolInstantiateMsg;
 
+/// cw2 contract name written at instantiate / migrate; identifies this binary in on-chain version metadata.
 const CONTRACT_NAME: &str = "bluechip-contracts-standard-pool";
+/// cw2 contract version (sourced from Cargo.toml); compared against the stored value in `migrate` to reject downgrades.
 const CONTRACT_VERSION: &str = env!("CARGO_PKG_VERSION");
 
 // ---------------------------------------------------------------------------
@@ -87,7 +88,7 @@ pub fn instantiate(
     // pool-core dispatches per-TokenType on `asset_infos[i]` and
     // doesn't read this field, so it's a value-only placeholder.
     //
-    // M-S4: keep the wire-format type stable as `Addr` (avoids a state
+    // Keep the wire-format type stable as `Addr` (avoids a state
     // migration on every existing pool record), but choose the
     // placeholder value carefully:
     //   - if any side is a CreatorToken, use that side's CW20 address
@@ -99,9 +100,7 @@ pub fn instantiate(
     //     pool's address is always valid bech32, can never be confused
     //     with a creator CW20 (it isn't one), and is self-referential
     //     enough to make "this field is a placeholder, not a token
-    //     address" obvious to any future reader. Pre-fix the fallback
-    //     was the factory address, which is the wallet that created
-    //     the pool — easy to misread as meaningful when it isn't.
+    //     address" obvious to any future reader.
     let token_address_placeholder = msg
         .pool_token_info
         .iter()
@@ -152,7 +151,7 @@ pub fn instantiate(
     //   - emergency_withdraw_core_drain reads `bluechip_wallet_address`
     //     as the drain recipient. It MUST be a wallet (not the factory
     //     contract) — the factory has no withdrawal path, so funds sent
-    //     there are permanently locked (H-S1).
+    //     there are permanently locked.
     //   - query_fee_info dereferences COMMITFEEINFO unconditionally.
     // The fee rates are zero on a standard pool, so the creator wallet
     // is never paid out in normal flow; we still store the factory's
@@ -229,7 +228,7 @@ fn check_pool_writable(storage: &dyn Storage) -> Result<(), ContractError> {
     Ok(())
 }
 
-/// M-2 deposit-side gate: same semantics as creator-pool's
+/// Deposit-side gate: same semantics as creator-pool's
 /// `check_pool_writable_for_deposit`. Rejects admin / emergency hard
 /// pauses but accepts auto-pause-on-low-liquidity so deposits can
 /// restore reserves.
@@ -292,11 +291,11 @@ pub fn execute(
             min_amount1,
             transaction_deadline,
         } => {
-            // M-2: deposit-side gate permits auto-pause so reserves can
+            // Deposit-side gate permits auto-pause so reserves can
             // be restored. Hard pauses still reject.
             check_pool_writable_for_deposit(deps.storage)?;
             let sender = info.sender.clone();
-            // H-S2: standard pools wrap arbitrary CW20s, so we route every
+            // Standard pools wrap arbitrary CW20s, so we route every
             // deposit through the SubMsg-based balance verification path.
             // The reply lands in `reply()` below, where a fee-on-transfer /
             // rebasing CW20 mismatch reverts the entire transaction.
@@ -322,7 +321,7 @@ pub fn execute(
         } => {
             check_pool_writable_for_deposit(deps.storage)?;
             let sender = info.sender.clone();
-            // H-S2: same SubMsg verify path as DepositLiquidity above.
+            // Same SubMsg verify path as DepositLiquidity above.
             execute_add_to_position_with_verify(
                 deps,
                 env,
@@ -406,27 +405,26 @@ pub fn execute(
     }
 }
 
-/// M-S1 — accept NFT ownership in the same transaction as pool creation.
+/// Accept NFT ownership in the same transaction as pool creation.
 ///
 /// Background: the factory's `finalize_standard_pool` reply chain
 /// already dispatches `Cw721ExecuteMsg::TransferOwnership { new_owner:
 /// pool }` to the position-NFT contract. cw_ownable's two-step transfer
 /// pattern leaves the pool as `pending_owner` until the pool itself
-/// sends `AcceptOwnership`. Pre-fix, that acceptance was deferred
-/// until the first user deposit (`pool_state.nft_ownership_accepted`
+/// sends `AcceptOwnership`. Without this handler, acceptance would be
+/// deferred until the first user deposit (`pool_state.nft_ownership_accepted`
 /// gate), opening a "pending-ownership window" between pool creation
 /// and first deposit during which the NFT contract's owner is still
 /// the factory.
 ///
-/// Fix: the factory appends an `AcceptNftOwnership {}` execute call to
-/// the pool to its finalize response, immediately after the
-/// TransferOwnership to the NFT. This handler then sends the matching
-/// AcceptOwnership message back to the NFT and flips the flag.
-/// Pool-core's deposit handler still has its `if !nft_ownership_accepted`
-/// branch as a backstop for any path that bypasses this trigger
-/// (e.g. test fixtures or upgrades from a pre-M-S1 standard pool that
-/// never received the trigger), so the lazy-accept behavior remains
-/// available as a fallback.
+/// The factory appends an `AcceptNftOwnership {}` execute call to the
+/// pool to its finalize response, immediately after the TransferOwnership
+/// to the NFT. This handler then sends the matching AcceptOwnership
+/// message back to the NFT and flips the flag. Pool-core's deposit
+/// handler still has its `if !nft_ownership_accepted` branch as a
+/// backstop for any path that bypasses this trigger (e.g. test
+/// fixtures), so the lazy-accept behavior remains available as a
+/// fallback.
 ///
 /// Idempotent: returns Ok with no messages if the flag is already set.
 /// Authorisation: sender must equal `POOL_INFO.factory_addr` — only
@@ -506,7 +504,7 @@ fn execute_emergency_withdraw(
 // Reply
 // ---------------------------------------------------------------------------
 
-/// H-S2: only one reply id is wired today — `DEPOSIT_VERIFY_REPLY_ID`,
+/// Only one reply id is wired today — `DEPOSIT_VERIFY_REPLY_ID`,
 /// which the verify-aware deposit / add-to-position paths emit on their
 /// final SubMsg. The handler queries each CW20 side's post-balance and
 /// asserts the delta matches the credited amount. A mismatch returns an
@@ -538,7 +536,7 @@ pub fn reply(deps: DepsMut, env: Env, msg: cosmwasm_std::Reply) -> StdResult<Res
 
 #[entry_point]
 pub fn migrate(deps: DepsMut, _env: Env, msg: MigrateMsg) -> StdResult<Response> {
-    // M-3: reject downgrades. Mirrors the creator-pool migrate guard —
+    // Reject downgrades. Mirrors the creator-pool migrate guard —
     // see that handler for the rationale. Tolerates a missing cw2 entry
     // (legacy pre-cw2 / test fixtures) by skipping the check; production
     // pools always set cw2 at instantiate time.

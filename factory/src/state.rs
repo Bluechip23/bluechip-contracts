@@ -38,11 +38,9 @@ pub const POOLS_BY_ID: Map<u64, PoolDetails> = Map::new("pools_by_id");
 pub const POOLS_BY_CONTRACT_ADDRESS: Map<Addr, PoolStateResponseForFactory> =
     Map::new("pools_by_contract_address");
 // Maximum age (seconds) of a Pyth price we are willing to use for USD
-// conversions. Tightened from 300s to 90s: a 5-minute window let an
-// attacker who spotted a favorable price pick-and-choose any moment in
-// the last 5 minutes to land a commit/swap. 90 seconds is inside typical
-// Pyth publish cadence while still cutting the attacker's useful window
-// to a fraction of a volatility half-life.
+// conversions. 90 seconds is inside typical Pyth publish cadence while
+// still cutting an attacker's useful "pick a favorable spot in the
+// last N seconds" window to a fraction of a volatility half-life.
 pub const MAX_PRICE_AGE_SECONDS_BEFORE_STALE: u64 = 90;
 
 // Standard timelock applied to admin-initiated mutations of factory state
@@ -63,16 +61,11 @@ pub const FIRST_THRESHOLD_TIMESTAMP: Item<Timestamp> = Item::new("first_pool_tim
 pub const POOL_THRESHOLD_MINTED: Map<u64, bool> = Map::new("pool_threshold_minted");
 pub const PENDING_POOL_CONFIG: Map<u64, PendingPoolConfig> = Map::new("pending_pool_config");
 
-// I-6: per-address rate limit on commit-pool creation. Records the
-// timestamp of each creator's last successful `Create` so the next
-// call from the same `info.sender` is rejected if it lands within
-// `COMMIT_POOL_CREATE_RATE_LIMIT_SECONDS` of the prior. Defends against
-// trivial spam-creates that inflate the commit-pool ordinal and
-// gas-amplify any future per-pool storage scan. Per-address, not
-// global: legitimate operators creating many pools from a single
-// admin EOA still need to wait the cooldown each time, but coordinated
-// multi-address spam still has to fund + sign from each address it
-// rotates through.
+// Per-address rate limit on commit-pool creation: timestamp of each
+// creator's last successful `Create`. Defends against spam that would
+// inflate the commit-pool ordinal and gas-amplify any future per-pool
+// storage scan. Per-address (not global) so coordinated multi-address
+// spam still has to fund + sign from each address it rotates through.
 pub const LAST_COMMIT_POOL_CREATE_AT: Map<Addr, Timestamp> =
     Map::new("last_commit_pool_create_at");
 
@@ -95,11 +88,9 @@ pub const ORACLE_UPDATE_BOUNTY_USD: Item<Uint128> = Item::new("oracle_update_bou
 
 // Hard cap to protect the factory's reserve if the admin key is
 // compromised. $0.10 USD per successful update (6 decimals). Realistic
-// keeper gas is on the order of $0.003–$0.03 per oracle update on typical
-// Cosmos chains; $0.10 leaves generous headroom for gas spikes while
-// capping the yearly drain if admin is compromised: $0.10 × 288 updates/day
-// = $28.80/day ≈ $10.5k/year max. The prior $1.00 cap was 10× higher and
-// pure overpayment.
+// keeper gas is ~$0.003–$0.03 per oracle update on typical Cosmos
+// chains; $0.10 leaves headroom for gas spikes while capping the yearly
+// drain at ~$28.80/day ≈ $10.5k/year if admin is compromised.
 pub const MAX_ORACLE_UPDATE_BOUNTY_USD: Uint128 = Uint128::new(100_000);
 
 // Native denom the bounty is paid in (after USD->bluechip conversion).
@@ -116,10 +107,8 @@ pub const DISTRIBUTION_BOUNTY_USD: Item<Uint128> = Item::new("distribution_bount
 
 // Hard cap. $0.10 USD per batch (6 decimals). A distribution batch is
 // up to MAX_DISTRIBUTIONS_PER_TX=40 mints + a handful of storage writes;
-// realistic gas ~$0.01–$0.10. The $0.10 cap leaves margin for expensive
-// chains and gas-price spikes but still caps admin-compromise blast
-// radius: at worst a compromised admin burns $0.10 × committer_count/40
-// per pool's full distribution. Was $1.00, which was ~10× overpayment.
+// realistic gas ~$0.01–$0.10. Caps admin-compromise blast radius at
+// $0.10 × committer_count/40 per pool's full distribution.
 pub const MAX_DISTRIBUTION_BOUNTY_USD: Uint128 = Uint128::new(100_000);
 
 // ForceRotateOraclePools is a 2-step action: admin proposes a rotation,
@@ -161,30 +150,17 @@ pub struct PendingPoolConfig {
 #[cw_serde]
 pub struct FactoryInstantiate {
     pub factory_admin_address: Addr,
-    // M-2: `commit_amount_for_threshold_bluechip` removed. The field was
-    // never read anywhere in the contract — only written from deploy
-    // scripts and tests, and ignored at every consumer. Keeping it
-    // around invited a future change to silently start consuming
-    // operator-supplied stale values.
-    //
-    // cw_serde does NOT add `deny_unknown_fields`, so already-stored
-    // FactoryInstantiate records carrying this field will deserialize
-    // cleanly into the new shape (the unknown key is ignored). Deploy
-    // scripts that pass the field on instantiate also continue to
-    // succeed — JSON deserialization at the contract boundary
-    // tolerates extra keys.
     pub commit_threshold_limit_usd: Uint128,
     pub pyth_contract_addr_for_conversions: String,
     pub pyth_atom_usd_price_feed_id: String,
     pub cw20_token_contract_id: u64,
     pub cw721_nft_contract_id: u64,
     pub create_pool_wasm_contract_id: u64,
-    /// Code ID for the standard-pool wasm (split out of creator-pool in
-    /// H14). Defaults to `0` on old serialized records so factories
-    /// deployed pre-split continue to deserialize; operators must propose
-    /// a config update that sets this field before `CreateStandardPool`
-    /// can succeed. Standard pools instantiate against THIS code_id,
-    /// not `create_pool_wasm_contract_id`.
+    /// Code ID for the standard-pool wasm. Defaults to `0` on old
+    /// serialized records so pre-split factories continue to
+    /// deserialize; operators must propose a config update that sets
+    /// this before `CreateStandardPool` can succeed. Standard pools
+    /// instantiate against THIS code_id, not `create_pool_wasm_contract_id`.
     #[serde(default)]
     pub standard_pool_wasm_contract_id: u64,
     pub bluechip_wallet_address: Addr,

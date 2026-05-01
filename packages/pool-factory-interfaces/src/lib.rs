@@ -134,7 +134,7 @@ pub enum ExpandEconomyExecuteMsg {
 /// because both sides need to agree on the layout exactly. The pool's
 /// instantiate handler dispatches between this struct and the existing
 /// commit-pool instantiate shape based on which one deserializes
-/// successfully (added in H14 Commit 3).
+/// successfully.
 #[cw_serde]
 pub struct StandardPoolInstantiateMsg {
     pub pool_id: u64,
@@ -145,6 +145,6 @@ pub struct StandardPoolInstantiateMsg {
     /// completes. Sourced from the factory's `bluechip_wallet_address`
     /// at instantiate time. Must NOT default to the factory address —
     /// the factory has no withdrawal mechanism, so funds drained to it
-    /// would be permanently locked (H-S1).
+    /// would be permanently locked.
     pub bluechip_wallet_address: Addr,
 }

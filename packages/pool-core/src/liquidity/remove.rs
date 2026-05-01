@@ -116,7 +116,7 @@ pub fn remove_all_liquidity(
     CREATOR_FEE_POT.save(deps.storage, &pot)?;
 
     POOL_STATE.save(deps.storage, &pool_state)?;
-    // M-2: arm auto-pause if this remove dropped reserves below MIN.
+    // Arm auto-pause if this remove dropped reserves below MIN.
     // Future swaps/removes will reject; the next deposit that restores
     // reserves above MIN auto-clears both flags.
     let auto_paused_now = maybe_auto_pause_on_low_liquidity(deps.storage, &pool_state)?;
@@ -326,7 +326,7 @@ pub fn remove_partial_liquidity(
         .checked_sub(liquidity_to_remove)?;
     POOL_STATE.save(deps.storage, &pool_state)?;
     POOL_FEE_STATE.save(deps.storage, &pool_fee_state)?;
-    // M-2: arm auto-pause if this partial-remove dropped reserves below MIN.
+    // Arm auto-pause if this partial-remove dropped reserves below MIN.
     let auto_paused_now = maybe_auto_pause_on_low_liquidity(deps.storage, &pool_state)?;
 
     liquidity_position.last_fee_collection = env.block.time.seconds();

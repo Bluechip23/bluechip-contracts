@@ -50,7 +50,7 @@ pub fn calculate_mint_amount(seconds_elapsed: u64, pools_created: u64) -> StdRes
 /// `pool_id` is the sequential ID of the pool — the decay formula uses this as `x`
 /// so that later pools receive fewer minted tokens.
 ///
-/// M-S3 — STANDARD POOLS DO NOT MINT.
+/// STANDARD POOLS DO NOT MINT.
 /// Only commit pools cross a threshold; standard pools wrap pre-existing
 /// assets and have no commit-phase concept. The single call site,
 /// `execute_notify_threshold_crossed`, already rejects
@@ -70,7 +70,7 @@ pub fn calculate_and_mint_bluechip(
 ) -> Result<Vec<CosmosMsg>, ContractError> {
     let messages = vec![];
 
-    // M-S3 defense-in-depth: hard guard that this function is only
+    // Defense-in-depth: hard guard that this function is only
     // ever called for commit pools. Belongs above the mock-feature
     // short-circuit so even mock builds enforce the invariant.
     let pool_details = POOLS_BY_ID.load(deps.storage, pool_id)?;
@@ -115,7 +115,7 @@ pub fn calculate_and_mint_bluechip(
     // `commit_pool_ordinal` existed have it default to zero on
     // deserialize; for those, fall back to `pool_id` to preserve the
     // exact mint amount they would have produced under the old code.
-    // (`pool_details` is reused from the M-S3 standard-pool guard above.)
+    // (`pool_details` is reused from the standard-pool guard above.)
     let decay_x = if pool_details.commit_pool_ordinal == 0 {
         pool_id
     } else {

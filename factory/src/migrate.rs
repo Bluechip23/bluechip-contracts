@@ -6,7 +6,9 @@ use semver::Version;
 
 use crate::error::ContractError;
 
+/// cw2 contract name persisted on every (re)instantiate and migrate.
 const CONTRACT_NAME: &str = "crates.io:bluechip-factory";
+/// cw2 contract version, sourced from Cargo.toml at compile time.
 const CONTRACT_VERSION: &str = env!("CARGO_PKG_VERSION");
 
 #[cfg_attr(not(feature = "library"), entry_point)]
@@ -15,12 +17,11 @@ pub fn migrate(deps: DepsMut, _env: Env, _msg: Empty) -> Result<Response, Contra
     let current: Version = CONTRACT_VERSION.parse()?;
     let stored_semver: Version = stored_version.version.parse()?;
 
-    // M-3: strictly reject downgrades. Pre-fix this branch returned
-    // `Ok(no-op)` when stored >= current, but the chain has already
-    // replaced the wasm bytecode by the time this handler runs — a no-op
-    // here just leaves the cw2 version stale while running the older
-    // code. A hard `Err` causes the chain to revert the migration and
-    // keep the previous (newer) wasm in place.
+    // Strictly reject downgrades. The chain has already replaced the wasm
+    // bytecode by the time this handler runs — a no-op here just leaves
+    // the cw2 version stale while running the older code. A hard `Err`
+    // causes the chain to revert the migration and keep the previous
+    // (newer) wasm in place.
     //
     // Equal-version migrations are allowed for idempotent re-runs;
     // strictly-greater stored is rejected.

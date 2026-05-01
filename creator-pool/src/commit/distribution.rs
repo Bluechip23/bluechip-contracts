@@ -42,7 +42,7 @@ pub fn execute_continue_distribution(
         return Err(ContractError::PoolPausedLowLiquidity {});
     }
 
-    // M-5: per-address rate limit. Same-block spam from a single keeper
+    // Per-address rate limit. Same-block spam from a single keeper
     // (or two competing keepers) wastes gas on no-op tx after the
     // ledger is empty / cursor is past the end. Reject if this address
     // called within the last CONTINUE_DISTRIBUTION_RATE_LIMIT_SECONDS.

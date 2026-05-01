@@ -138,7 +138,6 @@ fn execute_commit_logic(
     let fee_info = COMMITFEEINFO.load(deps.storage)?;
     let sender = info.sender.clone();
 
-    // Validate asset type
     if !asset.info.equal(&pool_info.pool_info.asset_infos[0])
         && !asset.info.equal(&pool_info.pool_info.asset_infos[1])
     {
@@ -193,19 +192,17 @@ fn execute_commit_logic(
         TokenType::Native { denom } if denom == &bluechip_denom => {
             // Strict exact-match on attached funds via `cw_utils::must_pay`.
             //
-            // `must_pay` enforces a stronger invariant than the previous
-            // `find(denom).amount.unwrap_or_default()` pattern:
-            //
+            // `must_pay` enforces:
             //   1. Funds list must be exactly one coin (rejects multi-denom).
-            //      Pre-fix, an attacker (or careless frontend) could attach
-            //      `[ubluechip: amount, ibc/...: Y]` and the IBC denom
-            //      would be silently absorbed into the pool's bank balance
-            //      with no recovery path — H-1 from the creator-pool audit.
+            //      An attacker (or careless frontend) attaching
+            //      `[ubluechip: amount, ibc/...: Y]` would otherwise have the
+            //      IBC denom silently absorbed into the pool's bank balance
+            //      with no recovery path.
             //   2. Coin amount must be non-zero.
             //   3. Coin denom must match the canonical bluechip denom.
             //
             // The post-condition `sent == amount` then catches under/
-            // overpayment in the bluechip side, preserving the original
+            // overpayment in the bluechip side, preserving the
             // exact-amount semantics that `simple_swap` already enforces
             // via `confirm_sent_native_balance` (which delegates to
             // must_pay too).
@@ -221,7 +218,6 @@ fn execute_commit_logic(
                 return Err(ContractError::MismatchAmount {});
             }
 
-            // Calculate fees
             let (commit_fee_bluechip_amt, commit_fee_creator_amt) =
                 calculate_commit_fees(amount, &fee_info)?;
             let total_fees = commit_fee_bluechip_amt.checked_add(commit_fee_creator_amt)?;
@@ -233,7 +229,6 @@ fn execute_commit_logic(
                 return Err(ContractError::InvalidFee {});
             }
 
-            // Build fee transfer messages
             let mut messages = build_fee_messages(
                 &fee_info,
                 denom,
@@ -294,7 +289,6 @@ fn execute_commit_logic(
                     }
                     THRESHOLD_PROCESSING.save(deps.storage, &true)?;
 
-                    // Calculate exact amounts for threshold crossing
                     let usd_to_threshold = commit_config
                         .commit_amount_for_threshold_usd
                         .checked_sub(current_usd_raised)

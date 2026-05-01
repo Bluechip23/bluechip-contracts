@@ -14,17 +14,27 @@ use cw_storage_plus::{Item, Map};
 
 // -- Commit-phase-only storage -------------------------------------------
 
+/// Running total of USD value committed to the pool pre-threshold.
 pub const USD_RAISED_FROM_COMMIT: Item<Uint128> = Item::new("usd_raised");
+/// Per-committer cumulative deposit/payment record.
 pub const COMMIT_INFO: Map<&Addr, Committing> = Map::new("sub_info");
+/// Running total of native bluechip raised from commits pre-threshold.
 pub const NATIVE_RAISED_FROM_COMMIT: Item<Uint128> = Item::new("bluechip_raised");
+/// Per-committer USD ledger; drained during post-threshold distribution.
 pub const COMMIT_LEDGER: cw_storage_plus::Map<&Addr, Uint128> =
     cw_storage_plus::Map::new("commit_usd");
+/// Re-entrancy/inflight flag set while a threshold-crossing commit is mid-execution.
 pub const THRESHOLD_PROCESSING: Item<bool> = Item::new("threshold_processing");
+/// Fixed split of creator-token amounts paid out at threshold crossing.
 pub const THRESHOLD_PAYOUT_AMOUNTS: Item<ThresholdPayoutAmounts> =
     Item::new("threshold_payout_amounts");
+/// Cursor + accounting for the post-threshold distribution batch loop.
 pub const DISTRIBUTION_STATE: Item<DistributionState> = Item::new("distribution_state");
+/// Threshold target, max bluechip lock, and excess-lock duration.
 pub const COMMIT_LIMIT_INFO: Item<CommitLimitInfo> = Item::new("commit_config");
+/// Creator-side excess liquidity position created when raised bluechip exceeds the per-pool cap.
 pub const CREATOR_EXCESS_POSITION: Item<CreatorExcessLiquidity> = Item::new("creator_excess");
+/// Timestamp of the most recent threshold-crossing attempt; used by stuck-state recovery.
 pub const LAST_THRESHOLD_ATTEMPT: Item<Timestamp> = Item::new("last_threshold_attempt");
 
 // Set to `true` when NotifyThresholdCrossed to the factory failed via the
@@ -53,8 +63,11 @@ pub const REPLY_ID_FACTORY_NOTIFY_RETRY: u64 = 2;
 
 // -- Commit-phase-only constants -----------------------------------------
 
+/// Default per-distribution gas estimate used to size batch dispatch.
 pub const DEFAULT_ESTIMATED_GAS_PER_DISTRIBUTION: u64 = 50_000;
+/// Default per-tx gas budget the batch sizer divides by `estimated_gas_per_distribution`.
 pub const DEFAULT_MAX_GAS_PER_TX: u64 = 2_000_000;
+/// Hard cap on distributions processed per `ContinueDistribution` call.
 pub const MAX_DISTRIBUTIONS_PER_TX: u32 = 40;
 
 // Maximum wall-clock time between successful distribution batches before the
@@ -65,7 +78,7 @@ pub const MAX_DISTRIBUTIONS_PER_TX: u32 = 40;
 // keeper outage. 24h gives operators a full day to react.
 pub const DISTRIBUTION_STALL_TIMEOUT_SECONDS: u64 = 86_400;
 
-// M-5: per-keeper rate limit on `ContinueDistribution`. Prevents a single
+// Per-keeper rate limit on `ContinueDistribution`. Prevents a single
 // keeper (or a competing keeper losing the race) from same-block-spamming
 // no-op tx that pay no bounty but still cost ledger reads / gas. Each
 // `info.sender` must wait `CONTINUE_DISTRIBUTION_RATE_LIMIT_SECONDS`
@@ -94,16 +107,27 @@ pub const CONTINUE_DISTRIBUTION_RATE_LIMIT_SECONDS: u64 = 5;
 
 #[cw_serde]
 pub struct DistributionState {
+    /// True while a distribution is in-flight; false after completion or recovery shutdown.
     pub is_distributing: bool,
+    /// Total creator-token amount to be distributed across all committers.
     pub total_to_distribute: Uint128,
+    /// Snapshot of total committed USD at threshold-cross; denominator for share math.
     pub total_committed_usd: Uint128,
+    /// Cursor into COMMIT_LEDGER; next batch starts strictly after this key.
     pub last_processed_key: Option<Addr>,
+    /// Informational counter of remaining committers (ground truth is the ledger).
     pub distributions_remaining: u32,
+    /// Adaptive estimate of gas consumed per distribution entry.
     pub estimated_gas_per_distribution: u64,
+    /// Per-tx gas budget used to derive batch size.
     pub max_gas_per_tx: u64,
+    /// Size of the last batch that completed successfully (for adaptive sizing).
     pub last_successful_batch_size: Option<u32>,
+    /// Count of consecutive failed batches; triggers stall after threshold.
     pub consecutive_failures: u32,
+    /// Block time when distribution started.
     pub started_at: Timestamp,
+    /// Block time of the most recent successful batch (used by stall detection).
     pub last_updated: Timestamp,
 }
 
@@ -117,35 +141,54 @@ pub enum RecoveryType {
 
 #[cw_serde]
 pub struct Committing {
+    /// Pool this commit history is associated with.
     pub pool_contract_address: Addr,
+    /// Address that owns this committing record.
     pub committer: Addr,
+    /// Cumulative USD value committed by this address.
     pub total_paid_usd: Uint128,
+    /// Cumulative native bluechip committed by this address.
     pub total_paid_bluechip: Uint128,
+    /// Block time of the most recent commit by this address.
     pub last_committed: Timestamp,
+    /// Native bluechip on the most recent commit (for rate-limiting/UX).
     pub last_payment_bluechip: Uint128,
+    /// USD value on the most recent commit.
     pub last_payment_usd: Uint128,
 }
 
 #[cw_serde]
 pub struct ThresholdPayoutAmounts {
+    /// Creator-token amount minted to the creator wallet at threshold-cross.
     pub creator_reward_amount: Uint128,
+    /// Creator-token amount minted to the Bluechip wallet at threshold-cross.
     pub bluechip_reward_amount: Uint128,
+    /// Creator-token amount minted to seed the AMM reserves.
     pub pool_seed_amount: Uint128,
+    /// Creator-token amount minted to fund the post-threshold committer distribution.
     pub commit_return_amount: Uint128,
 }
 
 #[cw_serde]
 pub struct CommitLimitInfo {
+    /// USD threshold target; once total committed USD reaches this, the pool seeds.
     pub commit_amount_for_threshold_usd: Uint128,
+    /// Max native bluechip locked into pool reserves; remainder becomes creator excess.
     pub max_bluechip_lock_per_pool: Uint128,
+    /// Lock duration (days) on the creator-excess liquidity position.
     pub creator_excess_liquidity_lock_days: u64,
 }
 
 #[cw_serde]
 pub struct CreatorExcessLiquidity {
+    /// Creator wallet entitled to claim the excess once unlocked.
     pub creator: Addr,
+    /// Bluechip portion of the excess (above max_bluechip_lock_per_pool).
     pub bluechip_amount: Uint128,
+    /// Creator-token portion of the excess proportional to bluechip_amount.
     pub token_amount: Uint128,
+    /// Earliest block time at which the creator may claim this excess.
     pub unlock_time: Timestamp,
+    /// Position-NFT id minted on claim (None until claimed).
     pub excess_nft_id: Option<String>,
 }

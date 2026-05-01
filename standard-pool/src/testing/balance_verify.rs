@@ -233,8 +233,8 @@ fn reply_rejects_fee_on_transfer_shortfall() {
     let err = reply(deps.as_mut(), mock_env(), ok_reply()).unwrap_err();
     let msg = err.to_string();
     assert!(
-        msg.contains("H-S2") && msg.contains("balance delta"),
-        "shortfall must surface a clear H-S2 error, got: {}",
+        msg.contains("balance delta") && msg.contains("does not match"),
+        "shortfall must surface a clear balance-delta-mismatch error, got: {}",
         msg
     );
 
@@ -260,7 +260,7 @@ fn reply_rejects_inflation_overage() {
     let err = reply(deps.as_mut(), mock_env(), ok_reply()).unwrap_err();
     assert!(
         err.to_string().contains("balance delta"),
-        "overage must surface the same H-S2 mismatch error: {}",
+        "overage must surface the same balance-delta mismatch error: {}",
         err
     );
 }

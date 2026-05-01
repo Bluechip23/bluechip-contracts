@@ -27,8 +27,6 @@ pub struct CreatePool {
 pub struct PoolConfigUpdate {
     pub lp_fee: Option<Decimal>,
     pub min_commit_interval: Option<u64>,
-    // `usd_payment_tolerance_bps` removed (was admin-tunable but never
-    // read by any execution path). Mirror of `pool_core::msg::PoolConfigUpdate`.
     pub oracle_address: Option<String>,
 }
 
@@ -76,7 +74,7 @@ pub struct PoolDetails {
     /// `#[serde(default)]` makes old serialized records — written before
     /// this field existed — round-trip as `PoolKind::Commit`, which is
     /// the correct legacy classification since every pool created prior
-    /// to H14 was a commit pool.
+    /// to standard-pool support was a commit pool.
     #[serde(default)]
     pub pool_kind: PoolKind,
     /// 1-indexed ordinal among commit pools at the time this pool was

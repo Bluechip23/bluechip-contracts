@@ -58,7 +58,7 @@ pub fn execute_pause(
     }
     let pool_contract = pool_info.pool_info.contract_addr.to_string();
     POOL_PAUSED.save(deps.storage, &true)?;
-    // M-2: explicit admin pause is "hard" — clear any prior auto-pause
+    // Explicit admin pause is "hard" — clear any prior auto-pause
     // state so a deposit-driven auto-unpause can't override the admin's
     // intent. If reserves happen to be low at admin-pause time, recovery
     // requires explicit Unpause, not an opportunistic deposit.
@@ -82,7 +82,7 @@ pub fn execute_unpause(
     }
     let pool_contract = pool_info.pool_info.contract_addr.to_string();
     POOL_PAUSED.save(deps.storage, &false)?;
-    // M-2: clearing admin pause also clears the auto-flag. The pool is
+    // Clearing admin pause also clears the auto-flag. The pool is
     // now unpaused regardless of reason — the next swap/remove that
     // drains reserves below MIN will re-arm the auto-pause cleanly.
     POOL_PAUSED_AUTO.save(deps.storage, &false)?;
@@ -120,7 +120,7 @@ pub fn execute_emergency_withdraw_initiate(
 
     let now = env.block.time;
     POOL_PAUSED.save(deps.storage, &true)?;
-    // M-2: emergency_withdraw_initiate is a "hard" pause — must not be
+    // emergency_withdraw_initiate is a "hard" pause — must not be
     // recoverable via opportunistic deposit. Override any prior auto-flag
     // so the 24h timelock can't be circumvented by a low-liquidity
     // bystander pushing reserves above MIN.
@@ -279,7 +279,7 @@ pub fn execute_cancel_emergency_withdraw(
     }
     PENDING_EMERGENCY_WITHDRAW.remove(deps.storage);
     POOL_PAUSED.save(deps.storage, &false)?;
-    // M-2: emergency cancel clears any auto-flag (the cancel returns
+    // Emergency cancel clears any auto-flag (the cancel returns
     // the pool to fully open state).
     POOL_PAUSED_AUTO.save(deps.storage, &false)?;
     Ok(Response::new()
