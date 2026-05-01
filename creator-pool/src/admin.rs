@@ -149,6 +149,19 @@ pub fn execute_recover_stuck_states(
         return Err(ContractError::Unauthorized {});
     }
 
+    // M-6: reject recovery on a drained pool. None of the three recovery
+    // branches (StuckThreshold, StuckDistribution, StuckReentrancyGuard)
+    // produce any fund-flow on a drained pool — every downstream consumer
+    // (commit, ContinueDistribution, swap) re-checks `ensure_not_drained`
+    // and fails closed — but `recover_distribution` re-saves
+    // DISTRIBUTION_STATE with `is_distributing = true`, leaving operators
+    // who poll `QueryMsg::DistributionState` after a drain seeing
+    // `is_distributing: true, is_stalled: false` while every keeper call
+    // fails. Failing here surfaces the post-drain state cleanly and
+    // keeps the recovery path's invariants tight ("only meaningful on a
+    // live pool").
+    ensure_not_drained(deps.storage)?;
+
     let mut attributes = vec![("action", "recover_stuck_states".to_string())];
     let mut recovered_items = vec![];
 

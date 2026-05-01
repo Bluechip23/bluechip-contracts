@@ -2643,11 +2643,17 @@ fn test_swap_triggers_pause_at_threshold() {
 
 #[test]
 fn test_add_liquidity_unpauses_pool() {
+    use crate::state::POOL_PAUSED_AUTO;
     let mut deps = mock_dependencies();
 
-    // Setup pool with low reserves and pause it
+    // Setup pool with low reserves and simulate an auto-pause (M-2):
+    // POOL_PAUSED + POOL_PAUSED_AUTO both true means "paused because
+    // a swap or remove dropped reserves below MIN, recoverable via
+    // deposit". Without POOL_PAUSED_AUTO, the deposit treats this as
+    // a hard pause and refuses to clear it.
     setup_pool_with_reserves(&mut deps, Uint128::new(5000), Uint128::new(5000));
     POOL_PAUSED.save(&mut deps.storage, &true).unwrap();
+    POOL_PAUSED_AUTO.save(&mut deps.storage, &true).unwrap();
 
     // Native side only — token1 is a CW20 and flows via TransferFrom,
     // not native attached funds. The H-2 reject-extras gate rejects any

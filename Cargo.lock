@@ -347,6 +347,7 @@ dependencies = [
  "pool-core",
  "pool-factory-interfaces",
  "proptest",
+ "semver",
  "thiserror 2.0.12",
 ]
 

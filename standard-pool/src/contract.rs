@@ -204,6 +204,19 @@ fn check_pool_writable(storage: &dyn Storage) -> Result<(), ContractError> {
     Ok(())
 }
 
+/// M-2 deposit-side gate: same semantics as creator-pool's
+/// `check_pool_writable_for_deposit`. Rejects admin / emergency hard
+/// pauses but accepts auto-pause-on-low-liquidity so deposits can
+/// restore reserves.
+fn check_pool_writable_for_deposit(storage: &dyn Storage) -> Result<(), ContractError> {
+    use pool_core::state::{pause_kind, PauseKind};
+    ensure_not_drained(storage)?;
+    match pause_kind(storage)? {
+        PauseKind::None | PauseKind::AutoLowLiquidity => Ok(()),
+        PauseKind::Hard => Err(ContractError::PoolPausedLowLiquidity {}),
+    }
+}
+
 #[cfg_attr(not(feature = "library"), entry_point)]
 pub fn execute(
     deps: DepsMut,
@@ -253,7 +266,9 @@ pub fn execute(
             min_amount1,
             transaction_deadline,
         } => {
-            check_pool_writable(deps.storage)?;
+            // M-2: deposit-side gate permits auto-pause so reserves can
+            // be restored. Hard pauses still reject.
+            check_pool_writable_for_deposit(deps.storage)?;
             let sender = info.sender.clone();
             execute_deposit_liquidity(
                 deps,
@@ -275,7 +290,7 @@ pub fn execute(
             min_amount1,
             transaction_deadline,
         } => {
-            check_pool_writable(deps.storage)?;
+            check_pool_writable_for_deposit(deps.storage)?;
             let sender = info.sender.clone();
             execute_add_to_position(
                 deps,

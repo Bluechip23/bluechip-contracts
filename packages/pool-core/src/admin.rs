@@ -16,7 +16,7 @@ use crate::msg::PoolConfigUpdate;
 use crate::state::{
     EmergencyWithdrawalInfo, COMMITFEEINFO, CREATOR_FEE_POT, EMERGENCY_DRAINED,
     EMERGENCY_WITHDRAWAL, EMERGENCY_WITHDRAW_DELAY_SECONDS, ORACLE_INFO, PENDING_EMERGENCY_WITHDRAW,
-    POOL_FEE_STATE, POOL_INFO, POOL_PAUSED, POOL_SPECS, POOL_STATE,
+    POOL_FEE_STATE, POOL_INFO, POOL_PAUSED, POOL_PAUSED_AUTO, POOL_SPECS, POOL_STATE,
 };
 use cosmwasm_std::{
     Addr, CosmosMsg, Decimal, DepsMut, Env, MessageInfo, Response, StdError, StdResult, Storage,
@@ -58,6 +58,11 @@ pub fn execute_pause(
     }
     let pool_contract = pool_info.pool_info.contract_addr.to_string();
     POOL_PAUSED.save(deps.storage, &true)?;
+    // M-2: explicit admin pause is "hard" — clear any prior auto-pause
+    // state so a deposit-driven auto-unpause can't override the admin's
+    // intent. If reserves happen to be low at admin-pause time, recovery
+    // requires explicit Unpause, not an opportunistic deposit.
+    POOL_PAUSED_AUTO.save(deps.storage, &false)?;
     Ok(Response::new()
         .add_attribute("action", "pause")
         .add_attribute("pool_contract", pool_contract)
@@ -77,6 +82,10 @@ pub fn execute_unpause(
     }
     let pool_contract = pool_info.pool_info.contract_addr.to_string();
     POOL_PAUSED.save(deps.storage, &false)?;
+    // M-2: clearing admin pause also clears the auto-flag. The pool is
+    // now unpaused regardless of reason — the next swap/remove that
+    // drains reserves below MIN will re-arm the auto-pause cleanly.
+    POOL_PAUSED_AUTO.save(deps.storage, &false)?;
     Ok(Response::new()
         .add_attribute("action", "unpause")
         .add_attribute("pool_contract", pool_contract)
@@ -111,6 +120,11 @@ pub fn execute_emergency_withdraw_initiate(
 
     let now = env.block.time;
     POOL_PAUSED.save(deps.storage, &true)?;
+    // M-2: emergency_withdraw_initiate is a "hard" pause — must not be
+    // recoverable via opportunistic deposit. Override any prior auto-flag
+    // so the 24h timelock can't be circumvented by a low-liquidity
+    // bystander pushing reserves above MIN.
+    POOL_PAUSED_AUTO.save(deps.storage, &false)?;
     let effective_after = now.plus_seconds(EMERGENCY_WITHDRAW_DELAY_SECONDS);
     PENDING_EMERGENCY_WITHDRAW.save(deps.storage, &effective_after)?;
 
@@ -265,6 +279,9 @@ pub fn execute_cancel_emergency_withdraw(
     }
     PENDING_EMERGENCY_WITHDRAW.remove(deps.storage);
     POOL_PAUSED.save(deps.storage, &false)?;
+    // M-2: emergency cancel clears any auto-flag (the cancel returns
+    // the pool to fully open state).
+    POOL_PAUSED_AUTO.save(deps.storage, &false)?;
     Ok(Response::new()
         .add_attribute("action", "emergency_withdraw_cancelled")
         .add_attribute(

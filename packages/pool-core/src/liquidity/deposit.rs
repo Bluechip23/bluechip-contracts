@@ -27,7 +27,7 @@ use crate::liquidity_helpers::{
 use crate::state::{
     PoolInfo, PoolSpecs, Position, TokenMetadata, LIQUIDITY_POSITIONS, MINIMUM_LIQUIDITY,
     NEXT_POSITION_ID, OWNER_POSITIONS, POOL_ANALYTICS, POOL_FEE_STATE, POOL_INFO, POOL_PAUSED,
-    POOL_SPECS, POOL_STATE, REENTRANCY_LOCK,
+    POOL_PAUSED_AUTO, POOL_SPECS, POOL_STATE, REENTRANCY_LOCK,
 };
 use crate::swap::update_price_accumulator;
 
@@ -347,10 +347,25 @@ fn execute_deposit_liquidity_inner(
     update_price_accumulator(&mut pool_state, env.block.time.seconds())?;
     POOL_STATE.save(deps.storage, &pool_state)?;
 
-    let unpaused =
+    // M-2: auto-unpause when a deposit restores reserves above MIN AND
+    // the pool was auto-paused (POOL_PAUSED_AUTO == true). Admin pauses
+    // and emergency-pending pauses (POOL_PAUSED_AUTO == false) are NOT
+    // cleared here — those require explicit admin Unpause / cancel.
+    //
+    // Today this branch is reachable only via the recovery path: the
+    // deposit dispatch's `check_pool_writable_for_deposit` permits
+    // entering the handler when `pause_kind == AutoLowLiquidity`.
+    // Hard-paused pools never reach this code (rejected at dispatch),
+    // so the auto-flag check here is the second layer of the same
+    // invariant — defense-in-depth against any future call site that
+    // bypasses the dispatch gate.
+    let was_auto_paused = POOL_PAUSED_AUTO.may_load(deps.storage)?.unwrap_or(false);
+    let reserves_recovered =
         pool_state.reserve0 >= MINIMUM_LIQUIDITY && pool_state.reserve1 >= MINIMUM_LIQUIDITY;
+    let unpaused = was_auto_paused && reserves_recovered;
     if unpaused {
         POOL_PAUSED.save(deps.storage, &false)?;
+        POOL_PAUSED_AUTO.save(deps.storage, &false)?;
     }
 
     // Update analytics

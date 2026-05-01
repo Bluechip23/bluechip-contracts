@@ -1139,3 +1139,409 @@ fn test_h2_deposit_accepts_clean_native_funds() {
         result.err()
     );
 }
+
+// ---------------------------------------------------------------------------
+// M-2 — auto-pause-on-low-liquidity / auto-unpause-on-deposit cycle.
+// `remove_partial_liquidity` that drains reserves below MIN must arm
+// POOL_PAUSED + POOL_PAUSED_AUTO. A subsequent deposit that restores
+// reserves above MIN must clear both. Admin pauses must NOT be cleared
+// by a deposit.
+// ---------------------------------------------------------------------------
+#[test]
+fn test_m2_helper_arms_auto_pause_when_reserves_below_min() {
+    use crate::state::{
+        maybe_auto_pause_on_low_liquidity, PoolState, MINIMUM_LIQUIDITY, POOL_PAUSED,
+        POOL_PAUSED_AUTO,
+    };
+    let mut deps = mock_dependencies();
+
+    // Case 1: reserves below MIN, pool unpaused → arms auto-pause.
+    let drained = PoolState {
+        pool_contract_address: Addr::unchecked("pool"),
+        nft_ownership_accepted: true,
+        reserve0: MINIMUM_LIQUIDITY - Uint128::new(1),
+        reserve1: MINIMUM_LIQUIDITY * Uint128::new(10),
+        total_liquidity: Uint128::new(100),
+        block_time_last: 0,
+        price0_cumulative_last: Uint128::zero(),
+        price1_cumulative_last: Uint128::zero(),
+    };
+    let armed = maybe_auto_pause_on_low_liquidity(&mut deps.storage, &drained).unwrap();
+    assert!(armed, "should arm auto-pause when reserve0 < MIN");
+    assert_eq!(POOL_PAUSED.load(&deps.storage).unwrap(), true);
+    assert_eq!(POOL_PAUSED_AUTO.load(&deps.storage).unwrap(), true);
+
+    // Case 2: helper is idempotent — calling again on already-paused pool
+    // returns false (no override) and leaves both flags as-is.
+    let armed_again = maybe_auto_pause_on_low_liquidity(&mut deps.storage, &drained).unwrap();
+    assert!(!armed_again, "helper must not re-arm an already-paused pool");
+    assert_eq!(POOL_PAUSED.load(&deps.storage).unwrap(), true);
+    assert_eq!(POOL_PAUSED_AUTO.load(&deps.storage).unwrap(), true);
+
+    // Case 3: reserves healthy → helper is no-op even on a fresh pool.
+    let mut deps2 = mock_dependencies();
+    let healthy = PoolState {
+        pool_contract_address: Addr::unchecked("pool"),
+        nft_ownership_accepted: true,
+        reserve0: MINIMUM_LIQUIDITY * Uint128::new(2),
+        reserve1: MINIMUM_LIQUIDITY * Uint128::new(2),
+        total_liquidity: Uint128::new(1_000),
+        block_time_last: 0,
+        price0_cumulative_last: Uint128::zero(),
+        price1_cumulative_last: Uint128::zero(),
+    };
+    let armed = maybe_auto_pause_on_low_liquidity(&mut deps2.storage, &healthy).unwrap();
+    assert!(!armed);
+    assert_eq!(POOL_PAUSED.may_load(&deps2.storage).unwrap(), None);
+    assert_eq!(POOL_PAUSED_AUTO.may_load(&deps2.storage).unwrap(), None);
+}
+
+#[test]
+fn test_m2_helper_does_not_override_admin_pause() {
+    use crate::state::{
+        maybe_auto_pause_on_low_liquidity, PoolState, MINIMUM_LIQUIDITY, POOL_PAUSED,
+        POOL_PAUSED_AUTO,
+    };
+    let mut deps = mock_dependencies();
+
+    // Pool is already admin-paused (POOL_PAUSED true, POOL_PAUSED_AUTO false).
+    POOL_PAUSED.save(&mut deps.storage, &true).unwrap();
+    POOL_PAUSED_AUTO.save(&mut deps.storage, &false).unwrap();
+
+    // Reserves drop below MIN. Helper must NOT flip POOL_PAUSED_AUTO=true,
+    // which would otherwise let a deposit auto-clear the admin pause.
+    let drained = PoolState {
+        pool_contract_address: Addr::unchecked("pool"),
+        nft_ownership_accepted: true,
+        reserve0: MINIMUM_LIQUIDITY - Uint128::new(1),
+        reserve1: MINIMUM_LIQUIDITY * Uint128::new(10),
+        total_liquidity: Uint128::new(100),
+        block_time_last: 0,
+        price0_cumulative_last: Uint128::zero(),
+        price1_cumulative_last: Uint128::zero(),
+    };
+    let armed = maybe_auto_pause_on_low_liquidity(&mut deps.storage, &drained).unwrap();
+    assert!(!armed, "helper must not override an existing admin pause");
+    assert_eq!(POOL_PAUSED.load(&deps.storage).unwrap(), true);
+    assert_eq!(POOL_PAUSED_AUTO.load(&deps.storage).unwrap(), false);
+}
+
+#[test]
+fn test_m2_admin_pause_overrides_auto_flag() {
+    use crate::admin::execute_pause;
+    use crate::state::{POOL_INFO, POOL_PAUSED, POOL_PAUSED_AUTO};
+    let mut deps = mock_dependencies();
+    setup_pool_post_threshold(&mut deps);
+
+    // Pre-arm an auto-pause (simulating a prior remove that drained).
+    POOL_PAUSED.save(&mut deps.storage, &true).unwrap();
+    POOL_PAUSED_AUTO.save(&mut deps.storage, &true).unwrap();
+
+    // Admin then issues an explicit Pause. The auto-flag must clear so
+    // a later deposit (which would auto-unpause auto-state) can't
+    // override the admin's intent.
+    let pool_info = POOL_INFO.load(&deps.storage).unwrap();
+    let factory_info = message_info(&pool_info.factory_addr, &[]);
+    execute_pause(deps.as_mut(), mock_env(), factory_info).unwrap();
+
+    assert_eq!(POOL_PAUSED.load(&deps.storage).unwrap(), true);
+    assert_eq!(POOL_PAUSED_AUTO.load(&deps.storage).unwrap(), false);
+}
+
+// ---------------------------------------------------------------------------
+// M-3 — migrate must reject downgrades. With cw2 stored at version
+// "9.9.9" (a far-future version that exceeds the current
+// CARGO_PKG_VERSION), migrate must error rather than silently overwrite.
+// ---------------------------------------------------------------------------
+#[test]
+fn test_m3_migrate_rejects_downgrade() {
+    use crate::contract::migrate;
+    let mut deps = mock_dependencies();
+    setup_pool_post_threshold(&mut deps);
+
+    // Force a "stored" semver that exceeds anything realistic the
+    // current binary could be.
+    cw2::set_contract_version(&mut deps.storage, "bluechip-contracts-pool", "9.9.9").unwrap();
+
+    let res = migrate(
+        deps.as_mut(),
+        mock_env(),
+        crate::msg::MigrateMsg::UpdateVersion {},
+    );
+    let err = res.expect_err("downgrade migration must be rejected");
+    assert!(
+        err.to_string().contains("downgrade"),
+        "expected downgrade-rejection error, got: {}",
+        err
+    );
+}
+
+// ---------------------------------------------------------------------------
+// M-5 — per-address rate limit on ContinueDistribution. A second call
+// from the same address within the cooldown window must reject.
+// ---------------------------------------------------------------------------
+#[test]
+fn test_m5_continue_distribution_rate_limit_per_address() {
+    use crate::msg::ExecuteMsg;
+    use crate::state::{
+        COMMIT_LEDGER, DEFAULT_ESTIMATED_GAS_PER_DISTRIBUTION, DEFAULT_MAX_GAS_PER_TX,
+        DistributionState, DISTRIBUTION_STATE, EXPECTED_FACTORY,
+    };
+    let mut deps = mock_dependencies();
+    setup_pool_post_threshold(&mut deps);
+
+    EXPECTED_FACTORY
+        .save(
+            &mut deps.storage,
+            &crate::state::ExpectedFactory {
+                expected_factory_address: Addr::unchecked("factory_contract"),
+            },
+        )
+        .unwrap();
+
+    // Seed a non-empty ledger so the first call processes work and
+    // emits a bounty msg (otherwise the no-op early-return path would
+    // not stamp the rate-limit timestamp the same way — actually it
+    // does, but seeding makes the test exercise the productive branch).
+    COMMIT_LEDGER
+        .save(
+            &mut deps.storage,
+            &Addr::unchecked("committer1"),
+            &Uint128::new(5_000_000_000),
+        )
+        .unwrap();
+    let dist_state = DistributionState {
+        is_distributing: true,
+        total_to_distribute: Uint128::new(500_000_000_000),
+        total_committed_usd: Uint128::new(25_000_000_000),
+        last_processed_key: None,
+        distributions_remaining: 1,
+        estimated_gas_per_distribution: DEFAULT_ESTIMATED_GAS_PER_DISTRIBUTION,
+        max_gas_per_tx: DEFAULT_MAX_GAS_PER_TX,
+        last_successful_batch_size: None,
+        consecutive_failures: 0,
+        started_at: Timestamp::from_seconds(1_600_000_000),
+        last_updated: Timestamp::from_seconds(1_600_000_000),
+    };
+    DISTRIBUTION_STATE.save(&mut deps.storage, &dist_state).unwrap();
+
+    let keeper = Addr::unchecked("keeper1");
+    let env = mock_env();
+
+    // First call from keeper1: succeeds.
+    execute(
+        deps.as_mut(),
+        env.clone(),
+        message_info(&keeper, &[]),
+        ExecuteMsg::ContinueDistribution {},
+    )
+    .unwrap();
+
+    // Restock ledger so the second call has work to do (otherwise it
+    // would return Err("NothingToRecover") before reaching rate-limit
+    // gate — we're testing rate-limit, not the empty-ledger reject).
+    COMMIT_LEDGER
+        .save(
+            &mut deps.storage,
+            &Addr::unchecked("committer2"),
+            &Uint128::new(5_000_000_000),
+        )
+        .unwrap();
+
+    // Second call from same keeper, same block: must rate-limit reject.
+    let res = execute(
+        deps.as_mut(),
+        env.clone(),
+        message_info(&keeper, &[]),
+        ExecuteMsg::ContinueDistribution {},
+    );
+    let err = res.expect_err("rapid second call must be rate-limited");
+    assert!(
+        err.to_string().contains("Rate-limited"),
+        "expected rate-limit error, got: {}",
+        err
+    );
+
+    // Different keeper in same block: NOT rate-limited (per-address).
+    // Need to also restore DISTRIBUTION_STATE because the first call
+    // emptied the original ledger and removed the state. Re-seed both.
+    let dist_state = DistributionState {
+        is_distributing: true,
+        total_to_distribute: Uint128::new(500_000_000_000),
+        total_committed_usd: Uint128::new(25_000_000_000),
+        last_processed_key: None,
+        distributions_remaining: 1,
+        estimated_gas_per_distribution: DEFAULT_ESTIMATED_GAS_PER_DISTRIBUTION,
+        max_gas_per_tx: DEFAULT_MAX_GAS_PER_TX,
+        last_successful_batch_size: None,
+        consecutive_failures: 0,
+        started_at: Timestamp::from_seconds(1_600_000_000),
+        last_updated: Timestamp::from_seconds(1_600_000_000),
+    };
+    DISTRIBUTION_STATE.save(&mut deps.storage, &dist_state).unwrap();
+
+    let keeper2 = Addr::unchecked("keeper2");
+    execute(
+        deps.as_mut(),
+        env.clone(),
+        message_info(&keeper2, &[]),
+        ExecuteMsg::ContinueDistribution {},
+    )
+    .unwrap();
+}
+
+// ---------------------------------------------------------------------------
+// M-6 — `RecoverStuckStates` must reject when pool is drained. The
+// recovery branches don't produce fund-flow on a drained pool but they
+// would leave misleading DISTRIBUTION_STATE. Failing here keeps
+// post-drain state queries honest.
+// ---------------------------------------------------------------------------
+#[test]
+fn test_m6_recover_rejects_on_drained_pool() {
+    use crate::msg::ExecuteMsg;
+    use crate::state::{
+        EmergencyWithdrawalInfo, ExpectedFactory, RecoveryType, EMERGENCY_DRAINED,
+        EMERGENCY_WITHDRAWAL, EXPECTED_FACTORY,
+    };
+    let mut deps = mock_dependencies();
+    setup_pool_post_threshold(&mut deps);
+
+    EXPECTED_FACTORY
+        .save(
+            &mut deps.storage,
+            &ExpectedFactory {
+                expected_factory_address: Addr::unchecked("factory_contract"),
+            },
+        )
+        .unwrap();
+
+    // Mark the pool as drained.
+    EMERGENCY_DRAINED.save(&mut deps.storage, &true).unwrap();
+    EMERGENCY_WITHDRAWAL
+        .save(
+            &mut deps.storage,
+            &EmergencyWithdrawalInfo {
+                withdrawn_at: 1_600_000_000,
+                recipient: Addr::unchecked("bluechip_wallet"),
+                amount0: Uint128::new(1_000_000),
+                amount1: Uint128::new(1_000_000),
+                total_liquidity_at_withdrawal: Uint128::new(1_000),
+            },
+        )
+        .unwrap();
+
+    let factory_info = message_info(&Addr::unchecked("factory_contract"), &[]);
+    let res = execute(
+        deps.as_mut(),
+        mock_env(),
+        factory_info,
+        ExecuteMsg::RecoverStuckStates {
+            recovery_type: RecoveryType::Both,
+        },
+    );
+    let err = res.expect_err("recovery on drained pool must reject");
+    assert!(
+        matches!(err, ContractError::EmergencyDrained {}),
+        "expected EmergencyDrained, got: {:?}",
+        err
+    );
+}
+
+// ---------------------------------------------------------------------------
+// M-7 — `trigger_threshold_payout` emits an `AcceptOwnership` SubMsg
+// so the pool locks in its CW721 ownership at threshold-cross time
+// rather than lazily on first deposit. Closes the pending-ownership
+// window between factory's TransferOwnership and first LP activity.
+// ---------------------------------------------------------------------------
+#[test]
+fn test_m7_threshold_payout_emits_accept_ownership() {
+    use crate::generic_helpers::trigger_threshold_payout;
+    use crate::msg::CommitFeeInfo;
+    use crate::state::{
+        CommitLimitInfo, NATIVE_RAISED_FROM_COMMIT, ThresholdPayoutAmounts, POOL_FEE_STATE,
+        POOL_INFO, POOL_STATE,
+    };
+    let mut deps = mock_dependencies();
+    setup_pool_storage(&mut deps);
+
+    // Seed enough native for the seed-amount calc to work.
+    NATIVE_RAISED_FROM_COMMIT
+        .save(&mut deps.storage, &Uint128::new(25_000_000_000))
+        .unwrap();
+
+    let pool_info = POOL_INFO.load(&deps.storage).unwrap();
+    let mut pool_state = POOL_STATE.load(&deps.storage).unwrap();
+    // Force pre-threshold "ownership pending" state. setup_pool_storage
+    // initializes nft_ownership_accepted = true; we want to simulate the
+    // realistic post-finalize / pre-threshold-cross window where the
+    // factory has dispatched TransferOwnership but the pool hasn't yet
+    // accepted it.
+    pool_state.nft_ownership_accepted = false;
+    POOL_STATE.save(&mut deps.storage, &pool_state).unwrap();
+
+    let mut pool_fee_state = POOL_FEE_STATE.load(&deps.storage).unwrap();
+
+    let commit_config = CommitLimitInfo {
+        commit_amount_for_threshold_usd: Uint128::new(25_000_000_000),
+        max_bluechip_lock_per_pool: Uint128::new(10_000_000_000),
+        creator_excess_liquidity_lock_days: 14,
+    };
+    let payout = ThresholdPayoutAmounts {
+        creator_reward_amount: Uint128::new(325_000_000_000),
+        bluechip_reward_amount: Uint128::new(25_000_000_000),
+        pool_seed_amount: Uint128::new(350_000_000_000),
+        commit_return_amount: Uint128::new(500_000_000_000),
+    };
+    let fee_info = CommitFeeInfo {
+        bluechip_wallet_address: Addr::unchecked("bluechip_wallet"),
+        creator_wallet_address: Addr::unchecked("creator_wallet"),
+        commit_fee_bluechip: Decimal::percent(1),
+        commit_fee_creator: Decimal::percent(5),
+    };
+
+    // Sanity: pre-cross, NFT not yet accepted.
+    assert!(!pool_state.nft_ownership_accepted);
+
+    let payout_msgs = trigger_threshold_payout(
+        &mut deps.storage,
+        &pool_info,
+        &mut pool_state,
+        &mut pool_fee_state,
+        &commit_config,
+        &payout,
+        &fee_info,
+        &mock_env(),
+    )
+    .unwrap();
+
+    // Post-cross: flag flipped, AcceptOwnership message present.
+    assert!(
+        pool_state.nft_ownership_accepted,
+        "trigger_threshold_payout must flip nft_ownership_accepted"
+    );
+    let accept_msg_present = payout_msgs.other_msgs.iter().any(|m| {
+        if let CosmosMsg::Wasm(WasmMsg::Execute { contract_addr, msg, .. }) = m {
+            if contract_addr != &pool_info.position_nft_address.to_string() {
+                return false;
+            }
+            // Match the AcceptOwnership variant by parsing the body.
+            let parsed: Result<
+                pool_factory_interfaces::cw721_msgs::Cw721ExecuteMsg<()>,
+                _,
+            > = cosmwasm_std::from_json(msg);
+            matches!(
+                parsed,
+                Ok(pool_factory_interfaces::cw721_msgs::Cw721ExecuteMsg::UpdateOwnership(
+                    pool_factory_interfaces::cw721_msgs::Action::AcceptOwnership
+                ))
+            )
+        } else {
+            false
+        }
+    });
+    assert!(
+        accept_msg_present,
+        "expected AcceptOwnership SubMsg in payout messages, got: {:?}",
+        payout_msgs.other_msgs
+    );
+}

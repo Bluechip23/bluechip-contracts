@@ -20,8 +20,9 @@ use crate::liquidity_helpers::{
     sync_position_on_transfer, verify_position_ownership,
 };
 use crate::state::{
-    PoolSpecs, CREATOR_FEE_POT, LIQUIDITY_POSITIONS, OWNER_POSITIONS, POOL_ANALYTICS,
-    POOL_FEE_STATE, POOL_INFO, POOL_SPECS, POOL_STATE, REENTRANCY_LOCK,
+    maybe_auto_pause_on_low_liquidity, PoolSpecs, CREATOR_FEE_POT, LIQUIDITY_POSITIONS,
+    OWNER_POSITIONS, POOL_ANALYTICS, POOL_FEE_STATE, POOL_INFO, POOL_SPECS, POOL_STATE,
+    REENTRANCY_LOCK,
 };
 use crate::swap::update_price_accumulator;
 
@@ -115,6 +116,10 @@ pub fn remove_all_liquidity(
     CREATOR_FEE_POT.save(deps.storage, &pot)?;
 
     POOL_STATE.save(deps.storage, &pool_state)?;
+    // M-2: arm auto-pause if this remove dropped reserves below MIN.
+    // Future swaps/removes will reject; the next deposit that restores
+    // reserves above MIN auto-clears both flags.
+    let auto_paused_now = maybe_auto_pause_on_low_liquidity(deps.storage, &pool_state)?;
     if liquidity_position.locked_liquidity.is_zero() {
         // Standard exit: nothing locked, burn the position completely.
         LIQUIDITY_POSITIONS.remove(deps.storage, &position_id);
@@ -162,6 +167,7 @@ pub fn remove_all_liquidity(
         ("block_height", env.block.height.to_string()),
         ("block_time", env.block.time.seconds().to_string()),
         ("total_lp_withdrawal_count", analytics.total_lp_withdrawal_count.to_string()),
+        ("auto_paused", auto_paused_now.to_string()),
     ]);
     let transfer_msgs =
         build_fee_transfer_msgs(&pool_info, &info.sender, total_amount_0, total_amount_1)?;
@@ -320,6 +326,8 @@ pub fn remove_partial_liquidity(
         .checked_sub(liquidity_to_remove)?;
     POOL_STATE.save(deps.storage, &pool_state)?;
     POOL_FEE_STATE.save(deps.storage, &pool_fee_state)?;
+    // M-2: arm auto-pause if this partial-remove dropped reserves below MIN.
+    let auto_paused_now = maybe_auto_pause_on_low_liquidity(deps.storage, &pool_state)?;
 
     liquidity_position.last_fee_collection = env.block.time.seconds();
     liquidity_position.fee_growth_inside_0_last = pool_fee_state.fee_growth_global_0;
@@ -367,6 +375,7 @@ pub fn remove_partial_liquidity(
         ("block_height", env.block.height.to_string()),
         ("block_time", env.block.time.seconds().to_string()),
         ("total_lp_withdrawal_count", analytics.total_lp_withdrawal_count.to_string()),
+        ("auto_paused", auto_paused_now.to_string()),
     ]);
     let transfer_msgs =
         build_fee_transfer_msgs(&pool_info, &info.sender, total_amount_0, total_amount_1)?;

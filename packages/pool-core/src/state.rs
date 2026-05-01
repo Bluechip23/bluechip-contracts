@@ -223,6 +223,30 @@ pub const LIQUIDITY_POSITIONS: Map<&str, Position> = Map::new("positions");
 pub const OWNER_POSITIONS: Map<(&Addr, &str), bool> = Map::new("owner_positions");
 pub const NEXT_POSITION_ID: Item<u64> = Item::new("next_position_id");
 pub const POOL_PAUSED: Item<bool> = Item::new("pool_paused");
+/// M-2: distinguishes "admin/emergency paused" (false) from "auto-paused
+/// because reserves dropped below MINIMUM_LIQUIDITY" (true). Only meaningful
+/// when `POOL_PAUSED == true`.
+///
+/// Wire-up:
+///   - Auto-set: after a swap or remove leaves reserves < MIN, the handler
+///     sets POOL_PAUSED + POOL_PAUSED_AUTO = true (only if no harder pause
+///     is already in place).
+///   - Auto-clear: after a deposit pushes reserves back >= MIN AND the
+///     pool was auto-paused, the deposit clears both flags.
+///   - Hard pauses (admin Pause, emergency_withdraw_initiate) explicitly
+///     set POOL_PAUSED_AUTO = false to override any prior auto-state.
+///
+/// Gating semantics:
+///   - Auto-paused (true & true): deposits allowed (recovery path);
+///     swaps / removes / collects rejected.
+///   - Hard-paused (true & false): everything rejected, including
+///     deposits — admin must Unpause or cancel emergency to resume.
+///
+/// `#[serde(default)]` keeps deployed pools that predate this flag
+/// deserializing as false; legacy paused pools therefore behave as
+/// hard-paused (the safe default), and admin Pause / Unpause continues
+/// to work unchanged.
+pub const POOL_PAUSED_AUTO: Item<bool> = Item::new("pool_paused_auto");
 pub const EMERGENCY_WITHDRAWAL: Item<EmergencyWithdrawalInfo> = Item::new("emergency_withdrawal");
 pub const PENDING_EMERGENCY_WITHDRAW: Item<Timestamp> = Item::new("pending_emergency_withdraw");
 pub const EMERGENCY_DRAINED: Item<bool> = Item::new("emergency_drained");
@@ -301,3 +325,64 @@ pub const EMERGENCY_WITHDRAW_DELAY_SECONDS: u64 = 86_400;
 /// targeting the freshly seeded pool, short enough to not meaningfully
 /// hurt UX for legitimate first traders.
 pub const POST_THRESHOLD_COOLDOWN_BLOCKS: u64 = 2;
+
+/// M-2: classify the pool's current pause state. Used by the dispatch
+/// gates to allow deposits during auto-pause (recovery) but reject them
+/// during admin / emergency pause.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum PauseKind {
+    /// Pool is open. POOL_PAUSED == false.
+    None,
+    /// Reserves fell below MINIMUM_LIQUIDITY after a swap or remove.
+    /// Deposits are allowed (recovery path); other ops reject.
+    AutoLowLiquidity,
+    /// Admin or emergency-withdraw pending. Everything rejects.
+    Hard,
+}
+
+/// Resolve POOL_PAUSED + POOL_PAUSED_AUTO into a `PauseKind`. Reads
+/// only — does not mutate. `may_load.unwrap_or(false)` means absent
+/// storage decodes as "not set", preserving backward-compat with
+/// pools deployed before POOL_PAUSED_AUTO existed.
+pub fn pause_kind(storage: &dyn Storage) -> StdResult<PauseKind> {
+    if !POOL_PAUSED.may_load(storage)?.unwrap_or(false) {
+        return Ok(PauseKind::None);
+    }
+    if POOL_PAUSED_AUTO.may_load(storage)?.unwrap_or(false) {
+        Ok(PauseKind::AutoLowLiquidity)
+    } else {
+        Ok(PauseKind::Hard)
+    }
+}
+
+/// M-2: arm the auto-pause flag after a liquidity-out operation if
+/// post-state reserves dropped below `MINIMUM_LIQUIDITY`. No-op when
+/// reserves are still healthy or when the pool is already hard-paused
+/// (admin / emergency-pending) — overriding a hard pause with an auto
+/// flag would let the next deposit unintentionally clear the admin's
+/// intent. Auto-pause only over a "None" pause state.
+///
+/// Called from `remove_all_liquidity` and `remove_partial_liquidity`
+/// after the post-remove POOL_STATE save. `swap` and `commit` paths
+/// don't need this — their own MINIMUM_LIQUIDITY checks reject any
+/// trade that would leave reserves below the floor, so post-trade
+/// reserves stay ≥ MIN by construction.
+pub fn maybe_auto_pause_on_low_liquidity(
+    storage: &mut dyn Storage,
+    pool_state: &PoolState,
+) -> StdResult<bool> {
+    let drained =
+        pool_state.reserve0 < MINIMUM_LIQUIDITY || pool_state.reserve1 < MINIMUM_LIQUIDITY;
+    if !drained {
+        return Ok(false);
+    }
+    // Don't override hard pauses. Only arm auto when the pool is
+    // currently considered "open" (not paused for any reason).
+    let already_paused = POOL_PAUSED.may_load(storage)?.unwrap_or(false);
+    if already_paused {
+        return Ok(false);
+    }
+    POOL_PAUSED.save(storage, &true)?;
+    POOL_PAUSED_AUTO.save(storage, &true)?;
+    Ok(true)
+}
