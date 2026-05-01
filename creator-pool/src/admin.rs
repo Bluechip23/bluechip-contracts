@@ -149,7 +149,7 @@ pub fn execute_recover_stuck_states(
         return Err(ContractError::Unauthorized {});
     }
 
-    // M-6: reject recovery on a drained pool. None of the three recovery
+    // Reject recovery on a drained pool. None of the three recovery
     // branches (StuckThreshold, StuckDistribution, StuckReentrancyGuard)
     // produce any fund-flow on a drained pool — every downstream consumer
     // (commit, ContinueDistribution, swap) re-checks `ensure_not_drained`

@@ -49,8 +49,8 @@ pub enum ExecuteMsg {
     Unpause {},
     EmergencyWithdraw {},
     CancelEmergencyWithdraw {},
-    /// M-S1: factory-only callback dispatched at the tail of the
-    /// factory's `finalize_standard_pool` reply chain. The NFT contract
+    /// Factory-only callback dispatched at the tail of the factory's
+    /// `finalize_standard_pool` reply chain. The NFT contract
     /// has already been told `TransferOwnership { new_owner: pool }`;
     /// this variant lets the pool itself send the matching
     /// `AcceptOwnership` message back to the NFT contract, closing the

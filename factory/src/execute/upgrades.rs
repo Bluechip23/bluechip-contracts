@@ -56,7 +56,7 @@ pub fn execute_propose_pool_upgrade(
     //   2. Every supplied ID must reference a registered pool. An
     //      invalid ID would error inside `build_upgrade_batch` at apply
     //      time and revert the entire batch.
-    //   3. M-5: the anchor pool is rejected. Migrating it mid-flight
+    //   3. The anchor pool is rejected. Migrating it mid-flight
     //      would leave the oracle querying `GetPoolState` against
     //      possibly-mid-migration storage; if the migrate changes
     //      the reserve representation the cumulative-delta math
@@ -95,7 +95,7 @@ pub fn execute_propose_pool_upgrade(
             .collect::<StdResult<Vec<_>>>()?
     };
 
-    // Anchor-pool exclusion (M-5). Resolve the configured anchor address
+    // Anchor-pool exclusion. Resolve the configured anchor address
     // once, walk the proposed list, refuse if the anchor pool is in it.
     let factory_config = crate::state::FACTORYINSTANTIATEINFO.load(deps.storage)?;
     let anchor_addr = factory_config.atom_bluechip_anchor_pool_address.clone();

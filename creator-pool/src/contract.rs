@@ -217,7 +217,7 @@ fn check_pool_not_paused(storage: &dyn Storage) -> Result<(), ContractError> {
     Ok(())
 }
 
-/// Liquidity-write gate (M-2): hard-rejects when the pool is paused for any
+/// Liquidity-write gate: hard-rejects when the pool is paused for any
 /// reason — admin pause, emergency-pending, or auto-pause due to low
 /// liquidity. Used for swaps, removes, fee collects, claims — i.e., paths
 /// that either drain reserves further or rely on healthy reserves.
@@ -226,7 +226,7 @@ fn check_pool_writable(storage: &dyn Storage) -> Result<(), ContractError> {
     check_pool_not_paused(storage)
 }
 
-/// M-2 deposit-side gate: rejects hard pauses (admin / emergency) but
+/// Deposit-side gate: rejects hard pauses (admin / emergency) but
 /// PERMITS auto-pause-on-low-liquidity. The deposit handler then either
 /// (a) restores reserves above MIN and auto-clears both flags, or
 /// (b) leaves the pool still auto-paused if the deposit didn't restore
@@ -341,7 +341,7 @@ pub fn execute(
             min_amount1,
             transaction_deadline,
         } => {
-            // M-2: deposits use the auto-pause-tolerant gate so they can
+            // Deposits use the auto-pause-tolerant gate so they can
             // restore liquidity in an auto-paused pool. Hard pauses still
             // reject.
             check_pool_writable_for_deposit(deps.storage)?;
@@ -369,7 +369,7 @@ pub fn execute(
             min_amount1,
             transaction_deadline,
         } => {
-            // M-2: same recovery semantics as DepositLiquidity.
+            // Same recovery semantics as DepositLiquidity.
             check_pool_writable_for_deposit(deps.storage)?;
             if !query_check_commit(deps.as_ref())? {
                 return Err(ContractError::ShortOfThreshold {});
@@ -583,7 +583,7 @@ pub fn reply(deps: DepsMut, env: Env, msg: Reply) -> StdResult<Response> {
 
 #[entry_point]
 pub fn migrate(deps: DepsMut, _env: Env, msg: MigrateMsg) -> StdResult<Response> {
-    // M-3: reject downgrades. The chain has already replaced the wasm
+    // Reject downgrades. The chain has already replaced the wasm
     // bytecode by the time this handler runs, so this is the last
     // chance to abort a downgrade — a hard `Err` here causes the chain
     // to revert the migration and leave the pool on its previous code.

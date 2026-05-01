@@ -60,7 +60,7 @@ fn first_deposit_mints_position_and_emits_nft_accept() {
     assert!(pool_state.nft_ownership_accepted, "flag should flip on first deposit");
 
     // Response carries the AcceptOwnership WasmMsg directed at the
-    // position-NFT contract (Option X: first deposit accepts ownership).
+    // position-NFT contract — first deposit accepts ownership.
     let nft_contract = addrs.position_nft.to_string();
     let nft_accept_msg = res.messages.iter().any(|sub| match &sub.msg {
         CosmosMsg::Wasm(WasmMsg::Execute { contract_addr, msg, .. }) => {

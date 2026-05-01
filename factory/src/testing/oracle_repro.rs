@@ -93,8 +93,8 @@ fn test_repro_token_sort_order_bug() {
         block_time: 0,
     }];
 
-    // Calculate Price - Expected 1.0 (1_000_000 precision). H-3: function
-    // now returns Option<Uint128> for prices; unwrap.
+    // Calculate Price - Expected 1.0 (1_000_000 precision). The function
+    // returns Option<Uint128> for prices; unwrap.
     let pools = vec![atom_pool.to_string()];
     let (price, _, _) =
         calculate_weighted_price_with_atom(deps.as_ref(), &pools, &prev_snapshots).unwrap();

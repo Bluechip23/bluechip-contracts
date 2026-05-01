@@ -17,7 +17,7 @@ pub enum ContractError {
         cap: Uint128,
     },
 
-    /// M-EE-1: any execute path on this contract is non-payable. Surfaces
+    /// Any execute path on this contract is non-payable. Surfaces
     /// `cw_utils::nonpayable` rejections directly so the underlying
     /// `PaymentError::NonPayable {}` reason ("This message does no accept
     /// funds") is preserved for clients.

@@ -74,7 +74,7 @@ pub fn validate_pool_threshold_payments(
 /// Output of `trigger_threshold_payout`. The factory notification is
 /// separated from the rest of the payout messages because we want it
 /// delivered via `SubMsg::reply_on_error` — a failure there should NOT
-/// revert the pool-side threshold-crossing state (P4-H5). The caller
+/// revert the pool-side threshold-crossing state. The caller
 /// splices `factory_notify` in as a SubMsg and `other_msgs` as plain
 /// CosmosMsgs on the returned Response.
 #[derive(Debug)]
@@ -113,7 +113,7 @@ pub fn trigger_threshold_payout(
 
     let mut other_msgs: Vec<CosmosMsg> = Vec::new();
 
-    // M-7: accept the position-NFT ownership at threshold-cross time
+    // Accept the position-NFT ownership at threshold-cross time
     // rather than lazily on first deposit. Closes the "ownership pending"
     // window between factory's `TransferOwnership` (at pool finalize)
     // and the first LP's deposit, during which a (compromised) factory

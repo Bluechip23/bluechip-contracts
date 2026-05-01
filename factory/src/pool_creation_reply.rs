@@ -42,9 +42,8 @@ pub fn set_tokens(
     let mut ctx = POOL_CREATION_CONTEXT.load(deps.storage, pool_id)?;
     let token_address = extract_contract_address(&deps, &result)?;
 
-    // Store only in ctx.temp; ctx.state.creator_token_address is now
-    // derived at query time from ctx.temp. Saves one Addr clone per
-    // pool creation.
+    // Store only in ctx.temp; ctx.state.creator_token_address is
+    // derived at query time from ctx.temp.
     ctx.temp.creator_token_addr = Some(token_address.clone());
     ctx.state.status = CreationStatus::TokenCreated;
     POOL_CREATION_CONTEXT.save(deps.storage, pool_id, &ctx)?;
@@ -90,8 +89,7 @@ pub fn mint_create_pool(
     let nft_address = extract_contract_address(&deps, &result)?;
 
     // Store only in ctx.temp; ctx.state.mint_new_position_nft_address is
-    // now derived at query time from ctx.temp. Saves one Addr clone per
-    // pool creation.
+    // derived at query time from ctx.temp.
     ctx.temp.nft_addr = Some(nft_address.clone());
     ctx.state.status = CreationStatus::NftCreated;
     POOL_CREATION_CONTEXT.save(deps.storage, pool_id, &ctx)?;
@@ -141,10 +139,6 @@ pub fn mint_create_pool(
         max_bluechip_lock_per_pool: factory_config.max_bluechip_lock_per_pool,
         creator_excess_liquidity_lock_days: factory_config.creator_excess_liquidity_lock_days,
     };
-    // Flat struct after 4d — creator-pool's `instantiate` now accepts
-    // `PoolInstantiateMsg` (a struct, not a tagged enum) directly. JSON
-    // shape matches what CommitPoolInstantiateMsg used to round-trip to
-    // inside the removed `Commit(...)` variant.
     let pool_msg = WasmMsg::Instantiate {
         code_id: factory_config.create_pool_wasm_contract_id,
         msg: to_json_binary(&commit_msg)?,
@@ -189,24 +183,21 @@ pub fn finalize_pool(
         .clone()
         .ok_or_else(|| ContractError::Std(StdError::generic_err("missing nft address")))?;
 
-    // C-2: rebuild `pool_token_info` from the SOURCE OF TRUTH for the
+    // Rebuild `pool_token_info` from the source of truth for the
     // creator-token address, which is `ctx.temp.creator_token_addr`
     // (set in `set_tokens` when the CW20 was instantiated). The original
     // `ctx.temp.temp_pool_info.pool_token_info` still carries the literal
     // `CREATOR_TOKEN_SENTINEL` placeholder string the user supplied at
-    // create time — it was never written back from the local
-    // `updated_asset_infos` clone in `mint_create_pool`. Persisting it
-    // unchanged into `POOLS_BY_ID` left every commit pool's registry
-    // entry with the placeholder address in the CreatorToken slot,
-    // breaking `query_creator_token_info` and any other consumer that
-    // reads the CW20 address out of the registry.
+    // create time. Persisting it unchanged into `POOLS_BY_ID` would leave
+    // every commit pool's registry entry with the placeholder address in
+    // the CreatorToken slot, breaking `query_creator_token_info` and any
+    // other consumer that reads the CW20 address out of the registry.
     //
     // Reconstructing here from `creator_token_addr` is unambiguous —
     // the validator at `validate_pool_token_info` enforces a strict
     // [Native(bluechip), CreatorToken(sentinel)] shape, so the bluechip
     // side is always at index 0 and the only field that needs the
-    // real address is the CreatorToken at index 1. `TokenType` is
-    // already imported at the top of this module.
+    // real address is the CreatorToken at index 1.
     let bluechip_side = ctx.temp.temp_pool_info.pool_token_info[0].clone();
     let pool_token_info = [
         bluechip_side,
@@ -230,7 +221,6 @@ pub fn finalize_pool(
         commit_pool_ordinal: ctx.commit_pool_ordinal,
     };
 
-    // Transfer ownership to pool
     let ownership_msgs =
         give_pool_ownership_cw20_and_nft(&token_address, &nft_address, &pool_address)?;
 
@@ -251,7 +241,7 @@ pub fn finalize_pool(
 }
 
 // ---------------------------------------------------------------------------
-// H14 — Standard pool reply chain
+// Standard pool reply chain
 // ---------------------------------------------------------------------------
 //
 // Standard pools have a 2-step reply chain (vs the commit-pool's 3 steps):
@@ -291,14 +281,14 @@ pub fn mint_standard_nft(
         pool_token_info: ctx.pool_token_info.clone(),
         used_factory_addr: env.contract.address.clone(),
         position_nft_address: nft_address.clone(),
-        // H-S1: real wallet address sourced from factory config so that
+        // Real wallet address sourced from factory config so that
         // an emergency drain on a standard pool sends funds to a
         // controllable wallet instead of the factory contract (which
         // has no withdrawal mechanism).
         bluechip_wallet_address: factory_config.bluechip_wallet_address.clone(),
     };
-    // Dual-code_id routing (H14 4c): standard pools instantiate
-    // against the separate standard-pool wasm, sending a flat
+    // Dual-code_id routing: standard pools instantiate against the
+    // separate standard-pool wasm, sending a flat
     // StandardPoolInstantiateMsg (standard-pool's `instantiate` takes
     // that type directly — no tagged-enum wrapper).
     if factory_config.standard_pool_wasm_contract_id == 0 {
@@ -363,7 +353,7 @@ pub fn finalize_standard_pool(
     // minter at all).
     let nft_transfer = give_pool_nft_ownership(&nft_address, &pool_address)?;
 
-    // M-S1: close the pending-ownership window in the same tx as
+    // Close the pending-ownership window in the same tx as
     // pool creation. The NFT contract sees TransferOwnership first
     // (from the factory) → pool becomes pending_owner; then the pool
     // itself processes AcceptNftOwnership and sends AcceptOwnership
@@ -399,10 +389,10 @@ enum StandardPoolFactoryCallback {
     AcceptNftOwnership {},
 }
 
-/// M-S1 helper: build the `Wasm::Execute { AcceptNftOwnership {} }`
-/// call back into the freshly-created standard pool. Sender on the
-/// resulting transaction is the factory contract, which is exactly
-/// what the pool's `execute_accept_nft_ownership` handler authorises.
+/// Builds the `Wasm::Execute { AcceptNftOwnership {} }` call back into
+/// the freshly-created standard pool. Sender on the resulting
+/// transaction is the factory contract, which is exactly what the
+/// pool's `execute_accept_nft_ownership` handler authorises.
 fn build_pool_accept_nft_ownership_call(pool_addr: &cosmwasm_std::Addr) -> StdResult<CosmosMsg> {
     Ok(WasmMsg::Execute {
         contract_addr: pool_addr.to_string(),

@@ -156,7 +156,7 @@ pub fn query_token_balance(
 /// Strict variant of `query_token_balance`: propagates the underlying
 /// query error instead of swallowing it as a zero balance.
 ///
-/// Used by the H-S2 deposit balance-verification path. There, swallowing
+/// Used by the deposit balance-verification path. There, swallowing
 /// a failed pre-balance query as zero would let the post-balance query's
 /// full pool reserve appear as a "delta" — silently masking the very
 /// fee-on-transfer / rebasing CW20 corruption the verification is meant

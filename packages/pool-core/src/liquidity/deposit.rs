@@ -55,8 +55,7 @@ pub(crate) struct DepositPrep {
     /// `actual_amount0` needed). Preserved for the `refunded_amount0`
     /// response attribute existing external tooling (logs, tests) parses.
     pub refund_amount0: Uint128,
-    /// Same for asset-1. New in H14 Commit 4b — prior to the refactor
-    /// asset 1 was always CW20, so refund semantics didn't apply.
+    /// Same for asset-1.
     pub refund_amount1: Uint128,
 }
 
@@ -128,10 +127,10 @@ pub(crate) fn prepare_deposit(
 ) -> Result<DepositPrep, ContractError> {
     let pool_info = POOL_INFO.load(deps.storage)?;
 
-    // H-2: reject any attached coin whose denom isn't one of the pool's
-    // configured native sides. Prior to this gate, `collect_deposit_side`
-    // read only the matching denom out of `info.funds` and silently left
-    // any extras (e.g. accidentally-attached gas tokens, IBC denoms,
+    // Reject any attached coin whose denom isn't one of the pool's
+    // configured native sides. Without this gate, `collect_deposit_side`
+    // would read only the matching denom out of `info.funds` and silently
+    // leave any extras (e.g. accidentally-attached gas tokens, IBC denoms,
     // tokenfactory tokens) in the pool's bank balance — orphaned forever
     // because no handler emits outgoing transfers in those denoms.
     //
@@ -199,7 +198,7 @@ pub(crate) fn prepare_deposit(
 /// Public deposit entry point — used by creator-pool, where the CW20 is
 /// freshly minted by the factory from `cw20-base` and is therefore
 /// trusted not to charge transfer fees or rebase. Passes
-/// `verify_balances = false` to skip the H-S2 SubMsg verification.
+/// `verify_balances = false` to skip the SubMsg verification.
 #[allow(clippy::too_many_arguments)]
 pub fn execute_deposit_liquidity(
     deps: DepsMut,
@@ -226,7 +225,7 @@ pub fn execute_deposit_liquidity(
     )
 }
 
-/// H-S2 variant — used by standard-pool, where the CW20 sides can be
+/// Variant used by standard-pool, where the CW20 sides can be
 /// arbitrary third-party contracts. Snapshots the pool's pre-balance
 /// for every CW20 side, dispatches the final outgoing message as a
 /// `SubMsg::reply_on_success`, and lets the contract's `reply` entry
@@ -332,7 +331,7 @@ fn execute_deposit_liquidity_inner(
         min_amount1,
     )?;
 
-    // H-S2: snapshot the pool's current CW20 balance on every CW20 side
+    // Snapshot the pool's current CW20 balance on every CW20 side
     // BEFORE the TransferFrom messages dispatch. The reply handler will
     // diff post-balance against this snapshot and reject any shortfall
     // (fee-on-transfer / negative-rebase). Native sides return None
@@ -436,7 +435,7 @@ fn execute_deposit_liquidity_inner(
     update_price_accumulator(&mut pool_state, env.block.time.seconds())?;
     POOL_STATE.save(deps.storage, &pool_state)?;
 
-    // M-2: auto-unpause when a deposit restores reserves above MIN AND
+    // Auto-unpause when a deposit restores reserves above MIN AND
     // the pool was auto-paused (POOL_PAUSED_AUTO == true). Admin pauses
     // and emergency-pending pauses (POOL_PAUSED_AUTO == false) are NOT
     // cleared here — those require explicit admin Unpause / cancel.
@@ -509,7 +508,7 @@ fn execute_deposit_liquidity_inner(
 }
 
 // ---------------------------------------------------------------------------
-// H-S2 — shared SubMsg-based deposit balance verification helpers.
+// Shared SubMsg-based deposit balance verification helpers.
 //
 // `pub(crate)` so `super::add::add_to_position` can reuse them on the
 // add-to-position path. The reply ID + storage Item live in `state.rs`
@@ -613,7 +612,7 @@ pub(crate) fn finalize_deposit_response(
     // refactor produces an empty list.
     if messages.is_empty() {
         return Err(ContractError::Std(StdError::generic_err(
-            "H-S2: cannot wire deposit balance verification on an empty \
+            "cannot wire deposit balance verification on an empty \
              outgoing message list",
         )));
     }

@@ -46,7 +46,7 @@ pub fn fixture_addrs() -> FixtureAddrs {
 ///   - the position-NFT contract answers `OwnerOf { .. }` with the
 ///     supplied `owner` (used by `verify_position_ownership`),
 ///   - any CW20 contract answers `Balance { .. }` with `Uint128::zero()`
-///     (used by the H-S2 verify path's pre-balance snapshot).
+///     (used by the verify path's pre-balance snapshot).
 ///
 /// In unit tests the deposit's verify SubMsg never fires (mock_deps
 /// doesn't dispatch SubMsg replies); the snapshot happens in the
@@ -72,9 +72,9 @@ pub fn mock_deps_with_nft_owner(
                     return SystemResult::Ok(ContractResult::Ok(to_json_binary(&resp).unwrap()));
                 }
             }
-            // CW20 Balance — H-S2 pre-balance snapshot. Match by message
-            // shape rather than contract address so any CW20 side any
-            // test wires in resolves uniformly to zero.
+            // CW20 Balance — pre-balance snapshot for the deposit verify
+            // path. Match by message shape rather than contract address so
+            // any CW20 side any test wires in resolves uniformly to zero.
             if let Ok(cw20::Cw20QueryMsg::Balance { .. }) = cosmwasm_std::from_json(msg) {
                 let resp = Cw20BalanceResponse {
                     balance: Uint128::zero(),

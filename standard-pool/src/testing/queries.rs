@@ -69,7 +69,7 @@ fn query_fee_info_returns_placeholder() {
     let (deps, addrs) = instantiate_default_pool();
     let bin = query(deps.as_ref(), mock_env(), QueryMsg::FeeInfo {}).unwrap();
     let resp: FeeInfoResponse = from_json(&bin).unwrap();
-    // H-S1: standard pools use zero fees, with the factory's configured
+    // Standard pools use zero fees, with the factory's configured
     // bluechip wallet (NOT the factory contract address) as the drain
     // recipient.
     assert_eq!(resp.fee_info.bluechip_wallet_address, addrs.bluechip_wallet);

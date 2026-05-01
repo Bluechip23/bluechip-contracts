@@ -111,7 +111,7 @@ pub enum ExecuteMsg {
         recipient: String,
     },
 
-    // ---- H14 standard pools ----
+    // ---- Standard pools ----
     //
     // Permissionless creator-of-its-own-pool entry point for plain xyk
     // pools around two pre-existing assets. Caller pays the configured

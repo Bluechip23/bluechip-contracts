@@ -42,8 +42,8 @@ pub const ORACLE_PRICE_PRECISION: u128 = 1_000_000;
 /// Performs the oracle-backed bluechip→USD conversion and returns the
 /// full ConversionResponse (not just the amount). Callers that need to
 /// subsequently convert USD back to bluechip can derive the second value
-/// from the `rate_used` field without re-querying — see P4-M6. Threads
-/// the same price snapshot through the entire commit flow, so every
+/// from the `rate_used` field without re-querying. Threads the same
+/// price snapshot through the entire commit flow, so every
 /// commit path issues at most one oracle query (verified across
 /// `execute_commit_logic`, `process_threshold_crossing_with_excess`,
 /// `process_pre_threshold_commit`, `process_post_threshold_commit`).

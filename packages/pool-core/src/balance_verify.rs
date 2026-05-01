@@ -1,4 +1,4 @@
-//! H-S2 — Deposit balance-verification reply handler.
+//! Deposit balance-verification reply handler.
 //!
 //! Standard-pool's `reply` entry point dispatches `DEPOSIT_VERIFY_REPLY_ID`
 //! into [`handle_deposit_verify_reply`]. The verify-aware deposit /
@@ -47,7 +47,7 @@ pub fn handle_deposit_verify_reply(
     if let SubMsgResult::Err(e) = msg.result {
         DEPOSIT_VERIFY_CTX.remove(deps.storage);
         return Err(ContractError::Std(StdError::generic_err(format!(
-            "H-S2: deposit submessage failed before balance verification could run: {}",
+            "deposit submessage failed before balance verification could run: {}",
             e
         ))));
     }
@@ -58,7 +58,7 @@ pub fn handle_deposit_verify_reply(
         .may_load(deps.storage)?
         .ok_or_else(|| {
             ContractError::Std(StdError::generic_err(
-                "H-S2: deposit verify reply fired without a saved context — \
+                "deposit verify reply fired without a saved context — \
                  indicates the parent handler returned without saving \
                  DEPOSIT_VERIFY_CTX before emitting the reply_on_success \
                  SubMsg, or a stale reply id collided",
@@ -71,7 +71,7 @@ pub fn handle_deposit_verify_reply(
         let post = query_token_balance_strict(&deps.querier, cw20_addr, &ctx.pool_addr)?;
         let delta = post.checked_sub(ctx.pre_balance0).map_err(|_| {
             ContractError::Std(StdError::generic_err(format!(
-                "H-S2: side-0 CW20 ({}) post-balance {} is BELOW pre-balance {} — \
+                "side-0 CW20 ({}) post-balance {} is BELOW pre-balance {} — \
                  the token contract must have transferred OUT of the pool during \
                  the deposit, which contradicts a normal TransferFrom flow",
                 cw20_addr, post, ctx.pre_balance0
@@ -79,7 +79,7 @@ pub fn handle_deposit_verify_reply(
         })?;
         if delta != ctx.expected_delta0 {
             return Err(ContractError::Std(StdError::generic_err(format!(
-                "H-S2: side-0 CW20 ({}) balance delta {} does not match the \
+                "side-0 CW20 ({}) balance delta {} does not match the \
                  credited deposit amount {}. Likely cause: fee-on-transfer or \
                  rebasing CW20. Pool reserves were about to drift away from the \
                  contract's actual balance; transaction reverted to keep them \
@@ -92,13 +92,13 @@ pub fn handle_deposit_verify_reply(
         let post = query_token_balance_strict(&deps.querier, cw20_addr, &ctx.pool_addr)?;
         let delta = post.checked_sub(ctx.pre_balance1).map_err(|_| {
             ContractError::Std(StdError::generic_err(format!(
-                "H-S2: side-1 CW20 ({}) post-balance {} is BELOW pre-balance {}",
+                "side-1 CW20 ({}) post-balance {} is BELOW pre-balance {}",
                 cw20_addr, post, ctx.pre_balance1
             )))
         })?;
         if delta != ctx.expected_delta1 {
             return Err(ContractError::Std(StdError::generic_err(format!(
-                "H-S2: side-1 CW20 ({}) balance delta {} does not match the \
+                "side-1 CW20 ({}) balance delta {} does not match the \
                  credited deposit amount {}. Likely cause: fee-on-transfer or \
                  rebasing CW20. Transaction reverted to keep pool reserves \
                  consistent with on-chain balances.",

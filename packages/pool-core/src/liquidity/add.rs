@@ -81,7 +81,7 @@ fn add_to_position_internal(
         min_amount1,
     )?;
 
-    // H-S2: same pre-snapshot pattern as `execute_deposit_liquidity_inner`.
+    // Same pre-snapshot pattern as `execute_deposit_liquidity_inner`.
     // Skipped when verify_balances=false (creator-pool path) — saves the
     // two CW20 balance queries per add-to-position call.
     let pre_snapshot = if verify_balances {
@@ -224,7 +224,7 @@ pub fn execute_add_to_position(
     )
 }
 
-/// H-S2 variant — used by standard-pool. Same SubMsg-based balance
+/// Variant used by standard-pool. Same SubMsg-based balance
 /// verification as `execute_deposit_liquidity_with_verify`; reverts the
 /// transaction when an arbitrary CW20 charged transfer fees or rebased.
 #[allow(clippy::too_many_arguments)]

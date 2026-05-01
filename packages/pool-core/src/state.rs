@@ -115,15 +115,6 @@ pub struct ExpectedFactory {
 pub struct PoolSpecs {
     pub lp_fee: Decimal,
     pub min_commit_interval: u64,
-    // `usd_payment_tolerance_bps` removed: it was admin-tunable but never
-    // read by any execution path, leaving operators with the impression
-    // they were configuring a USD-payment slippage knob that had zero
-    // effect on commit valuation. cw_serde tolerates unknown fields on
-    // deserialize, so already-stored PoolSpecs records carrying it
-    // round-trip cleanly into the new shape and the field is dropped on
-    // the next save. If a USD-vs-oracle slippage protection is ever
-    // wanted, wire it up explicitly with a fresh field rather than
-    // resurrecting this stale config.
 }
 
 #[cw_serde]
@@ -214,16 +205,25 @@ impl PoolCtx {
 
 // -- Storage Items & Maps -------------------------------------------------
 
+/// Pool identity and addresses (factory, token, position NFT).
 pub const POOL_INFO: Item<PoolInfo> = Item::new("pool_info");
+/// Mutable pool state: reserves, total_liquidity, price accumulators.
 pub const POOL_STATE: Item<PoolState> = Item::new("pool_state");
+/// Fee accounting: global fee growth, fee reserves, totals collected.
 pub const POOL_FEE_STATE: Item<PoolFeeState> = Item::new("pool_fee_state");
+/// Tunable pool parameters (lp_fee, min_commit_interval).
 pub const POOL_SPECS: Item<PoolSpecs> = Item::new("pool_specs");
+/// Cumulative counters for swaps, commits, deposits, withdrawals.
 pub const POOL_ANALYTICS: Item<PoolAnalytics> = Item::new("pool_analytics");
+/// All LP positions keyed by string position id.
 pub const LIQUIDITY_POSITIONS: Map<&str, Position> = Map::new("positions");
+/// Reverse index: positions owned by a given address.
 pub const OWNER_POSITIONS: Map<(&Addr, &str), bool> = Map::new("owner_positions");
+/// Monotonic counter used to mint the next Position NFT id.
 pub const NEXT_POSITION_ID: Item<u64> = Item::new("next_position_id");
+/// Top-level pause flag — true if the pool is paused for any reason.
 pub const POOL_PAUSED: Item<bool> = Item::new("pool_paused");
-/// M-2: distinguishes "admin/emergency paused" (false) from "auto-paused
+/// Distinguishes "admin/emergency paused" (false) from "auto-paused
 /// because reserves dropped below MINIMUM_LIQUIDITY" (true). Only meaningful
 /// when `POOL_PAUSED == true`.
 ///
@@ -247,9 +247,14 @@ pub const POOL_PAUSED: Item<bool> = Item::new("pool_paused");
 /// hard-paused (the safe default), and admin Pause / Unpause continues
 /// to work unchanged.
 pub const POOL_PAUSED_AUTO: Item<bool> = Item::new("pool_paused_auto");
+/// Audit record written on completed emergency withdraw (Phase 2 drain).
 pub const EMERGENCY_WITHDRAWAL: Item<EmergencyWithdrawalInfo> = Item::new("emergency_withdrawal");
+/// Effective-after timestamp armed by Phase 1 (initiate); cleared by
+/// Phase 2 (drain) or by cancel.
 pub const PENDING_EMERGENCY_WITHDRAW: Item<Timestamp> = Item::new("pending_emergency_withdraw");
+/// Permanent flag set after a successful emergency drain.
 pub const EMERGENCY_DRAINED: Item<bool> = Item::new("emergency_drained");
+/// Expected factory address pinned at instantiate for sanity checks.
 pub const EXPECTED_FACTORY: Item<ExpectedFactory> = Item::new("expected_factory");
 
 // Reentrancy lock acquired by `commit` and `simple_swap` to reject
@@ -262,7 +267,7 @@ pub const EXPECTED_FACTORY: Item<ExpectedFactory> = Item::new("expected_factory"
 // no acquisition.
 pub const REENTRANCY_LOCK: Item<bool> = Item::new("rate_limit_guard");
 
-/// H-S2: transient context for SubMsg-based CW20 balance verification on
+/// Transient context for SubMsg-based CW20 balance verification on
 /// deposits. The deposit handler snapshots the pool's pre-balance for
 /// every CW20 side, saves this context, and dispatches the last
 /// CW20-side `TransferFrom` as a `SubMsg::reply_on_success`. The reply
@@ -289,6 +294,8 @@ pub struct DepositVerifyContext {
     pub expected_delta1: Uint128,
 }
 
+/// Storage for the transient `DepositVerifyContext` used between deposit
+/// dispatch and the balance-verification reply.
 pub const DEPOSIT_VERIFY_CTX: Item<DepositVerifyContext> = Item::new("deposit_verify_ctx");
 
 /// Reply ID for `DEPOSIT_VERIFY_CTX` — emitted by the
@@ -299,20 +306,21 @@ pub const DEPOSIT_VERIFY_CTX: Item<DepositVerifyContext> = Item::new("deposit_ve
 /// reply ID conventions.
 pub const DEPOSIT_VERIFY_REPLY_ID: u64 = 0xD550_0000;
 
+/// Per-user timestamp of last commit, used by rate limiting.
 pub const USER_LAST_COMMIT: Map<&Addr, u64> = Map::new("user_last_commit");
 
-// Standard pool writes `true` at instantiate (no threshold gate); creator
-// pool flips it in the threshold-crossing commit path. Shared handlers
-// read via `query_check_commit`.
+/// Standard pool writes `true` at instantiate (no threshold gate); creator
+/// pool flips it in the threshold-crossing commit path. Shared handlers
+/// read via `query_check_commit`.
 pub const IS_THRESHOLD_HIT: Item<bool> = Item::new("threshold_hit");
 
-// Creator-claimable pot that receives the portion of LP fees "clipped"
-// away from small positions by `calculate_fee_size_multiplier`. Standard
-// pool's stays empty; emergency_withdraw sweeps it unconditionally.
+/// Creator-claimable pot that receives the portion of LP fees "clipped"
+/// away from small positions by `calculate_fee_size_multiplier`. Standard
+/// pool's stays empty; emergency_withdraw sweeps it unconditionally.
 pub const CREATOR_FEE_POT: Item<CreatorFeePot> = Item::new("creator_fee_pot");
 
-// emergency_withdraw reads `bluechip_wallet_address` for the drain
-// recipient; standard pool instantiate saves a zero-valued placeholder.
+/// emergency_withdraw reads `bluechip_wallet_address` for the drain
+/// recipient; standard pool instantiate saves a zero-valued placeholder.
 pub const COMMITFEEINFO: Item<CommitFeeInfo> = Item::new("fee_info");
 
 // Oracle endpoint the pool queries for `ConvertBluechipToUsd`. Initialized
@@ -353,7 +361,11 @@ pub const POST_THRESHOLD_COOLDOWN_UNTIL_BLOCK: Item<u64> =
 
 // -- Constants ------------------------------------------------------------
 
+/// Uniswap-V2-style minimum-liquidity floor permanently locked on the
+/// first deposit, and the per-reserve floor used by auto-pause checks.
 pub const MINIMUM_LIQUIDITY: Uint128 = Uint128::new(1000);
+/// 24 hours, in seconds — timelock between emergency_withdraw_initiate
+/// and emergency_withdraw_core_drain.
 pub const EMERGENCY_WITHDRAW_DELAY_SECONDS: u64 = 86_400;
 
 /// Blocks of trading freeze applied immediately after a commit pool's
@@ -363,7 +375,7 @@ pub const EMERGENCY_WITHDRAW_DELAY_SECONDS: u64 = 86_400;
 /// hurt UX for legitimate first traders.
 pub const POST_THRESHOLD_COOLDOWN_BLOCKS: u64 = 2;
 
-/// M-2: classify the pool's current pause state. Used by the dispatch
+/// Classify the pool's current pause state. Used by the dispatch
 /// gates to allow deposits during auto-pause (recovery) but reject them
 /// during admin / emergency pause.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -392,7 +404,7 @@ pub fn pause_kind(storage: &dyn Storage) -> StdResult<PauseKind> {
     }
 }
 
-/// M-2: arm the auto-pause flag after a liquidity-out operation if
+/// Arm the auto-pause flag after a liquidity-out operation if
 /// post-state reserves dropped below `MINIMUM_LIQUIDITY`. No-op when
 /// reserves are still healthy or when the pool is already hard-paused
 /// (admin / emergency-pending) — overriding a hard pause with an auto

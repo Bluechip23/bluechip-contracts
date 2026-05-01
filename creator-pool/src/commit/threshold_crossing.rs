@@ -65,7 +65,7 @@ pub(super) fn process_threshold_crossing_with_excess(
     analytics: &mut PoolAnalytics,
 ) -> Result<Response, ContractError> {
     // Reuse the rate captured at commit() entry rather than re-querying the
-    // oracle (P4-M6). usd_to_bluechip_at_rate is the inverse of the
+    // oracle. usd_to_bluechip_at_rate is the inverse of the
     // bluechip_to_usd math used to produce usd_value, so thresholding is
     // arithmetically consistent with the valuation.
     let bluechip_to_threshold = usd_to_bluechip_at_rate(usd_to_threshold, oracle_rate)?;
@@ -103,7 +103,7 @@ pub(super) fn process_threshold_crossing_with_excess(
 
     // Hold factory_notify aside; it becomes a SubMsg on the final Response
     // so a factory-side failure is recoverable via RetryFactoryNotify
-    // rather than reverting the whole threshold crossing (P4-H5).
+    // rather than reverting the whole threshold crossing.
     let payout_msgs = trigger_threshold_payout(
         deps.storage,
         pool_info,
