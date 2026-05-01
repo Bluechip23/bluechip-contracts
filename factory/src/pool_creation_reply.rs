@@ -363,16 +363,53 @@ pub fn finalize_standard_pool(
     // minter at all).
     let nft_transfer = give_pool_nft_ownership(&nft_address, &pool_address)?;
 
+    // M-S1: close the pending-ownership window in the same tx as
+    // pool creation. The NFT contract sees TransferOwnership first
+    // (from the factory) → pool becomes pending_owner; then the pool
+    // itself processes AcceptNftOwnership and sends AcceptOwnership
+    // back to the NFT. By the end of this tx the NFT contract has
+    // the pool as its actual owner, with no window for an outside
+    // observer to interact with the half-transferred NFT.
+    let pool_accept_trigger = build_pool_accept_nft_ownership_call(&pool_address)?;
+
     STANDARD_POOL_CREATION_CONTEXT.remove(deps.storage, pool_id);
 
     crate::state::register_pool(deps.storage, pool_id, &pool_address, &pool_details)?;
 
     Ok(Response::new()
+        // Order matters: TransferOwnership must process before the
+        // pool tries to accept, otherwise the NFT contract would
+        // reject AcceptOwnership with NoPendingOwner.
         .add_message(nft_transfer)
+        .add_message(pool_accept_trigger)
         .add_attribute("action", "standard_pool_created_successfully")
         .add_attribute("pool_address", pool_address)
         .add_attribute("pool_id", pool_id.to_string())
         .add_attribute("creator", ctx.creator.to_string()))
+}
+
+/// Minimal typed mirror of the standard-pool ExecuteMsg variants the
+/// factory ever needs to call back into. Intentionally NOT a re-export
+/// of `standard_pool::msg::ExecuteMsg` — the factory must not take a
+/// circular dep on standard-pool. Wire compatibility is locked in by
+/// the round-trip parse test in factory/testing.
+#[derive(serde::Serialize)]
+#[serde(rename_all = "snake_case")]
+enum StandardPoolFactoryCallback {
+    AcceptNftOwnership {},
+}
+
+/// M-S1 helper: build the `Wasm::Execute { AcceptNftOwnership {} }`
+/// call back into the freshly-created standard pool. Sender on the
+/// resulting transaction is the factory contract, which is exactly
+/// what the pool's `execute_accept_nft_ownership` handler authorises.
+fn build_pool_accept_nft_ownership_call(pool_addr: &cosmwasm_std::Addr) -> StdResult<CosmosMsg> {
+    Ok(WasmMsg::Execute {
+        contract_addr: pool_addr.to_string(),
+        msg: to_json_binary(&StandardPoolFactoryCallback::AcceptNftOwnership {})?,
+        funds: vec![],
+    }
+    .into())
 }
 
 /// Standalone NFT-ownership transfer for the standard-pool finalize path.

@@ -158,10 +158,19 @@ fn instantiate_accepts_native_native_pair() {
     };
     instantiate(deps.as_mut(), mock_env(), info, msg).unwrap();
 
-    // Token address placeholder falls back to the factory address since
-    // no CreatorToken side exists.
+    // M-S4: Native+Native pool has no creator-token side, so
+    // `token_address` defaults to the pool's OWN contract address
+    // (mock_env's deterministic "cosmos2contract"). Self-referential
+    // value signals "placeholder, not a token address" without
+    // resembling a real CW20 contract; pre-fix the fallback was the
+    // factory address, which was easy to misread as meaningful.
     let pool_info = POOL_INFO.load(&deps.storage).unwrap();
-    assert_eq!(pool_info.token_address, factory);
+    assert_eq!(pool_info.token_address, mock_env().contract.address);
+    assert_ne!(
+        pool_info.token_address, factory,
+        "M-S4: placeholder must NOT be the factory address — that was \
+         the misleading default we replaced"
+    );
 }
 
 #[test]

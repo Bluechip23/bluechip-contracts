@@ -80,11 +80,28 @@ pub fn instantiate(
         }
     }
 
-    // `PoolInfo.token_address` is a legacy commit-pool field. Standard
-    // pools populate it with the first CreatorToken side if any, else
-    // the factory address as a harmless placeholder. Shared liquidity
-    // and swap code dispatches per-TokenType on `asset_infos[i]` and
-    // doesn't read this field.
+    // `PoolInfo.token_address` is a legacy commit-pool field — its
+    // semantic meaning ("address of the freshly-minted creator CW20")
+    // doesn't apply to standard pools, which wrap pre-existing assets
+    // and never mint a new CW20. Shared liquidity and swap code in
+    // pool-core dispatches per-TokenType on `asset_infos[i]` and
+    // doesn't read this field, so it's a value-only placeholder.
+    //
+    // M-S4: keep the wire-format type stable as `Addr` (avoids a state
+    // migration on every existing pool record), but choose the
+    // placeholder value carefully:
+    //   - if any side is a CreatorToken, use that side's CW20 address
+    //     (matches creator-pool's convention; lets external indexers
+    //     that historically read this field still resolve to a real
+    //     CW20 on Native+CW20 standard pools).
+    //   - otherwise (Native+Native shapes such as the ATOM/bluechip
+    //     anchor), set it to the pool's OWN contract address. The
+    //     pool's address is always valid bech32, can never be confused
+    //     with a creator CW20 (it isn't one), and is self-referential
+    //     enough to make "this field is a placeholder, not a token
+    //     address" obvious to any future reader. Pre-fix the fallback
+    //     was the factory address, which is the wallet that created
+    //     the pool — easy to misread as meaningful when it isn't.
     let token_address_placeholder = msg
         .pool_token_info
         .iter()
@@ -92,7 +109,7 @@ pub fn instantiate(
             TokenType::CreatorToken { contract_addr } => Some(contract_addr.clone()),
             _ => None,
         })
-        .unwrap_or_else(|| msg.used_factory_addr.clone());
+        .unwrap_or_else(|| env.contract.address.clone());
 
     set_contract_version(deps.storage, CONTRACT_NAME, CONTRACT_VERSION)?;
 
@@ -267,6 +284,7 @@ pub fn execute(
         ExecuteMsg::CancelEmergencyWithdraw {} => {
             execute_cancel_emergency_withdraw(deps, env, info)
         }
+        ExecuteMsg::AcceptNftOwnership {} => execute_accept_nft_ownership(deps, info),
         ExecuteMsg::DepositLiquidity {
             amount0,
             amount1,
@@ -386,6 +404,71 @@ pub fn execute(
             )
         }
     }
+}
+
+/// M-S1 — accept NFT ownership in the same transaction as pool creation.
+///
+/// Background: the factory's `finalize_standard_pool` reply chain
+/// already dispatches `Cw721ExecuteMsg::TransferOwnership { new_owner:
+/// pool }` to the position-NFT contract. cw_ownable's two-step transfer
+/// pattern leaves the pool as `pending_owner` until the pool itself
+/// sends `AcceptOwnership`. Pre-fix, that acceptance was deferred
+/// until the first user deposit (`pool_state.nft_ownership_accepted`
+/// gate), opening a "pending-ownership window" between pool creation
+/// and first deposit during which the NFT contract's owner is still
+/// the factory.
+///
+/// Fix: the factory appends an `AcceptNftOwnership {}` execute call to
+/// the pool to its finalize response, immediately after the
+/// TransferOwnership to the NFT. This handler then sends the matching
+/// AcceptOwnership message back to the NFT and flips the flag.
+/// Pool-core's deposit handler still has its `if !nft_ownership_accepted`
+/// branch as a backstop for any path that bypasses this trigger
+/// (e.g. test fixtures or upgrades from a pre-M-S1 standard pool that
+/// never received the trigger), so the lazy-accept behavior remains
+/// available as a fallback.
+///
+/// Idempotent: returns Ok with no messages if the flag is already set.
+/// Authorisation: sender must equal `POOL_INFO.factory_addr` — only
+/// the factory has any reason to invoke this, and accepting from any
+/// other sender would let an attacker race the legitimate flow.
+fn execute_accept_nft_ownership(
+    deps: DepsMut,
+    info: MessageInfo,
+) -> Result<Response, ContractError> {
+    let pool_info = POOL_INFO.load(deps.storage)?;
+    if info.sender != pool_info.factory_addr {
+        return Err(ContractError::Unauthorized {});
+    }
+
+    let mut pool_state = POOL_STATE.load(deps.storage)?;
+    if pool_state.nft_ownership_accepted {
+        // Already accepted (likely via the deposit-side fallback in
+        // pool-core). Don't dispatch a second AcceptOwnership — the
+        // NFT contract would reject it with NoPendingOwner, failing
+        // the entire create-pool transaction.
+        return Ok(Response::new()
+            .add_attribute("action", "accept_nft_ownership_noop")
+            .add_attribute("pool", pool_info.pool_info.contract_addr.to_string()));
+    }
+
+    let accept_msg = cosmwasm_std::WasmMsg::Execute {
+        contract_addr: pool_info.position_nft_address.to_string(),
+        msg: cosmwasm_std::to_json_binary(
+            &pool_factory_interfaces::cw721_msgs::Cw721ExecuteMsg::<()>::UpdateOwnership(
+                pool_factory_interfaces::cw721_msgs::Action::AcceptOwnership,
+            ),
+        )?,
+        funds: vec![],
+    };
+    pool_state.nft_ownership_accepted = true;
+    POOL_STATE.save(deps.storage, &pool_state)?;
+
+    Ok(Response::new()
+        .add_message(cosmwasm_std::CosmosMsg::Wasm(accept_msg))
+        .add_attribute("action", "accept_nft_ownership")
+        .add_attribute("pool", pool_info.pool_info.contract_addr.to_string())
+        .add_attribute("nft", pool_info.position_nft_address.to_string()))
 }
 
 /// Standard-pool emergency withdraw: no commit-only bookkeeping. Dispatches

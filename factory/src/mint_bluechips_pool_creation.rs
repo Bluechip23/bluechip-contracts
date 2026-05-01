@@ -49,12 +49,39 @@ pub fn calculate_mint_amount(seconds_elapsed: u64, pools_created: u64) -> StdRes
 /// Calculates and mints bluechip tokens when a pool crosses its commit threshold.
 /// `pool_id` is the sequential ID of the pool — the decay formula uses this as `x`
 /// so that later pools receive fewer minted tokens.
+///
+/// M-S3 — STANDARD POOLS DO NOT MINT.
+/// Only commit pools cross a threshold; standard pools wrap pre-existing
+/// assets and have no commit-phase concept. The single call site,
+/// `execute_notify_threshold_crossed`, already rejects
+/// `PoolKind::Standard`, so no `Standard` pool can reach this function
+/// in the current code base. The defensive guard below is
+/// belt-and-braces: any future call site that forgets the upstream
+/// check still cannot trigger a bluechip mint on behalf of a standard
+/// pool. Keeping standard pools out of the mint formula is a hard
+/// invariant — a standard pool inflating `x` (or worse, getting a
+/// `mint_amount > 0`) would dilute every legitimate commit pool's
+/// mint reward and let permissionless pool creation drain the
+/// expand-economy budget.
 pub fn calculate_and_mint_bluechip(
     deps: &mut DepsMut,
     env: Env,
     pool_id: u64,
 ) -> Result<Vec<CosmosMsg>, ContractError> {
     let messages = vec![];
+
+    // M-S3 defense-in-depth: hard guard that this function is only
+    // ever called for commit pools. Belongs above the mock-feature
+    // short-circuit so even mock builds enforce the invariant.
+    let pool_details = POOLS_BY_ID.load(deps.storage, pool_id)?;
+    if pool_details.pool_kind == pool_factory_interfaces::PoolKind::Standard {
+        return Err(ContractError::Std(StdError::generic_err(format!(
+            "Pool {} is a standard pool — standard pools do not participate \
+             in the expand-economy mint formula. The caller should never \
+             reach calculate_and_mint_bluechip for a standard pool.",
+            pool_id
+        ))));
+    }
 
     // Lazy-init the "first threshold crossed" anchor timestamp. The
     // decay formula's `s` input is `block.time - first_threshold_time`
@@ -88,7 +115,7 @@ pub fn calculate_and_mint_bluechip(
     // `commit_pool_ordinal` existed have it default to zero on
     // deserialize; for those, fall back to `pool_id` to preserve the
     // exact mint amount they would have produced under the old code.
-    let pool_details = POOLS_BY_ID.load(deps.storage, pool_id)?;
+    // (`pool_details` is reused from the M-S3 standard-pool guard above.)
     let decay_x = if pool_details.commit_pool_ordinal == 0 {
         pool_id
     } else {
