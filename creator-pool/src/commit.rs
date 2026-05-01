@@ -326,9 +326,15 @@ fn execute_commit_logic(
                         let final_usd =
                             new_total.min(commit_config.commit_amount_for_threshold_usd);
                         USD_RAISED_FROM_COMMIT.save(deps.storage, &final_usd)?;
+                        // Store the net-of-fees bluechip that actually enters
+                        // the contract's bank balance (audit fix; see
+                        // pre_threshold.rs comment block). Eliminates the
+                        // dust-stranding mismatch between per-commit fee
+                        // floors and the recovery formula in
+                        // `trigger_threshold_payout`.
                         NATIVE_RAISED_FROM_COMMIT
                             .update::<_, ContractError>(deps.storage, |r| {
-                                Ok(r.checked_add(asset.amount)?)
+                                Ok(r.checked_add(amount_after_fees)?)
                             })?;
                         IS_THRESHOLD_HIT.save(deps.storage, &true)?;
                         // Arm the post-threshold cooldown so other actors
@@ -393,6 +399,10 @@ fn execute_commit_logic(
                         sender,
                         &asset,
                         usd_value,
+                        // Net-of-fees bluechip that actually enters the
+                        // contract bank balance from this commit (audit
+                        // fix; see pre_threshold.rs).
+                        amount_after_fees,
                         messages,
                         &pool_state,
                         &mut analytics,

@@ -103,11 +103,58 @@ pub struct BlueChipPriceInternalOracle {
     /// anchor's reserves. Decremented per successful price-publishing
     /// update; failed (snapshot-only) updates do NOT decrement
     /// because they don't advance the TWAP. While `> 0`, downstream
-    /// conversions return `Err(InsufficientData)`. `#[serde(default)]`
-    /// keeps records written before this field existed deserializing
-    /// as zero (no warm-up active).
+    /// conversions return `Err(InsufficientData)` for strict callers
+    /// (commit path), but best-effort callers
+    /// (`bluechip_to_usd_best_effort`, `usd_to_bluechip_best_effort`)
+    /// fall back to `pre_reset_last_price`. `#[serde(default)]` keeps
+    /// records written before this field existed deserializing as
+    /// zero (no warm-up active).
     #[serde(default)]
     pub warmup_remaining: u32,
+    /// Cached bluechip-side index of the anchor pool (0 = bluechip is
+    /// reserve0, 1 = bluechip is reserve1). Pinned at every anchor
+    /// reset (`SetAnchorPool`, timelocked anchor change in
+    /// `UpdateConfig`, force-rotate) so the per-update sample loop
+    /// never has to scan `POOLS_BY_ID` to figure out which side is
+    /// bluechip on the anchor. Without this cache the prior code
+    /// path fell back to an O(N) scan over the full pool registry,
+    /// which scales poorly under permissionless `CreateStandardPool`
+    /// spam. `#[serde(default)]` lets pre-cache records round-trip
+    /// as zero; the next anchor reset repopulates it with the real
+    /// value (and, since on every chain we ship today the canonical
+    /// anchor has bluechip at index 0, the default of 0 also happens
+    /// to be the right value during the brief pre-reset interval).
+    #[serde(default)]
+    pub anchor_bluechip_index: u8,
+    /// Buffered candidate first observation after a price-cache reset.
+    /// On every reset (anchor change / force-rotate / bootstrap)
+    /// `last_price` is zeroed AND this is set to None. The first
+    /// post-reset successful TWAP is held here rather than committed
+    /// to `last_price` directly — the second observation drift-checks
+    /// against this candidate; on success the median of the two
+    /// becomes the new `last_price`, on drift-failure the second
+    /// observation replaces the candidate (start-over). The previous
+    /// behaviour committed the first observation directly with no
+    /// drift check (the breaker bypassed because `prior == 0`),
+    /// letting a single-block manipulation of the anchor reserves
+    /// anchor the breaker to a bad starting point. With this buffer,
+    /// an attacker has to manipulate two consecutive observations
+    /// within `MAX_TWAP_DRIFT_BPS` of each other for the bad value
+    /// to land. `#[serde(default)]` is `None`.
+    #[serde(default)]
+    pub pending_first_price: Option<Uint128>,
+    /// Snapshot of `last_price` immediately before a reset (anchor
+    /// change / force-rotate). Used by the best-effort conversion
+    /// path so non-critical USD-denominated callers
+    /// (CreateStandardPool fee, PayDistributionBounty) can keep
+    /// running during the warm-up window. The strict path used by
+    /// commit valuation never consults this — a wrong USD valuation
+    /// directly translates to wrong threshold-cross arithmetic, so
+    /// commits remain hard-failed during warm-up. `#[serde(default)]`
+    /// is `Uint128::zero()`; both internal callers gracefully skip
+    /// when zero.
+    #[serde(default)]
+    pub pre_reset_last_price: Uint128,
 }
 
 /// Number of successful price-publishing oracle updates required after the
@@ -232,6 +279,9 @@ pub fn select_random_pools_with_atom(
                 },
                 update_interval: UPDATE_INTERVAL,
                 warmup_remaining: 0,
+                anchor_bluechip_index: 0,
+                pending_first_price: None,
+                pre_reset_last_price: Uint128::zero(),
             });
     let mut hasher = Sha256::new();
     hasher.update(env.block.time.seconds().to_be_bytes());
@@ -309,6 +359,17 @@ pub fn initialize_internal_bluechip_oracle(
         // weight, so we refuse to serve a price downstream until enough
         // real cumulative-delta evidence has accumulated.
         warmup_remaining: ANCHOR_CHANGE_WARMUP_OBSERVATIONS,
+        // Anchor isn't actually set yet at factory instantiate (the
+        // address in factory_config is the deploy-time placeholder
+        // until `SetAnchorPool` fires). The real value is populated
+        // by `execute_set_anchor_pool` and every subsequent anchor-reset
+        // path. Default to 0 here; the next anchor reset repopulates.
+        anchor_bluechip_index: 0,
+        // No pending observation at bootstrap; the warm-up loop fills
+        // this in starting on the very first post-bootstrap update.
+        pending_first_price: None,
+        // No pre-reset price exists at bootstrap.
+        pre_reset_last_price: Uint128::zero(),
     };
 
     INTERNAL_ORACLE.save(deps.storage, &oracle)?;
@@ -543,6 +604,7 @@ pub fn update_internal_oracle_price(
             deps.as_ref(),
             &pools_to_use,
             &oracle.pool_cumulative_snapshots,
+            oracle.anchor_bluechip_index,
         )?;
     // Always persist the new snapshots so the next round has prior data
     // to compute a TWAP from, even when this round couldn't produce a
@@ -591,18 +653,55 @@ pub fn update_internal_oracle_price(
 
     let twap_price = calculate_twap(&oracle.bluechip_price_cache.twap_observations)?;
 
-    // Circuit breaker. If the freshly-computed TWAP has drifted more than
-    // MAX_TWAP_DRIFT_BPS from the previously-cached `last_price`, reject
-    // this update entirely. The full tx reverts (push to twap_observations,
-    // pyth cache update, etc.) so the next caller sees the prior cached
-    // state and gets to retry against fresh observations. See
-    // `MAX_TWAP_DRIFT_BPS` doc for sizing rationale and recovery path.
+    // Circuit breaker.
     //
-    // First-update bootstrap (`prior == 0`) bypasses the check so the
-    // very first observation can land. After that, every subsequent
-    // update is rate-limited to the bps threshold per UPDATE_INTERVAL.
+    // Branch selection depends on three flags:
+    //   - `prior` = oracle.bluechip_price_cache.last_price
+    //   - `pre_reset` = oracle.pre_reset_last_price
+    //   - `candidate` = oracle.pending_first_price
+    //
+    // Four branches:
+    //
+    //   (a) Steady state (`prior > 0`): drift-check the new TWAP against
+    //       the prior cached price. If the diff exceeds
+    //       MAX_TWAP_DRIFT_BPS the entire tx reverts — every storage
+    //       write above (twap_observations push, pyth cache update,
+    //       snapshot save) is rolled back, so the next caller sees the
+    //       same prior state and gets a fresh shot.
+    //
+    //   (b) Post-reset, no candidate yet (`prior == 0` AND
+    //       `pre_reset > 0` AND `candidate == None`): hold the new
+    //       TWAP as a candidate. Do NOT publish it to `last_price`,
+    //       do NOT decrement `warmup_remaining`. The point of the
+    //       buffer is to prevent a single-block manipulation of the
+    //       new anchor from anchoring the breaker to a bad value —
+    //       the next observation drift-checks against the candidate.
+    //
+    //   (c) Post-reset, candidate exists (`prior == 0` AND
+    //       `candidate == Some(c)`): drift-check the new observation
+    //       against the candidate. On success the median of the two
+    //       becomes the new `last_price`, the buffer clears, and the
+    //       warm-up counter starts ticking. On drift-failure we
+    //       discard the prior candidate and replace it with the new
+    //       observation (start over).
+    //
+    //   (d) Bootstrap (`prior == 0` AND `pre_reset == 0` AND
+    //       `candidate == None`): the very first observation after
+    //       factory instantiate. There is no prior trusted price for
+    //       the breaker to be anchored against, so the buffer adds no
+    //       protection — and adding it here would force a one-time
+    //       extra `UpdateOraclePrice` cycle at every fresh deployment.
+    //       Publish directly. This branch fires exactly once per
+    //       factory lifecycle (bootstrap), and only on rotation paths
+    //       where `pre_reset_last_price` failed to land
+    //       (e.g. `SetAnchorPool` happens before any update fired).
+    //       Anchor rotations after the first published price always
+    //       have `pre_reset > 0` and route through (b)/(c).
     let prior = oracle.bluechip_price_cache.last_price;
+    let pre_reset = oracle.pre_reset_last_price;
+    let buffered_reset_path = !pre_reset.is_zero();
     if !prior.is_zero() {
+        // Branch (a): steady-state drift check.
         let (smaller, larger) = if twap_price > prior {
             (prior, twap_price)
         } else {
@@ -628,21 +727,101 @@ pub fn update_internal_oracle_price(
                 max_bps: MAX_TWAP_DRIFT_BPS,
             });
         }
+        oracle.bluechip_price_cache.last_price = twap_price;
+        oracle.bluechip_price_cache.last_update = current_time;
+    } else if let Some(candidate) = oracle.pending_first_price {
+        // Branch (c): second post-reset observation. Drift-check against
+        // the buffered candidate. Reachable only if branch (b) fired
+        // earlier (i.e. `pre_reset > 0`); the candidate field is never
+        // populated by the bootstrap branch (d).
+        let (smaller, larger) = if twap_price > candidate {
+            (candidate, twap_price)
+        } else {
+            (twap_price, candidate)
+        };
+        let diff = larger.checked_sub(smaller)?;
+        let drift_bps_u128 = match diff.checked_mul(Uint128::from(10_000u128)) {
+            Ok(scaled) => scaled
+                .checked_div(smaller)
+                .map(|v| v.u128())
+                .unwrap_or(u128::MAX),
+            Err(_) => u128::MAX,
+        };
+        if drift_bps_u128 > MAX_TWAP_DRIFT_BPS as u128 {
+            // Drift between candidate and second observation exceeds
+            // the breaker. Discard the candidate; replace it with the
+            // new observation as the fresh candidate and stay in the
+            // post-reset branch. Roll back the just-pushed observation
+            // and don't decrement warmup_remaining — neither candidate
+            // is trusted enough to count.
+            oracle.bluechip_price_cache.twap_observations.pop();
+            oracle.pending_first_price = Some(twap_price);
+            INTERNAL_ORACLE.save(deps.storage, &oracle)?;
+            return Ok(Response::new()
+                .add_attribute("action", "update_oracle")
+                .add_attribute("price_published", "false")
+                .add_attribute("reason", "post_reset_candidate_replaced_drift_too_large")
+                .add_attribute("prior_candidate", candidate.to_string())
+                .add_attribute("new_candidate", twap_price.to_string())
+                .add_attribute("drift_bps", drift_bps_u128.to_string())
+                .add_attribute("max_bps", MAX_TWAP_DRIFT_BPS.to_string()));
+        }
+        // Drift OK: median of the two becomes the new last_price. Median
+        // (vs e.g. taking the second observation directly) means a single
+        // manipulated observation among the two has at most half the
+        // pull on the published price.
+        let median = candidate
+            .checked_add(twap_price)?
+            .checked_div(Uint128::from(2u128))
+            .map_err(|_| ContractError::Std(StdError::generic_err("median div-by-zero")))?;
+        oracle.bluechip_price_cache.last_price = median;
+        oracle.bluechip_price_cache.last_update = current_time;
+        oracle.pending_first_price = None;
+    } else if buffered_reset_path {
+        // Branch (b): first post-reset observation, AND there is a prior
+        // trusted price (`pre_reset > 0`) we're protecting against
+        // manipulation of. Hold the TWAP as a candidate. Pop the
+        // just-pushed PriceObservation so the warm-up TWAP window
+        // doesn't accumulate buffered candidates as data points
+        // (otherwise the second-observation TWAP would be computed
+        // against a window that already includes the candidate).
+        oracle.bluechip_price_cache.twap_observations.pop();
+        oracle.pending_first_price = Some(twap_price);
+        INTERNAL_ORACLE.save(deps.storage, &oracle)?;
+        return Ok(Response::new()
+            .add_attribute("action", "update_oracle")
+            .add_attribute("price_published", "false")
+            .add_attribute("reason", "first_post_reset_observation_buffered")
+            .add_attribute("candidate_price", twap_price.to_string())
+            .add_attribute("warmup_remaining", oracle.warmup_remaining.to_string()));
+    } else {
+        // Branch (d): bootstrap. No prior price (`prior == 0`), no
+        // pre-reset price to protect against (`pre_reset == 0`), no
+        // candidate buffered (`candidate == None`). Publish directly.
+        // The buffer adds no security at bootstrap because there's no
+        // prior trusted price for an attacker to anchor the breaker
+        // against; the first published value will itself be the
+        // breaker's anchor for branch (a) on the next update. The
+        // warm-up gate (`warmup_remaining`) still holds downstream
+        // consumers off the new value for `ANCHOR_CHANGE_WARMUP_OBSERVATIONS`
+        // additional rounds, providing the same observability window
+        // as for an anchor change.
+        oracle.bluechip_price_cache.last_price = twap_price;
+        oracle.bluechip_price_cache.last_update = current_time;
     }
 
-    oracle.bluechip_price_cache.last_price = twap_price;
-    oracle.bluechip_price_cache.last_update = current_time;
-
-    // Cache the Pyth ATOM/USD price alongside the TWAP update
+    // Cache the Pyth ATOM/USD price alongside the TWAP update.
+    // Reached only on branches (a) and (c)-success — i.e. the rounds
+    // where we actually committed to a `last_price`.
     if let Ok(pyth_price) = query_pyth_atom_usd_price(deps.as_ref(), &env) {
         oracle.bluechip_price_cache.cached_pyth_price = pyth_price;
         oracle.bluechip_price_cache.cached_pyth_timestamp = current_time;
     }
 
     // Decrement the warm-up counter. Only price-publishing updates
-    // count — snapshot-only updates returned earlier and don't tick
-    // this down, otherwise an attacker could exhaust the warm-up by
-    // triggering empty rounds.
+    // count — snapshot-only and post-reset-buffered rounds returned
+    // earlier and don't tick this down, otherwise an attacker could
+    // exhaust the warm-up by triggering empty rounds.
     let warmup_remaining_before = oracle.warmup_remaining;
     oracle.warmup_remaining = oracle.warmup_remaining.saturating_sub(1);
 
@@ -753,6 +932,7 @@ pub fn calculate_weighted_price_with_atom(
     deps: Deps,
     pool_addresses: &[String],
     prev_snapshots: &[PoolCumulativeSnapshot],
+    anchor_bluechip_index: u8,
 ) -> Result<(Option<Uint128>, Option<Uint128>, Vec<PoolCumulativeSnapshot>), ContractError> {
     let factory_config = FACTORYINSTANTIATEINFO
         .load(deps.storage)
@@ -781,56 +961,33 @@ pub fn calculate_weighted_price_with_atom(
                     continue;
                 }
 
-                // Determine if Bluechip is reserve0 or reserve1. Hoisted out
-                // of an O(N) scan of `POOLS_BY_ID` (formerly run per-sample;
-                // amounted to O(N²) per oracle update at scale). The
-                // eligible-pool snapshot now caches the bluechip-side index
-                // alongside each address, populated at capture time in
-                // `get_eligible_creator_pools`.
+                // Determine if Bluechip is reserve0 or reserve1.
                 //
-                // Falls back to the old linear scan only on:
-                //   - the anchor pool (which isn't in the snapshot — it's
-                //     always added separately by `select_random_pools_with_atom`)
-                //   - a snapshot written by pre-cache code that had no
-                //     `bluechip_indices` populated (`#[serde(default)]`
-                //     produces an empty Vec; one-time, until next refresh)
-                let is_bluechip_second = if let Some(idx) =
-                    bluechip_index_lookup(deps, pool_address)?
-                {
+                //   - Anchor pool: read the index pinned on
+                //     `BlueChipPriceInternalOracle.anchor_bluechip_index`.
+                //     Populated at every anchor reset (SetAnchorPool,
+                //     timelocked anchor change, ForceRotate). Replaces an
+                //     O(N) fallback scan over POOLS_BY_ID that previously
+                //     ran for the anchor on every oracle update.
+                //
+                //   - Non-anchor (creator) pools: read from the cached
+                //     `EligiblePoolSnapshot.bluechip_indices`, populated
+                //     at snapshot-refresh time. If the lookup misses
+                //     (pre-cache snapshot, or pool just rotated out of
+                //     the eligible set), skip the pool rather than falling
+                //     back to a registry scan — the next snapshot refresh
+                //     will repopulate, and skipping a single pool for
+                //     one round only diminishes the weighted sum slightly.
+                let is_bluechip_second = if pool_address == &atom_pool_address {
+                    anchor_bluechip_index == 1
+                } else if let Some(idx) = bluechip_index_lookup(deps, pool_address)? {
                     idx == 1
                 } else {
-                    // Anchor pool or stale snapshot — fall back to scan.
-                    //
-                    // Two pool shapes can land here:
-                    //   (a) Creator pool: `[Native(bluechip), CreatorToken(...)]`.
-                    //       `pool_token_info[0]` is `Native`, so the `Native` arm
-                    //       fires and returns `false` (bluechip is at index 0).
-                    //   (b) Anchor pool: `[Native(bluechip), Native(atom)]` OR
-                    //       `[Native(atom), Native(bluechip)]` — `execute_set_anchor_pool`
-                    //       accepts either order. Match the index-0 denom against
-                    //       the canonical bluechip denom; if it matches, bluechip
-                    //       is first; otherwise (i.e. atom is first), bluechip
-                    //       is second.
-                    //
-                    // The pre-fix `matches!(... CreatorToken { .. })` pattern was
-                    // structurally `false` for any Native/Native pair, which silently
-                    // inverted the anchor's reserve selection whenever the operator
-                    // created the anchor with `[Native(atom), Native(bluechip)]`.
-                    let canonical_bluechip = factory_config.bluechip_denom.as_str();
-                    let mut found = false;
-                    for (_id, pool_details) in POOLS_BY_ID
-                        .range(deps.storage, None, None, Order::Ascending)
-                        .flatten()
-                    {
-                        if pool_details.creator_pool_addr.as_str() == pool_address.as_str() {
-                            found = match &pool_details.pool_token_info[0] {
-                                TokenType::CreatorToken { .. } => true,
-                                TokenType::Native { denom } => denom != canonical_bluechip,
-                            };
-                            break;
-                        }
-                    }
-                    found
+                    // Non-anchor pool not in the cached snapshot. Anomalous
+                    // — skip rather than guess. The eligible-pool snapshot
+                    // is rebuilt every ~5 days, so any newly-eligible pool
+                    // shows up there on the next refresh.
+                    continue;
                 };
 
                 // Resolve bluechip reserve based on token ordering.
@@ -1155,7 +1312,23 @@ pub fn query_pyth_atom_usd_price(deps: Deps, env: &Env) -> StdResult<Uint128> {
 /// fallback path needs the cache to authorize the stale-pyth bridge —
 /// so loading the oracle once and reusing it both for the cache check
 /// and for the TWAP read avoids the prior 2× / 3× re-deserialization.
-fn get_bluechip_usd_price_with_meta(deps: Deps, env: &Env) -> StdResult<(Uint128, u64)> {
+///
+/// `allow_warmup_fallback` tiers the warm-up gate (audit fix):
+///   - `false` (strict): the historical behaviour. Any non-zero
+///     `warmup_remaining` returns Err. Used by the commit valuation
+///     path — wrong USD valuation directly translates into wrong
+///     threshold-cross arithmetic, so commits hard-fail during warm-up.
+///   - `true` (best-effort): if `warmup_remaining > 0` AND
+///     `pre_reset_last_price > 0`, fall back to the pre-reset price
+///     instead of erroring. Used by `CreateStandardPool` fee
+///     conversion and `PayDistributionBounty` payout — best-effort
+///     callers where a stale-but-bounded fallback price is preferable
+///     to freezing the entire protocol on every anchor rotation.
+fn get_bluechip_usd_price_with_meta(
+    deps: Deps,
+    env: &Env,
+    allow_warmup_fallback: bool,
+) -> StdResult<(Uint128, u64)> {
     // Single load of INTERNAL_ORACLE shared by both the Pyth-fallback
     // branch (which reads `bluechip_price_cache`) and the post-Pyth TWAP
     // computation (which reads `bluechip_price_cache.last_price`).
@@ -1167,9 +1340,72 @@ fn get_bluechip_usd_price_with_meta(deps: Deps, env: &Env) -> StdResult<(Uint128
     // cache is reset, and the very-first post-reset observation is
     // single-block-manipulable. Refuse to serve a price downstream
     // until ANCHOR_CHANGE_WARMUP_OBSERVATIONS price-publishing updates
-    // have accumulated. Commits/swaps revert during this window. Once
-    // warmup_remaining hits zero, normal pricing resumes.
+    // have accumulated. Strict callers (commit) revert during this
+    // window. Best-effort callers may fall back to `pre_reset_last_price`
+    // if it's non-zero; otherwise they also revert.
     if oracle.warmup_remaining > 0 {
+        if allow_warmup_fallback && !oracle.pre_reset_last_price.is_zero() {
+            // Best-effort path during warm-up. Use the pre-reset price
+            // and tag the conversion's timestamp with the *current*
+            // block time so callers don't see a wildly stale
+            // `last_update` (the pre-reset cache.last_update is
+            // genuinely old now). Pyth ATOM/USD math still applies on
+            // top, same as the steady-state path; this only relaxes
+            // the gate on the bluechip-side TWAP factor.
+            //
+            // Safety: best-effort callers (CreateStandardPool fee,
+            // PayDistributionBounty) cap their economic exposure at
+            // O($0.10) per call AND have their own retry / skip
+            // semantics on conversion failure. Worst-case fee
+            // mispricing during a warm-up window is bounded by the
+            // 30% TWAP circuit-breaker that armed the pre-reset
+            // value in the first place.
+            let bluechip_per_atom = oracle.pre_reset_last_price;
+            let atom_usd_price = match query_pyth_atom_usd_price(deps, env) {
+                Ok(p) => p,
+                Err(_) => {
+                    let cache = &oracle.bluechip_price_cache;
+                    let current_time = env.block.time.seconds();
+                    if cache.cached_pyth_price.is_zero()
+                        || current_time.saturating_sub(cache.cached_pyth_timestamp)
+                            > crate::state::MAX_PRICE_AGE_SECONDS_BEFORE_STALE
+                    {
+                        return Err(StdError::generic_err(
+                            "best-effort warm-up: Pyth stale and no cached pyth price",
+                        ));
+                    }
+                    cache.cached_pyth_price
+                }
+            };
+            #[cfg(feature = "mock")]
+            {
+                return Ok((atom_usd_price, env.block.time.seconds()));
+            }
+            #[cfg(not(feature = "mock"))]
+            {
+                let bluechip_usd_price = atom_usd_price
+                    .checked_mul(Uint128::from(PRICE_PRECISION))
+                    .map_err(|e| {
+                        StdError::generic_err(format!(
+                            "Overflow calculating best-effort warm-up price: {}",
+                            e
+                        ))
+                    })?
+                    .checked_div(bluechip_per_atom)
+                    .map_err(|e| {
+                        StdError::generic_err(format!(
+                            "Division error calculating best-effort warm-up price: {}",
+                            e
+                        ))
+                    })?;
+                if bluechip_usd_price.is_zero() {
+                    return Err(StdError::generic_err(
+                        "best-effort warm-up: calculated price is zero",
+                    ));
+                }
+                return Ok((bluechip_usd_price, env.block.time.seconds()));
+            }
+        }
         return Err(StdError::generic_err(format!(
             "Oracle warm-up in progress after anchor reset: {} more successful TWAP \
              updates required before pricing resumes",
@@ -1269,21 +1505,29 @@ fn get_bluechip_usd_price_with_meta(deps: Deps, env: &Env) -> StdResult<(Uint128
 }
 
 pub fn get_bluechip_usd_price(deps: Deps, env: &Env) -> StdResult<Uint128> {
-    get_bluechip_usd_price_with_meta(deps, env).map(|(price, _)| price)
+    get_bluechip_usd_price_with_meta(deps, env, false).map(|(price, _)| price)
 }
 
 /// Core conversion: when `to_usd` is true, converts bluechip→USD; otherwise USD→bluechip.
+///
+/// `allow_warmup_fallback` tiers the warm-up gate (audit fix). See
+/// `get_bluechip_usd_price_with_meta` doc for the rationale; in short,
+/// strict callers (commit valuation) hard-fail during warm-up while
+/// best-effort callers (CreateStandardPool fee, PayDistributionBounty)
+/// fall back to `pre_reset_last_price` when available.
 fn convert_with_oracle(
     deps: Deps,
     env: &Env,
     amount: Uint128,
     to_usd: bool,
+    allow_warmup_fallback: bool,
 ) -> StdResult<ConversionResponse> {
     // Single oracle load — `get_bluechip_usd_price_with_meta` returns both
     // the price and the cache's `last_update`, so we no longer need a
     // separate `INTERNAL_ORACLE.load(...)` here just to populate the
     // response timestamp.
-    let (cached_price, last_update) = get_bluechip_usd_price_with_meta(deps, env)?;
+    let (cached_price, last_update) =
+        get_bluechip_usd_price_with_meta(deps, env, allow_warmup_fallback)?;
 
     if cached_price.is_zero() {
         return Err(StdError::generic_err("Invalid zero price"));
@@ -1315,20 +1559,63 @@ fn convert_with_oracle(
     })
 }
 
+/// Strict bluechip→USD conversion. Fails during warm-up. Used by the
+/// pool's commit-valuation query path: a wrong USD valuation directly
+/// translates to wrong threshold-cross arithmetic, so we'd rather
+/// freeze commits than misprice them.
 pub fn bluechip_to_usd(
     deps: Deps,
     bluechip_amount: Uint128,
     env: &Env,
 ) -> StdResult<ConversionResponse> {
-    convert_with_oracle(deps, env, bluechip_amount, true)
+    convert_with_oracle(deps, env, bluechip_amount, true, false)
 }
 
+/// Strict USD→bluechip conversion. Same warm-up semantics as
+/// `bluechip_to_usd`.
 pub fn usd_to_bluechip(
     deps: Deps,
     usd_amount: Uint128,
     env: &Env,
 ) -> StdResult<ConversionResponse> {
-    convert_with_oracle(deps, env, usd_amount, false)
+    convert_with_oracle(deps, env, usd_amount, false, false)
+}
+
+/// Best-effort USD→bluechip conversion (audit fix).
+///
+/// Same as `usd_to_bluechip` in steady state. During the post-reset
+/// warm-up window, falls back to `pre_reset_last_price` instead of
+/// erroring — keeping non-critical USD-denominated paths
+/// (`CreateStandardPool` creation fee, `PayDistributionBounty`
+/// payout) functional through anchor rotations rather than freezing
+/// the entire protocol for ~30 minutes on every legitimate rotation.
+///
+/// Worst-case mispricing during the fallback window is bounded by the
+/// 30% TWAP circuit breaker that armed the pre-reset price in the
+/// first place. Both call sites cap their economic exposure at O($0.10)
+/// per call and have their own retry/skip semantics on conversion
+/// failure, so the residual risk is several orders of magnitude
+/// below the cost of full protocol freeze.
+pub fn usd_to_bluechip_best_effort(
+    deps: Deps,
+    usd_amount: Uint128,
+    env: &Env,
+) -> StdResult<ConversionResponse> {
+    convert_with_oracle(deps, env, usd_amount, false, true)
+}
+
+/// Best-effort bluechip→USD conversion. Mirror of
+/// `usd_to_bluechip_best_effort`; same warm-up fallback semantics.
+/// Currently unused but kept symmetrical for future best-effort
+/// call sites (e.g., observability queries that don't want to surface
+/// "Err(warm-up)" to dashboards).
+#[allow(dead_code)]
+pub fn bluechip_to_usd_best_effort(
+    deps: Deps,
+    bluechip_amount: Uint128,
+    env: &Env,
+) -> StdResult<ConversionResponse> {
+    convert_with_oracle(deps, env, bluechip_amount, true, true)
 }
 
 pub fn get_price_with_staleness_check(
@@ -1474,11 +1761,21 @@ pub fn execute_force_rotate_pools(
     // skips newly-selected pools that have no prior snapshot, and
     // the retained `last_price` from the pre-rotation set anchors
     // the circuit breaker — defeating the purpose of force-rotate.
+    //
+    // Snapshot the pre-reset price BEFORE zeroing so best-effort
+    // callers (CreateStandardPool fee, PayDistributionBounty) can
+    // keep operating through the warm-up window. The strict commit
+    // path never consults this — wrong USD valuation = wrong
+    // threshold-cross arithmetic — so commits remain hard-failed.
+    oracle.pre_reset_last_price = oracle.bluechip_price_cache.last_price;
     oracle.pool_cumulative_snapshots.clear();
     oracle.bluechip_price_cache.last_price = Uint128::zero();
     oracle.bluechip_price_cache.last_update = 0;
     oracle.bluechip_price_cache.twap_observations.clear();
     oracle.warmup_remaining = ANCHOR_CHANGE_WARMUP_OBSERVATIONS;
+    // Clear any leftover candidate from a previous reset; the post-
+    // rotation warm-up starts fresh.
+    oracle.pending_first_price = None;
 
     INTERNAL_ORACLE.save(deps.storage, &oracle)?;
     crate::state::PENDING_ORACLE_ROTATION.remove(deps.storage);

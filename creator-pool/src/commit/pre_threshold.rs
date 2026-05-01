@@ -25,6 +25,7 @@ pub(super) fn process_pre_threshold_commit(
     sender: Addr,
     asset: &TokenInfo,
     usd_value: Uint128,
+    net_bluechip: Uint128,
     messages: Vec<CosmosMsg>,
     pool_state: &PoolState,
     analytics: &mut PoolAnalytics,
@@ -34,10 +35,20 @@ pub(super) fn process_pre_threshold_commit(
     })?;
     // Capture the update return values so we don't re-read USD_RAISED /
     // NATIVE_RAISED after the writes. `Item::update` returns the new value.
+    //
+    // `NATIVE_RAISED_FROM_COMMIT` now stores the *net* bluechip that
+    // entered the contract's bank balance from this commit (audit fix).
+    // Previously it stored the gross `asset.amount`, and
+    // `trigger_threshold_payout` recovered the net via
+    // `gross * (1 - fee_rate)` floor. The two flooring directions
+    // (per-commit fee floor + recovery floor) didn't match exactly,
+    // leaving up to ~2 units per commit stranded in the contract
+    // forever. Storing net directly eliminates the second floor and
+    // makes the seed math exact: `pools_bluechip_seed = NATIVE_RAISED`.
     let total_usd_raised = USD_RAISED_FROM_COMMIT
         .update::<_, ContractError>(deps.storage, |r| Ok(r.checked_add(usd_value)?))?;
     let total_bluechip_raised = NATIVE_RAISED_FROM_COMMIT
-        .update::<_, ContractError>(deps.storage, |r| Ok(r.checked_add(asset.amount)?))?;
+        .update::<_, ContractError>(deps.storage, |r| Ok(r.checked_add(net_bluechip)?))?;
 
     update_commit_info(
         deps.storage,

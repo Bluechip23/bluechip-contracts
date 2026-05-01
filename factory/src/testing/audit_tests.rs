@@ -16,8 +16,8 @@ use crate::mock_querier::WasmMockQuerier;
 use crate::msg::{CreatorTokenInfo, ExecuteMsg};
 use crate::pool_struct::{CommitFeeInfo, CreatePool, PoolConfigUpdate, PoolDetails};
 use crate::state::{
-    FactoryInstantiate, PENDING_CONFIG, POOLS_BY_CONTRACT_ADDRESS, POOLS_BY_ID, POOL_COUNTER,
-    POOL_THRESHOLD_MINTED,
+    EligiblePoolSnapshot, FactoryInstantiate, ELIGIBLE_POOL_SNAPSHOT, PENDING_CONFIG,
+    POOLS_BY_CONTRACT_ADDRESS, POOLS_BY_ID, POOL_COUNTER, POOL_THRESHOLD_MINTED,
 };
 use crate::testing::tests::{create_instantiate_reply, register_test_pool_addr, setup_atom_pool};
 use pool_factory_interfaces::PoolStateResponseForFactory;
@@ -253,7 +253,6 @@ fn test_update_pool_config_sends_message_to_pool() {
     let update = PoolConfigUpdate {
         lp_fee: Some(Decimal::percent(5)),
         min_commit_interval: Some(120),
-        oracle_address: None,
     };
 
     // Step 1: Propose — no messages sent yet
@@ -296,7 +295,6 @@ fn test_update_pool_config_unauthorized() {
     let update = PoolConfigUpdate {
         lp_fee: Some(Decimal::percent(5)),
         min_commit_interval: None,
-        oracle_address: None,
     };
 
     let msg = ExecuteMsg::ProposePoolConfigUpdate {
@@ -320,7 +318,6 @@ fn test_update_pool_config_nonexistent_pool() {
     let update = PoolConfigUpdate {
         lp_fee: None,
         min_commit_interval: None,
-        oracle_address: None,
     };
 
     let msg = ExecuteMsg::ProposePoolConfigUpdate {
@@ -397,6 +394,24 @@ fn test_m_new_3_rotation_skips_pools_without_prior_snapshot() {
         .save(&mut deps.storage, atom_addr_obj, &atom_state)
         .unwrap();
 
+    // After the audit refactor `calculate_weighted_price_with_atom` reads
+    // each non-anchor pool's bluechip-side index from
+    // `ELIGIBLE_POOL_SNAPSHOT.bluechip_indices` rather than from the
+    // legacy POOLS_BY_ID linear scan. Populate the snapshot in this
+    // test the way production's `refresh_eligible_pool_snapshot_if_stale`
+    // would: creator pool has Native (bluechip) at index 0 in its
+    // `pool_token_info`, so `bluechip_indices[i] = 0`.
+    ELIGIBLE_POOL_SNAPSHOT
+        .save(
+            &mut deps.storage,
+            &EligiblePoolSnapshot {
+                pool_addresses: vec![creator_addr.clone()],
+                bluechip_indices: vec![0],
+                captured_at_block: 0,
+            },
+        )
+        .unwrap();
+
     let pool_addresses = vec![atom_addr.clone(), creator_addr.clone()];
 
     // Provide a previous snapshot ONLY for the atom pool (simulates rotation
@@ -408,7 +423,7 @@ fn test_m_new_3_rotation_skips_pools_without_prior_snapshot() {
     }];
 
     let result =
-        calculate_weighted_price_with_atom(deps.as_ref(), &pool_addresses, &prev_snapshots);
+        calculate_weighted_price_with_atom(deps.as_ref(), &pool_addresses, &prev_snapshots, 0);
 
     // Should succeed — atom pool has a snapshot and produces a price.
     // Creator pool should be skipped (not fall back to spot).
@@ -454,7 +469,7 @@ fn test_h3_bootstrap_returns_none_price_but_records_snapshot() {
     let prev_snapshots: Vec<PoolCumulativeSnapshot> = vec![];
 
     let (weighted_price, atom_price, new_snapshots) =
-        calculate_weighted_price_with_atom(deps.as_ref(), &pool_addresses, &prev_snapshots)
+        calculate_weighted_price_with_atom(deps.as_ref(), &pool_addresses, &prev_snapshots, 0)
             .expect("bootstrap must succeed (snapshots-only) instead of erroring");
 
     // No price this round — spot fallback was removed. Caller will
@@ -519,7 +534,7 @@ fn test_h3_anchor_no_cumulative_delta_returns_none_price() {
     }];
 
     let (weighted_price, atom_price, new_snapshots) =
-        calculate_weighted_price_with_atom(deps.as_ref(), &pool_addresses, &prev_snapshots)
+        calculate_weighted_price_with_atom(deps.as_ref(), &pool_addresses, &prev_snapshots, 0)
             .expect("must return Ok with None prices, not Err");
 
     assert!(

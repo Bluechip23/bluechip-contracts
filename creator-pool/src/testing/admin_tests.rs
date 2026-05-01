@@ -2,7 +2,7 @@ use crate::asset::{TokenInfo, TokenType};
 use crate::contract::{execute, instantiate};
 use crate::msg::CommitFeeInfo;
 use crate::msg::{ExecuteMsg, PoolConfigUpdate, PoolInstantiateMsg};
-use crate::state::{ThresholdPayoutAmounts, ORACLE_INFO, POOL_PAUSED, POOL_SPECS, POOL_STATE};
+use crate::state::{ThresholdPayoutAmounts, POOL_PAUSED, POOL_SPECS, POOL_STATE};
 use cosmwasm_std::testing::{message_info, mock_dependencies, mock_env, MockApi};
 use cosmwasm_std::{to_json_binary, Addr, Coin, Decimal, Uint128};
 
@@ -253,8 +253,6 @@ fn test_cancel_emergency_withdraw() {
 fn test_update_config_all() {
     let mut deps = mock_dependencies();
     let msg = mock_instantiate_msg();
-    let api = MockApi::default();
-    let new_oracle = api.addr_make("new_oracle");
     let info = message_info(&Addr::unchecked("factory_addr"), &[]);
     instantiate(deps.as_mut(), mock_env(), info.clone(), msg).unwrap();
     // Simulate post-threshold state: admin tests exercise swap/emergency_
@@ -267,7 +265,6 @@ fn test_update_config_all() {
     let update = PoolConfigUpdate {
         lp_fee: Some(Decimal::percent(5)),    // was 0.3%
         min_commit_interval: Some(60),        // was something else
-        oracle_address: Some(new_oracle.to_string()),
     };
 
     let exec_msg = ExecuteMsg::UpdateConfigFromFactory { update };
@@ -278,8 +275,15 @@ fn test_update_config_all() {
     assert_eq!(specs.lp_fee, Decimal::percent(5));
     assert_eq!(specs.min_commit_interval, 60);
 
-    let oracle_info = ORACLE_INFO.load(&deps.storage).unwrap();
-    assert_eq!(oracle_info.oracle_addr, new_oracle);
+    // `oracle_address` field on PoolConfigUpdate was removed (audit fix);
+    // the per-pool oracle endpoint is pinned at instantiate to the
+    // factory address and no longer rotatable via this path. The
+    // separate ORACLE_INFO state item still exists and is set at
+    // instantiate, so a sanity check that the pre-existing value is
+    // unchanged after this update keeps the regression coverage.
+    let oracle_info = crate::state::ORACLE_INFO.load(&deps.storage).unwrap();
+    let pool_info = crate::state::POOL_INFO.load(&deps.storage).unwrap();
+    assert_eq!(oracle_info.oracle_addr, pool_info.factory_addr);
 }
 
 #[test]
@@ -320,7 +324,6 @@ fn test_unauthorized_admin_actions() {
     let update = PoolConfigUpdate {
         lp_fee: Some(Decimal::percent(100)),
         min_commit_interval: None,
-        oracle_address: None,
     };
     let err = execute(
         deps.as_mut(),

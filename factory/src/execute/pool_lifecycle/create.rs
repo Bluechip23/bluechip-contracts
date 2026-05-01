@@ -17,8 +17,9 @@ use crate::msg::{CreatorTokenInfo, TokenInstantiateMsg};
 use crate::pool_struct::{CreatePool, TempPoolCreation};
 use crate::state::{
     CreationStatus, COMMIT_POOL_COUNTER, COMMIT_POOL_CREATE_RATE_LIMIT_SECONDS,
-    FACTORYINSTANTIATEINFO, LAST_COMMIT_POOL_CREATE_AT, POOL_COUNTER,
-    POOL_CREATION_CONTEXT, PoolCreationContext, PoolCreationState,
+    FACTORYINSTANTIATEINFO, LAST_COMMIT_POOL_CREATE_AT, LAST_STANDARD_POOL_CREATE_AT,
+    POOL_COUNTER, POOL_CREATION_CONTEXT, PoolCreationContext, PoolCreationState,
+    STANDARD_POOL_CREATE_RATE_LIMIT_SECONDS,
 };
 
 use super::super::{encode_reply_id, MINT_STANDARD_NFT, SET_TOKENS};
@@ -342,6 +343,28 @@ pub(crate) fn execute_create_standard_pool(
     // the fee or write any state.
     validate_standard_pool_token_info(deps.as_ref(), &pool_token_info)?;
 
+    // Per-address rate limit on standard-pool creation (audit fix). Mirror
+    // of the commit-pool rate-limit at `execute_create_creator_pool`.
+    // Stamps the new timestamp before any further state writes — a
+    // failed downstream step (insufficient funds, fee-forward revert,
+    // reply chain failure) reverts this stamp atomically along with the
+    // rest of the tx, so no permanent rate-limit residue from rejected
+    // creations.
+    let now = env.block.time;
+    if let Some(last) =
+        LAST_STANDARD_POOL_CREATE_AT.may_load(deps.storage, info.sender.clone())?
+    {
+        let next_allowed = last.plus_seconds(STANDARD_POOL_CREATE_RATE_LIMIT_SECONDS);
+        if now < next_allowed {
+            return Err(ContractError::Std(StdError::generic_err(format!(
+                "Rate-limited: this address can create another standard pool after {} \
+                 (last create at {}, cooldown {}s)",
+                next_allowed, last, STANDARD_POOL_CREATE_RATE_LIMIT_SECONDS
+            ))));
+        }
+    }
+    LAST_STANDARD_POOL_CREATE_AT.save(deps.storage, info.sender.clone(), &now)?;
+
     if label.trim().is_empty() {
         return Err(ContractError::Std(StdError::generic_err(
             "label must be non-empty",
@@ -370,7 +393,14 @@ pub(crate) fn execute_create_standard_pool(
     let (required_bluechip, fee_source) = if usd_fee.is_zero() {
         (Uint128::zero(), "disabled")
     } else {
-        match crate::internal_bluechip_price_oracle::usd_to_bluechip(
+        // Best-effort USD→bluechip conversion (audit fix). Falls back to
+        // `pre_reset_last_price` during the post-reset warm-up window
+        // instead of erroring; keeps standard-pool creation functional
+        // through anchor rotations rather than forcing every standard-
+        // pool creator to wait ~30 min after every rotation. If even
+        // best-effort fails (no pre-reset price + Pyth+cache both out),
+        // we still drop to the hardcoded fallback.
+        match crate::internal_bluechip_price_oracle::usd_to_bluechip_best_effort(
             deps.as_ref(),
             usd_fee,
             &env,

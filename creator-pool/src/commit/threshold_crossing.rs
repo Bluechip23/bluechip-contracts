@@ -84,8 +84,19 @@ pub(super) fn process_threshold_crossing_with_excess(
         Ok(v.unwrap_or_default().checked_add(usd_to_threshold)?)
     })?;
     USD_RAISED_FROM_COMMIT.save(deps.storage, &commit_config.commit_amount_for_threshold_usd)?;
+    // Audit fix: NATIVE_RAISED_FROM_COMMIT now stores the *net* bluechip
+    // entering the threshold-pool side of the contract's bank balance —
+    // i.e. the threshold-portion-after-fees, not the gross
+    // `bluechip_to_threshold`. The excess (post-fee) goes through the
+    // AMM swap inline and lands directly in `pool_state.reserve0` via
+    // the swap accounting below; it does not enter NATIVE_RAISED.
+    // This makes `pools_bluechip_seed = NATIVE_RAISED_FROM_COMMIT` exact
+    // in `trigger_threshold_payout`, no `(1 - fee_rate)` recovery
+    // multiply needed.
     NATIVE_RAISED_FROM_COMMIT
-        .update::<_, ContractError>(deps.storage, |r| Ok(r.checked_add(bluechip_to_threshold)?))?;
+        .update::<_, ContractError>(deps.storage, |r| {
+            Ok(r.checked_add(threshold_portion_after_fees)?)
+        })?;
 
     IS_THRESHOLD_HIT.save(deps.storage, &true)?;
     // Arm the post-threshold cooldown. The crosser's own bounded excess
