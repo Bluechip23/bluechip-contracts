@@ -19,11 +19,11 @@ mod tests {
         factory: MockFactoryConfig,
     }
 
-    /// Install a wasm-mock that satisfies expand-economy's M10 cross-
-    /// validation query: `execute_expand_economy` queries the factory's
-    /// `Factory {}` to confirm `bluechip_denom` matches before issuing
-    /// a BankMsg::Send. Tests that don't otherwise care about the wasm
-    /// querier need to install this mock or the call rejects with
+    /// Install a wasm-mock that satisfies expand-economy's
+    /// cross-validation query: `execute_expand_economy` queries the
+    /// factory's `Factory {}` to confirm `bluechip_denom` matches before
+    /// issuing a BankMsg::Send. Tests that don't otherwise care about the
+    /// wasm querier need to install this mock or the call rejects with
     /// "Failed to query factory config".
     fn install_factory_denom_mock(
         deps: &mut cosmwasm_std::OwnedDeps<
@@ -475,7 +475,7 @@ mod tests {
         let factory_addr = MockApi::default().addr_make("factory");
         let user_addr = MockApi::default().addr_make("user");
 
-        // M10: cross-validate factory's bluechip_denom on every call.
+        // Cross-validate factory's bluechip_denom on every call.
         install_factory_denom_mock(&mut deps, factory_addr.clone(), "ubluechip");
 
         let msg = ExecuteMsg::ExpandEconomy(ExpandEconomyMsg::RequestExpansion {
@@ -498,7 +498,7 @@ mod tests {
             .find(|a| a.key == "action")
             .expect("Should have action attribute");
         assert_eq!(action_attr.value, "request_reward_skipped");
-        // M9: dormant reason explicit so monitoring can distinguish
+        // Dormant reason explicit so monitoring can distinguish
         // "decay-curve expired" from a bug.
         let reason_attr = res
             .attributes
@@ -555,7 +555,7 @@ mod tests {
         assert!(matches!(err, crate::error::ContractError::Unauthorized {}));
     }
 
-    // -- C-EE-1 migrate handler ------------------------------------------
+    // -- migrate handler ---------------------------------------------------
 
     #[test]
     fn migrate_no_op_succeeds_when_cw2_unset() {
@@ -612,7 +612,7 @@ mod tests {
         assert!(err.to_string().contains("not valid semver"));
     }
 
-    // -- M-EE-1 nonpayable guard ------------------------------------------
+    // -- nonpayable guard --------------------------------------------------
 
     #[test]
     fn execute_rejects_attached_funds_on_request_expansion() {
@@ -687,7 +687,7 @@ mod tests {
         assert!(matches!(err, crate::error::ContractError::Payment(_)));
     }
 
-    // -- M-EE-2 subset deserialization round-trip ------------------------
+    // -- subset deserialization round-trip --------------------------------
 
     /// The factory's real `FactoryInstantiateResponse` carries many more
     /// fields than just `bluechip_denom`. This test constructs a
@@ -724,7 +724,7 @@ mod tests {
         assert_eq!(resp.factory.bluechip_denom, "ubluechip");
     }
 
-    // -- M-EE-3 denom format validator -----------------------------------
+    // -- denom format validator -------------------------------------------
 
     #[test]
     fn validate_native_denom_accepts_canonical_shapes() {

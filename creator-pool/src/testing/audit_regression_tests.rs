@@ -971,7 +971,7 @@ fn test_emergency_withdraw_clears_distribution() {
 }
 
 // ---------------------------------------------------------------------------
-// H-1 — `Commit` must reject multi-denom funds via `must_pay`. Pre-fix,
+// `Commit` must reject multi-denom funds via `must_pay`. Pre-fix,
 // attaching `[ubluechip: amount, ibc/...: Y]` would let the bluechip-side
 // equality check pass while the IBC side was silently absorbed into the
 // pool's bank balance with no withdrawal path. This test exercises the
@@ -1032,7 +1032,7 @@ fn test_h1_commit_rejects_multi_denom_funds() {
     let user = Addr::unchecked("committer");
     let amount = Uint128::new(100_000_000);
 
-    // Attaching ubluechip + a stray IBC denom must reject. Pre-H-1 this
+    // Attaching ubluechip + a stray IBC denom must reject. Pre-fix this
     // call would have silently absorbed the IBC funds into the pool.
     let result = execute(
         deps.as_mut(),
@@ -1072,9 +1072,9 @@ fn test_h1_commit_rejects_multi_denom_funds() {
 }
 
 // ---------------------------------------------------------------------------
-// H-2 — `prepare_deposit` must reject any attached coin whose denom
-// isn't one of the pool's configured native sides. Pre-fix, an attached
-// foreign denom would be silently kept in the pool's bank balance.
+// `prepare_deposit` must reject any attached coin whose denom isn't one
+// of the pool's configured native sides. Pre-fix, an attached foreign
+// denom would be silently kept in the pool's bank balance.
 // ---------------------------------------------------------------------------
 #[test]
 fn test_h2_deposit_rejects_non_pool_native_denom() {
@@ -1109,7 +1109,7 @@ fn test_h2_deposit_rejects_non_pool_native_denom() {
 }
 
 // ---------------------------------------------------------------------------
-// H-2 — verify the gate accepts a clean deposit (only pool-native denoms).
+// Verify the gate accepts a clean deposit (only pool-native denoms).
 // Defends against an over-broad fix that rejects legitimate deposits too.
 // ---------------------------------------------------------------------------
 #[test]
@@ -1141,7 +1141,7 @@ fn test_h2_deposit_accepts_clean_native_funds() {
 }
 
 // ---------------------------------------------------------------------------
-// M-2 — auto-pause-on-low-liquidity / auto-unpause-on-deposit cycle.
+// Auto-pause-on-low-liquidity / auto-unpause-on-deposit cycle.
 // `remove_partial_liquidity` that drains reserves below MIN must arm
 // POOL_PAUSED + POOL_PAUSED_AUTO. A subsequent deposit that restores
 // reserves above MIN must clear both. Admin pauses must NOT be cleared
@@ -1249,9 +1249,9 @@ fn test_m2_admin_pause_overrides_auto_flag() {
 }
 
 // ---------------------------------------------------------------------------
-// M-3 — migrate must reject downgrades. With cw2 stored at version
-// "9.9.9" (a far-future version that exceeds the current
-// CARGO_PKG_VERSION), migrate must error rather than silently overwrite.
+// Migrate must reject downgrades. With cw2 stored at version "9.9.9"
+// (a far-future version that exceeds the current CARGO_PKG_VERSION),
+// migrate must error rather than silently overwrite.
 // ---------------------------------------------------------------------------
 #[test]
 fn test_m3_migrate_rejects_downgrade() {
@@ -1277,8 +1277,8 @@ fn test_m3_migrate_rejects_downgrade() {
 }
 
 // ---------------------------------------------------------------------------
-// M-5 — per-address rate limit on ContinueDistribution. A second call
-// from the same address within the cooldown window must reject.
+// Per-address rate limit on ContinueDistribution. A second call from
+// the same address within the cooldown window must reject.
 // ---------------------------------------------------------------------------
 #[test]
 fn test_m5_continue_distribution_rate_limit_per_address() {
@@ -1391,10 +1391,10 @@ fn test_m5_continue_distribution_rate_limit_per_address() {
 }
 
 // ---------------------------------------------------------------------------
-// M-6 — `RecoverStuckStates` must reject when pool is drained. The
-// recovery branches don't produce fund-flow on a drained pool but they
-// would leave misleading DISTRIBUTION_STATE. Failing here keeps
-// post-drain state queries honest.
+// `RecoverStuckStates` must reject when pool is drained. The recovery
+// branches don't produce fund-flow on a drained pool but they would
+// leave misleading DISTRIBUTION_STATE. Failing here keeps post-drain
+// state queries honest.
 // ---------------------------------------------------------------------------
 #[test]
 fn test_m6_recover_rejects_on_drained_pool() {
@@ -1448,10 +1448,10 @@ fn test_m6_recover_rejects_on_drained_pool() {
 }
 
 // ---------------------------------------------------------------------------
-// M-7 — `trigger_threshold_payout` emits an `AcceptOwnership` SubMsg
-// so the pool locks in its CW721 ownership at threshold-cross time
-// rather than lazily on first deposit. Closes the pending-ownership
-// window between factory's TransferOwnership and first LP activity.
+// `trigger_threshold_payout` emits an `AcceptOwnership` SubMsg so the
+// pool locks in its CW721 ownership at threshold-cross time rather than
+// lazily on first deposit. Closes the pending-ownership window between
+// factory's TransferOwnership and first LP activity.
 // ---------------------------------------------------------------------------
 #[test]
 fn test_m7_threshold_payout_emits_accept_ownership() {

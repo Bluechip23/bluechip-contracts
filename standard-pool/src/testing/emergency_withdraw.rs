@@ -126,7 +126,7 @@ fn phase2_drains_reserves_and_emits_transfers() {
     )
     .unwrap();
 
-    // H-S1: drain recipient = COMMITFEEINFO.bluechip_wallet_address,
+    // Drain recipient = COMMITFEEINFO.bluechip_wallet_address,
     // which instantiate sourced from the factory's configured wallet
     // (NOT the factory address itself).
     assert!(res
@@ -182,7 +182,7 @@ fn phase2_drains_reserves_and_emits_transfers() {
     );
 }
 
-/// H-S1 regression: with the wallet routed through
+/// Regression: with the wallet routed through
 /// `StandardPoolInstantiateMsg.bluechip_wallet_address`, an emergency
 /// drain MUST send the funds to that wallet, never to the factory
 /// contract. This guards against a regression where the field defaults

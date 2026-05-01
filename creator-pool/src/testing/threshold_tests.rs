@@ -52,7 +52,7 @@ fn test_threshold_with_excess_creates_position() {
     setup_pool_with_excess_config(&mut deps);
 
     // Override max_bluechip_lock_per_pool to a value below the realistic
-    // pools_bluechip_seed that this test will generate. After P4-M6 the
+    // pools_bluechip_seed that this test will generate. The
     // bluechip_to_threshold is derived arithmetically from the rate
     // captured at commit entry, rather than via a second mock oracle
     // query that used to return a flat constant. The realistic seed for
@@ -679,9 +679,9 @@ fn test_concurrent_threshold_crossing_attempts() {
 
     let err = execute(deps.as_mut(), env.clone(), info2, msg).unwrap_err();
 
-    // After H14, a stuck `THRESHOLD_PROCESSING = true` (pre-set in this
-    // test to simulate corruption) is reported as an explicit error
-    // pointing at the recovery path, instead of silently downgrading the
+    // A stuck `THRESHOLD_PROCESSING = true` (pre-set in this test to
+    // simulate corruption) is reported as an explicit error pointing
+    // at the recovery path, instead of silently downgrading the
     // user-intended threshold-crossing commit into pre/post-threshold.
     // The error message references the StuckThreshold recovery so the
     // operator/keeper has a clear remediation step.

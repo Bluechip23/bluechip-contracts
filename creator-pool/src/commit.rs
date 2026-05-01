@@ -148,7 +148,7 @@ fn execute_commit_logic(
     }
 
     // Snapshot the oracle rate once at commit entry and thread it through
-    // every conversion that happens during this handler (P4-M6). Prevents
+    // every conversion that happens during this handler. Prevents
     // mid-tx drift where the USD valuation at the top of the handler could
     // disagree with the bluechip_to_threshold conversion computed later in
     // process_threshold_crossing_with_excess. No current path allows
@@ -370,7 +370,7 @@ fn execute_commit_logic(
 
                         // `payout.factory_notify` is attached as a SubMsg so a
                         // factory-side failure lands in the pool's reply handler
-                        // (see P4-H5) rather than reverting the commit.
+                        // rather than reverting the commit.
                         let base = commit_base_attributes(
                             "threshold_hit_exact",
                             &sender,

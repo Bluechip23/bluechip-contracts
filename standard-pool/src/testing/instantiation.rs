@@ -28,7 +28,7 @@ fn instantiate_saves_all_required_state() {
     assert_eq!(info.position_nft_address, addrs.position_nft);
     assert_eq!(info.token_address, addrs.creator_token);
 
-    // Option X: nft_ownership_accepted starts false; first deposit flips it.
+    // nft_ownership_accepted starts false; first deposit flips it.
     let state = POOL_STATE.load(&deps.storage).unwrap();
     assert_eq!(state.reserve0, Uint128::zero());
     assert_eq!(state.reserve1, Uint128::zero());
@@ -52,11 +52,11 @@ fn instantiate_saves_all_required_state() {
     // handlers open to traffic immediately.
     assert!(IS_THRESHOLD_HIT.load(&deps.storage).unwrap());
 
-    // H-S1: COMMITFEEINFO.bluechip_wallet_address is sourced from the
-    // factory's configured wallet (StandardPoolInstantiateMsg.
-    // bluechip_wallet_address), NOT the factory contract address itself
-    // — the factory has no withdrawal mechanism, so a drain recipient
-    // pointing at it would permanently lock funds.
+    // COMMITFEEINFO.bluechip_wallet_address is sourced from the factory's
+    // configured wallet (StandardPoolInstantiateMsg.bluechip_wallet_address),
+    // NOT the factory contract address itself — the factory has no
+    // withdrawal mechanism, so a drain recipient pointing at it would
+    // permanently lock funds.
     let fee_info = COMMITFEEINFO.load(&deps.storage).unwrap();
     assert_eq!(fee_info.bluechip_wallet_address, addrs.bluechip_wallet);
     assert_ne!(fee_info.bluechip_wallet_address, addrs.factory);
@@ -158,17 +158,17 @@ fn instantiate_accepts_native_native_pair() {
     };
     instantiate(deps.as_mut(), mock_env(), info, msg).unwrap();
 
-    // M-S4: Native+Native pool has no creator-token side, so
-    // `token_address` defaults to the pool's OWN contract address
-    // (mock_env's deterministic "cosmos2contract"). Self-referential
-    // value signals "placeholder, not a token address" without
-    // resembling a real CW20 contract; pre-fix the fallback was the
-    // factory address, which was easy to misread as meaningful.
+    // Native+Native pool has no creator-token side, so `token_address`
+    // defaults to the pool's OWN contract address (mock_env's deterministic
+    // "cosmos2contract"). Self-referential value signals "placeholder,
+    // not a token address" without resembling a real CW20 contract;
+    // pre-fix the fallback was the factory address, which was easy to
+    // misread as meaningful.
     let pool_info = POOL_INFO.load(&deps.storage).unwrap();
     assert_eq!(pool_info.token_address, mock_env().contract.address);
     assert_ne!(
         pool_info.token_address, factory,
-        "M-S4: placeholder must NOT be the factory address — that was \
+        "placeholder must NOT be the factory address — that was \
          the misleading default we replaced"
     );
 }

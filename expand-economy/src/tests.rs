@@ -84,7 +84,7 @@ mod expand_economy_tests {
     fn custom_bluechip_denom_is_honored() {
         // A non-None bluechip_denom in InstantiateMsg must be stored and
         // used by subsequent RequestExpansion calls.
-        // Pre-fund the contract so the H3 graceful-no-op gate (which
+        // Pre-fund the contract so the graceful-no-op gate (which
         // returns an attribute-only Response when balance < amount) does
         // not short-circuit before the BankMsg is emitted.
         let mut deps = mock_dependencies_with_balance(&[coin(1_000_000, "ucustom")]);
@@ -105,7 +105,7 @@ mod expand_economy_tests {
         )
         .unwrap();
 
-        // Cross-validation query (M10): expand-economy reads the factory's
+        // Cross-validation query: expand-economy reads the factory's
         // `bluechip_denom` on every RequestExpansion and rejects if it
         // doesn't match this contract's configured denom. Mock the factory
         // response with the matching denom for this test.
@@ -132,8 +132,8 @@ mod expand_economy_tests {
 
     #[test]
     fn instantiate_rejects_malformed_denom() {
-        // M-EE-3: previously this test asserted the "non-empty" error
-        // for whitespace-only input. The validator now applies the full
+        // Previously this test asserted the "non-empty" error for
+        // whitespace-only input. The validator now applies the full
         // cosmos-sdk denom format check, so whitespace fails because
         // the leading space isn't an ASCII letter (and disallowed
         // characters appear). Surface the format error message instead.
@@ -164,7 +164,7 @@ mod expand_economy_tests {
 
     #[test]
     fn request_expansion() {
-        // Pre-fund the contract so the H3 graceful-no-op gate (skip when
+        // Pre-fund the contract so the graceful-no-op gate (skip when
         // balance < amount) doesn't short-circuit and drop the BankMsg.
         let mut deps = mock_dependencies_with_balance(&[coin(1_000_000, "ubluechip")]);
         let factory_addr = MockApi::default().addr_make("factory");
@@ -180,7 +180,7 @@ mod expand_economy_tests {
         let info = message_info(&creator_addr, &[]);
         instantiate(deps.as_mut(), mock_env(), info, msg).unwrap();
 
-        // M10 denom cross-validation needs a factory mock that replies
+        // Denom cross-validation needs a factory mock that replies
         // with the matching `bluechip_denom`.
         install_factory_denom_mock(&mut deps, factory_addr.clone(), "ubluechip");
 

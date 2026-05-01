@@ -1,4 +1,4 @@
-//! H-S2 — SubMsg-based deposit balance verification on standard-pool.
+//! SubMsg-based deposit balance verification on standard-pool.
 //!
 //! Standard pools wrap arbitrary CW20s. A fee-on-transfer or rebasing
 //! token would otherwise let `actual_amount` (what the pool credits)
@@ -121,7 +121,7 @@ fn deposit_emits_reply_on_success_submsg_with_verify_id() {
     assert_eq!(
         last.id, DEPOSIT_VERIFY_REPLY_ID,
         "last SubMsg must carry DEPOSIT_VERIFY_REPLY_ID so its reply triggers \
-         the H-S2 balance verification handler"
+         the balance verification handler"
     );
     assert!(
         matches!(last.reply_on, ReplyOn::Success),
@@ -318,7 +318,7 @@ fn add_to_position_emits_reply_on_success_anchor() {
     let last = res.messages.last().unwrap();
     assert_eq!(
         last.id, DEPOSIT_VERIFY_REPLY_ID,
-        "add_to_position must also wire the H-S2 verify SubMsg"
+        "add_to_position must also wire the verify SubMsg"
     );
     assert!(matches!(last.reply_on, ReplyOn::Success));
 

@@ -1,4 +1,4 @@
-//! M-S1 — `ExecuteMsg::AcceptNftOwnership {}` factory callback tests.
+//! `ExecuteMsg::AcceptNftOwnership {}` factory callback tests.
 //!
 //! The factory's `finalize_standard_pool` reply chain dispatches this
 //! variant on the freshly-created pool immediately after the NFT
@@ -24,7 +24,7 @@ fn accept_nft_ownership_from_factory_emits_accept_message_and_flips_flag() {
     let pre = POOL_STATE.load(&deps.storage).unwrap();
     assert!(
         !pre.nft_ownership_accepted,
-        "instantiate must leave nft_ownership_accepted=false (the M-S1 \
+        "instantiate must leave nft_ownership_accepted=false (the \
          factory callback is what flips it)"
     );
 
@@ -178,7 +178,7 @@ fn factory_callback_wire_format_matches_execute_msg() {
 
 #[test]
 fn first_deposit_after_factory_accept_does_not_re_emit_accept() {
-    // M-S1 leaves the deposit-side branch as a backstop. With the
+    // The fix leaves the deposit-side branch as a backstop. With the
     // factory callback already firing, by the time the first deposit
     // arrives `nft_ownership_accepted` is true and the deposit handler
     // skips the AcceptOwnership SubMsg. Verify that's actually the

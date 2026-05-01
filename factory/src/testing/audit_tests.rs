@@ -382,7 +382,7 @@ fn test_m_new_3_rotation_skips_pools_without_prior_snapshot() {
         )
         .unwrap();
 
-    // H-3: anchor pool needs `block_time_last` and `price1_cumulative_last`
+    // Anchor pool needs `block_time_last` and `price1_cumulative_last`
     // ahead of the prev_snapshot below (cumulative=50_000, block_time=500)
     // so the TWAP path produces `cumulative_delta > 0` and `time_delta > 0`.
     // setup_factory's default zeros would have triggered the (now-removed)
@@ -428,8 +428,8 @@ fn test_m_new_3_rotation_skips_pools_without_prior_snapshot() {
     );
 
     // The weighted price should come only from the atom pool (since creator
-    // pool was skipped). Post-H-3 the function returns Option for prices —
-    // unwrap and assert price came from the anchor only.
+    // pool was skipped). The function returns Option for prices — unwrap
+    // and assert price came from the anchor only.
     let weighted = weighted_price.expect("anchor TWAP should produce a price");
     let atom = atom_price.expect("anchor pool price should be Some");
     assert_eq!(
@@ -438,7 +438,7 @@ fn test_m_new_3_rotation_skips_pools_without_prior_snapshot() {
     );
 }
 
-/// H-3: when `prev_snapshots` is completely empty (bootstrap / first-ever
+/// When `prev_snapshots` is completely empty (bootstrap / first-ever
 /// update), the oracle MUST refuse to publish a price (no spot fallback)
 /// but MUST still record snapshots so the next round has prior data to
 /// compute a TWAP from. Pre-fix this returned a manipulable spot reading;
@@ -457,7 +457,7 @@ fn test_h3_bootstrap_returns_none_price_but_records_snapshot() {
         calculate_weighted_price_with_atom(deps.as_ref(), &pool_addresses, &prev_snapshots)
             .expect("bootstrap must succeed (snapshots-only) instead of erroring");
 
-    // No price this round — H-3 removed the spot fallback. Caller will
+    // No price this round — spot fallback was removed. Caller will
     // persist `new_snapshots` and the next round computes a real TWAP.
     assert!(
         weighted_price.is_none(),
@@ -476,10 +476,10 @@ fn test_h3_bootstrap_returns_none_price_but_records_snapshot() {
     );
 }
 
-/// H-3: even with the anchor sampled and meeting MIN_POOL_LIQUIDITY,
-/// if the anchor's cumulative_delta is zero (no swap since the last
-/// sample) the oracle MUST refuse to publish — pre-fix it would have
-/// fallen back to single-block spot reserves on the anchor.
+/// Even with the anchor sampled and meeting MIN_POOL_LIQUIDITY, if the
+/// anchor's cumulative_delta is zero (no swap since the last sample) the
+/// oracle MUST refuse to publish — pre-fix it would have fallen back to
+/// single-block spot reserves on the anchor.
 #[test]
 fn test_h3_anchor_no_cumulative_delta_returns_none_price() {
     use crate::state::POOLS_BY_CONTRACT_ADDRESS;
@@ -510,8 +510,8 @@ fn test_h3_anchor_no_cumulative_delta_returns_none_price() {
 
     let pool_addresses = vec![atom_addr.to_string()];
     // Prior snapshot identical to the current state — cumulative_delta = 0,
-    // time_delta = 0. Pre-H-3 this would have triggered the anchor spot
-    // fallback. Post-H-3 it must not.
+    // time_delta = 0. Pre-fix this would have triggered the anchor spot
+    // fallback. Post-fix it must not.
     let prev_snapshots = vec![PoolCumulativeSnapshot {
         pool_address: atom_addr.to_string(),
         price0_cumulative: Uint128::new(500_000),
@@ -643,7 +643,7 @@ fn test_m_new_5_multi_pool_creator_no_registry_collision() {
         },
     };
 
-    // I-6: per-address rate limit (1h between creates from the same
+    // Per-address rate limit (1h between creates from the same
     // address). Advance the clock past the cooldown so this test
     // exercises the registry-collision path rather than the rate-limit
     // guard (which has its own dedicated tests).
@@ -723,7 +723,7 @@ fn test_l_new_8_factory_migration_contract_name() {
 }
 
 // ---------------------------------------------------------------------------
-// H-5 — `ProposeConfigUpdate` must refuse to silently overwrite a pending
+// `ProposeConfigUpdate` must refuse to silently overwrite a pending
 // proposal. Without this, a benign proposal at hour 47 of the timelock
 // could be replaced by a hostile one minutes before the community window
 // elapses, with no on-chain `Cancel` event signalling the swap.
@@ -766,7 +766,7 @@ fn test_propose_config_update_rejects_overwrite() {
 }
 
 // ---------------------------------------------------------------------------
-// H-7 — `validate_factory_config` must reject configs whose
+// `validate_factory_config` must reject configs whose
 // `commit_fee_bluechip + commit_fee_creator > 100%`. The pool-side
 // `instantiate` already rejects with `InvalidFee`, but if the factory
 // stored a bad config it would brick every subsequent `Create` until
@@ -794,9 +794,9 @@ fn test_propose_config_update_rejects_fee_sum_above_one() {
 }
 
 // ---------------------------------------------------------------------------
-// H-7 — `commit_threshold_limit_usd == 0` is also rejected. A zero
-// threshold makes commit pools created against this config permanently
-// uncrossable, locking them in pre-threshold state forever.
+// `commit_threshold_limit_usd == 0` is also rejected. A zero threshold
+// makes commit pools created against this config permanently uncrossable,
+// locking them in pre-threshold state forever.
 // ---------------------------------------------------------------------------
 #[test]
 fn test_propose_config_update_rejects_zero_threshold() {
@@ -822,9 +822,9 @@ fn test_propose_config_update_rejects_zero_threshold() {
 }
 
 // ---------------------------------------------------------------------------
-// H-8 — `pyth_contract_addr_for_conversions` must be a non-empty bech32-
-// valid address; an empty string used to slip through and only fail at
-// query time (after the 48h timelock elapsed and the bad config landed).
+// `pyth_contract_addr_for_conversions` must be a non-empty bech32-valid
+// address; an empty string used to slip through and only fail at query
+// time (after the 48h timelock elapsed and the bad config landed).
 // ---------------------------------------------------------------------------
 #[test]
 fn test_propose_config_update_rejects_empty_pyth_addr() {
@@ -850,7 +850,7 @@ fn test_propose_config_update_rejects_empty_pyth_addr() {
 }
 
 // ---------------------------------------------------------------------------
-// H-8 — same handler must reject a bech32-invalid string too. Without
+// Same handler must reject a bech32-invalid string too. Without
 // `addr_validate`, "not_a_real_addr" would be accepted and only blow up
 // at first Pyth query attempt.
 // ---------------------------------------------------------------------------
@@ -878,7 +878,7 @@ fn test_propose_config_update_rejects_invalid_pyth_addr() {
 }
 
 // ---------------------------------------------------------------------------
-// H-8 — same handler must reject an empty `pyth_atom_usd_price_feed_id`.
+// Same handler must reject an empty `pyth_atom_usd_price_feed_id`.
 // ---------------------------------------------------------------------------
 #[test]
 fn test_propose_config_update_rejects_empty_pyth_feed_id() {
@@ -904,10 +904,10 @@ fn test_propose_config_update_rejects_empty_pyth_feed_id() {
 }
 
 // ---------------------------------------------------------------------------
-// H-4 — `PayDistributionBounty` must reject standard pools, even though
-// the standard-pool wasm doesn't currently emit the message. Defense-
-// in-depth so a future pool-wasm migration can't drain the bounty
-// reserve without going through the audited commit-pool path.
+// `PayDistributionBounty` must reject standard pools, even though the
+// standard-pool wasm doesn't currently emit the message. Defense-in-depth
+// so a future pool-wasm migration can't drain the bounty reserve without
+// going through the audited commit-pool path.
 // ---------------------------------------------------------------------------
 #[test]
 fn test_pay_distribution_bounty_rejects_standard_pool() {
@@ -990,7 +990,7 @@ fn test_pay_distribution_bounty_rejects_standard_pool() {
 }
 
 // ---------------------------------------------------------------------------
-// H-6 — `CreateStandardPool` must refund any non-bluechip funds the caller
+// `CreateStandardPool` must refund any non-bluechip funds the caller
 // attached. Without this, attached IBC-wrapped or tokenfactory denoms are
 // orphaned in the factory's bank balance with no withdrawal path.
 // ---------------------------------------------------------------------------
@@ -1081,7 +1081,7 @@ fn test_create_standard_pool_refunds_non_bluechip_funds() {
 }
 
 // ---------------------------------------------------------------------------
-// H-2 — warm-up gate. After any anchor reset (one-shot SetAnchorPool, the
+// Warm-up gate. After any anchor reset (one-shot SetAnchorPool, the
 // timelocked anchor change inside ProposeConfigUpdate, etc.) the oracle
 // must refuse to publish a price downstream until
 // ANCHOR_CHANGE_WARMUP_OBSERVATIONS successful TWAP updates have
@@ -1167,11 +1167,11 @@ fn test_h2_warmup_only_decrements_on_price_publishing_updates() {
 }
 
 // ---------------------------------------------------------------------------
-// M-1 — `ProposePoolUpgrade` must dedup `pool_ids` and reject IDs that
-// don't exist in the registry. Pre-fix the admin-supplied list flowed
-// straight through to apply, where duplicates produced two `Migrate`
-// messages to the same pool and invalid IDs aborted the entire batch
-// after a 48h timelock.
+// `ProposePoolUpgrade` must dedup `pool_ids` and reject IDs that don't
+// exist in the registry. Pre-fix the admin-supplied list flowed straight
+// through to apply, where duplicates produced two `Migrate` messages to
+// the same pool and invalid IDs aborted the entire batch after a 48h
+// timelock.
 // ---------------------------------------------------------------------------
 #[test]
 fn test_m1_propose_upgrade_rejects_unregistered_pool_id() {
@@ -1233,10 +1233,10 @@ fn test_m1_propose_upgrade_dedups_pool_ids() {
 }
 
 // ---------------------------------------------------------------------------
-// M-5 — `ProposePoolUpgrade` must refuse to include the anchor pool.
-// Migrating the anchor mid-flight would leave the oracle querying
-// possibly-mid-migration storage; if the migrate changes the reserve
-// representation the cumulative-delta math breaks silently.
+// `ProposePoolUpgrade` must refuse to include the anchor pool. Migrating
+// the anchor mid-flight would leave the oracle querying possibly-mid-
+// migration storage; if the migrate changes the reserve representation
+// the cumulative-delta math breaks silently.
 // ---------------------------------------------------------------------------
 #[test]
 fn test_m5_propose_upgrade_rejects_anchor_pool() {
@@ -1268,10 +1268,10 @@ fn test_m5_propose_upgrade_rejects_anchor_pool() {
 }
 
 // ---------------------------------------------------------------------------
-// M-8 — `ForceRotateOraclePools` must reset the cumulative snapshots,
-// price cache, and warm-up counter so the post-rotation TWAP starts
-// from a clean slate. Pre-fix it left snapshots and `last_price`
-// intact, anchoring the circuit breaker on the (potentially manipulated)
+// `ForceRotateOraclePools` must reset the cumulative snapshots, price
+// cache, and warm-up counter so the post-rotation TWAP starts from a
+// clean slate. Pre-fix it left snapshots and `last_price` intact,
+// anchoring the circuit breaker on the (potentially manipulated)
 // pre-rotation state — which was the very thing the operator was
 // force-rotating to escape.
 // ---------------------------------------------------------------------------
@@ -1338,13 +1338,13 @@ fn test_m8_force_rotate_resets_oracle_state() {
     );
     assert_eq!(
         oracle.warmup_remaining, ANCHOR_CHANGE_WARMUP_OBSERVATIONS,
-        "force-rotate must re-arm the H-2 warm-up gate"
+        "force-rotate must re-arm the warm-up gate"
     );
 }
 
 // ---------------------------------------------------------------------------
-// C-2 / I-5 — `PoolDetails.pool_token_info[1].contract_addr` must equal the
-// freshly-instantiated CW20 address after a successful commit-pool create.
+// `PoolDetails.pool_token_info[1].contract_addr` must equal the freshly-
+// instantiated CW20 address after a successful commit-pool create.
 // Pre-fix, `mint_create_pool` rewrote a LOCAL clone of the pair while the
 // original `ctx.temp.temp_pool_info.pool_token_info` retained the literal
 // `CREATOR_TOKEN_SENTINEL` placeholder, which `finalize_pool` then
@@ -1416,7 +1416,7 @@ fn test_c2_pool_details_persists_real_creator_token_address() {
     assert_ne!(
         creator_token_addr.as_str(),
         CREATOR_TOKEN_SENTINEL,
-        "C-2 regression: PoolDetails persisted the sentinel instead of the real CW20 address"
+        "regression: PoolDetails persisted the sentinel instead of the real CW20 address"
     );
     assert_eq!(
         creator_token_addr, real_token_addr,
@@ -1445,7 +1445,7 @@ fn test_c2_pool_details_persists_real_creator_token_address() {
 }
 
 // ---------------------------------------------------------------------------
-// L-4 — `CreateStandardPool` rejects labels longer than the bound.
+// `CreateStandardPool` rejects labels longer than the bound.
 // ---------------------------------------------------------------------------
 #[test]
 fn test_l4_create_standard_pool_rejects_oversized_label() {
@@ -1484,7 +1484,7 @@ fn test_l4_create_standard_pool_rejects_oversized_label() {
 }
 
 // ---------------------------------------------------------------------------
-// L-7 — `validate_creator_token_info` rejects all-numeric symbols.
+// `validate_creator_token_info` rejects all-numeric symbols.
 // ---------------------------------------------------------------------------
 #[test]
 fn test_l7_create_rejects_all_numeric_symbol() {
@@ -1524,8 +1524,8 @@ fn test_l7_create_rejects_all_numeric_symbol() {
 }
 
 // ---------------------------------------------------------------------------
-// I-6 — per-address rate limit on commit-pool creation. Pre-fix, anyone
-// could spam consecutive Create calls. Now the same address must wait
+// Per-address rate limit on commit-pool creation. Pre-fix, anyone could
+// spam consecutive Create calls. Now the same address must wait
 // `COMMIT_POOL_CREATE_RATE_LIMIT_SECONDS` between successful creates.
 // ---------------------------------------------------------------------------
 #[test]
