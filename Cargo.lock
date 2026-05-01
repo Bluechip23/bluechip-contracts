@@ -1337,6 +1337,7 @@ dependencies = [
  "oracle",
  "pool-core",
  "pool-factory-interfaces",
+ "semver",
  "thiserror 2.0.12",
 ]
 

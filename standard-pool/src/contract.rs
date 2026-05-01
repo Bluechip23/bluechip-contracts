@@ -412,6 +412,31 @@ fn execute_emergency_withdraw(
 
 #[entry_point]
 pub fn migrate(deps: DepsMut, _env: Env, msg: MigrateMsg) -> StdResult<Response> {
+    // M-3: reject downgrades. Mirrors the creator-pool migrate guard —
+    // see that handler for the rationale. Tolerates a missing cw2 entry
+    // (legacy pre-cw2 / test fixtures) by skipping the check; production
+    // pools always set cw2 at instantiate time.
+    if let Ok(stored_version) = cw2::get_contract_version(deps.storage) {
+        let stored_semver: semver::Version = stored_version.version.parse().map_err(|e| {
+            StdError::generic_err(format!(
+                "stored contract version {} is not valid semver: {}",
+                stored_version.version, e
+            ))
+        })?;
+        let current_semver: semver::Version = CONTRACT_VERSION.parse().map_err(|e| {
+            StdError::generic_err(format!(
+                "current contract version {} is not valid semver: {}",
+                CONTRACT_VERSION, e
+            ))
+        })?;
+        if stored_semver > current_semver {
+            return Err(StdError::generic_err(format!(
+                "Migration would downgrade contract from {} to {}; refusing.",
+                stored_semver, current_semver
+            )));
+        }
+    }
+
     match msg {
         MigrateMsg::UpdateFees { new_fees } => {
             let max_lp_fee = Decimal::percent(10);
