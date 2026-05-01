@@ -1,9 +1,13 @@
-//! Standard-pool entry points: instantiate, execute dispatch, migrate.
+//! Standard-pool entry points: instantiate, execute dispatch, reply,
+//! migrate.
 //!
-//! Query dispatch lives in `crate::query`. No `reply` entry point —
-//! position-NFT ownership is accepted lazily on the first deposit via
-//! `pool_state.nft_ownership_accepted` (Option X from the 4b-ii design
-//! review).
+//! Query dispatch lives in `crate::query`. The `reply` entry point
+//! handles a single id today — `DEPOSIT_VERIFY_REPLY_ID` (H-S2) — used
+//! by the SubMsg-based CW20 balance verification on deposits and
+//! add-to-position. Position-NFT ownership is still accepted lazily on
+//! the first deposit via `pool_state.nft_ownership_accepted` (Option X
+//! from the 4b-ii design review); no separate reply id is needed for
+//! that path.
 
 use crate::error::ContractError;
 use crate::msg::{ExecuteMsg, MigrateMsg};
@@ -18,11 +22,13 @@ use pool_core::admin::{
     execute_update_config_from_factory,
 };
 use pool_core::asset::{PoolPairType, TokenInfoPoolExt, TokenType};
+use pool_core::balance_verify::handle_deposit_verify_reply;
 use pool_core::liquidity::{
-    execute_add_to_position, execute_collect_fees, execute_deposit_liquidity,
-    execute_remove_all_liquidity, execute_remove_partial_liquidity,
-    execute_remove_partial_liquidity_by_percent,
+    execute_add_to_position_with_verify, execute_collect_fees,
+    execute_deposit_liquidity_with_verify, execute_remove_all_liquidity,
+    execute_remove_partial_liquidity, execute_remove_partial_liquidity_by_percent,
 };
+use pool_core::state::DEPOSIT_VERIFY_REPLY_ID;
 use pool_core::msg::CommitFeeInfo;
 use pool_core::state::{
     ExpectedFactory, OracleInfo, PoolAnalytics, PoolDetails, PoolFeeState, PoolInfo, PoolSpecs,
@@ -74,11 +80,28 @@ pub fn instantiate(
         }
     }
 
-    // `PoolInfo.token_address` is a legacy commit-pool field. Standard
-    // pools populate it with the first CreatorToken side if any, else
-    // the factory address as a harmless placeholder. Shared liquidity
-    // and swap code dispatches per-TokenType on `asset_infos[i]` and
-    // doesn't read this field.
+    // `PoolInfo.token_address` is a legacy commit-pool field — its
+    // semantic meaning ("address of the freshly-minted creator CW20")
+    // doesn't apply to standard pools, which wrap pre-existing assets
+    // and never mint a new CW20. Shared liquidity and swap code in
+    // pool-core dispatches per-TokenType on `asset_infos[i]` and
+    // doesn't read this field, so it's a value-only placeholder.
+    //
+    // M-S4: keep the wire-format type stable as `Addr` (avoids a state
+    // migration on every existing pool record), but choose the
+    // placeholder value carefully:
+    //   - if any side is a CreatorToken, use that side's CW20 address
+    //     (matches creator-pool's convention; lets external indexers
+    //     that historically read this field still resolve to a real
+    //     CW20 on Native+CW20 standard pools).
+    //   - otherwise (Native+Native shapes such as the ATOM/bluechip
+    //     anchor), set it to the pool's OWN contract address. The
+    //     pool's address is always valid bech32, can never be confused
+    //     with a creator CW20 (it isn't one), and is self-referential
+    //     enough to make "this field is a placeholder, not a token
+    //     address" obvious to any future reader. Pre-fix the fallback
+    //     was the factory address, which is the wallet that created
+    //     the pool — easy to misread as meaningful when it isn't.
     let token_address_placeholder = msg
         .pool_token_info
         .iter()
@@ -86,7 +109,7 @@ pub fn instantiate(
             TokenType::CreatorToken { contract_addr } => Some(contract_addr.clone()),
             _ => None,
         })
-        .unwrap_or_else(|| msg.used_factory_addr.clone());
+        .unwrap_or_else(|| env.contract.address.clone());
 
     set_contract_version(deps.storage, CONTRACT_NAME, CONTRACT_VERSION)?;
 
@@ -123,19 +146,20 @@ pub fn instantiate(
     let pool_specs = PoolSpecs {
         lp_fee: Decimal::permille(3), // 0.3% LP fee
         min_commit_interval: 13,      // seconds; used by swap rate limit
-        usd_payment_tolerance_bps: 0, // unused for standard pools
     };
 
-    // Zero-valued placeholder. Two reasons we save it:
+    // Zero-valued fee placeholder. Two reasons we save it:
     //   - emergency_withdraw_core_drain reads `bluechip_wallet_address`
-    //     as the drain recipient.
+    //     as the drain recipient. It MUST be a wallet (not the factory
+    //     contract) — the factory has no withdrawal path, so funds sent
+    //     there are permanently locked (H-S1).
     //   - query_fee_info dereferences COMMITFEEINFO unconditionally.
-    // Factory address is a safe default for both wallet fields — fees
-    // are always zero on a standard pool, so no live flow depends on
-    // these values.
+    // The fee rates are zero on a standard pool, so the creator wallet
+    // is never paid out in normal flow; we still store the factory's
+    // configured bluechip wallet there as a safe placeholder.
     let fee_info = CommitFeeInfo {
-        bluechip_wallet_address: msg.used_factory_addr.clone(),
-        creator_wallet_address: msg.used_factory_addr.clone(),
+        bluechip_wallet_address: msg.bluechip_wallet_address.clone(),
+        creator_wallet_address: msg.bluechip_wallet_address.clone(),
         commit_fee_bluechip: Decimal::zero(),
         commit_fee_creator: Decimal::zero(),
     };
@@ -205,6 +229,19 @@ fn check_pool_writable(storage: &dyn Storage) -> Result<(), ContractError> {
     Ok(())
 }
 
+/// M-2 deposit-side gate: same semantics as creator-pool's
+/// `check_pool_writable_for_deposit`. Rejects admin / emergency hard
+/// pauses but accepts auto-pause-on-low-liquidity so deposits can
+/// restore reserves.
+fn check_pool_writable_for_deposit(storage: &dyn Storage) -> Result<(), ContractError> {
+    use pool_core::state::{pause_kind, PauseKind};
+    ensure_not_drained(storage)?;
+    match pause_kind(storage)? {
+        PauseKind::None | PauseKind::AutoLowLiquidity => Ok(()),
+        PauseKind::Hard => Err(ContractError::PoolPausedLowLiquidity {}),
+    }
+}
+
 #[cfg_attr(not(feature = "library"), entry_point)]
 pub fn execute(
     deps: DepsMut,
@@ -247,6 +284,7 @@ pub fn execute(
         ExecuteMsg::CancelEmergencyWithdraw {} => {
             execute_cancel_emergency_withdraw(deps, env, info)
         }
+        ExecuteMsg::AcceptNftOwnership {} => execute_accept_nft_ownership(deps, info),
         ExecuteMsg::DepositLiquidity {
             amount0,
             amount1,
@@ -254,9 +292,15 @@ pub fn execute(
             min_amount1,
             transaction_deadline,
         } => {
-            check_pool_writable(deps.storage)?;
+            // M-2: deposit-side gate permits auto-pause so reserves can
+            // be restored. Hard pauses still reject.
+            check_pool_writable_for_deposit(deps.storage)?;
             let sender = info.sender.clone();
-            execute_deposit_liquidity(
+            // H-S2: standard pools wrap arbitrary CW20s, so we route every
+            // deposit through the SubMsg-based balance verification path.
+            // The reply lands in `reply()` below, where a fee-on-transfer /
+            // rebasing CW20 mismatch reverts the entire transaction.
+            execute_deposit_liquidity_with_verify(
                 deps,
                 env,
                 info,
@@ -276,9 +320,10 @@ pub fn execute(
             min_amount1,
             transaction_deadline,
         } => {
-            check_pool_writable(deps.storage)?;
+            check_pool_writable_for_deposit(deps.storage)?;
             let sender = info.sender.clone();
-            execute_add_to_position(
+            // H-S2: same SubMsg verify path as DepositLiquidity above.
+            execute_add_to_position_with_verify(
                 deps,
                 env,
                 info,
@@ -361,6 +406,71 @@ pub fn execute(
     }
 }
 
+/// M-S1 — accept NFT ownership in the same transaction as pool creation.
+///
+/// Background: the factory's `finalize_standard_pool` reply chain
+/// already dispatches `Cw721ExecuteMsg::TransferOwnership { new_owner:
+/// pool }` to the position-NFT contract. cw_ownable's two-step transfer
+/// pattern leaves the pool as `pending_owner` until the pool itself
+/// sends `AcceptOwnership`. Pre-fix, that acceptance was deferred
+/// until the first user deposit (`pool_state.nft_ownership_accepted`
+/// gate), opening a "pending-ownership window" between pool creation
+/// and first deposit during which the NFT contract's owner is still
+/// the factory.
+///
+/// Fix: the factory appends an `AcceptNftOwnership {}` execute call to
+/// the pool to its finalize response, immediately after the
+/// TransferOwnership to the NFT. This handler then sends the matching
+/// AcceptOwnership message back to the NFT and flips the flag.
+/// Pool-core's deposit handler still has its `if !nft_ownership_accepted`
+/// branch as a backstop for any path that bypasses this trigger
+/// (e.g. test fixtures or upgrades from a pre-M-S1 standard pool that
+/// never received the trigger), so the lazy-accept behavior remains
+/// available as a fallback.
+///
+/// Idempotent: returns Ok with no messages if the flag is already set.
+/// Authorisation: sender must equal `POOL_INFO.factory_addr` — only
+/// the factory has any reason to invoke this, and accepting from any
+/// other sender would let an attacker race the legitimate flow.
+fn execute_accept_nft_ownership(
+    deps: DepsMut,
+    info: MessageInfo,
+) -> Result<Response, ContractError> {
+    let pool_info = POOL_INFO.load(deps.storage)?;
+    if info.sender != pool_info.factory_addr {
+        return Err(ContractError::Unauthorized {});
+    }
+
+    let mut pool_state = POOL_STATE.load(deps.storage)?;
+    if pool_state.nft_ownership_accepted {
+        // Already accepted (likely via the deposit-side fallback in
+        // pool-core). Don't dispatch a second AcceptOwnership — the
+        // NFT contract would reject it with NoPendingOwner, failing
+        // the entire create-pool transaction.
+        return Ok(Response::new()
+            .add_attribute("action", "accept_nft_ownership_noop")
+            .add_attribute("pool", pool_info.pool_info.contract_addr.to_string()));
+    }
+
+    let accept_msg = cosmwasm_std::WasmMsg::Execute {
+        contract_addr: pool_info.position_nft_address.to_string(),
+        msg: cosmwasm_std::to_json_binary(
+            &pool_factory_interfaces::cw721_msgs::Cw721ExecuteMsg::<()>::UpdateOwnership(
+                pool_factory_interfaces::cw721_msgs::Action::AcceptOwnership,
+            ),
+        )?,
+        funds: vec![],
+    };
+    pool_state.nft_ownership_accepted = true;
+    POOL_STATE.save(deps.storage, &pool_state)?;
+
+    Ok(Response::new()
+        .add_message(cosmwasm_std::CosmosMsg::Wasm(accept_msg))
+        .add_attribute("action", "accept_nft_ownership")
+        .add_attribute("pool", pool_info.pool_info.contract_addr.to_string())
+        .add_attribute("nft", pool_info.position_nft_address.to_string()))
+}
+
 /// Standard-pool emergency withdraw: no commit-only bookkeeping. Dispatches
 /// directly to the pool-core Phase 1 / Phase 2 handlers with zero
 /// accumulation_drain amounts (no CREATOR_EXCESS_POSITION to sweep, no
@@ -393,11 +503,66 @@ fn execute_emergency_withdraw(
 }
 
 // ---------------------------------------------------------------------------
+// Reply
+// ---------------------------------------------------------------------------
+
+/// H-S2: only one reply id is wired today — `DEPOSIT_VERIFY_REPLY_ID`,
+/// which the verify-aware deposit / add-to-position paths emit on their
+/// final SubMsg. The handler queries each CW20 side's post-balance and
+/// asserts the delta matches the credited amount. A mismatch returns an
+/// `Err` here, which propagates back to the chain and rolls the entire
+/// transaction back — including all the parent's state writes (position
+/// save, NFT mint, reserve update, etc.). On match, returns Ok and the
+/// transaction commits normally.
+///
+/// Any unknown reply id is rejected rather than silently dropped:
+/// nothing else in standard-pool currently dispatches `SubMsg::reply_*`,
+/// so an unknown id signals either a forgotten dispatch site or an
+/// upstream `pool-core` upgrade that introduced a new reply path
+/// without wiring it here.
+#[cfg_attr(not(feature = "library"), entry_point)]
+pub fn reply(deps: DepsMut, env: Env, msg: cosmwasm_std::Reply) -> StdResult<Response> {
+    match msg.id {
+        DEPOSIT_VERIFY_REPLY_ID => handle_deposit_verify_reply(deps, env, msg)
+            .map_err(|e| StdError::generic_err(e.to_string())),
+        other => Err(StdError::generic_err(format!(
+            "standard-pool reply: unknown reply id {}",
+            other
+        ))),
+    }
+}
+
+// ---------------------------------------------------------------------------
 // Migrate
 // ---------------------------------------------------------------------------
 
 #[entry_point]
 pub fn migrate(deps: DepsMut, _env: Env, msg: MigrateMsg) -> StdResult<Response> {
+    // M-3: reject downgrades. Mirrors the creator-pool migrate guard —
+    // see that handler for the rationale. Tolerates a missing cw2 entry
+    // (legacy pre-cw2 / test fixtures) by skipping the check; production
+    // pools always set cw2 at instantiate time.
+    if let Ok(stored_version) = cw2::get_contract_version(deps.storage) {
+        let stored_semver: semver::Version = stored_version.version.parse().map_err(|e| {
+            StdError::generic_err(format!(
+                "stored contract version {} is not valid semver: {}",
+                stored_version.version, e
+            ))
+        })?;
+        let current_semver: semver::Version = CONTRACT_VERSION.parse().map_err(|e| {
+            StdError::generic_err(format!(
+                "current contract version {} is not valid semver: {}",
+                CONTRACT_VERSION, e
+            ))
+        })?;
+        if stored_semver > current_semver {
+            return Err(StdError::generic_err(format!(
+                "Migration would downgrade contract from {} to {}; refusing.",
+                stored_semver, current_semver
+            )));
+        }
+    }
+
     match msg {
         MigrateMsg::UpdateFees { new_fees } => {
             let max_lp_fee = Decimal::percent(10);

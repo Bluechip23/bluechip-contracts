@@ -798,7 +798,6 @@ pub fn setup_pool_storage(deps: &mut OwnedDeps<MockStorage, MockApi, MockQuerier
     let pool_specs = PoolSpecs {
         lp_fee: Decimal::percent(3) / Uint128::new(10), // 0.3% fee (3/1000)
         min_commit_interval: 60,                        // 1 minute minimum between commits
-        usd_payment_tolerance_bps: 100,                 // 1% tolerance
     };
     POOL_SPECS.save(&mut deps.storage, &pool_specs).unwrap();
 

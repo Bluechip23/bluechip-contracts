@@ -43,3 +43,8 @@ pub mod liquidity_helpers;
 pub mod liquidity;
 pub mod admin;
 pub mod query;
+/// H-S2 — SubMsg-based deposit balance verification reply handler.
+/// Standard-pool's `reply` entry point dispatches `DEPOSIT_VERIFY_REPLY_ID`
+/// here to confirm the actual CW20 balance delta on the pool matches the
+/// credited deposit amount. See module docs for the threat model.
+pub mod balance_verify;

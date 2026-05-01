@@ -65,6 +65,26 @@ pub const MAX_DISTRIBUTIONS_PER_TX: u32 = 40;
 // keeper outage. 24h gives operators a full day to react.
 pub const DISTRIBUTION_STALL_TIMEOUT_SECONDS: u64 = 86_400;
 
+// M-5: per-keeper rate limit on `ContinueDistribution`. Prevents a single
+// keeper (or a competing keeper losing the race) from same-block-spamming
+// no-op tx that pay no bounty but still cost ledger reads / gas. Each
+// `info.sender` must wait `CONTINUE_DISTRIBUTION_RATE_LIMIT_SECONDS`
+// between calls; another address can still call sooner, so legitimate
+// keepers rotating through addresses (e.g. a multi-keeper service)
+// aren't blocked.
+//
+// Per-address tracker keyed on the caller. Cleared opportunistically
+// (TODO: prune entries older than the rate-limit window if storage
+// growth becomes a concern).
+pub const LAST_CONTINUE_DISTRIBUTION_AT: cw_storage_plus::Map<&Addr, u64> =
+    cw_storage_plus::Map::new("last_continue_distribution_at");
+
+/// 5 seconds between consecutive ContinueDistribution calls from the
+/// same address. Tight enough to deflate same-block spam but loose
+/// enough that a legitimate keeper polling at any reasonable cadence
+/// (every block, every 30s, every 5min) is unaffected on the slow path.
+pub const CONTINUE_DISTRIBUTION_RATE_LIMIT_SECONDS: u64 = 5;
+
 // Distribution keeper bounty is paid by the factory, not the pool.
 // See factory::execute_pay_distribution_bounty. The pool just emits a
 // WasmMsg to the factory and the factory pays from its own native reserve.

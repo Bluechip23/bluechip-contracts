@@ -142,9 +142,8 @@ pub fn instantiate(
     };
 
     let pool_specs = PoolSpecs {
-        lp_fee: Decimal::permille(3),   // 0.3% LP fee
-        min_commit_interval: 13,        // seconds
-        usd_payment_tolerance_bps: 100, // 1% tolerance
+        lp_fee: Decimal::permille(3), // 0.3% LP fee
+        min_commit_interval: 13,      // seconds
     };
 
     let commit_config = CommitLimitInfo {
@@ -218,13 +217,35 @@ fn check_pool_not_paused(storage: &dyn Storage) -> Result<(), ContractError> {
     Ok(())
 }
 
-/// Liquidity-write gate: every deposit / add / remove / collect / claim
-/// path must fail closed when an emergency drain has been initiated OR
-/// when admin has paused the pool. Combines the two checks that were
-/// previously copy-pasted into 8 dispatch arms.
+/// Liquidity-write gate (M-2): hard-rejects when the pool is paused for any
+/// reason — admin pause, emergency-pending, or auto-pause due to low
+/// liquidity. Used for swaps, removes, fee collects, claims — i.e., paths
+/// that either drain reserves further or rely on healthy reserves.
 fn check_pool_writable(storage: &dyn Storage) -> Result<(), ContractError> {
     ensure_not_drained(storage)?;
     check_pool_not_paused(storage)
+}
+
+/// M-2 deposit-side gate: rejects hard pauses (admin / emergency) but
+/// PERMITS auto-pause-on-low-liquidity. The deposit handler then either
+/// (a) restores reserves above MIN and auto-clears both flags, or
+/// (b) leaves the pool still auto-paused if the deposit didn't restore
+/// enough. Either way the deposit completes and adds liquidity.
+///
+/// Auto-pause vs. hard pause distinction:
+///   - `PauseKind::AutoLowLiquidity`: this gate accepts. The deposit's
+///     post-state branch in `execute_deposit_liquidity_inner` clears the
+///     flags if reserves recover.
+///   - `PauseKind::Hard`: rejected — emergency-pending pool must wait
+///     for the 24h timelock or admin cancel; admin-paused pool must wait
+///     for explicit Unpause.
+fn check_pool_writable_for_deposit(storage: &dyn Storage) -> Result<(), ContractError> {
+    use crate::state::{pause_kind, PauseKind};
+    ensure_not_drained(storage)?;
+    match pause_kind(storage)? {
+        PauseKind::None | PauseKind::AutoLowLiquidity => Ok(()),
+        PauseKind::Hard => Err(ContractError::PoolPausedLowLiquidity {}),
+    }
 }
 
 #[cfg_attr(not(feature = "library"), entry_point)]
@@ -320,7 +341,10 @@ pub fn execute(
             min_amount1,
             transaction_deadline,
         } => {
-            check_pool_writable(deps.storage)?;
+            // M-2: deposits use the auto-pause-tolerant gate so they can
+            // restore liquidity in an auto-paused pool. Hard pauses still
+            // reject.
+            check_pool_writable_for_deposit(deps.storage)?;
             if !query_check_commit(deps.as_ref())? {
                 return Err(ContractError::ShortOfThreshold {});
             }
@@ -345,7 +369,8 @@ pub fn execute(
             min_amount1,
             transaction_deadline,
         } => {
-            check_pool_writable(deps.storage)?;
+            // M-2: same recovery semantics as DepositLiquidity.
+            check_pool_writable_for_deposit(deps.storage)?;
             if !query_check_commit(deps.as_ref())? {
                 return Err(ContractError::ShortOfThreshold {});
             }
@@ -558,6 +583,43 @@ pub fn reply(deps: DepsMut, env: Env, msg: Reply) -> StdResult<Response> {
 
 #[entry_point]
 pub fn migrate(deps: DepsMut, _env: Env, msg: MigrateMsg) -> StdResult<Response> {
+    // M-3: reject downgrades. The chain has already replaced the wasm
+    // bytecode by the time this handler runs, so this is the last
+    // chance to abort a downgrade — a hard `Err` here causes the chain
+    // to revert the migration and leave the pool on its previous code.
+    //
+    // Defensive layer in addition to the factory's 48h timelock on
+    // ExecutePoolUpgrade. Once this check ships in every released
+    // version, any future migration that would replace `version > N`
+    // with `version <= N` is blocked at runtime regardless of admin
+    // observability. Equal-version migrations are allowed (idempotent
+    // re-runs); strictly-greater stored is rejected.
+    //
+    // `may_load`-style: a missing cw2 entry (legacy pre-cw2 pool, or a
+    // test fixture that bypassed `instantiate`) skips the check rather
+    // than erroring. Production pools always set cw2 via
+    // `set_contract_version` at instantiate time.
+    if let Ok(stored_version) = cw2::get_contract_version(deps.storage) {
+        let stored_semver: semver::Version = stored_version.version.parse().map_err(|e| {
+            StdError::generic_err(format!(
+                "stored contract version {} is not valid semver: {}",
+                stored_version.version, e
+            ))
+        })?;
+        let current_semver: semver::Version = CONTRACT_VERSION.parse().map_err(|e| {
+            StdError::generic_err(format!(
+                "current contract version {} is not valid semver: {}",
+                CONTRACT_VERSION, e
+            ))
+        })?;
+        if stored_semver > current_semver {
+            return Err(StdError::generic_err(format!(
+                "Migration would downgrade contract from {} to {}; refusing.",
+                stored_semver, current_semver
+            )));
+        }
+    }
+
     match msg {
         MigrateMsg::UpdateFees { new_fees } => {
             let max_lp_fee = Decimal::percent(10);

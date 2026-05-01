@@ -131,7 +131,12 @@ mod expand_economy_tests {
     }
 
     #[test]
-    fn instantiate_rejects_empty_denom() {
+    fn instantiate_rejects_malformed_denom() {
+        // M-EE-3: previously this test asserted the "non-empty" error
+        // for whitespace-only input. The validator now applies the full
+        // cosmos-sdk denom format check, so whitespace fails because
+        // the leading space isn't an ASCII letter (and disallowed
+        // characters appear). Surface the format error message instead.
         let mut deps = mock_dependencies();
         let factory_addr = MockApi::default().addr_make("factory");
         let creator_addr = MockApi::default().addr_make("creator");
@@ -148,7 +153,13 @@ mod expand_economy_tests {
             msg,
         )
         .unwrap_err();
-        assert!(err.to_string().contains("non-empty"));
+        let msg = err.to_string();
+        assert!(
+            msg.contains("must start with an ASCII letter")
+                || msg.contains("disallowed character"),
+            "expected denom-format error, got: {}",
+            msg
+        );
     }
 
     #[test]

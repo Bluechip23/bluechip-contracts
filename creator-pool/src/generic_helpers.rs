@@ -113,6 +113,31 @@ pub fn trigger_threshold_payout(
 
     let mut other_msgs: Vec<CosmosMsg> = Vec::new();
 
+    // M-7: accept the position-NFT ownership at threshold-cross time
+    // rather than lazily on first deposit. Closes the "ownership pending"
+    // window between factory's `TransferOwnership` (at pool finalize)
+    // and the first LP's deposit, during which a (compromised) factory
+    // could theoretically re-route the NFT elsewhere via another
+    // TransferOwnership before the pool ever locks it in. The
+    // `nft_ownership_accepted` flag flips here too so the deposit
+    // handler's lazy check skips the AcceptOwnership emit (avoiding a
+    // double-accept that would error at the CW721 contract).
+    //
+    // Idempotent: if the flag is already true (e.g. a hand-rolled
+    // factory dispatch path that pre-accepted), this branch is a no-op.
+    if !pool_state.nft_ownership_accepted {
+        other_msgs.push(CosmosMsg::Wasm(WasmMsg::Execute {
+            contract_addr: pool_info.position_nft_address.to_string(),
+            msg: to_json_binary(
+                &pool_factory_interfaces::cw721_msgs::Cw721ExecuteMsg::<()>::UpdateOwnership(
+                    pool_factory_interfaces::cw721_msgs::Action::AcceptOwnership,
+                ),
+            )?,
+            funds: vec![],
+        }));
+        pool_state.nft_ownership_accepted = true;
+    }
+
     let total = payout
         .creator_reward_amount
         .checked_add(payout.bluechip_reward_amount)

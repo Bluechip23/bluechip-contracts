@@ -20,7 +20,6 @@ fn test_pool_update_config_from_factory() {
     let update = PoolConfigUpdate {
         lp_fee: Some(Decimal::permille(3)),   // 0.3% LP fee
         min_commit_interval: Some(120),       // 2 minutes between commits
-        usd_payment_tolerance_bps: Some(100), // 1% tolerance (100 basis points)
         oracle_address: None,
     };
 
@@ -37,7 +36,6 @@ fn test_pool_update_config_from_factory() {
     let update_for_hacker = PoolConfigUpdate {
         lp_fee: Some(Decimal::permille(3)),   // 0.3% LP fee
         min_commit_interval: Some(120),       // 2 minutes between commits
-        usd_payment_tolerance_bps: Some(100), // 1% tolerance (100 basis points)
         oracle_address: None,
     };
 

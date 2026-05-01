@@ -2419,7 +2419,6 @@ pub fn setup_pool_with_reserves(
     let pool_specs = PoolSpecs {
         lp_fee: Decimal::percent(3) / Uint128::new(10), // 0.3% fee (3/1000)
         min_commit_interval: 60,                        // 1 minute minimum between commits
-        usd_payment_tolerance_bps: 100,                 // 1% tolerance
     };
     POOL_SPECS.save(&mut deps.storage, &pool_specs).unwrap();
 
@@ -2644,21 +2643,27 @@ fn test_swap_triggers_pause_at_threshold() {
 
 #[test]
 fn test_add_liquidity_unpauses_pool() {
+    use crate::state::POOL_PAUSED_AUTO;
     let mut deps = mock_dependencies();
 
-    // Setup pool with low reserves and pause it
+    // Setup pool with low reserves and simulate an auto-pause (M-2):
+    // POOL_PAUSED + POOL_PAUSED_AUTO both true means "paused because
+    // a swap or remove dropped reserves below MIN, recoverable via
+    // deposit". Without POOL_PAUSED_AUTO, the deposit treats this as
+    // a hard pause and refuses to clear it.
     setup_pool_with_reserves(&mut deps, Uint128::new(5000), Uint128::new(5000));
     POOL_PAUSED.save(&mut deps.storage, &true).unwrap();
+    POOL_PAUSED_AUTO.save(&mut deps.storage, &true).unwrap();
 
+    // Native side only — token1 is a CW20 and flows via TransferFrom,
+    // not native attached funds. The H-2 reject-extras gate rejects any
+    // attached coin whose denom isn't one of the pool's native sides.
     let result = execute_deposit_liquidity(
         deps.as_mut(),
         mock_env(),
         message_info(
             &Addr::unchecked("provider"),
-            &[
-                Coin::new(50_000u128, "ubluechip"),
-                Coin::new(50_000u128, "token1_contract"),
-            ],
+            &[Coin::new(50_000u128, "ubluechip")],
         ),
         Addr::unchecked("provider"),
         Uint128::new(50_000),
@@ -2694,15 +2699,14 @@ fn test_add_liquidity_doesnt_unpause_if_still_below_threshold() {
     setup_pool_with_reserves(&mut deps, Uint128::new(100), Uint128::new(100));
     POOL_PAUSED.save(&mut deps.storage, &true).unwrap();
 
+    // Native side only — H-2 rejects any attached coin whose denom
+    // isn't one of the pool's native sides; token1 is CW20.
     let result = execute_deposit_liquidity(
         deps.as_mut(),
         mock_env(),
         message_info(
             &Addr::unchecked("provider"),
-            &[
-                Coin::new(500u128, "ubluechip"),
-                Coin::new(500u128, "token1"),
-            ],
+            &[Coin::new(500u128, "ubluechip")],
         ),
         Addr::unchecked("provider"),
         Uint128::new(500),

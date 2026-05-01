@@ -4,6 +4,8 @@
 //! pool's thin dispatch, with no commit-phase layer in the way.
 //! Organized by handler area — one file per concern.
 
+mod accept_nft_ownership;
+mod balance_verify;
 mod collect_fees;
 mod deposit_liquidity;
 mod emergency_withdraw;

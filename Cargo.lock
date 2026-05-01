@@ -347,6 +347,7 @@ dependencies = [
  "pool-core",
  "pool-factory-interfaces",
  "proptest",
+ "semver",
  "thiserror 2.0.12",
 ]
 
@@ -662,8 +663,10 @@ dependencies = [
  "cosmwasm-std",
  "cw-multi-test",
  "cw-storage-plus",
+ "cw-utils",
  "cw2",
  "pool-factory-interfaces",
+ "semver",
  "serde",
  "thiserror 2.0.12",
 ]
@@ -1336,6 +1339,7 @@ dependencies = [
  "oracle",
  "pool-core",
  "pool-factory-interfaces",
+ "semver",
  "thiserror 2.0.12",
 ]
 

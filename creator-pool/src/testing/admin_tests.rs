@@ -267,7 +267,6 @@ fn test_update_config_all() {
     let update = PoolConfigUpdate {
         lp_fee: Some(Decimal::percent(5)),    // was 0.3%
         min_commit_interval: Some(60),        // was something else
-        usd_payment_tolerance_bps: Some(200), // 2%
         oracle_address: Some(new_oracle.to_string()),
     };
 
@@ -278,7 +277,6 @@ fn test_update_config_all() {
     let specs = POOL_SPECS.load(&deps.storage).unwrap();
     assert_eq!(specs.lp_fee, Decimal::percent(5));
     assert_eq!(specs.min_commit_interval, 60);
-    assert_eq!(specs.usd_payment_tolerance_bps, 200);
 
     let oracle_info = ORACLE_INFO.load(&deps.storage).unwrap();
     assert_eq!(oracle_info.oracle_addr, new_oracle);
@@ -322,7 +320,6 @@ fn test_unauthorized_admin_actions() {
     let update = PoolConfigUpdate {
         lp_fee: Some(Decimal::percent(100)),
         min_commit_interval: None,
-        usd_payment_tolerance_bps: None,
         oracle_address: None,
     };
     let err = execute(

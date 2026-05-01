@@ -49,6 +49,19 @@ pub enum ExecuteMsg {
     Unpause {},
     EmergencyWithdraw {},
     CancelEmergencyWithdraw {},
+    /// M-S1: factory-only callback dispatched at the tail of the
+    /// factory's `finalize_standard_pool` reply chain. The NFT contract
+    /// has already been told `TransferOwnership { new_owner: pool }`;
+    /// this variant lets the pool itself send the matching
+    /// `AcceptOwnership` message back to the NFT contract, closing the
+    /// pending-ownership window IN THE SAME TRANSACTION as pool
+    /// creation rather than waiting for the first user deposit.
+    ///
+    /// Idempotent: if `pool_state.nft_ownership_accepted` is already
+    /// true (e.g. the first deposit happened to land first), the
+    /// handler is a no-op. Authorisation: sender must equal
+    /// `POOL_INFO.factory_addr`.
+    AcceptNftOwnership {},
     DepositLiquidity {
         amount0: Uint128,
         amount1: Uint128,

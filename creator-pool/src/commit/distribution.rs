@@ -12,7 +12,11 @@ use cosmwasm_std::{to_json_binary, CosmosMsg, DepsMut, Env, MessageInfo, Respons
 use crate::admin::ensure_not_drained;
 use crate::error::ContractError;
 use crate::generic_helpers::process_distribution_batch;
-use crate::state::{DISTRIBUTION_STATE, POOL_INFO, POOL_PAUSED};
+use crate::state::{
+    CONTINUE_DISTRIBUTION_RATE_LIMIT_SECONDS, DISTRIBUTION_STATE,
+    LAST_CONTINUE_DISTRIBUTION_AT, POOL_INFO, POOL_PAUSED,
+};
+use cosmwasm_std::StdError;
 
 pub fn execute_continue_distribution(
     deps: DepsMut,
@@ -37,6 +41,28 @@ pub fn execute_continue_distribution(
     if POOL_PAUSED.may_load(deps.storage)?.unwrap_or(false) {
         return Err(ContractError::PoolPausedLowLiquidity {});
     }
+
+    // M-5: per-address rate limit. Same-block spam from a single keeper
+    // (or two competing keepers) wastes gas on no-op tx after the
+    // ledger is empty / cursor is past the end. Reject if this address
+    // called within the last CONTINUE_DISTRIBUTION_RATE_LIMIT_SECONDS.
+    // Stamp the new timestamp before any further work — a successful
+    // tx records the call; a tx that errors below atomically reverts
+    // the stamp along with everything else.
+    let now = env.block.time.seconds();
+    if let Some(prev) =
+        LAST_CONTINUE_DISTRIBUTION_AT.may_load(deps.storage, &info.sender)?
+    {
+        let earliest_next = prev.saturating_add(CONTINUE_DISTRIBUTION_RATE_LIMIT_SECONDS);
+        if now < earliest_next {
+            return Err(ContractError::Std(StdError::generic_err(format!(
+                "Rate-limited: this address can call ContinueDistribution again at {} \
+                 (last call {}, cooldown {}s)",
+                earliest_next, prev, CONTINUE_DISTRIBUTION_RATE_LIMIT_SECONDS
+            ))));
+        }
+    }
+    LAST_CONTINUE_DISTRIBUTION_AT.save(deps.storage, &info.sender, &now)?;
 
     let dist_state = DISTRIBUTION_STATE.load(deps.storage)?;
     if !dist_state.is_distributing {
