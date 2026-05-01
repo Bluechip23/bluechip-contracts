@@ -1,4 +1,5 @@
 use cosmwasm_std::{OverflowError, StdError, Uint128};
+use cw_utils::PaymentError;
 use thiserror::Error;
 
 #[derive(Error, Debug)]
@@ -15,6 +16,13 @@ pub enum ContractError {
         spent_in_window: Uint128,
         cap: Uint128,
     },
+
+    /// M-EE-1: any execute path on this contract is non-payable. Surfaces
+    /// `cw_utils::nonpayable` rejections directly so the underlying
+    /// `PaymentError::NonPayable {}` reason ("This message does no accept
+    /// funds") is preserved for clients.
+    #[error("{0}")]
+    Payment(#[from] PaymentError),
 }
 
 impl From<OverflowError> for ContractError {

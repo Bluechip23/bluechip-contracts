@@ -16,7 +16,12 @@ cosmwasm-std = { workspace = true }
 cw-storage-plus = { workspace = true }
 thiserror = { workspace = true }
 cw2 = { workspace = true }
+cw-utils = { workspace = true }
 serde = { workspace = true }
+# C-EE-1: migrate handler parses cw2 stored version and current
+# CONTRACT_VERSION as semver to reject downgrades. Same crate the
+# pool / factory contracts already use for the same M-3 guard.
+semver = { workspace = true }
 
 [dev-dependencies]
 cw-multi-test = { workspace = true }

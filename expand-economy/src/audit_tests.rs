@@ -554,4 +554,256 @@ mod tests {
         .unwrap_err();
         assert!(matches!(err, crate::error::ContractError::Unauthorized {}));
     }
+
+    // -- C-EE-1 migrate handler ------------------------------------------
+
+    #[test]
+    fn migrate_no_op_succeeds_when_cw2_unset() {
+        // Test fixtures may not have cw2 initialised. The downgrade
+        // guard tolerates this (production deployments always set cw2
+        // at instantiate); the migrate must still succeed and bump the
+        // cw2 record to the current version.
+        let mut deps = mock_dependencies();
+        let res = crate::contract::migrate(
+            deps.as_mut(),
+            mock_env(),
+            crate::msg::MigrateMsg::UpdateVersion {},
+        )
+        .unwrap();
+        let action = res.attributes.iter().find(|a| a.key == "action").unwrap();
+        assert_eq!(action.value, "migrate");
+        let stored = cw2::get_contract_version(&deps.storage).unwrap();
+        assert_eq!(stored.contract, "crates.io:expand-economy");
+        assert_eq!(stored.version, env!("CARGO_PKG_VERSION"));
+    }
+
+    #[test]
+    fn migrate_rejects_downgrade() {
+        let mut deps = mock_dependencies();
+        setup_contract(&mut deps);
+        // Pretend the contract is already on a newer version than the
+        // wasm being migrated TO. The guard must refuse.
+        cw2::set_contract_version(&mut deps.storage, "crates.io:expand-economy", "999.0.0")
+            .unwrap();
+        let err = crate::contract::migrate(
+            deps.as_mut(),
+            mock_env(),
+            crate::msg::MigrateMsg::UpdateVersion {},
+        )
+        .unwrap_err();
+        assert!(
+            err.to_string().contains("downgrade"),
+            "downgrade must surface a clear error, got: {}",
+            err
+        );
+    }
+
+    #[test]
+    fn migrate_rejects_invalid_stored_semver() {
+        let mut deps = mock_dependencies();
+        cw2::set_contract_version(&mut deps.storage, "crates.io:expand-economy", "not-a-semver")
+            .unwrap();
+        let err = crate::contract::migrate(
+            deps.as_mut(),
+            mock_env(),
+            crate::msg::MigrateMsg::UpdateVersion {},
+        )
+        .unwrap_err();
+        assert!(err.to_string().contains("not valid semver"));
+    }
+
+    // -- M-EE-1 nonpayable guard ------------------------------------------
+
+    #[test]
+    fn execute_rejects_attached_funds_on_request_expansion() {
+        let mut deps = mock_dependencies();
+        setup_contract(&mut deps);
+        let factory_addr = MockApi::default().addr_make("factory");
+        let user_addr = MockApi::default().addr_make("user");
+        install_factory_denom_mock(&mut deps, factory_addr.clone(), "ubluechip");
+
+        let msg = ExecuteMsg::ExpandEconomy(ExpandEconomyMsg::RequestExpansion {
+            recipient: user_addr.to_string(),
+            amount: Uint128::new(100),
+        });
+        let funds = cosmwasm_std::coins(1u128, "ubluechip");
+        let err = crate::contract::execute(
+            deps.as_mut(),
+            mock_env(),
+            message_info(&factory_addr, &funds),
+            msg,
+        )
+        .unwrap_err();
+        assert!(matches!(err, crate::error::ContractError::Payment(_)));
+    }
+
+    #[test]
+    fn execute_rejects_attached_funds_on_propose_withdrawal() {
+        let mut deps = mock_dependencies();
+        setup_contract(&mut deps);
+        let owner_addr = MockApi::default().addr_make("owner");
+
+        let msg = ExecuteMsg::ProposeWithdrawal {
+            amount: Uint128::new(1),
+            denom: "ubluechip".to_string(),
+            recipient: None,
+        };
+        let funds = cosmwasm_std::coins(1u128, "ubluechip");
+        let err = crate::contract::execute(
+            deps.as_mut(),
+            mock_env(),
+            message_info(&owner_addr, &funds),
+            msg,
+        )
+        .unwrap_err();
+        assert!(matches!(err, crate::error::ContractError::Payment(_)));
+    }
+
+    #[test]
+    fn execute_rejects_attached_funds_on_cancel_paths() {
+        // Cancel arms have no semantic reason to accept funds either.
+        // The guard sits at dispatch top so every variant inherits it.
+        let mut deps = mock_dependencies();
+        setup_contract(&mut deps);
+        let owner_addr = MockApi::default().addr_make("owner");
+        let funds = cosmwasm_std::coins(1u128, "ubluechip");
+
+        let err = crate::contract::execute(
+            deps.as_mut(),
+            mock_env(),
+            message_info(&owner_addr, &funds),
+            ExecuteMsg::CancelWithdrawal {},
+        )
+        .unwrap_err();
+        assert!(matches!(err, crate::error::ContractError::Payment(_)));
+
+        let err = crate::contract::execute(
+            deps.as_mut(),
+            mock_env(),
+            message_info(&owner_addr, &funds),
+            ExecuteMsg::CancelConfigUpdate {},
+        )
+        .unwrap_err();
+        assert!(matches!(err, crate::error::ContractError::Payment(_)));
+    }
+
+    // -- M-EE-2 subset deserialization round-trip ------------------------
+
+    /// The factory's real `FactoryInstantiateResponse` carries many more
+    /// fields than just `bluechip_denom`. This test constructs a
+    /// hand-built JSON blob that mimics the full factory response and
+    /// asserts our subset still deserializes — locking in the
+    /// "extra fields are ignored" property so a future cosmwasm-schema
+    /// upgrade that flips `deny_unknown_fields` would fail this test
+    /// before reaching production.
+    #[test]
+    fn factory_response_subset_round_trip_with_extra_fields() {
+        // Mimic the real factory response with several unknown fields
+        // alongside the one we read.
+        let json = br#"{
+            "factory": {
+                "factory_admin_address": "cosmos1adminadmin",
+                "bluechip_wallet_address": "cosmos1wallet",
+                "atom_bluechip_anchor_pool_address": "cosmos1anchor",
+                "bluechip_denom": "ubluechip",
+                "atom_denom": "uatom",
+                "extra_unknown_field": "should be ignored",
+                "nested": { "another": "ignored" }
+            }
+        }"#;
+        // Cross-validation path uses cosmwasm_std::from_json under the
+        // hood via query_wasm_smart. Exercise the same deserializer.
+        let resp: cosmwasm_std::StdResult<crate::contract::testing::FactoryInstantiateResponseSubsetForTest> =
+            cosmwasm_std::from_json(&json[..]);
+        let resp = resp.expect(
+            "extra factory-side fields must continue to deserialize as a no-op; \
+             if this test fails, a cosmwasm-schema upgrade or serde change has \
+             enabled deny_unknown_fields and execute_expand_economy is now \
+             silently bricked in production",
+        );
+        assert_eq!(resp.factory.bluechip_denom, "ubluechip");
+    }
+
+    // -- M-EE-3 denom format validator -----------------------------------
+
+    #[test]
+    fn validate_native_denom_accepts_canonical_shapes() {
+        // Each of these must be accepted by the propose-time validator —
+        // cosmos-sdk's bank module accepts all of them.
+        let cases = [
+            "ubluechip",
+            "ucustom",
+            "uatom",
+            "ibc/27394FB092D2ECCD56123C74F36E4C1F926001CEADA9CA97EA622B25F41E5EB2",
+            "factory/cosmos1abc/tokenname",
+            "abc",
+        ];
+        for d in cases {
+            crate::contract::testing::validate_native_denom_for_test(d).unwrap_or_else(|e| {
+                panic!("expected '{}' to be accepted, got: {}", d, e)
+            });
+        }
+    }
+
+    #[test]
+    fn validate_native_denom_rejects_typos_and_malformed() {
+        // Each of these is rejected by the cosmos-sdk denom regex
+        // `^[a-zA-Z][a-zA-Z0-9/:._-]{2,127}$` — and would have been
+        // silently accepted by the previous "non-empty after trim"
+        // check, bricking the contract 48h later when the bank
+        // module rejected the denom on every BankMsg::Send.
+        //
+        // Note: the regex accepts uppercase letters, so "Bluechip"
+        // is technically valid (a casing-mismatch with the configured
+        // bank denom is a separate operator-typo class that the
+        // cross-validation query catches at runtime).
+        let cases = [
+            ("u bluechip", "disallowed character"),               // whitespace
+            ("u", "outside the cosmos-sdk allowed range"),        // too short
+            ("ub", "outside the cosmos-sdk allowed range"),       // too short
+            ("1ubluechip", "must start with an ASCII letter"),    // digit prefix
+            ("ubluechip!", "disallowed character"),               // bad punct
+            ("/ubluechip", "must start with an ASCII letter"),    // slash prefix
+            ("u@bluechip", "disallowed character"),               // @ outside set
+            ("ubluechip\n", "disallowed character"),              // newline
+            ("   ", "must start with an ASCII letter"),           // whitespace-only
+            ("", "outside the cosmos-sdk allowed range"),         // empty
+        ];
+        for (d, expected_fragment) in cases {
+            let err = crate::contract::testing::validate_native_denom_for_test(d).unwrap_err();
+            let msg = err.to_string();
+            assert!(
+                msg.contains(expected_fragment),
+                "denom '{}': expected fragment '{}' in error, got: {}",
+                d,
+                expected_fragment,
+                msg
+            );
+        }
+    }
+
+    #[test]
+    fn propose_config_update_rejects_malformed_denom() {
+        let mut deps = mock_dependencies();
+        setup_contract(&mut deps);
+        let owner_addr = MockApi::default().addr_make("owner");
+        let new_factory_addr = MockApi::default().addr_make("new_factory");
+
+        let err = crate::contract::execute(
+            deps.as_mut(),
+            mock_env(),
+            message_info(&owner_addr, &[]),
+            ExecuteMsg::ProposeConfigUpdate {
+                factory_address: Some(new_factory_addr.to_string()),
+                owner: None,
+                bluechip_denom: Some("u bluechip".to_string()), // space — invalid
+            },
+        )
+        .unwrap_err();
+        assert!(
+            err.to_string().contains("disallowed character"),
+            "malformed denom must be caught at propose time, got: {}",
+            err
+        );
+    }
 }

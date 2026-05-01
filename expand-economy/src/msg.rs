@@ -57,3 +57,16 @@ pub struct ConfigResponse {
     pub owner: Addr,
     pub bluechip_denom: String,
 }
+
+/// C-EE-1 — migrate handler shape. Today there's only `UpdateVersion {}`,
+/// which bumps the cw2 stored version. The downgrade guard inside the
+/// handler rejects any migrate where the stored version is newer than
+/// `CONTRACT_VERSION` regardless of which variant is sent — same M-3
+/// invariant the pool / factory contracts enforce.
+///
+/// Future variants (e.g. `MigrateConfig { … }`) can land here without a
+/// wire-format break: the enum is closed but new variants are additive.
+#[cw_serde]
+pub enum MigrateMsg {
+    UpdateVersion {},
+}

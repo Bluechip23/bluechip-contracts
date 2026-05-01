@@ -663,8 +663,10 @@ dependencies = [
  "cosmwasm-std",
  "cw-multi-test",
  "cw-storage-plus",
+ "cw-utils",
  "cw2",
  "pool-factory-interfaces",
+ "semver",
  "serde",
  "thiserror 2.0.12",
 ]
