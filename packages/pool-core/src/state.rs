@@ -262,6 +262,43 @@ pub const EXPECTED_FACTORY: Item<ExpectedFactory> = Item::new("expected_factory"
 // no acquisition.
 pub const REENTRANCY_LOCK: Item<bool> = Item::new("rate_limit_guard");
 
+/// H-S2: transient context for SubMsg-based CW20 balance verification on
+/// deposits. The deposit handler snapshots the pool's pre-balance for
+/// every CW20 side, saves this context, and dispatches the last
+/// CW20-side `TransferFrom` as a `SubMsg::reply_on_success`. The reply
+/// handler queries the post-balance, confirms the delta matches the
+/// expected `actual_amount`, and either clears the context (success)
+/// or errors (causing the entire transaction to roll back).
+///
+/// Only set / read when `verify_balances == true` is passed into the
+/// shared deposit/add helpers — i.e. by standard-pool, where the CW20
+/// can be any third-party contract. Creator-pool's freshly minted
+/// `cw20-base` is trusted (no transfer fee, no rebase) and never
+/// triggers this path.
+///
+/// `cw20_side*_addr == None` for non-CW20 sides; balances on those
+/// sides are not snapshotted (native bank transfers are exact).
+#[cw_serde]
+pub struct DepositVerifyContext {
+    pub pool_addr: Addr,
+    pub cw20_side0_addr: Option<Addr>,
+    pub cw20_side1_addr: Option<Addr>,
+    pub pre_balance0: Uint128,
+    pub pre_balance1: Uint128,
+    pub expected_delta0: Uint128,
+    pub expected_delta1: Uint128,
+}
+
+pub const DEPOSIT_VERIFY_CTX: Item<DepositVerifyContext> = Item::new("deposit_verify_ctx");
+
+/// Reply ID for `DEPOSIT_VERIFY_CTX` — emitted by the
+/// `verify_balances == true` deposit/add path on its final SubMsg, and
+/// dispatched in standard-pool's `reply` entry point to
+/// `pool_core::balance_verify::handle_deposit_verify_reply`. Numeric
+/// value is high enough to not collide with any factory or creator-pool
+/// reply ID conventions.
+pub const DEPOSIT_VERIFY_REPLY_ID: u64 = 0xD550_0000;
+
 pub const USER_LAST_COMMIT: Map<&Addr, u64> = Map::new("user_last_commit");
 
 // Standard pool writes `true` at instantiate (no threshold gate); creator

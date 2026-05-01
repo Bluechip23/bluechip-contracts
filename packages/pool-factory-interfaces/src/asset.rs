@@ -153,6 +153,28 @@ pub fn query_token_balance(
     Ok(res.balance)
 }
 
+/// Strict variant of `query_token_balance`: propagates the underlying
+/// query error instead of swallowing it as a zero balance.
+///
+/// Used by the H-S2 deposit balance-verification path. There, swallowing
+/// a failed pre-balance query as zero would let the post-balance query's
+/// full pool reserve appear as a "delta" — silently masking the very
+/// fee-on-transfer / rebasing CW20 corruption the verification is meant
+/// to detect.
+pub fn query_token_balance_strict(
+    querier: &QuerierWrapper,
+    contract_addr: &Addr,
+    account_addr: &Addr,
+) -> StdResult<Uint128> {
+    let res: Cw20BalanceResponse = querier.query(&QueryRequest::Wasm(WasmQuery::Smart {
+        contract_addr: contract_addr.to_string(),
+        msg: to_json_binary(&Cw20QueryMsg::Balance {
+            address: account_addr.to_string(),
+        })?,
+    }))?;
+    Ok(res.balance)
+}
+
 /// Queries a native bank balance for a given account and denom.
 pub fn query_balance(
     querier: &QuerierWrapper,

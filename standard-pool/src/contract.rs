@@ -1,9 +1,13 @@
-//! Standard-pool entry points: instantiate, execute dispatch, migrate.
+//! Standard-pool entry points: instantiate, execute dispatch, reply,
+//! migrate.
 //!
-//! Query dispatch lives in `crate::query`. No `reply` entry point —
-//! position-NFT ownership is accepted lazily on the first deposit via
-//! `pool_state.nft_ownership_accepted` (Option X from the 4b-ii design
-//! review).
+//! Query dispatch lives in `crate::query`. The `reply` entry point
+//! handles a single id today — `DEPOSIT_VERIFY_REPLY_ID` (H-S2) — used
+//! by the SubMsg-based CW20 balance verification on deposits and
+//! add-to-position. Position-NFT ownership is still accepted lazily on
+//! the first deposit via `pool_state.nft_ownership_accepted` (Option X
+//! from the 4b-ii design review); no separate reply id is needed for
+//! that path.
 
 use crate::error::ContractError;
 use crate::msg::{ExecuteMsg, MigrateMsg};
@@ -18,11 +22,13 @@ use pool_core::admin::{
     execute_update_config_from_factory,
 };
 use pool_core::asset::{PoolPairType, TokenInfoPoolExt, TokenType};
+use pool_core::balance_verify::handle_deposit_verify_reply;
 use pool_core::liquidity::{
-    execute_add_to_position, execute_collect_fees, execute_deposit_liquidity,
-    execute_remove_all_liquidity, execute_remove_partial_liquidity,
-    execute_remove_partial_liquidity_by_percent,
+    execute_add_to_position_with_verify, execute_collect_fees,
+    execute_deposit_liquidity_with_verify, execute_remove_all_liquidity,
+    execute_remove_partial_liquidity, execute_remove_partial_liquidity_by_percent,
 };
+use pool_core::state::DEPOSIT_VERIFY_REPLY_ID;
 use pool_core::msg::CommitFeeInfo;
 use pool_core::state::{
     ExpectedFactory, OracleInfo, PoolAnalytics, PoolDetails, PoolFeeState, PoolInfo, PoolSpecs,
@@ -272,7 +278,11 @@ pub fn execute(
             // be restored. Hard pauses still reject.
             check_pool_writable_for_deposit(deps.storage)?;
             let sender = info.sender.clone();
-            execute_deposit_liquidity(
+            // H-S2: standard pools wrap arbitrary CW20s, so we route every
+            // deposit through the SubMsg-based balance verification path.
+            // The reply lands in `reply()` below, where a fee-on-transfer /
+            // rebasing CW20 mismatch reverts the entire transaction.
+            execute_deposit_liquidity_with_verify(
                 deps,
                 env,
                 info,
@@ -294,7 +304,8 @@ pub fn execute(
         } => {
             check_pool_writable_for_deposit(deps.storage)?;
             let sender = info.sender.clone();
-            execute_add_to_position(
+            // H-S2: same SubMsg verify path as DepositLiquidity above.
+            execute_add_to_position_with_verify(
                 deps,
                 env,
                 info,
@@ -406,6 +417,36 @@ fn execute_emergency_withdraw(
         .add_attribute("pool_contract", env.contract.address.to_string())
         .add_attribute("block_height", env.block.height.to_string())
         .add_attribute("block_time", env.block.time.seconds().to_string()))
+}
+
+// ---------------------------------------------------------------------------
+// Reply
+// ---------------------------------------------------------------------------
+
+/// H-S2: only one reply id is wired today — `DEPOSIT_VERIFY_REPLY_ID`,
+/// which the verify-aware deposit / add-to-position paths emit on their
+/// final SubMsg. The handler queries each CW20 side's post-balance and
+/// asserts the delta matches the credited amount. A mismatch returns an
+/// `Err` here, which propagates back to the chain and rolls the entire
+/// transaction back — including all the parent's state writes (position
+/// save, NFT mint, reserve update, etc.). On match, returns Ok and the
+/// transaction commits normally.
+///
+/// Any unknown reply id is rejected rather than silently dropped:
+/// nothing else in standard-pool currently dispatches `SubMsg::reply_*`,
+/// so an unknown id signals either a forgotten dispatch site or an
+/// upstream `pool-core` upgrade that introduced a new reply path
+/// without wiring it here.
+#[cfg_attr(not(feature = "library"), entry_point)]
+pub fn reply(deps: DepsMut, env: Env, msg: cosmwasm_std::Reply) -> StdResult<Response> {
+    match msg.id {
+        DEPOSIT_VERIFY_REPLY_ID => handle_deposit_verify_reply(deps, env, msg)
+            .map_err(|e| StdError::generic_err(e.to_string())),
+        other => Err(StdError::generic_err(format!(
+            "standard-pool reply: unknown reply id {}",
+            other
+        ))),
+    }
 }
 
 // ---------------------------------------------------------------------------

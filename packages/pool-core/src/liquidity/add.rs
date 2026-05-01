@@ -26,7 +26,7 @@ use crate::state::{
 };
 use crate::swap::update_price_accumulator;
 
-use super::deposit::prepare_deposit;
+use super::deposit::{finalize_deposit_response, prepare_deposit, snapshot_pool_cw20_balances};
 
 #[allow(clippy::too_many_arguments)]
 pub fn add_to_position(
@@ -41,6 +41,35 @@ pub fn add_to_position(
     min_amount1: Option<Uint128>,
     transaction_deadline: Option<Timestamp>,
 ) -> Result<Response, ContractError> {
+    add_to_position_internal(
+        deps,
+        env,
+        info,
+        user,
+        position_id,
+        amount0,
+        amount1,
+        min_amount0,
+        min_amount1,
+        transaction_deadline,
+        false,
+    )
+}
+
+#[allow(clippy::too_many_arguments)]
+fn add_to_position_internal(
+    deps: &mut DepsMut,
+    env: Env,
+    info: MessageInfo,
+    user: Addr,
+    position_id: String,
+    amount0: Uint128,
+    amount1: Uint128,
+    min_amount0: Option<Uint128>,
+    min_amount1: Option<Uint128>,
+    transaction_deadline: Option<Timestamp>,
+    verify_balances: bool,
+) -> Result<Response, ContractError> {
     enforce_transaction_deadline(env.block.time, transaction_deadline)?;
 
     let prep = prepare_deposit(
@@ -51,6 +80,19 @@ pub fn add_to_position(
         min_amount0,
         min_amount1,
     )?;
+
+    // H-S2: same pre-snapshot pattern as `execute_deposit_liquidity_inner`.
+    // Skipped when verify_balances=false (creator-pool path) — saves the
+    // two CW20 balance queries per add-to-position call.
+    let pre_snapshot = if verify_balances {
+        Some(snapshot_pool_cw20_balances(
+            deps.as_ref(),
+            &prep.pool_info.pool_info.contract_addr,
+            &prep.pool_info.pool_info.asset_infos,
+        )?)
+    } else {
+        None
+    };
 
     let mut pool_fee_state = POOL_FEE_STATE.load(deps.storage)?;
     let mut pool_state = POOL_STATE.load(deps.storage)?;
@@ -115,7 +157,7 @@ pub fn add_to_position(
     analytics.total_lp_deposit_count += 1;
     POOL_ANALYTICS.save(deps.storage, &analytics)?;
 
-    let mut response = Response::new().add_attributes(vec![
+    let attrs = vec![
         ("action", "add_to_position".to_string()),
         ("position_id", position_id),
         ("depositor", user.to_string()),
@@ -136,16 +178,85 @@ pub fn add_to_position(
         ("block_height", env.block.height.to_string()),
         ("block_time", env.block.time.seconds().to_string()),
         ("total_lp_deposit_count", analytics.total_lp_deposit_count.to_string()),
-    ]);
+    ];
     let fee_msgs = build_fee_transfer_msgs(&prep.pool_info, &user, fees_owed_0, fees_owed_1)?;
     messages.extend(fee_msgs);
-    response = response.add_messages(messages);
 
-    Ok(response)
+    finalize_deposit_response(
+        deps.storage,
+        &prep.pool_info,
+        &prep.pool_info.pool_info.asset_infos,
+        prep.actual_amount0,
+        prep.actual_amount1,
+        pre_snapshot,
+        messages,
+        attrs,
+    )
+}
+
+/// Public entry point — used by creator-pool. No CW20 balance
+/// verification: the freshly-minted cw20-base token is trusted.
+#[allow(clippy::too_many_arguments)]
+pub fn execute_add_to_position(
+    deps: DepsMut,
+    env: Env,
+    info: MessageInfo,
+    position_id: String,
+    sender: Addr,
+    amount0: Uint128,
+    amount1: Uint128,
+    min_amount0: Option<Uint128>,
+    min_amount1: Option<Uint128>,
+    transaction_deadline: Option<Timestamp>,
+) -> Result<Response, ContractError> {
+    execute_add_to_position_dispatch(
+        deps,
+        env,
+        info,
+        position_id,
+        sender,
+        amount0,
+        amount1,
+        min_amount0,
+        min_amount1,
+        transaction_deadline,
+        false,
+    )
+}
+
+/// H-S2 variant — used by standard-pool. Same SubMsg-based balance
+/// verification as `execute_deposit_liquidity_with_verify`; reverts the
+/// transaction when an arbitrary CW20 charged transfer fees or rebased.
+#[allow(clippy::too_many_arguments)]
+pub fn execute_add_to_position_with_verify(
+    deps: DepsMut,
+    env: Env,
+    info: MessageInfo,
+    position_id: String,
+    sender: Addr,
+    amount0: Uint128,
+    amount1: Uint128,
+    min_amount0: Option<Uint128>,
+    min_amount1: Option<Uint128>,
+    transaction_deadline: Option<Timestamp>,
+) -> Result<Response, ContractError> {
+    execute_add_to_position_dispatch(
+        deps,
+        env,
+        info,
+        position_id,
+        sender,
+        amount0,
+        amount1,
+        min_amount0,
+        min_amount1,
+        transaction_deadline,
+        true,
+    )
 }
 
 #[allow(clippy::too_many_arguments)]
-pub fn execute_add_to_position(
+fn execute_add_to_position_dispatch(
     mut deps: DepsMut,
     env: Env,
     info: MessageInfo,
@@ -156,6 +267,7 @@ pub fn execute_add_to_position(
     min_amount0: Option<Uint128>,
     min_amount1: Option<Uint128>,
     transaction_deadline: Option<Timestamp>,
+    verify_balances: bool,
 ) -> Result<Response, ContractError> {
     enforce_transaction_deadline(env.block.time, transaction_deadline)?;
 
@@ -172,7 +284,7 @@ pub fn execute_add_to_position(
         REENTRANCY_LOCK.save(deps.storage, &false)?;
         return Err(e);
     }
-    let result = add_to_position(
+    let result = add_to_position_internal(
         &mut deps,
         env,
         info.clone(),
@@ -183,6 +295,7 @@ pub fn execute_add_to_position(
         min_amount0,
         min_amount1,
         transaction_deadline,
+        verify_balances,
     );
     REENTRANCY_LOCK.save(deps.storage, &false)?;
     result
