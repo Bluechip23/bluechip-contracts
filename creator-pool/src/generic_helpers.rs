@@ -202,20 +202,15 @@ pub fn trigger_threshold_payout(
         DISTRIBUTION_STATE.save(storage, &dist_state)?;
     }
 
-    let total_fee_rate = fee_info
-        .commit_fee_bluechip
-        .checked_add(fee_info.commit_fee_creator)
-        .map_err(|_| StdError::generic_err("Fee rate overflow"))?;
-    let total_bluechip_raised = crate::state::NATIVE_RAISED_FROM_COMMIT.load(storage)?;
-    let one_minus_fee = Decimal::one()
-        .checked_sub(total_fee_rate)
-        .map_err(|_| StdError::generic_err("Fee rate >= 100%"))?;
-    // Full post-fee bluechip raised seeds the pool. The keeper bounty for
-    // distribution batches is paid by the factory from its own reserve, not
-    // skimmed from LP funds — see factory::execute_pay_distribution_bounty.
-    let pools_bluechip_seed = total_bluechip_raised
-        .checked_mul_floor(one_minus_fee)
-        .map_err(|_| StdError::generic_err("Fee deduction overflow"))?;
+    // Audit fix: NATIVE_RAISED_FROM_COMMIT is now stored as net-of-fees
+    // by every commit handler, so the seed amount is read out directly
+    // with no recovery math. Previously the field stored gross and was
+    // recovered via `gross * (1 - fee_rate)` floor here, which combined
+    // with the per-commit fee floor to leave up to ~2 units stranded
+    // per commit. The keeper bounty for distribution batches is paid
+    // by the factory from its own reserve, not skimmed from LP funds —
+    // see `factory::execute_pay_distribution_bounty`.
+    let pools_bluechip_seed = crate::state::NATIVE_RAISED_FROM_COMMIT.load(storage)?;
 
     if pools_bluechip_seed > commit_config.max_bluechip_lock_per_pool {
         let excess_bluechip = pools_bluechip_seed

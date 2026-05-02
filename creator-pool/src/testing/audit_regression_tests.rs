@@ -1464,7 +1464,14 @@ fn test_m7_threshold_payout_emits_accept_ownership() {
     let mut deps = mock_dependencies();
     setup_pool_storage(&mut deps);
 
-    // Seed enough native for the seed-amount calc to work.
+    // Seed NATIVE_RAISED_FROM_COMMIT directly. After the audit-fix
+    // gross→net refactor this value is interpreted as the post-fee
+    // total that has actually entered the pool's bank balance —
+    // `trigger_threshold_payout` reads it directly as
+    // `pools_bluechip_seed` with no further recovery multiply. This
+    // test only asserts NFT-ownership behavior, so the exact seed
+    // amount is not load-bearing here; we just need it non-zero so
+    // the seed-side branch executes.
     NATIVE_RAISED_FROM_COMMIT
         .save(&mut deps.storage, &Uint128::new(25_000_000_000))
         .unwrap();

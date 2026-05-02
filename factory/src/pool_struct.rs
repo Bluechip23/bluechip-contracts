@@ -27,7 +27,13 @@ pub struct CreatePool {
 pub struct PoolConfigUpdate {
     pub lp_fee: Option<Decimal>,
     pub min_commit_interval: Option<u64>,
-    pub oracle_address: Option<String>,
+    // `oracle_address` removed (audit fix). Mirrors the same field's
+    // removal from `pool_core::msg::PoolConfigUpdate`. Per-pool oracle
+    // rotation was an admin-compromise vector — a malicious oracle could
+    // return arbitrary USD valuations, letting a tiny commit register
+    // as a full threshold cross. Future re-routing, if ever needed,
+    // goes through a coordinated `UpgradePools` migration that writes
+    // ORACLE_INFO directly.
 }
 
 // Mirrors pool::state::RecoveryType. Redefined here to avoid a pool -> factory

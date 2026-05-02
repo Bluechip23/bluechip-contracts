@@ -20,7 +20,6 @@ fn test_pool_update_config_from_factory() {
     let update = PoolConfigUpdate {
         lp_fee: Some(Decimal::permille(3)),   // 0.3% LP fee
         min_commit_interval: Some(120),       // 2 minutes between commits
-        oracle_address: None,
     };
 
     let res = execute(
@@ -36,7 +35,6 @@ fn test_pool_update_config_from_factory() {
     let update_for_hacker = PoolConfigUpdate {
         lp_fee: Some(Decimal::permille(3)),   // 0.3% LP fee
         min_commit_interval: Some(120),       // 2 minutes between commits
-        oracle_address: None,
     };
 
     let hacker = message_info(&Addr::unchecked("hacker"), &[]);

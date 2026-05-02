@@ -17,8 +17,9 @@ use crate::msg::{CreatorTokenInfo, TokenInstantiateMsg};
 use crate::pool_struct::{CreatePool, TempPoolCreation};
 use crate::state::{
     CreationStatus, COMMIT_POOL_COUNTER, COMMIT_POOL_CREATE_RATE_LIMIT_SECONDS,
-    FACTORYINSTANTIATEINFO, LAST_COMMIT_POOL_CREATE_AT, POOL_COUNTER,
-    POOL_CREATION_CONTEXT, PoolCreationContext, PoolCreationState,
+    FACTORYINSTANTIATEINFO, LAST_COMMIT_POOL_CREATE_AT, LAST_STANDARD_POOL_CREATE_AT,
+    POOL_COUNTER, POOL_CREATION_CONTEXT, PoolCreationContext, PoolCreationState,
+    STANDARD_POOL_CREATE_RATE_LIMIT_SECONDS,
 };
 
 use super::super::{encode_reply_id, MINT_STANDARD_NFT, SET_TOKENS};
@@ -198,8 +199,20 @@ pub(crate) fn execute_create_creator_pool(
             initial_balances: vec![],
             mint: Some(MinterResponse {
                 minter: env.contract.address.to_string(),
-                //amount minted after threshold.
-                cap: Some(Uint128::new(1_500_000_000_000)),
+                // Mint cap pinned to the exact threshold-payout total
+                // (creator_reward 325e9 + bluechip_reward 25e9 +
+                // pool_seed 350e9 + commit_return 500e9 = 1_200e9).
+                // No protocol path ever needs to mint beyond this — the
+                // payout is fixed at threshold-cross and validated by
+                // `ThresholdPayoutAmounts::validate(1_200e9)` and
+                // `validate_pool_threshold_payments`. Tightening the
+                // cap from the prior 1_500e9 headroom removes a 300e9
+                // attack-surface buffer: if any future code path ever
+                // gained mint authority and tried to mint extra
+                // tokens, cw20-base would reject the mint and revert
+                // the entire tx (fail-closed) rather than silently
+                // letting up to 300e9 additional supply be created.
+                cap: Some(Uint128::new(1_200_000_000_000)),
             }),
         })?,
         //no initial balance. waits until threshold is crossed to mint creator tokens.
@@ -342,6 +355,28 @@ pub(crate) fn execute_create_standard_pool(
     // the fee or write any state.
     validate_standard_pool_token_info(deps.as_ref(), &pool_token_info)?;
 
+    // Per-address rate limit on standard-pool creation (audit fix). Mirror
+    // of the commit-pool rate-limit at `execute_create_creator_pool`.
+    // Stamps the new timestamp before any further state writes — a
+    // failed downstream step (insufficient funds, fee-forward revert,
+    // reply chain failure) reverts this stamp atomically along with the
+    // rest of the tx, so no permanent rate-limit residue from rejected
+    // creations.
+    let now = env.block.time;
+    if let Some(last) =
+        LAST_STANDARD_POOL_CREATE_AT.may_load(deps.storage, info.sender.clone())?
+    {
+        let next_allowed = last.plus_seconds(STANDARD_POOL_CREATE_RATE_LIMIT_SECONDS);
+        if now < next_allowed {
+            return Err(ContractError::Std(StdError::generic_err(format!(
+                "Rate-limited: this address can create another standard pool after {} \
+                 (last create at {}, cooldown {}s)",
+                next_allowed, last, STANDARD_POOL_CREATE_RATE_LIMIT_SECONDS
+            ))));
+        }
+    }
+    LAST_STANDARD_POOL_CREATE_AT.save(deps.storage, info.sender.clone(), &now)?;
+
     if label.trim().is_empty() {
         return Err(ContractError::Std(StdError::generic_err(
             "label must be non-empty",
@@ -370,7 +405,14 @@ pub(crate) fn execute_create_standard_pool(
     let (required_bluechip, fee_source) = if usd_fee.is_zero() {
         (Uint128::zero(), "disabled")
     } else {
-        match crate::internal_bluechip_price_oracle::usd_to_bluechip(
+        // Best-effort USD→bluechip conversion (audit fix). Falls back to
+        // `pre_reset_last_price` during the post-reset warm-up window
+        // instead of erroring; keeps standard-pool creation functional
+        // through anchor rotations rather than forcing every standard-
+        // pool creator to wait ~30 min after every rotation. If even
+        // best-effort fails (no pre-reset price + Pyth+cache both out),
+        // we still drop to the hardcoded fallback.
+        match crate::internal_bluechip_price_oracle::usd_to_bluechip_best_effort(
             deps.as_ref(),
             usd_fee,
             &env,

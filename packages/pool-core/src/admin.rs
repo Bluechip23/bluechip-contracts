@@ -15,12 +15,11 @@ use crate::error::ContractError;
 use crate::msg::PoolConfigUpdate;
 use crate::state::{
     EmergencyWithdrawalInfo, COMMITFEEINFO, CREATOR_FEE_POT, EMERGENCY_DRAINED,
-    EMERGENCY_WITHDRAWAL, EMERGENCY_WITHDRAW_DELAY_SECONDS, ORACLE_INFO, PENDING_EMERGENCY_WITHDRAW,
+    EMERGENCY_WITHDRAWAL, EMERGENCY_WITHDRAW_DELAY_SECONDS, PENDING_EMERGENCY_WITHDRAW,
     POOL_FEE_STATE, POOL_INFO, POOL_PAUSED, POOL_PAUSED_AUTO, POOL_SPECS, POOL_STATE,
 };
 use cosmwasm_std::{
-    Addr, CosmosMsg, Decimal, DepsMut, Env, MessageInfo, Response, StdError, StdResult, Storage,
-    Uint128,
+    Addr, CosmosMsg, Decimal, DepsMut, Env, MessageInfo, Response, StdError, Storage, Uint128,
 };
 
 /// Bundle returned by `execute_emergency_withdraw_core_drain`. Callers
@@ -346,13 +345,12 @@ pub fn execute_update_config_from_factory(
         POOL_SPECS.save(deps.storage, &specs)?;
     }
 
-    if let Some(oracle_addr) = update.oracle_address {
-        ORACLE_INFO.update(deps.storage, |mut info| -> StdResult<_> {
-            info.oracle_addr = deps.api.addr_validate(&oracle_addr)?;
-            Ok(info)
-        })?;
-        attributes.push(("oracle_address", "updated"));
-    }
+    // Per-pool `oracle_address` rotation removed (audit fix). The oracle
+    // endpoint is pinned at instantiate to the factory address and is
+    // no longer mutable through the per-pool config flow. If the
+    // protocol ever splits the oracle off the factory, the rerouting
+    // path is a coordinated `UpgradePools` migration that writes
+    // ORACLE_INFO directly — not a runtime config knob.
 
     Ok(Response::new()
         .add_attributes(attributes)

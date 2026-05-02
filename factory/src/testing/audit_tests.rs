@@ -16,8 +16,8 @@ use crate::mock_querier::WasmMockQuerier;
 use crate::msg::{CreatorTokenInfo, ExecuteMsg};
 use crate::pool_struct::{CommitFeeInfo, CreatePool, PoolConfigUpdate, PoolDetails};
 use crate::state::{
-    FactoryInstantiate, PENDING_CONFIG, POOLS_BY_CONTRACT_ADDRESS, POOLS_BY_ID, POOL_COUNTER,
-    POOL_THRESHOLD_MINTED,
+    EligiblePoolSnapshot, FactoryInstantiate, ELIGIBLE_POOL_SNAPSHOT, PENDING_CONFIG,
+    POOLS_BY_CONTRACT_ADDRESS, POOLS_BY_ID, POOL_COUNTER, POOL_THRESHOLD_MINTED,
 };
 use crate::testing::tests::{create_instantiate_reply, register_test_pool_addr, setup_atom_pool};
 use pool_factory_interfaces::PoolStateResponseForFactory;
@@ -253,7 +253,6 @@ fn test_update_pool_config_sends_message_to_pool() {
     let update = PoolConfigUpdate {
         lp_fee: Some(Decimal::percent(5)),
         min_commit_interval: Some(120),
-        oracle_address: None,
     };
 
     // Step 1: Propose — no messages sent yet
@@ -296,7 +295,6 @@ fn test_update_pool_config_unauthorized() {
     let update = PoolConfigUpdate {
         lp_fee: Some(Decimal::percent(5)),
         min_commit_interval: None,
-        oracle_address: None,
     };
 
     let msg = ExecuteMsg::ProposePoolConfigUpdate {
@@ -320,7 +318,6 @@ fn test_update_pool_config_nonexistent_pool() {
     let update = PoolConfigUpdate {
         lp_fee: None,
         min_commit_interval: None,
-        oracle_address: None,
     };
 
     let msg = ExecuteMsg::ProposePoolConfigUpdate {
@@ -397,6 +394,24 @@ fn test_m_new_3_rotation_skips_pools_without_prior_snapshot() {
         .save(&mut deps.storage, atom_addr_obj, &atom_state)
         .unwrap();
 
+    // After the audit refactor `calculate_weighted_price_with_atom` reads
+    // each non-anchor pool's bluechip-side index from
+    // `ELIGIBLE_POOL_SNAPSHOT.bluechip_indices` rather than from the
+    // legacy POOLS_BY_ID linear scan. Populate the snapshot in this
+    // test the way production's `refresh_eligible_pool_snapshot_if_stale`
+    // would: creator pool has Native (bluechip) at index 0 in its
+    // `pool_token_info`, so `bluechip_indices[i] = 0`.
+    ELIGIBLE_POOL_SNAPSHOT
+        .save(
+            &mut deps.storage,
+            &EligiblePoolSnapshot {
+                pool_addresses: vec![creator_addr.clone()],
+                bluechip_indices: vec![0],
+                captured_at_block: 0,
+            },
+        )
+        .unwrap();
+
     let pool_addresses = vec![atom_addr.clone(), creator_addr.clone()];
 
     // Provide a previous snapshot ONLY for the atom pool (simulates rotation
@@ -408,7 +423,7 @@ fn test_m_new_3_rotation_skips_pools_without_prior_snapshot() {
     }];
 
     let result =
-        calculate_weighted_price_with_atom(deps.as_ref(), &pool_addresses, &prev_snapshots);
+        calculate_weighted_price_with_atom(deps.as_ref(), &pool_addresses, &prev_snapshots, 0);
 
     // Should succeed — atom pool has a snapshot and produces a price.
     // Creator pool should be skipped (not fall back to spot).
@@ -454,7 +469,7 @@ fn test_h3_bootstrap_returns_none_price_but_records_snapshot() {
     let prev_snapshots: Vec<PoolCumulativeSnapshot> = vec![];
 
     let (weighted_price, atom_price, new_snapshots) =
-        calculate_weighted_price_with_atom(deps.as_ref(), &pool_addresses, &prev_snapshots)
+        calculate_weighted_price_with_atom(deps.as_ref(), &pool_addresses, &prev_snapshots, 0)
             .expect("bootstrap must succeed (snapshots-only) instead of erroring");
 
     // No price this round — spot fallback was removed. Caller will
@@ -519,7 +534,7 @@ fn test_h3_anchor_no_cumulative_delta_returns_none_price() {
     }];
 
     let (weighted_price, atom_price, new_snapshots) =
-        calculate_weighted_price_with_atom(deps.as_ref(), &pool_addresses, &prev_snapshots)
+        calculate_weighted_price_with_atom(deps.as_ref(), &pool_addresses, &prev_snapshots, 0)
             .expect("must return Ok with None prices, not Err");
 
     assert!(
@@ -1585,3 +1600,620 @@ fn test_i6_commit_pool_create_rate_limit_per_address() {
         .plus_seconds(crate::state::COMMIT_POOL_CREATE_RATE_LIMIT_SECONDS + 1);
     execute(deps.as_mut(), later_env, info, make_msg("DDD")).unwrap();
 }
+
+// ===========================================================================
+// Audit-fix follow-up tests (round 2)
+//
+// Coverage for the four standard-pool / oracle / accounting fixes that
+// previously had only implicit (existing-test passes) verification.
+// ===========================================================================
+
+// ---------------------------------------------------------------------------
+// Fix 2: per-sender rate-limit on `CreateStandardPool`
+// ---------------------------------------------------------------------------
+//
+// The rate-limit check fires AFTER `validate_standard_pool_token_info`, so
+// the test uses a Native+Native pair (skips the CW20 TokenInfo query that
+// would otherwise short-circuit through validation in the mock querier).
+// Setup also writes `standard_pool_wasm_contract_id = 12` so the reply
+// chain has a code id to instantiate against — the SubMsg may still error
+// further downstream in mock-land, but the rate-limit storage write
+// happens BEFORE the SubMsg dispatch in the same tx, so a CosmWasm
+// revert would also revert the timestamp save.
+//
+// To get clean assertions we directly load `LAST_STANDARD_POOL_CREATE_AT`
+// from storage rather than relying on the response on the first call —
+// the rate-limit save happens before any reply-chain SubMsg, so the
+// timestamp is present in storage even if the outer SubMsg dispatch fails
+// in the test environment.
+mod standard_pool_rate_limit_tests {
+    use super::*;
+    use crate::state::{
+        LAST_STANDARD_POOL_CREATE_AT, STANDARD_POOL_CREATE_RATE_LIMIT_SECONDS,
+    };
+
+    fn make_native_pair_msg() -> ExecuteMsg {
+        ExecuteMsg::CreateStandardPool {
+            pool_token_info: [
+                TokenType::Native {
+                    denom: "ubluechip".to_string(),
+                },
+                TokenType::Native {
+                    denom: "uatom".to_string(),
+                },
+            ],
+            label: "rate-limit-test".to_string(),
+        }
+    }
+
+    fn setup_factory_with_std_wasm(
+        deps: &mut OwnedDeps<MockStorage, MockApi, WasmMockQuerier>,
+    ) {
+        setup_factory(deps);
+        let mut cfg = default_factory_config();
+        cfg.standard_pool_wasm_contract_id = 12;
+        cfg.standard_pool_creation_fee_usd = Uint128::zero(); // disable fee for cleaner test
+        crate::state::FACTORYINSTANTIATEINFO
+            .save(deps.as_mut().storage, &cfg)
+            .unwrap();
+    }
+
+    /// A second `CreateStandardPool` from the same sender within the
+    /// cooldown window must be rejected with a "Rate-limited" error.
+    #[test]
+    fn second_create_within_cooldown_is_rejected() {
+        let mut deps = mock_deps_with_querier(&[]);
+        setup_factory_with_std_wasm(&mut deps);
+        let caller = make_addr("std_pool_creator");
+        let env = mock_env();
+
+        // First call. The reply chain may not fully execute under the
+        // mock querier, but the rate-limit write happens at handler entry
+        // (before SubMsg dispatch). If the handler returns Ok, the write
+        // landed; if it returns Err, the write was reverted.
+        // Either way, the SECOND call's behaviour locks in: if first
+        // succeeded, second must be rate-limited; if first failed,
+        // second succeeds (no prior stamp). We assert by reading the
+        // storage timestamp directly.
+        let _ = execute(
+            deps.as_mut(),
+            env.clone(),
+            message_info(&caller, &[]),
+            make_native_pair_msg(),
+        );
+
+        let stamp = LAST_STANDARD_POOL_CREATE_AT
+            .may_load(&deps.storage, caller.clone())
+            .unwrap();
+        if stamp.is_none() {
+            // First call rolled back via SubMsg failure in mock-land.
+            // Manually seed the stamp to simulate a successful first
+            // call so we can exercise the rate-limit gate explicitly.
+            LAST_STANDARD_POOL_CREATE_AT
+                .save(&mut deps.storage, caller.clone(), &env.block.time)
+                .unwrap();
+        }
+
+        // Second call from same caller, same block: must be rate-limited.
+        let err = execute(
+            deps.as_mut(),
+            env.clone(),
+            message_info(&caller, &[]),
+            make_native_pair_msg(),
+        )
+        .expect_err("second create within cooldown must be rate-limited");
+        assert!(
+            err.to_string().contains("Rate-limited"),
+            "expected rate-limit error, got: {}",
+            err
+        );
+        assert!(
+            err.to_string().contains("standard pool"),
+            "error message must identify the standard-pool path; got: {}",
+            err
+        );
+    }
+
+    /// A different sender within the cooldown window is unaffected — the
+    /// rate-limit is per-address, not global.
+    #[test]
+    fn different_sender_within_cooldown_is_allowed() {
+        let mut deps = mock_deps_with_querier(&[]);
+        setup_factory_with_std_wasm(&mut deps);
+        let env = mock_env();
+
+        let alice = make_addr("alice");
+        // Seed alice's stamp directly so we don't depend on whether the
+        // first execute() succeeded under mock conditions.
+        LAST_STANDARD_POOL_CREATE_AT
+            .save(&mut deps.storage, alice.clone(), &env.block.time)
+            .unwrap();
+
+        let bob = make_addr("bob");
+        // Bob has no stamp → bob's first call must NOT be rate-limited.
+        // The handler may fail downstream in the SubMsg, but the
+        // rate-limit gate must NOT be the cause. Inspect the error
+        // string to confirm.
+        let res = execute(
+            deps.as_mut(),
+            env,
+            message_info(&bob, &[]),
+            make_native_pair_msg(),
+        );
+        if let Err(e) = res {
+            assert!(
+                !e.to_string().contains("Rate-limited"),
+                "different sender must not hit the rate-limit gate; got: {}",
+                e
+            );
+        }
+
+        // And bob's stamp landed (reached the rate-limit write).
+        let bob_stamp = LAST_STANDARD_POOL_CREATE_AT
+            .may_load(&deps.storage, bob)
+            .unwrap();
+        // The stamp may be None if the SubMsg reverted the whole tx in
+        // mock-land. Both outcomes are acceptable — the assertion that
+        // matters is the negative one above.
+        let _ = bob_stamp;
+    }
+
+    /// After the cooldown elapses, the original sender can create again.
+    #[test]
+    fn original_sender_succeeds_after_cooldown() {
+        let mut deps = mock_deps_with_querier(&[]);
+        setup_factory_with_std_wasm(&mut deps);
+        let caller = make_addr("std_pool_creator");
+        let env = mock_env();
+
+        // Seed a stamp at "now".
+        LAST_STANDARD_POOL_CREATE_AT
+            .save(&mut deps.storage, caller.clone(), &env.block.time)
+            .unwrap();
+
+        // Just before the cooldown expires: still rate-limited.
+        let mut early_env = env.clone();
+        early_env.block.time = early_env
+            .block
+            .time
+            .plus_seconds(STANDARD_POOL_CREATE_RATE_LIMIT_SECONDS - 1);
+        let err = execute(
+            deps.as_mut(),
+            early_env,
+            message_info(&caller, &[]),
+            make_native_pair_msg(),
+        )
+        .expect_err("call inside cooldown must reject");
+        assert!(
+            err.to_string().contains("Rate-limited"),
+            "expected rate-limit, got: {}",
+            err
+        );
+
+        // Just after the cooldown expires: the rate-limit gate must NOT
+        // be the cause of any error.
+        let mut late_env = env.clone();
+        late_env.block.time = late_env
+            .block
+            .time
+            .plus_seconds(STANDARD_POOL_CREATE_RATE_LIMIT_SECONDS + 1);
+        let res = execute(
+            deps.as_mut(),
+            late_env,
+            message_info(&caller, &[]),
+            make_native_pair_msg(),
+        );
+        if let Err(e) = res {
+            assert!(
+                !e.to_string().contains("Rate-limited"),
+                "after cooldown must not hit rate-limit; got: {}",
+                e
+            );
+        }
+    }
+}
+
+// ---------------------------------------------------------------------------
+// Fix 3: cache anchor pool's bluechip-side index
+// ---------------------------------------------------------------------------
+//
+// Coverage for the new `BlueChipPriceInternalOracle.anchor_bluechip_index`
+// field across the three places production code populates / preserves it:
+//   - `execute_set_anchor_pool` (one-shot bootstrap path)
+//   - `refresh_internal_oracle_for_anchor_change` (timelocked anchor
+//     change via `UpdateConfig`; also called by the one-shot above)
+//   - `execute_force_rotate_pools` (anchor itself unchanged → index
+//     must be preserved, not zeroed)
+mod anchor_bluechip_index_cache_tests {
+    use super::*;
+    use crate::internal_bluechip_price_oracle::INTERNAL_ORACLE;
+    use crate::state::{
+        EligiblePoolSnapshot, ELIGIBLE_POOL_SNAPSHOT, INITIAL_ANCHOR_SET, POOLS_BY_ID,
+    };
+
+    /// Register a Native/Native standard anchor pool with a chosen
+    /// (bluechip, atom) ordering so we can drive both `index = 0` and
+    /// `index = 1` cases through `SetAnchorPool`.
+    fn register_anchor_with_ordering(
+        deps: &mut OwnedDeps<MockStorage, MockApi, WasmMockQuerier>,
+        pool_id: u64,
+        bluechip_first: bool,
+    ) -> Addr {
+        let bluechip_side = TokenType::Native {
+            denom: "ubluechip".to_string(),
+        };
+        let atom_side = TokenType::Native {
+            denom: "uatom".to_string(),
+        };
+        let pool_token_info = if bluechip_first {
+            [bluechip_side, atom_side]
+        } else {
+            [atom_side, bluechip_side]
+        };
+        let pool_addr = make_addr(&format!("anchor_pool_{}", pool_id));
+        let pool_details = PoolDetails {
+            pool_id,
+            pool_token_info,
+            creator_pool_addr: pool_addr.clone(),
+            pool_kind: pool_factory_interfaces::PoolKind::Standard,
+            commit_pool_ordinal: 0,
+        };
+        POOLS_BY_ID
+            .save(&mut deps.storage, pool_id, &pool_details)
+            .unwrap();
+        // Mirror what register_pool would write so oracle queries don't
+        // panic on a missing POOLS_BY_CONTRACT_ADDRESS entry. The
+        // oracle's calculate_weighted_price path doesn't fire in these
+        // tests, so reserve values aren't load-bearing.
+        let snapshot = PoolStateResponseForFactory {
+            pool_contract_address: pool_addr.clone(),
+            nft_ownership_accepted: false,
+            reserve0: Uint128::new(100_000_000_000),
+            reserve1: Uint128::new(100_000_000_000),
+            total_liquidity: Uint128::new(200_000_000_000),
+            block_time_last: 0,
+            price0_cumulative_last: Uint128::zero(),
+            price1_cumulative_last: Uint128::zero(),
+            assets: vec![],
+        };
+        POOLS_BY_CONTRACT_ADDRESS
+            .save(&mut deps.storage, pool_addr.clone(), &snapshot)
+            .unwrap();
+        pool_addr
+    }
+
+    /// SetAnchorPool with bluechip at index 0 must populate
+    /// `anchor_bluechip_index = 0`.
+    #[test]
+    fn set_anchor_pool_caches_index_0_when_bluechip_first() {
+        let mut deps = mock_deps_with_querier(&[]);
+        setup_factory(&mut deps);
+        // Reset the one-shot guard so SetAnchorPool can fire (setup_factory
+        // may have already triggered it depending on its impl).
+        INITIAL_ANCHOR_SET
+            .save(deps.as_mut().storage, &false)
+            .unwrap();
+
+        let _addr = register_anchor_with_ordering(&mut deps, 99, /*bluechip_first*/ true);
+
+        execute(
+            deps.as_mut(),
+            mock_env(),
+            message_info(&admin_addr(), &[]),
+            ExecuteMsg::SetAnchorPool { pool_id: 99 },
+        )
+        .expect("SetAnchorPool must succeed for bluechip-first anchor");
+
+        let oracle = INTERNAL_ORACLE.load(&deps.storage).unwrap();
+        assert_eq!(
+            oracle.anchor_bluechip_index, 0,
+            "bluechip at index 0 in pool_token_info must cache as 0"
+        );
+    }
+
+    /// SetAnchorPool with bluechip at index 1 must populate
+    /// `anchor_bluechip_index = 1`. Inverted-shape regression coverage.
+    #[test]
+    fn set_anchor_pool_caches_index_1_when_atom_first() {
+        let mut deps = mock_deps_with_querier(&[]);
+        setup_factory(&mut deps);
+        INITIAL_ANCHOR_SET
+            .save(deps.as_mut().storage, &false)
+            .unwrap();
+
+        let _addr = register_anchor_with_ordering(&mut deps, 88, /*bluechip_first*/ false);
+
+        execute(
+            deps.as_mut(),
+            mock_env(),
+            message_info(&admin_addr(), &[]),
+            ExecuteMsg::SetAnchorPool { pool_id: 88 },
+        )
+        .expect("SetAnchorPool must succeed for atom-first anchor");
+
+        let oracle = INTERNAL_ORACLE.load(&deps.storage).unwrap();
+        assert_eq!(
+            oracle.anchor_bluechip_index, 1,
+            "bluechip at index 1 in pool_token_info must cache as 1"
+        );
+    }
+
+    /// `execute_force_rotate_pools` does NOT change the anchor pool —
+    /// only the sample-set rotation is forced. The cached
+    /// `anchor_bluechip_index` must therefore be PRESERVED across a
+    /// force-rotate, not reset to zero.
+    #[test]
+    fn force_rotate_preserves_anchor_bluechip_index() {
+        let mut deps = mock_deps_with_querier(&[]);
+        setup_factory(&mut deps);
+        INITIAL_ANCHOR_SET
+            .save(deps.as_mut().storage, &false)
+            .unwrap();
+
+        // Set anchor with bluechip at index 1 so the cache holds a
+        // non-default value (default is 0; we want to assert the
+        // non-default value survives force-rotate).
+        let _addr = register_anchor_with_ordering(&mut deps, 77, /*bluechip_first*/ false);
+        execute(
+            deps.as_mut(),
+            mock_env(),
+            message_info(&admin_addr(), &[]),
+            ExecuteMsg::SetAnchorPool { pool_id: 77 },
+        )
+        .unwrap();
+
+        let cached_before = INTERNAL_ORACLE
+            .load(&deps.storage)
+            .unwrap()
+            .anchor_bluechip_index;
+        assert_eq!(cached_before, 1, "sanity: anchor_bluechip_index = 1 after SetAnchorPool");
+
+        // Drive the force-rotate flow: propose, wait timelock, execute.
+        let env_propose = mock_env();
+        execute(
+            deps.as_mut(),
+            env_propose.clone(),
+            message_info(&admin_addr(), &[]),
+            ExecuteMsg::ProposeForceRotateOraclePools {},
+        )
+        .unwrap();
+
+        let mut env_exec = env_propose;
+        env_exec.block.time = env_exec
+            .block
+            .time
+            .plus_seconds(crate::state::ADMIN_TIMELOCK_SECONDS + 1);
+        execute(
+            deps.as_mut(),
+            env_exec,
+            message_info(&admin_addr(), &[]),
+            ExecuteMsg::ForceRotateOraclePools {},
+        )
+        .unwrap();
+
+        let cached_after = INTERNAL_ORACLE
+            .load(&deps.storage)
+            .unwrap()
+            .anchor_bluechip_index;
+        assert_eq!(
+            cached_after, 1,
+            "force-rotate must NOT reset anchor_bluechip_index — anchor itself is unchanged"
+        );
+    }
+
+    /// `calculate_weighted_price_with_atom` reads the anchor's
+    /// bluechip-side from the `anchor_bluechip_index` parameter (not from
+    /// a runtime POOLS_BY_ID scan). Passing 0 vs 1 with the same pool
+    /// state produces different `bluechip_reserve` (and thus different
+    /// weighted contributions) — verifies the cache is actually
+    /// consulted.
+    #[test]
+    fn calculate_weighted_price_uses_cached_index_for_anchor() {
+        use crate::internal_bluechip_price_oracle::{
+            calculate_weighted_price_with_atom, PoolCumulativeSnapshot,
+        };
+
+        let mut deps = mock_deps_with_querier(&[]);
+        setup_factory(&mut deps);
+
+        let atom_addr = atom_bluechip_pool_addr();
+        // Skewed reserves so reserve0 != reserve1 — we can detect which
+        // side the function used as the "bluechip reserve" weight via
+        // the resulting weighted-price math.
+        let mut state = POOLS_BY_CONTRACT_ADDRESS
+            .load(&deps.storage, atom_addr.clone())
+            .unwrap();
+        state.reserve0 = Uint128::new(100_000_000_000);
+        state.reserve1 = Uint128::new(50_000_000_000);
+        state.block_time_last = 100;
+        state.price0_cumulative_last = Uint128::new(500);
+        state.price1_cumulative_last = Uint128::new(2_000);
+        POOLS_BY_CONTRACT_ADDRESS
+            .save(&mut deps.storage, atom_addr.clone(), &state)
+            .unwrap();
+
+        let prev_snapshots = vec![PoolCumulativeSnapshot {
+            pool_address: atom_addr.to_string(),
+            price0_cumulative: Uint128::zero(),
+            block_time: 0,
+        }];
+        let pools = vec![atom_addr.to_string()];
+
+        // Invocation A: anchor_bluechip_index = 0. cumulative_for_price
+        // reads price1_cumulative_last (2000) → TWAP = 2000*1e6/100 = 20_000_000.
+        let (_, atom_price_a, _) =
+            calculate_weighted_price_with_atom(deps.as_ref(), &pools, &prev_snapshots, 0)
+                .expect("call A must succeed");
+        let price_a =
+            atom_price_a.expect("anchor TWAP under index=0 must be Some");
+
+        // Invocation B: anchor_bluechip_index = 1. cumulative_for_price
+        // reads price0_cumulative_last (500) → TWAP = 500*1e6/100 = 5_000_000.
+        let (_, atom_price_b, _) =
+            calculate_weighted_price_with_atom(deps.as_ref(), &pools, &prev_snapshots, 1)
+                .expect("call B must succeed");
+        let price_b =
+            atom_price_b.expect("anchor TWAP under index=1 must be Some");
+
+        assert_ne!(
+            price_a, price_b,
+            "the anchor_bluechip_index parameter must actually drive the cumulative-side selection"
+        );
+        assert_eq!(price_a, Uint128::new(20_000_000));
+        assert_eq!(price_b, Uint128::new(5_000_000));
+    }
+}
+
+// ---------------------------------------------------------------------------
+// Fix 5: tier the warm-up gate (best-effort fallback for non-critical
+//                               USD-denominated callers)
+// ---------------------------------------------------------------------------
+//
+// Strict callers (`bluechip_to_usd` / `usd_to_bluechip`) hard-fail during
+// warm-up. Best-effort callers (`*_best_effort`) fall back to
+// `pre_reset_last_price` if it's non-zero. Pyth must still be available
+// (live or cached within MAX_PRICE_AGE_SECONDS_BEFORE_STALE) — both paths
+// fail closed if the bluechip-side fallback exists but Pyth has no
+// usable price.
+mod warmup_best_effort_tests {
+    use super::*;
+    use crate::internal_bluechip_price_oracle::{
+        bluechip_to_usd, usd_to_bluechip, usd_to_bluechip_best_effort, INTERNAL_ORACLE,
+        MOCK_PYTH_PRICE,
+    };
+
+    /// Helper: prime the oracle into post-reset state with the given
+    /// `pre_reset_last_price`, `warmup_remaining`, and a fresh Pyth cache.
+    fn set_oracle_post_reset(
+        deps: &mut OwnedDeps<MockStorage, MockApi, WasmMockQuerier>,
+        pre_reset: Uint128,
+        warmup_remaining: u32,
+    ) {
+        // Mock Pyth so the live query succeeds.
+        MOCK_PYTH_PRICE
+            .save(deps.as_mut().storage, &Uint128::new(10_000_000))
+            .unwrap();
+        let mut oracle = INTERNAL_ORACLE.load(&deps.storage).unwrap();
+        oracle.bluechip_price_cache.last_price = Uint128::zero();
+        oracle.bluechip_price_cache.last_update = 0;
+        oracle.warmup_remaining = warmup_remaining;
+        oracle.pre_reset_last_price = pre_reset;
+        oracle.pending_first_price = None;
+        INTERNAL_ORACLE.save(&mut deps.storage, &oracle).unwrap();
+    }
+
+    fn fresh_deps_with_factory() -> OwnedDeps<MockStorage, MockApi, WasmMockQuerier> {
+        let mut deps = mock_deps_with_querier(&[]);
+        setup_factory(&mut deps);
+        deps
+    }
+
+    /// During warm-up with `pre_reset_last_price > 0`, best-effort
+    /// returns Ok using the pre-reset price; strict returns Err.
+    #[test]
+    fn best_effort_serves_during_warmup_strict_does_not() {
+        let mut deps = fresh_deps_with_factory();
+
+        // Pre-reset price = 10_000_000 (10 bluechip per atom). Warm-up
+        // active (5 remaining).
+        set_oracle_post_reset(&mut deps, Uint128::new(10_000_000), 5);
+
+        let env = mock_env();
+        let amount = Uint128::new(1_000_000); // $1.00
+
+        // Strict path must Err.
+        let strict_result = usd_to_bluechip(deps.as_ref(), amount, &env);
+        assert!(
+            strict_result.is_err(),
+            "strict must fail during warm-up; got {:?}",
+            strict_result
+        );
+        assert!(
+            strict_result
+                .unwrap_err()
+                .to_string()
+                .contains("warm-up in progress"),
+            "strict error must mention warm-up"
+        );
+
+        // Best-effort must succeed using pre_reset_last_price.
+        let best_effort_result = usd_to_bluechip_best_effort(deps.as_ref(), amount, &env);
+        let conv = best_effort_result
+            .expect("best-effort must serve during warm-up when pre_reset > 0");
+        assert!(
+            !conv.amount.is_zero(),
+            "best-effort conversion must produce non-zero amount"
+        );
+        // Timestamp tagged as current block time (not the stale pre-reset
+        // last_update) so downstream staleness checks accept it.
+        assert_eq!(
+            conv.timestamp,
+            env.block.time.seconds(),
+            "best-effort must tag timestamp = current block time"
+        );
+    }
+
+    /// During warm-up with `pre_reset_last_price == 0` (true bootstrap),
+    /// best-effort also Errs — there's no fallback price to serve.
+    #[test]
+    fn best_effort_fails_during_bootstrap_warmup() {
+        let mut deps = fresh_deps_with_factory();
+
+        // pre_reset = 0 simulates fresh bootstrap. Warm-up active.
+        set_oracle_post_reset(&mut deps, Uint128::zero(), 5);
+
+        let env = mock_env();
+        let result = usd_to_bluechip_best_effort(
+            deps.as_ref(),
+            Uint128::new(1_000_000),
+            &env,
+        );
+        assert!(
+            result.is_err(),
+            "best-effort with no pre_reset price must fail; got {:?}",
+            result
+        );
+    }
+
+    /// In steady state (`warmup_remaining == 0`), best-effort and strict
+    /// produce identical results — they only diverge during warm-up.
+    #[test]
+    fn best_effort_equals_strict_in_steady_state() {
+        let mut deps = fresh_deps_with_factory();
+
+        // Steady state: warmup = 0, last_price set, pre_reset doesn't matter.
+        MOCK_PYTH_PRICE
+            .save(deps.as_mut().storage, &Uint128::new(10_000_000))
+            .unwrap();
+        let mut oracle = INTERNAL_ORACLE.load(&deps.storage).unwrap();
+        oracle.bluechip_price_cache.last_price = Uint128::new(10_000_000);
+        oracle.bluechip_price_cache.last_update = mock_env().block.time.seconds();
+        oracle.warmup_remaining = 0;
+        oracle.pre_reset_last_price = Uint128::new(99_999_999); // wildly different
+        INTERNAL_ORACLE.save(&mut deps.storage, &oracle).unwrap();
+
+        let env = mock_env();
+        let amount = Uint128::new(2_500_000);
+
+        let strict =
+            usd_to_bluechip(deps.as_ref(), amount, &env).expect("strict OK in steady state");
+        let best_effort = usd_to_bluechip_best_effort(deps.as_ref(), amount, &env)
+            .expect("best-effort OK in steady state");
+
+        assert_eq!(
+            strict.amount, best_effort.amount,
+            "steady-state amounts must match"
+        );
+        assert_eq!(
+            strict.rate_used, best_effort.rate_used,
+            "steady-state rates must match"
+        );
+
+        // Bonus: bluechip_to_usd strict in steady state also works
+        // (smoke check that the round-trip via the symmetric function
+        // works under the same setup).
+        bluechip_to_usd(deps.as_ref(), amount, &env)
+            .expect("bluechip_to_usd strict in steady state must succeed");
+    }
+}
+

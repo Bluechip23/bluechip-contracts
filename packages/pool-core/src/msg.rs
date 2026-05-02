@@ -32,7 +32,17 @@ pub struct PoolConfigUpdate {
     pub min_commit_interval: Option<u64>,
     // `usd_payment_tolerance_bps` removed — see `PoolSpecs` doc-comment
     // in `pool-core::state` for rationale.
-    pub oracle_address: Option<String>,
+    //
+    // `oracle_address` removed (audit fix). Per-pool oracle rotation is a
+    // documented admin-compromise vector: a malicious oracle can return
+    // arbitrary `ConversionResponse.amount`, letting a $5 commit register
+    // as a $25k threshold-cross and capturing the full pool seed +
+    // creator/bluechip rewards on a single pool. There is no current
+    // operational need to point an individual pool at a non-factory
+    // oracle. If a future architecture splits the oracle off the
+    // factory, the accepted re-routing path is a coordinated wasm
+    // migration via `UpgradePools` (already 48h-timelocked + batched)
+    // that updates `ORACLE_INFO` directly, not a per-pool config knob.
 }
 
 #[cw_serde]

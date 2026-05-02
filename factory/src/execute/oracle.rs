@@ -146,9 +146,14 @@ pub fn execute_pay_distribution_bounty(
 
     let bounty_usd_attr = Attribute::new("bounty_configured_usd", bounty_usd.to_string());
 
-    // Convert USD -> bluechip via the internal oracle. If the oracle is
-    // unavailable, skip gracefully.
-    let bounty_bluechip = match crate::internal_bluechip_price_oracle::usd_to_bluechip(
+    // Convert USD -> bluechip via the internal oracle. Best-effort path
+    // (audit fix): during the post-reset warm-up window the strict path
+    // would Err and we'd skip every distribution-bounty payment for
+    // ~30 min. The bounty itself is capped at $0.10 per call and the
+    // pre-reset price is bounded by the 30% TWAP breaker, so falling
+    // back during warm-up keeps keepers compensated without meaningful
+    // mispricing risk.
+    let bounty_bluechip = match crate::internal_bluechip_price_oracle::usd_to_bluechip_best_effort(
         deps.as_ref(),
         bounty_usd,
         &env,
@@ -360,6 +365,30 @@ pub(crate) fn refresh_internal_oracle_for_anchor_change(
     new_anchor_addr: &cosmwasm_std::Addr,
 ) -> Result<usize, ContractError> {
     let mut oracle = crate::internal_bluechip_price_oracle::INTERNAL_ORACLE.load(deps.storage)?;
+
+    // Resolve the new anchor's bluechip-side index from the registry
+    // BEFORE mutating any oracle state, so a malformed anchor (somehow
+    // missing the canonical bluechip denom — should be impossible after
+    // `validate_anchor_pool_choice` but defense-in-depth) errors out
+    // cleanly instead of leaving the oracle in a half-reset state.
+    let factory_config = FACTORYINSTANTIATEINFO.load(deps.storage)?;
+    let canonical_bluechip = factory_config.bluechip_denom.as_str();
+    let pool_details = lookup_pool_by_addr(deps.as_ref(), new_anchor_addr)?
+        .ok_or_else(|| {
+            ContractError::Std(StdError::generic_err(format!(
+                "anchor pool {} not found in registry while refreshing oracle",
+                new_anchor_addr
+            )))
+        })?;
+    let anchor_bluechip_index = pool_details
+        .pool_token_info
+        .iter()
+        .position(|t| matches!(t, crate::asset::TokenType::Native { denom } if denom == canonical_bluechip))
+        .ok_or_else(|| ContractError::Std(StdError::generic_err(format!(
+            "anchor pool {} does not contain canonical bluechip denom \"{}\"",
+            new_anchor_addr, canonical_bluechip
+        ))))? as u8;
+
     let new_pools = crate::internal_bluechip_price_oracle::select_random_pools_with_atom(
         deps.branch(),
         env.clone(),
@@ -369,9 +398,25 @@ pub(crate) fn refresh_internal_oracle_for_anchor_change(
     oracle.atom_pool_contract_address = new_anchor_addr.clone();
     oracle.last_rotation = env.block.time.seconds();
     oracle.pool_cumulative_snapshots.clear();
+    // Snapshot the pre-reset price for best-effort callers (audit fix).
+    // The strict commit path never reads this; only `bluechip_to_usd_best_effort`
+    // / `usd_to_bluechip_best_effort` (CreateStandardPool fee + bounty
+    // payout) consult it during the warm-up window so the protocol
+    // doesn't fully freeze on every legitimate anchor rotation.
+    oracle.pre_reset_last_price = oracle.bluechip_price_cache.last_price;
     oracle.bluechip_price_cache.last_price = Uint128::zero();
     oracle.bluechip_price_cache.last_update = 0;
     oracle.bluechip_price_cache.twap_observations.clear();
+    // Cache the anchor's bluechip-side index (audit fix). Replaces the
+    // O(N) fallback scan over POOLS_BY_ID that previously fired once per
+    // oracle update for the anchor pool.
+    oracle.anchor_bluechip_index = anchor_bluechip_index;
+    // Drop any pending candidate from a prior reset cycle.
+    oracle.pending_first_price = None;
+    // Reset the consecutive-failure counter so the new post-reset
+    // window gets a fresh budget of (c)-failure rounds before the
+    // force-accept liveness valve fires.
+    oracle.post_reset_consecutive_failures = 0;
     // Arm the warm-up counter on every anchor reset. With the spot
     // fallbacks removed, the very-first post-reset price comes from a
     // TWAP computed against snapshots taken on this very call;

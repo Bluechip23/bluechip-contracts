@@ -76,6 +76,21 @@ pub const LAST_COMMIT_POOL_CREATE_AT: Map<Addr, Timestamp> =
 /// thousands of addresses to materially inflate `commit_pool_ordinal`.
 pub const COMMIT_POOL_CREATE_RATE_LIMIT_SECONDS: u64 = 3600;
 
+// Per-address rate limit on standard-pool creation. Mirror of the
+// commit-pool rate limit; defends against the same registry-bloat
+// shape. The standard-pool USD creation fee is the primary economic
+// barrier, but the fee path falls back to a hardcoded
+// `STANDARD_POOL_CREATION_FEE_FALLBACK_BLUECHIP` (100 bluechip)
+// whenever the oracle is unavailable (warm-up window, Pyth+cache
+// outage, etc.). Without a per-address cooldown, an attacker who
+// engineers an oracle-unavailable window — or simply happens to act
+// during one — can spam pools at the fallback rate. Same 1h cooldown
+// as commit pools so the two flows symmetric.
+pub const LAST_STANDARD_POOL_CREATE_AT: Map<Addr, Timestamp> =
+    Map::new("last_std_pool_create_at");
+
+pub const STANDARD_POOL_CREATE_RATE_LIMIT_SECONDS: u64 = 3600;
+
 // Keeper bounty paid to whoever successfully calls UpdateOraclePrice.
 // Stored as a USD value (6 decimals: 1_000_000 = $1.00). At payout time
 // the factory converts USD to bluechip via the internal oracle so the

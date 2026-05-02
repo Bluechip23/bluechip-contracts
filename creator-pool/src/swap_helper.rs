@@ -49,16 +49,17 @@ pub const ORACLE_PRICE_PRECISION: u128 = 1_000_000;
 /// `process_pre_threshold_commit`, `process_post_threshold_commit`).
 ///
 /// Reads the oracle endpoint from `ORACLE_INFO.oracle_addr`, which is
-/// initialized at instantiate to the factory address (the factory hosts
-/// the internal price oracle today) and is operator-rotatable via
-/// `UpdateConfigFromFactory { oracle_address }`. Pointing this at a
-/// different contract is forward-compat with future oracle designs
-/// (separate oracle wasm, multi-source averaging, randomized source
-/// selection) — the only requirement is that the target wasm respond to
-/// `FactoryQueryWrapper::InternalBlueChipOracleQuery(ConvertBluechipToUsd)`
-/// with a `ConversionResponse`. Falls back to `POOL_INFO.factory_addr`
-/// only if `ORACLE_INFO` is somehow missing (defensive — instantiate
-/// always sets it, but cheap to tolerate a stale storage layout).
+/// pinned at instantiate to the factory address (the factory hosts the
+/// internal price oracle today). The runtime `UpdateConfigFromFactory
+/// { oracle_address }` rotation knob was removed (audit fix) because a
+/// per-pool oracle rotation is an admin-compromise vector — a malicious
+/// oracle can return arbitrary `ConversionResponse.amount`, letting a
+/// trivial commit register as a full threshold cross. If the protocol
+/// ever needs to split the oracle off the factory, the supported path
+/// is a coordinated `UpgradePools` migration that writes `ORACLE_INFO`
+/// directly. Falls back to `POOL_INFO.factory_addr` only if
+/// `ORACLE_INFO` is somehow missing (defensive — instantiate always
+/// sets it, but cheap to tolerate a stale storage layout).
 pub fn get_oracle_conversion_with_staleness(
     deps: Deps,
     bluechip_amount: Uint128,
