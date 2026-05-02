@@ -133,14 +133,18 @@ pub struct BlueChipPriceInternalOracle {
     /// to `last_price` directly — the second observation drift-checks
     /// against this candidate; on success the median of the two
     /// becomes the new `last_price`, on drift-failure the second
-    /// observation replaces the candidate (start-over). The previous
-    /// behaviour committed the first observation directly with no
-    /// drift check (the breaker bypassed because `prior == 0`),
-    /// letting a single-block manipulation of the anchor reserves
-    /// anchor the breaker to a bad starting point. With this buffer,
-    /// an attacker has to manipulate two consecutive observations
-    /// within `MAX_TWAP_DRIFT_BPS` of each other for the bad value
-    /// to land. `#[serde(default)]` is `None`.
+    /// observation replaces the candidate (start-over) up to
+    /// `MAX_POST_RESET_CONSECUTIVE_FAILURES` consecutive rounds, after
+    /// which the median is force-accepted as a liveness valve (see
+    /// `post_reset_consecutive_failures`). The previous behaviour
+    /// committed the first observation directly with no drift check
+    /// (the breaker bypassed because `prior == 0`), letting a
+    /// single-block manipulation of the anchor reserves anchor the
+    /// breaker to a bad starting point. With this buffer, an attacker
+    /// has to manipulate two consecutive observations within
+    /// `MAX_TWAP_DRIFT_BPS` of each other for the bad value to land,
+    /// AND can stretch the freeze only up to the cap above before the
+    /// median lands anyway. `#[serde(default)]` is `None`.
     #[serde(default)]
     pub pending_first_price: Option<Uint128>,
     /// Snapshot of `last_price` immediately before a reset (anchor
@@ -155,6 +159,24 @@ pub struct BlueChipPriceInternalOracle {
     /// when zero.
     #[serde(default)]
     pub pre_reset_last_price: Uint128,
+    /// Liveness escape valve for the post-reset buffer in branch (c).
+    /// Each consecutive (c)-failure (drift between candidate and the
+    /// new observation exceeds `MAX_TWAP_DRIFT_BPS`) increments this
+    /// counter. (c)-success resets it to zero. Branch (b) is the
+    /// "first observation after reset" case; it does NOT touch this
+    /// counter (the failure semantics start at (c) once a candidate
+    /// exists). Once the counter reaches
+    /// `MAX_POST_RESET_CONSECUTIVE_FAILURES` we forcibly accept the
+    /// median of the buffered candidate and the current observation
+    /// as `last_price`, log the force-accept reason, reset the
+    /// counter, and resume the steady-state breaker on the next
+    /// round. This prevents an attacker who can keep manipulating
+    /// the new anchor's reserves for consecutive rounds from
+    /// indefinitely freezing the strict commit path.
+    /// `#[serde(default)]` is zero on bootstrap and after every
+    /// reset.
+    #[serde(default)]
+    pub post_reset_consecutive_failures: u32,
 }
 
 /// Number of successful price-publishing oracle updates required after the
@@ -165,6 +187,24 @@ pub struct BlueChipPriceInternalOracle {
 /// would be required to bias the warm-up TWAP — a much larger commitment
 /// than the prior single-block manipulation window.
 pub const ANCHOR_CHANGE_WARMUP_OBSERVATIONS: u32 = 6;
+
+/// Maximum consecutive post-reset (c)-failure rounds — i.e. rounds where
+/// the new observation drifts more than `MAX_TWAP_DRIFT_BPS` from the
+/// buffered candidate — before the breaker forcibly accepts the median.
+/// 12 rounds × `UPDATE_INTERVAL = 300s` ≈ 1 hour. Sized as a liveness
+/// escape valve: an attacker who can keep manipulating the new anchor
+/// across this many consecutive observations is sophisticated enough
+/// that the buffer alone cannot serve as the only defense; the
+/// `warmup_remaining` counter (held off downstream consumers for the
+/// full warm-up window from the moment of force-accept) and the
+/// 30%-per-round circuit breaker that resumes on subsequent rounds
+/// remain in place. Without this cap an attacker could indefinitely
+/// freeze every strict-commit caller, which is a worse failure mode
+/// than letting a slightly-influenced median land. The wider trade-off
+/// — strict callers still freeze for the warm-up window after a
+/// force-accept — preserves observability and gives operators time
+/// to investigate even in the force-accept path.
+pub const MAX_POST_RESET_CONSECUTIVE_FAILURES: u32 = 12;
 #[cw_serde]
 pub struct PriceCache {
     pub last_price: Uint128,
@@ -282,6 +322,7 @@ pub fn select_random_pools_with_atom(
                 anchor_bluechip_index: 0,
                 pending_first_price: None,
                 pre_reset_last_price: Uint128::zero(),
+                post_reset_consecutive_failures: 0,
             });
     let mut hasher = Sha256::new();
     hasher.update(env.block.time.seconds().to_be_bytes());
@@ -370,6 +411,8 @@ pub fn initialize_internal_bluechip_oracle(
         pending_first_price: None,
         // No pre-reset price exists at bootstrap.
         pre_reset_last_price: Uint128::zero(),
+        // No prior failures at bootstrap.
+        post_reset_consecutive_failures: 0,
     };
 
     INTERNAL_ORACLE.save(deps.storage, &oracle)?;
@@ -747,15 +790,84 @@ pub fn update_internal_oracle_price(
                 .unwrap_or(u128::MAX),
             Err(_) => u128::MAX,
         };
+
+        // Median of (candidate, twap_price). Used both by the drift-OK
+        // path (publish median) and the force-accept liveness path so
+        // we compute it once and branch on the drift result.
+        let median = candidate
+            .checked_add(twap_price)?
+            .checked_div(Uint128::from(2u128))
+            .map_err(|_| ContractError::Std(StdError::generic_err("median div-by-zero")))?;
+
         if drift_bps_u128 > MAX_TWAP_DRIFT_BPS as u128 {
-            // Drift between candidate and second observation exceeds
-            // the breaker. Discard the candidate; replace it with the
-            // new observation as the fresh candidate and stay in the
-            // post-reset branch. Roll back the just-pushed observation
-            // and don't decrement warmup_remaining — neither candidate
-            // is trusted enough to count.
+            // Drift between candidate and second observation exceeds the
+            // breaker. Three sub-cases:
+            //
+            //   (c-fail-replace): consecutive_failures < cap. Discard
+            //       the prior candidate, treat the new observation as
+            //       the fresh candidate, increment the counter, return
+            //       early (don't decrement warmup_remaining).
+            //
+            //   (c-fail-force-accept): consecutive_failures hits the cap
+            //       (`MAX_POST_RESET_CONSECUTIVE_FAILURES`). Liveness
+            //       escape valve. Force-publish the median, log the
+            //       force-accept reason, reset both the candidate and
+            //       the counter. The warm-up counter still ticks normally
+            //       from this point — strict callers stay frozen for
+            //       the remainder of the warm-up window even though
+            //       last_price is now non-zero.
+            let next_failures = oracle
+                .post_reset_consecutive_failures
+                .saturating_add(1);
+            if next_failures >= MAX_POST_RESET_CONSECUTIVE_FAILURES {
+                // Force-accept path. Replace the just-pushed observation's
+                // price with the median so the observation series and
+                // last_price stay in lock-step (see the (c-success) note
+                // below for the rationale). Resume on branch (a) next round.
+                if let Some(last) = oracle.bluechip_price_cache.twap_observations.last_mut() {
+                    last.price = median;
+                }
+                oracle.bluechip_price_cache.last_price = median;
+                oracle.bluechip_price_cache.last_update = current_time;
+                oracle.pending_first_price = None;
+                oracle.post_reset_consecutive_failures = 0;
+                // Cache pyth + decrement warmup the same way the (a)/(c-ok)
+                // paths do; we fall through to that shared tail below.
+                if let Ok(pyth_price) = query_pyth_atom_usd_price(deps.as_ref(), &env) {
+                    oracle.bluechip_price_cache.cached_pyth_price = pyth_price;
+                    oracle.bluechip_price_cache.cached_pyth_timestamp = current_time;
+                }
+                let warmup_remaining_before = oracle.warmup_remaining;
+                oracle.warmup_remaining = oracle.warmup_remaining.saturating_sub(1);
+                INTERNAL_ORACLE.save(deps.storage, &oracle)?;
+                return Ok(Response::new()
+                    .add_attribute("action", "update_oracle")
+                    .add_attribute("twap_price", median.to_string())
+                    .add_attribute("pools_used", pools_to_use.len().to_string())
+                    .add_attribute(
+                        "warmup_remaining_before",
+                        warmup_remaining_before.to_string(),
+                    )
+                    .add_attribute(
+                        "warmup_remaining_after",
+                        oracle.warmup_remaining.to_string(),
+                    )
+                    .add_attribute("force_accept", "true")
+                    .add_attribute("force_accept_reason", "post_reset_consecutive_failures_cap")
+                    .add_attribute(
+                        "force_accept_threshold",
+                        MAX_POST_RESET_CONSECUTIVE_FAILURES.to_string(),
+                    )
+                    .add_attribute("prior_candidate", candidate.to_string())
+                    .add_attribute("new_candidate", twap_price.to_string())
+                    .add_attribute("median_published", median.to_string())
+                    .add_attribute("drift_bps", drift_bps_u128.to_string())
+                    .add_attribute("max_bps", MAX_TWAP_DRIFT_BPS.to_string()));
+            }
+            // Standard (c-fail-replace) path.
             oracle.bluechip_price_cache.twap_observations.pop();
             oracle.pending_first_price = Some(twap_price);
+            oracle.post_reset_consecutive_failures = next_failures;
             INTERNAL_ORACLE.save(deps.storage, &oracle)?;
             return Ok(Response::new()
                 .add_attribute("action", "update_oracle")
@@ -764,19 +876,36 @@ pub fn update_internal_oracle_price(
                 .add_attribute("prior_candidate", candidate.to_string())
                 .add_attribute("new_candidate", twap_price.to_string())
                 .add_attribute("drift_bps", drift_bps_u128.to_string())
-                .add_attribute("max_bps", MAX_TWAP_DRIFT_BPS.to_string()));
+                .add_attribute("max_bps", MAX_TWAP_DRIFT_BPS.to_string())
+                .add_attribute(
+                    "consecutive_failures",
+                    next_failures.to_string(),
+                )
+                .add_attribute(
+                    "force_accept_threshold",
+                    MAX_POST_RESET_CONSECUTIVE_FAILURES.to_string(),
+                ));
         }
-        // Drift OK: median of the two becomes the new last_price. Median
-        // (vs e.g. taking the second observation directly) means a single
-        // manipulated observation among the two has at most half the
-        // pull on the published price.
-        let median = candidate
-            .checked_add(twap_price)?
-            .checked_div(Uint128::from(2u128))
-            .map_err(|_| ContractError::Std(StdError::generic_err("median div-by-zero")))?;
+        // (c-success): drift OK. Median of the two becomes the new
+        // `last_price`. Median (vs e.g. taking the second observation
+        // directly) means a single manipulated observation among the
+        // two has at most half the pull on the published price.
+        //
+        // Overwrite the just-pushed PriceObservation's price with the
+        // median so the twap_observations window and `last_price` stay
+        // in lock-step. Without this, the observation series would
+        // contain `twap_price` while `last_price` is `median`,
+        // diverging the cumulative-style TWAP feedback loop from what
+        // downstream consumers actually see. Uniswap V2/V3 oracles
+        // avoid this entirely by storing only cumulatives (no cached
+        // last_price). This pool keeps both, so we keep them in sync.
+        if let Some(last) = oracle.bluechip_price_cache.twap_observations.last_mut() {
+            last.price = median;
+        }
         oracle.bluechip_price_cache.last_price = median;
         oracle.bluechip_price_cache.last_update = current_time;
         oracle.pending_first_price = None;
+        oracle.post_reset_consecutive_failures = 0;
     } else if buffered_reset_path {
         // Branch (b): first post-reset observation, AND there is a prior
         // trusted price (`pre_reset > 0`) we're protecting against
@@ -1776,6 +1905,9 @@ pub fn execute_force_rotate_pools(
     // Clear any leftover candidate from a previous reset; the post-
     // rotation warm-up starts fresh.
     oracle.pending_first_price = None;
+    // Reset the (c)-failure counter — the new post-rotation window
+    // gets its own budget of consecutive failures before force-accept.
+    oracle.post_reset_consecutive_failures = 0;
 
     INTERNAL_ORACLE.save(deps.storage, &oracle)?;
     crate::state::PENDING_ORACLE_ROTATION.remove(deps.storage);

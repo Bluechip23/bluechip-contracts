@@ -18,7 +18,19 @@ use cw_storage_plus::{Item, Map};
 pub const USD_RAISED_FROM_COMMIT: Item<Uint128> = Item::new("usd_raised");
 /// Per-committer cumulative deposit/payment record.
 pub const COMMIT_INFO: Map<&Addr, Committing> = Map::new("sub_info");
-/// Running total of native bluechip raised from commits pre-threshold.
+/// Running total of NET-of-fees bluechip that has actually entered the
+/// pool's bank balance from threshold-contributing commits. After the
+/// audit-fix gross→net refactor (commit handlers store the post-fee
+/// amount; `trigger_threshold_payout` reads this directly as
+/// `pools_bluechip_seed` with no `(1 - fee_rate)` recovery), the value
+/// here equals the contract's bank balance for `bluechip_denom` at
+/// threshold-crossing time modulo the per-commit fee floor (the only
+/// floor still applied). Note: query responses
+/// (`PoolAnalyticsResponse.total_bluechip_raised`) and the
+/// `total_bluechip_raised_after` event attribute also expose this
+/// post-fee value — frontends showing "X bluechip raised toward goal"
+/// will display the net amount, smaller than the pre-refactor gross.
+/// Storage key preserved as `"bluechip_raised"` for compat.
 pub const NATIVE_RAISED_FROM_COMMIT: Item<Uint128> = Item::new("bluechip_raised");
 /// Per-committer USD ledger; drained during post-threshold distribution.
 pub const COMMIT_LEDGER: cw_storage_plus::Map<&Addr, Uint128> =

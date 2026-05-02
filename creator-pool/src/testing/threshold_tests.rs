@@ -865,8 +865,15 @@ fn test_accumulated_bluechips_respected() {
     let mut deps = mock_dependencies();
     setup_pool_with_excess_config(&mut deps);
 
-    // Set initial state: 4,000 raised, but with LOW price (/bin/bash.50)
-    // So we should have collected 48,000 bluechips already
+    // Set initial state: $24,000 raised at low price ($0.50 implied),
+    // so the contract has 48,000 bluechips of NET-of-fees inflow
+    // accumulated. After the gross→net refactor NATIVE_RAISED_FROM_COMMIT
+    // is interpreted as net (the post-fee total that has actually
+    // entered the pool's bank balance), so we seed the net value
+    // directly. The test's exact amount isn't load-bearing — the
+    // assertion below is on the `max_bluechip_lock_per_pool` cap, which
+    // is reached regardless of whether the input is treated as gross
+    // or net (both well exceed the cap).
     USD_RAISED_FROM_COMMIT
         .save(&mut deps.storage, &Uint128::new(24_000_000_000))
         .unwrap();
@@ -951,7 +958,11 @@ fn test_concurrent_threshold_crossing_race_condition() {
     USD_RAISED_FROM_COMMIT
         .save(&mut deps.storage, &Uint128::new(24_995_000_000))
         .unwrap();
-    // At $1/bluechip, $24,995 worth of bluechip was raised
+    // At $1/bluechip, $24,995 of NET-of-fees bluechip has entered the
+    // pool's bank balance (NATIVE_RAISED_FROM_COMMIT is post-fee after
+    // the gross→net audit refactor). The test asserts threshold-phase
+    // semantics, not seed arithmetic, so the exact amount is just a
+    // realistic placeholder.
     crate::state::NATIVE_RAISED_FROM_COMMIT
         .save(&mut deps.storage, &Uint128::new(24_995_000_000))
         .unwrap();

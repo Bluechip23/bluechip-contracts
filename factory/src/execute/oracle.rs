@@ -413,6 +413,10 @@ pub(crate) fn refresh_internal_oracle_for_anchor_change(
     oracle.anchor_bluechip_index = anchor_bluechip_index;
     // Drop any pending candidate from a prior reset cycle.
     oracle.pending_first_price = None;
+    // Reset the consecutive-failure counter so the new post-reset
+    // window gets a fresh budget of (c)-failure rounds before the
+    // force-accept liveness valve fires.
+    oracle.post_reset_consecutive_failures = 0;
     // Arm the warm-up counter on every anchor reset. With the spot
     // fallbacks removed, the very-first post-reset price comes from a
     // TWAP computed against snapshots taken on this very call;

@@ -1886,6 +1886,7 @@ fn test_get_bluechip_usd_price_with_pyth() {
         anchor_bluechip_index: 0,
         pending_first_price: None,
         pre_reset_last_price: Uint128::zero(),
+        post_reset_consecutive_failures: 0,
     };
     INTERNAL_ORACLE
         .save(deps.as_mut().storage, &oracle)
@@ -1954,6 +1955,7 @@ fn test_bluechip_usd_price_with_different_atom_prices() {
         anchor_bluechip_index: 0,
         pending_first_price: None,
         pre_reset_last_price: Uint128::zero(),
+        post_reset_consecutive_failures: 0,
     };
     INTERNAL_ORACLE
         .save(deps.as_mut().storage, &oracle)
@@ -2036,6 +2038,7 @@ fn test_conversion_functions_with_pyth() {
         anchor_bluechip_index: 0,
         pending_first_price: None,
         pre_reset_last_price: Uint128::zero(),
+        post_reset_consecutive_failures: 0,
     };
     INTERNAL_ORACLE
         .save(deps.as_mut().storage, &oracle)
@@ -4419,6 +4422,478 @@ mod validate_pool_token_info_tests {
             format!("{}", err).contains("must be the sentinel"),
             "got: {}",
             err
+        );
+    }
+}
+
+// ---------------------------------------------------------------------------
+// Post-reset breaker-buffer tests (audit fix)
+// ---------------------------------------------------------------------------
+//
+// Coverage for the four branches added to `update_internal_oracle_price`'s
+// circuit-breaker block:
+//
+//   (b) first_post_reset_observation_buffered — `pre_reset > 0`, no candidate
+//   (c)-success — second observation drifts within 30%, median lands
+//   (c)-failure — second observation drifts > 30%, candidate replaced
+//   force-accept — after MAX_POST_RESET_CONSECUTIVE_FAILURES failures,
+//                  median is force-published as a liveness escape valve
+//
+// All four manipulate INTERNAL_ORACLE state directly to simulate the
+// post-reset condition and drive the anchor pool's cumulative-delta
+// math via successive UpdateOraclePrice executions.
+mod post_reset_buffer_tests {
+    use super::*;
+    use crate::internal_bluechip_price_oracle::{
+        ANCHOR_CHANGE_WARMUP_OBSERVATIONS, MAX_POST_RESET_CONSECUTIVE_FAILURES,
+    };
+
+    /// Drives the anchor pool's cumulative price1 forward by `delta` over
+    /// the given `time_advance`. The bluechip-per-atom TWAP produced for
+    /// the next round is `delta * 1e6 / time_advance` (see
+    /// `calculate_weighted_price_with_atom`'s TWAP formula).
+    ///
+    /// Returns the new `block_time_last` so callers can chain rounds.
+    fn advance_anchor_cumulative(
+        deps: &mut OwnedDeps<MockStorage, MockApi, WasmMockQuerier>,
+        time_advance: u64,
+        cumulative_delta: u128,
+    ) -> u64 {
+        let atom_addr = atom_bluechip_pool_addr();
+        let mut state = POOLS_BY_CONTRACT_ADDRESS
+            .load(&deps.storage, atom_addr.clone())
+            .unwrap();
+        state.block_time_last = state.block_time_last.saturating_add(time_advance);
+        state.price1_cumulative_last = state
+            .price1_cumulative_last
+            .checked_add(Uint128::from(cumulative_delta))
+            .unwrap();
+        let new_block_time = state.block_time_last;
+        POOLS_BY_CONTRACT_ADDRESS
+            .save(&mut deps.storage, atom_addr, &state)
+            .unwrap();
+        new_block_time
+    }
+
+    /// Sets up a post-reset oracle state: `last_price = 0`, `pre_reset > 0`,
+    /// `pending_first_price = None`, `warmup_remaining = 6`. Mirrors what
+    /// `refresh_internal_oracle_for_anchor_change` produces but lets tests
+    /// inject specific snapshot values for deterministic TWAP math.
+    fn prime_post_reset_oracle(
+        deps: &mut OwnedDeps<MockStorage, MockApi, WasmMockQuerier>,
+        pre_reset_last_price: Uint128,
+    ) {
+        let atom_addr = atom_bluechip_pool_addr();
+        // Anchor pool starts at (block_time = 100, cumulative = 1000) so
+        // the FIRST round can compute a TWAP using the snapshot below.
+        let mut state = POOLS_BY_CONTRACT_ADDRESS
+            .load(&deps.storage, atom_addr.clone())
+            .unwrap();
+        state.block_time_last = 100;
+        state.price1_cumulative_last = Uint128::new(1_000);
+        POOLS_BY_CONTRACT_ADDRESS
+            .save(&mut deps.storage, atom_addr.clone(), &state)
+            .unwrap();
+
+        let mut oracle = INTERNAL_ORACLE.load(&deps.storage).unwrap();
+        oracle.pool_cumulative_snapshots = vec![PoolCumulativeSnapshot {
+            pool_address: atom_addr.to_string(),
+            price0_cumulative: Uint128::zero(),
+            block_time: 0,
+        }];
+        oracle.warmup_remaining = ANCHOR_CHANGE_WARMUP_OBSERVATIONS;
+        oracle.bluechip_price_cache.last_price = Uint128::zero();
+        oracle.bluechip_price_cache.last_update = 0;
+        oracle.bluechip_price_cache.twap_observations.clear();
+        oracle.pending_first_price = None;
+        oracle.pre_reset_last_price = pre_reset_last_price;
+        oracle.post_reset_consecutive_failures = 0;
+        INTERNAL_ORACLE.save(&mut deps.storage, &oracle).unwrap();
+    }
+
+    fn setup_factory_for_oracle_tests(
+        deps: &mut OwnedDeps<MockStorage, MockApi, WasmMockQuerier>,
+    ) {
+        setup_atom_pool(deps);
+        let msg = create_default_instantiate_msg();
+        let env = mock_env();
+        let info = message_info(&admin_addr(), &[]);
+        instantiate(deps.as_mut(), env, info, msg).unwrap();
+    }
+
+    /// Branch (b): first post-reset observation is buffered, not published.
+    #[test]
+    fn first_post_reset_observation_is_buffered() {
+        let mut deps = mock_dependencies(&[]);
+        setup_factory_for_oracle_tests(&mut deps);
+        // Simulate having had a real price prior to a reset.
+        prime_post_reset_oracle(&mut deps, Uint128::new(10_000_000));
+
+        let mut env = mock_env();
+        env.block.time = env.block.time.plus_seconds(360);
+
+        let res = execute(
+            deps.as_mut(),
+            env,
+            message_info(&admin_addr(), &[]),
+            ExecuteMsg::UpdateOraclePrice {},
+        )
+        .expect("first post-reset round must return Ok (buffered)");
+
+        // Attribute checks — branch (b) marker.
+        let reasons: Vec<&str> = res
+            .attributes
+            .iter()
+            .filter(|a| a.key == "reason")
+            .map(|a| a.value.as_str())
+            .collect();
+        assert!(
+            reasons.contains(&"first_post_reset_observation_buffered"),
+            "expected buffered reason, got attrs: {:?}",
+            res.attributes
+        );
+
+        // State checks: candidate set, last_price still zero, observations
+        // popped, warmup not decremented.
+        let oracle = INTERNAL_ORACLE.load(&deps.storage).unwrap();
+        assert!(
+            oracle.pending_first_price.is_some(),
+            "candidate must be buffered"
+        );
+        assert!(
+            oracle.bluechip_price_cache.last_price.is_zero(),
+            "last_price must remain zero in branch (b)"
+        );
+        assert!(
+            oracle.bluechip_price_cache.twap_observations.is_empty(),
+            "the just-pushed observation must be popped to keep the warm-up window clean"
+        );
+        assert_eq!(
+            oracle.warmup_remaining, ANCHOR_CHANGE_WARMUP_OBSERVATIONS,
+            "warmup must NOT decrement on branch (b)"
+        );
+        assert_eq!(
+            oracle.post_reset_consecutive_failures, 0,
+            "branch (b) does not touch the failure counter"
+        );
+    }
+
+    /// Branch (c)-success: second observation drifts within 30%, median lands
+    /// as `last_price` AND the just-pushed observation's price is overwritten
+    /// with the median (Uniswap-style: TWAP series and last_price stay in
+    /// lock-step).
+    #[test]
+    fn second_post_reset_observation_within_drift_publishes_median() {
+        let mut deps = mock_dependencies(&[]);
+        setup_factory_for_oracle_tests(&mut deps);
+        prime_post_reset_oracle(&mut deps, Uint128::new(10_000_000));
+
+        // Round 1: branch (b). TWAP = 1000 * 1e6 / 100 = 10_000_000.
+        let mut env = mock_env();
+        env.block.time = env.block.time.plus_seconds(360);
+        execute(
+            deps.as_mut(),
+            env.clone(),
+            message_info(&admin_addr(), &[]),
+            ExecuteMsg::UpdateOraclePrice {},
+        )
+        .unwrap();
+        let candidate = INTERNAL_ORACLE
+            .load(&deps.storage)
+            .unwrap()
+            .pending_first_price
+            .expect("candidate must be set after round 1");
+
+        // Round 2: advance cumulative so TWAP comes out within 30% of
+        // candidate. cumulative_delta = 1000 over time_delta = 100 →
+        // TWAP = 10_000_000 (zero drift). Drift OK → branch (c)-success.
+        advance_anchor_cumulative(&mut deps, 100, 1_000);
+        env.block.time = env.block.time.plus_seconds(360);
+
+        let res = execute(
+            deps.as_mut(),
+            env,
+            message_info(&admin_addr(), &[]),
+            ExecuteMsg::UpdateOraclePrice {},
+        )
+        .expect("(c)-success round must return Ok");
+
+        // Should be a publishing round — has twap_price + warmup_after attrs,
+        // not a "buffered" or "candidate_replaced" reason.
+        let reasons: Vec<&str> = res
+            .attributes
+            .iter()
+            .filter(|a| a.key == "reason")
+            .map(|a| a.value.as_str())
+            .collect();
+        assert!(
+            !reasons.contains(&"first_post_reset_observation_buffered"),
+            "(c)-success must not emit buffered reason"
+        );
+        assert!(
+            !reasons.contains(&"post_reset_candidate_replaced_drift_too_large"),
+            "(c)-success must not emit replaced reason"
+        );
+
+        let oracle = INTERNAL_ORACLE.load(&deps.storage).unwrap();
+        let new_twap = Uint128::new(10_000_000);
+        let expected_median = (candidate + new_twap) / Uint128::from(2u128);
+        assert_eq!(
+            oracle.bluechip_price_cache.last_price, expected_median,
+            "last_price must equal median(candidate, twap_price)"
+        );
+        assert!(
+            oracle.pending_first_price.is_none(),
+            "candidate must clear on success"
+        );
+        assert_eq!(
+            oracle.warmup_remaining,
+            ANCHOR_CHANGE_WARMUP_OBSERVATIONS - 1,
+            "warmup must decrement once on (c)-success"
+        );
+        assert_eq!(
+            oracle.post_reset_consecutive_failures, 0,
+            "failure counter must reset on success"
+        );
+
+        // Uniswap-style alignment: the just-pushed observation's price
+        // matches the published median, not the raw twap_price.
+        let last_obs = oracle
+            .bluechip_price_cache
+            .twap_observations
+            .last()
+            .expect("observation must be pushed on (c)-success");
+        assert_eq!(
+            last_obs.price, expected_median,
+            "observation series and last_price must stay in lock-step (Uniswap-style)"
+        );
+    }
+
+    /// Branch (c)-failure: second observation drifts > 30%, candidate is
+    /// replaced, counter increments, no publish.
+    #[test]
+    fn second_post_reset_observation_over_drift_replaces_candidate() {
+        let mut deps = mock_dependencies(&[]);
+        setup_factory_for_oracle_tests(&mut deps);
+        prime_post_reset_oracle(&mut deps, Uint128::new(10_000_000));
+
+        let mut env = mock_env();
+        env.block.time = env.block.time.plus_seconds(360);
+        execute(
+            deps.as_mut(),
+            env.clone(),
+            message_info(&admin_addr(), &[]),
+            ExecuteMsg::UpdateOraclePrice {},
+        )
+        .unwrap();
+        let candidate = INTERNAL_ORACLE
+            .load(&deps.storage)
+            .unwrap()
+            .pending_first_price
+            .unwrap();
+
+        // Round 2: huge cumulative bump. Round-1 TWAP was 10_000_000; we
+        // push round-2 to TWAP ~ 30_000_000 (+200% drift, well past the
+        // 3000bps cap).
+        advance_anchor_cumulative(&mut deps, 100, 3_000);
+        env.block.time = env.block.time.plus_seconds(360);
+
+        let res = execute(
+            deps.as_mut(),
+            env,
+            message_info(&admin_addr(), &[]),
+            ExecuteMsg::UpdateOraclePrice {},
+        )
+        .expect("(c)-failure round must return Ok (no revert)");
+
+        let reasons: Vec<&str> = res
+            .attributes
+            .iter()
+            .filter(|a| a.key == "reason")
+            .map(|a| a.value.as_str())
+            .collect();
+        assert!(
+            reasons.contains(&"post_reset_candidate_replaced_drift_too_large"),
+            "(c)-failure must emit candidate_replaced reason; got: {:?}",
+            res.attributes
+        );
+
+        let oracle = INTERNAL_ORACLE.load(&deps.storage).unwrap();
+        assert!(
+            oracle.bluechip_price_cache.last_price.is_zero(),
+            "(c)-failure must NOT publish — last_price stays zero"
+        );
+        let new_candidate = oracle
+            .pending_first_price
+            .expect("(c)-failure must replace candidate, not clear it");
+        assert_ne!(
+            new_candidate, candidate,
+            "candidate must be replaced with the new (drifted) observation"
+        );
+        assert_eq!(
+            oracle.warmup_remaining, ANCHOR_CHANGE_WARMUP_OBSERVATIONS,
+            "warmup must NOT decrement on (c)-failure"
+        );
+        assert_eq!(
+            oracle.post_reset_consecutive_failures, 1,
+            "failure counter must increment to 1 on first (c)-failure"
+        );
+    }
+
+    /// Force-accept liveness valve: after MAX consecutive (c)-failures, the
+    /// median is force-published, counter resets, warmup decrements, and the
+    /// observation series tracks the median.
+    #[test]
+    fn force_accept_after_consecutive_failure_cap() {
+        let mut deps = mock_dependencies(&[]);
+        setup_factory_for_oracle_tests(&mut deps);
+        prime_post_reset_oracle(&mut deps, Uint128::new(10_000_000));
+
+        // Pre-stage the oracle as if MAX-1 consecutive failures already
+        // happened, with a candidate buffered. The next failure-inducing
+        // round triggers the cap.
+        //
+        // Also advance `pool_cumulative_snapshots` to the post-prime
+        // state (cum=1000, block_time=100) so the next round's
+        // cumulative-delta math is "since last observation" rather than
+        // "since genesis" — matches what production code maintains
+        // between successful update calls.
+        let atom_addr = atom_bluechip_pool_addr();
+        let candidate_value = Uint128::new(10_000_000);
+        {
+            let mut oracle = INTERNAL_ORACLE.load(&deps.storage).unwrap();
+            oracle.pending_first_price = Some(candidate_value);
+            oracle.post_reset_consecutive_failures =
+                MAX_POST_RESET_CONSECUTIVE_FAILURES - 1;
+            oracle.pool_cumulative_snapshots = vec![PoolCumulativeSnapshot {
+                pool_address: atom_addr.to_string(),
+                price0_cumulative: Uint128::new(1_000),
+                block_time: 100,
+            }];
+            INTERNAL_ORACLE.save(&mut deps.storage, &oracle).unwrap();
+        }
+
+        // Round X: drift > 30% from candidate. cumulative_delta = 3000
+        // over time_delta = 100 ⇒ TWAP = 30_000_000 (+200% drift).
+        advance_anchor_cumulative(&mut deps, 100, 3_000);
+        let mut env = mock_env();
+        env.block.time = env.block.time.plus_seconds(360);
+
+        let warmup_before = INTERNAL_ORACLE
+            .load(&deps.storage)
+            .unwrap()
+            .warmup_remaining;
+
+        let res = execute(
+            deps.as_mut(),
+            env,
+            message_info(&admin_addr(), &[]),
+            ExecuteMsg::UpdateOraclePrice {},
+        )
+        .expect("force-accept round must return Ok");
+
+        // Force-accept attributes.
+        let force_accept_set = res
+            .attributes
+            .iter()
+            .any(|a| a.key == "force_accept" && a.value == "true");
+        assert!(
+            force_accept_set,
+            "force-accept round must emit force_accept=true; got: {:?}",
+            res.attributes
+        );
+        let reason_attr = res
+            .attributes
+            .iter()
+            .find(|a| a.key == "force_accept_reason")
+            .expect("force_accept_reason attribute must be present");
+        assert_eq!(reason_attr.value, "post_reset_consecutive_failures_cap");
+
+        let oracle = INTERNAL_ORACLE.load(&deps.storage).unwrap();
+        // Median = (10_000_000 + 30_000_000) / 2 = 20_000_000.
+        let expected_median = (candidate_value + Uint128::new(30_000_000))
+            / Uint128::from(2u128);
+        assert_eq!(
+            oracle.bluechip_price_cache.last_price, expected_median,
+            "force-accept publishes the median"
+        );
+        assert!(
+            oracle.pending_first_price.is_none(),
+            "candidate must clear after force-accept"
+        );
+        assert_eq!(
+            oracle.post_reset_consecutive_failures, 0,
+            "failure counter must reset after force-accept"
+        );
+        assert_eq!(
+            oracle.warmup_remaining,
+            warmup_before.saturating_sub(1),
+            "warmup must decrement once on force-accept (it's a publishing round)"
+        );
+
+        // Uniswap-style alignment on force-accept too — observation series
+        // shows the median, not the raw twap_price.
+        let last_obs = oracle
+            .bluechip_price_cache
+            .twap_observations
+            .last()
+            .expect("force-accept must keep the just-pushed observation");
+        assert_eq!(
+            last_obs.price, expected_median,
+            "force-accept must keep the observation series in sync with last_price"
+        );
+    }
+
+    /// Bootstrap (branch d): no prior trusted price (`pre_reset == 0`),
+    /// the very first observation publishes directly without buffering.
+    /// Pre-existing tests already cover this implicitly; explicit coverage
+    /// here locks in the gating logic so a future change can't accidentally
+    /// route bootstrap through the buffer.
+    #[test]
+    fn bootstrap_publishes_directly_without_buffering() {
+        let mut deps = mock_dependencies(&[]);
+        setup_factory_for_oracle_tests(&mut deps);
+        // No pre-reset price → bootstrap. Use the same priming helper but
+        // with `pre_reset_last_price = 0`.
+        prime_post_reset_oracle(&mut deps, Uint128::zero());
+
+        let mut env = mock_env();
+        env.block.time = env.block.time.plus_seconds(360);
+
+        let res = execute(
+            deps.as_mut(),
+            env,
+            message_info(&admin_addr(), &[]),
+            ExecuteMsg::UpdateOraclePrice {},
+        )
+        .expect("bootstrap round must publish directly");
+
+        // No buffered/replaced reason — branch (d) is a publishing round.
+        let reasons: Vec<&str> = res
+            .attributes
+            .iter()
+            .filter(|a| a.key == "reason")
+            .map(|a| a.value.as_str())
+            .collect();
+        assert!(
+            !reasons.contains(&"first_post_reset_observation_buffered"),
+            "bootstrap must not buffer; got: {:?}",
+            res.attributes
+        );
+
+        let oracle = INTERNAL_ORACLE.load(&deps.storage).unwrap();
+        assert!(
+            !oracle.bluechip_price_cache.last_price.is_zero(),
+            "bootstrap publishes last_price directly"
+        );
+        assert!(
+            oracle.pending_first_price.is_none(),
+            "bootstrap leaves pending_first_price as None"
+        );
+        assert_eq!(
+            oracle.warmup_remaining,
+            ANCHOR_CHANGE_WARMUP_OBSERVATIONS - 1,
+            "bootstrap counts as a publishing round → warmup decrements"
         );
     }
 }
