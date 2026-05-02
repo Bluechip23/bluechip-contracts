@@ -18,7 +18,7 @@ use crate::execution::{
 };
 use crate::msg::{ConfigResponse, ExecuteMsg, InstantiateMsg, QueryMsg};
 use crate::simulation::simulate_multi_hop;
-use crate::state::{Config, CONFIG};
+use crate::state::{Config, PendingConfigUpdate, CONFIG, PENDING_CONFIG, ROUTER_TIMELOCK_SECONDS};
 
 const CONTRACT_NAME: &str = "crates.io:bluechip-router";
 const CONTRACT_VERSION: &str = env!("CARGO_PKG_VERSION");
@@ -68,10 +68,12 @@ pub fn execute(
             deadline,
             recipient,
         ),
-        ExecuteMsg::UpdateConfig {
+        ExecuteMsg::ProposeConfigUpdate {
             admin,
             factory_addr,
-        } => execute_update_config(deps, info, admin, factory_addr),
+        } => execute_propose_config_update(deps, env, info, admin, factory_addr),
+        ExecuteMsg::UpdateConfig {} => execute_apply_config_update(deps, env, info),
+        ExecuteMsg::CancelConfigUpdate {} => execute_cancel_config_update(deps, info),
         ExecuteMsg::Receive(cw20_msg) => execute_receive_cw20(deps, env, info, cw20_msg),
         ExecuteMsg::ExecuteSwapOperation {
             operation,
@@ -100,29 +102,106 @@ pub fn reply(deps: DepsMut, env: Env, msg: Reply) -> Result<Response, RouterErro
     handle_reply(deps, env, msg)
 }
 
-fn execute_update_config(
+/// Step 1 of the 48h timelocked config rotation. Admin-only. Validates
+/// any address fields up front so a malformed proposal fails immediately
+/// instead of 48h later at apply.
+fn execute_propose_config_update(
     deps: DepsMut,
+    env: Env,
     info: MessageInfo,
     new_admin: Option<String>,
     new_factory_addr: Option<String>,
+) -> Result<Response, RouterError> {
+    let config = CONFIG.load(deps.storage)?;
+    if info.sender != config.admin {
+        return Err(RouterError::Unauthorized);
+    }
+
+    // Reject re-propose while a prior proposal is still pending. Without
+    // this gate, a benign-looking proposal observed by the community
+    // could be silently swapped for a hostile one minutes before the
+    // window elapses; a watcher polling `PENDING_CONFIG` would see "still
+    // pending" without an explicit cancellation event in between.
+    if PENDING_CONFIG.may_load(deps.storage)?.is_some() {
+        return Err(RouterError::ConfigUpdateAlreadyPending);
+    }
+
+    // Early validation: addr_validate the candidate fields now so a
+    // malformed proposal fails at propose time rather than 48h later.
+    if let Some(addr) = &new_admin {
+        deps.api.addr_validate(addr)?;
+    }
+    if let Some(addr) = &new_factory_addr {
+        deps.api.addr_validate(addr)?;
+    }
+
+    let effective_after = env.block.time.plus_seconds(ROUTER_TIMELOCK_SECONDS);
+    PENDING_CONFIG.save(
+        deps.storage,
+        &PendingConfigUpdate {
+            admin: new_admin,
+            factory_addr: new_factory_addr,
+            effective_after,
+        },
+    )?;
+
+    Ok(Response::new()
+        .add_attribute("action", "propose_config_update")
+        .add_attribute("effective_after", effective_after.to_string()))
+}
+
+/// Step 2 of the timelocked flow. Admin-only. Applies the pending
+/// proposal once `effective_after` has elapsed.
+fn execute_apply_config_update(
+    deps: DepsMut,
+    env: Env,
+    info: MessageInfo,
 ) -> Result<Response, RouterError> {
     let mut config = CONFIG.load(deps.storage)?;
     if info.sender != config.admin {
         return Err(RouterError::Unauthorized);
     }
 
-    if let Some(admin) = new_admin {
+    let pending = PENDING_CONFIG
+        .may_load(deps.storage)?
+        .ok_or(RouterError::NoPendingConfigUpdate)?;
+
+    if env.block.time < pending.effective_after {
+        return Err(RouterError::TimelockNotExpired {
+            effective_after: pending.effective_after.seconds(),
+        });
+    }
+
+    if let Some(admin) = pending.admin {
         config.admin = deps.api.addr_validate(&admin)?;
     }
-    if let Some(factory) = new_factory_addr {
+    if let Some(factory) = pending.factory_addr {
         config.factory_addr = deps.api.addr_validate(&factory)?;
     }
+
     CONFIG.save(deps.storage, &config)?;
+    PENDING_CONFIG.remove(deps.storage);
 
     Ok(Response::new()
         .add_attribute("action", "update_config")
         .add_attribute("admin", config.admin)
         .add_attribute("factory_addr", config.factory_addr))
+}
+
+/// Cancels a pending proposal before its `effective_after`. Admin-only.
+fn execute_cancel_config_update(
+    deps: DepsMut,
+    info: MessageInfo,
+) -> Result<Response, RouterError> {
+    let config = CONFIG.load(deps.storage)?;
+    if info.sender != config.admin {
+        return Err(RouterError::Unauthorized);
+    }
+    if PENDING_CONFIG.may_load(deps.storage)?.is_none() {
+        return Err(RouterError::NoPendingConfigUpdate);
+    }
+    PENDING_CONFIG.remove(deps.storage);
+    Ok(Response::new().add_attribute("action", "cancel_config_update"))
 }
 
 #[cfg_attr(not(feature = "library"), entry_point)]

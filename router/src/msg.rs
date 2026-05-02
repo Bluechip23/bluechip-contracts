@@ -50,13 +50,24 @@ pub enum ExecuteMsg {
         deadline: Option<Timestamp>,
         recipient: Option<String>,
     },
-    /// Admin-only configuration update. Both fields are optional so the
-    /// admin can rotate ownership independently of swapping the factory
-    /// reference (e.g. after a factory migration).
-    UpdateConfig {
+    /// Admin-only. Step 1 of a 48h-timelocked config change. Records a
+    /// `PendingConfigUpdate` with `effective_after = now + 48h`. Either
+    /// field may be `None` to leave that field unchanged. Re-proposing
+    /// while a pending proposal exists is rejected with
+    /// `ConfigUpdateAlreadyPending` — the admin must `CancelConfigUpdate`
+    /// first, so any community watcher polling `PENDING_CONFIG` sees an
+    /// explicit cancellation event before a replacement proposal lands.
+    ProposeConfigUpdate {
         admin: Option<String>,
         factory_addr: Option<String>,
     },
+    /// Admin-only. Step 2 of the timelocked flow. Applies the pending
+    /// proposal once `effective_after` has elapsed. Errors with
+    /// `NoPendingConfigUpdate` if no proposal is pending or
+    /// `TimelockNotExpired` if invoked too early.
+    UpdateConfig {},
+    /// Admin-only. Cancels a pending proposal before it can be applied.
+    CancelConfigUpdate {},
     /// CW20 entry path: triggered when a user invokes `cw20::Send`
     /// targeting the router with [`Cw20HookMsg::ExecuteMultiHop`] in the
     /// body. Used when the first hop offers a creator token rather than
