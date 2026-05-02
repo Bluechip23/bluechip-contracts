@@ -254,6 +254,7 @@ pub fn execute(
             offer_asset,
             belief_price,
             max_spread,
+            allow_high_max_spread,
             to,
             transaction_deadline,
         } => {
@@ -270,6 +271,7 @@ pub fn execute(
                 offer_asset,
                 belief_price,
                 max_spread,
+                allow_high_max_spread,
                 to_addr,
                 transaction_deadline,
             )

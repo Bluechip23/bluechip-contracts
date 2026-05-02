@@ -84,6 +84,7 @@ pub(super) fn process_post_threshold_commit(
     assert_max_spread(
         belief_price,
         max_spread,
+        None,
         swap_amount,
         return_amt.checked_add(commission_amt)?,
         spread_amt,
