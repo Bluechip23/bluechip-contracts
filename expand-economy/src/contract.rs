@@ -508,6 +508,7 @@ pub fn execute_propose_withdrawal(
 
     let target = recipient.unwrap_or_else(|| info.sender.to_string());
     deps.api.addr_validate(&target)?;
+    validate_native_denom(&denom)?;
 
     let execute_after = env.block.time.plus_seconds(WITHDRAW_TIMELOCK_SECONDS);
     PENDING_WITHDRAWAL.save(
