@@ -806,4 +806,303 @@ mod tests {
             err
         );
     }
+
+    // -- Daily expansion cap + rolling window ----------------------------
+    //
+    // The daily cap is the primary defense against admin-compromise drain
+    // through the `RequestExpansion` path. These tests pin the contract's
+    // documented invariants:
+    //   - Total expansions in a 24h rolling window cannot exceed
+    //     DAILY_EXPANSION_CAP.
+    //   - The window is single-bucket-reset: when more than
+    //     DAILY_WINDOW_SECONDS elapses since `window_start`, the next
+    //     request resets `spent_in_window` to zero (acknowledged drift
+    //     vs a true sliding window — only LETS more through, never
+    //     blocks legitimately).
+    //   - Insufficient-balance graceful skip does NOT debit cap budget
+    //     (so a refund-then-retry doesn't permanently burn quota on a
+    //     payment that never landed).
+    //   - Sub-cap requests accumulate correctly across multiple calls.
+
+    use crate::state::{DAILY_EXPANSION_CAP, DAILY_WINDOW_SECONDS, EXPANSION_WINDOW};
+
+    /// A single request that exceeds the daily cap (fresh window) is
+    /// rejected with `DailyExpansionCapExceeded`. The window state is
+    /// untouched (no debit).
+    #[test]
+    fn daily_cap_rejects_single_request_exceeding_cap() {
+        let mut deps = mock_dependencies();
+        setup_contract(&mut deps);
+
+        let factory_addr = MockApi::default().addr_make("factory");
+        let user_addr = MockApi::default().addr_make("user");
+        install_factory_denom_mock(&mut deps, factory_addr.clone(), "ubluechip");
+
+        // Pre-fund the contract beyond the cap so the rejection is on
+        // the cap path, not the insufficient-balance fallback.
+        deps.querier
+            .bank
+            .update_balance(
+                &mock_env().contract.address,
+                coins(DAILY_EXPANSION_CAP.u128() + 1, "ubluechip"),
+            );
+
+        let over_cap = DAILY_EXPANSION_CAP + Uint128::new(1);
+        let err = execute(
+            deps.as_mut(),
+            mock_env(),
+            message_info(&factory_addr, &[]),
+            ExecuteMsg::ExpandEconomy(ExpandEconomyMsg::RequestExpansion {
+                recipient: user_addr.to_string(),
+                amount: over_cap,
+            }),
+        )
+        .unwrap_err();
+        assert!(
+            err.to_string().contains("Daily expansion cap exceeded"),
+            "expected DailyExpansionCapExceeded, got: {}",
+            err
+        );
+        // Window unaffected by the rejected request.
+        let window = EXPANSION_WINDOW.may_load(&deps.storage).unwrap();
+        assert!(
+            window.is_none() || window.unwrap().spent_in_window.is_zero(),
+            "rejected request must not debit window"
+        );
+    }
+
+    /// Sub-cap requests accumulate; the call that would push total past
+    /// the cap rejects, prior debits remain.
+    #[test]
+    fn daily_cap_accumulates_then_rejects_overshoot() {
+        let mut deps = mock_dependencies();
+        setup_contract(&mut deps);
+
+        let factory_addr = MockApi::default().addr_make("factory");
+        let user_addr = MockApi::default().addr_make("user");
+        install_factory_denom_mock(&mut deps, factory_addr.clone(), "ubluechip");
+
+        deps.querier
+            .bank
+            .update_balance(
+                &mock_env().contract.address,
+                coins(DAILY_EXPANSION_CAP.u128() * 3, "ubluechip"),
+            );
+
+        // Three half-cap requests: the first two land, the third overshoots.
+        let half_cap = DAILY_EXPANSION_CAP.checked_div(Uint128::new(2)).unwrap();
+
+        // Call 1: spend half cap.
+        execute(
+            deps.as_mut(),
+            mock_env(),
+            message_info(&factory_addr, &[]),
+            ExecuteMsg::ExpandEconomy(ExpandEconomyMsg::RequestExpansion {
+                recipient: user_addr.to_string(),
+                amount: half_cap,
+            }),
+        )
+        .unwrap();
+        let w = EXPANSION_WINDOW.load(&deps.storage).unwrap();
+        assert_eq!(w.spent_in_window, half_cap);
+
+        // Call 2: another (just-under) half — total is still <= cap, lands.
+        let just_under_half = half_cap - Uint128::new(1);
+        execute(
+            deps.as_mut(),
+            mock_env(),
+            message_info(&factory_addr, &[]),
+            ExecuteMsg::ExpandEconomy(ExpandEconomyMsg::RequestExpansion {
+                recipient: user_addr.to_string(),
+                amount: just_under_half,
+            }),
+        )
+        .unwrap();
+        let w = EXPANSION_WINDOW.load(&deps.storage).unwrap();
+        assert_eq!(w.spent_in_window, half_cap + just_under_half);
+
+        // Call 3: another half — overshoots. Reject with prior debits
+        // intact.
+        let pre_call3 = w.spent_in_window;
+        let err = execute(
+            deps.as_mut(),
+            mock_env(),
+            message_info(&factory_addr, &[]),
+            ExecuteMsg::ExpandEconomy(ExpandEconomyMsg::RequestExpansion {
+                recipient: user_addr.to_string(),
+                amount: half_cap,
+            }),
+        )
+        .unwrap_err();
+        assert!(err.to_string().contains("Daily expansion cap exceeded"));
+
+        // Window unchanged by the rejection.
+        let w_after = EXPANSION_WINDOW.load(&deps.storage).unwrap();
+        assert_eq!(
+            w_after.spent_in_window, pre_call3,
+            "rejected request must not mutate spent_in_window"
+        );
+    }
+
+    /// After 24h+1s elapses, the next request resets the window and
+    /// can spend a fresh full-cap budget.
+    #[test]
+    fn daily_window_rolls_over_after_24h() {
+        let mut deps = mock_dependencies();
+        setup_contract(&mut deps);
+
+        let factory_addr = MockApi::default().addr_make("factory");
+        let user_addr = MockApi::default().addr_make("user");
+        install_factory_denom_mock(&mut deps, factory_addr.clone(), "ubluechip");
+
+        deps.querier
+            .bank
+            .update_balance(
+                &mock_env().contract.address,
+                coins(DAILY_EXPANSION_CAP.u128() * 3, "ubluechip"),
+            );
+
+        // Day-1 spend: half the cap.
+        let half_cap = DAILY_EXPANSION_CAP.checked_div(Uint128::new(2)).unwrap();
+        let env_day1 = mock_env();
+        execute(
+            deps.as_mut(),
+            env_day1.clone(),
+            message_info(&factory_addr, &[]),
+            ExecuteMsg::ExpandEconomy(ExpandEconomyMsg::RequestExpansion {
+                recipient: user_addr.to_string(),
+                amount: half_cap,
+            }),
+        )
+        .unwrap();
+        let w = EXPANSION_WINDOW.load(&deps.storage).unwrap();
+        assert_eq!(w.spent_in_window, half_cap);
+        let day1_window_start = w.window_start;
+
+        // Advance time past DAILY_WINDOW_SECONDS + 1s.
+        let mut env_day2 = env_day1.clone();
+        env_day2.block.time = env_day1.block.time.plus_seconds(DAILY_WINDOW_SECONDS + 1);
+
+        // Day-2 spend: the full cap. Should succeed because the window
+        // resets on the next call after expiry.
+        execute(
+            deps.as_mut(),
+            env_day2.clone(),
+            message_info(&factory_addr, &[]),
+            ExecuteMsg::ExpandEconomy(ExpandEconomyMsg::RequestExpansion {
+                recipient: user_addr.to_string(),
+                amount: DAILY_EXPANSION_CAP,
+            }),
+        )
+        .unwrap();
+        let w = EXPANSION_WINDOW.load(&deps.storage).unwrap();
+        assert_eq!(
+            w.spent_in_window, DAILY_EXPANSION_CAP,
+            "fresh window must accept a full-cap request after rollover"
+        );
+        assert_ne!(
+            w.window_start, day1_window_start,
+            "window_start must roll over to the new request's block time"
+        );
+    }
+
+    /// Insufficient-balance graceful skip MUST NOT debit cap budget.
+    /// If the contract balance is below the requested amount, the
+    /// handler returns Ok with the skip attribute but `spent_in_window`
+    /// stays unchanged — so a later refund + retry can spend that quota.
+    #[test]
+    fn insufficient_balance_skip_does_not_burn_cap() {
+        let mut deps = mock_dependencies();
+        setup_contract(&mut deps);
+
+        let factory_addr = MockApi::default().addr_make("factory");
+        let user_addr = MockApi::default().addr_make("user");
+        install_factory_denom_mock(&mut deps, factory_addr.clone(), "ubluechip");
+
+        // Contract has zero balance — request will skip on insufficient
+        // balance. Pre-set window state to verify it stays untouched.
+        let res = execute(
+            deps.as_mut(),
+            mock_env(),
+            message_info(&factory_addr, &[]),
+            ExecuteMsg::ExpandEconomy(ExpandEconomyMsg::RequestExpansion {
+                recipient: user_addr.to_string(),
+                amount: Uint128::new(1_000_000_000),
+            }),
+        )
+        .unwrap();
+        // Skipped, not paid. No BankMsg.
+        assert_eq!(res.messages.len(), 0);
+        let action = res
+            .attributes
+            .iter()
+            .find(|a| a.key == "action")
+            .unwrap();
+        assert_eq!(action.value, "request_reward_skipped");
+        let reason = res
+            .attributes
+            .iter()
+            .find(|a| a.key == "reason")
+            .unwrap();
+        assert_eq!(reason.value, "insufficient_balance");
+
+        // Window storage is untouched (no debit).
+        let window = EXPANSION_WINDOW.may_load(&deps.storage).unwrap();
+        assert!(
+            window.is_none(),
+            "skip path must not write any window state at all; got {:?}",
+            window
+        );
+    }
+
+    /// Successful request emits a BankMsg::Send for the right amount and
+    /// debits the window. Smoke test for the happy path that complements
+    /// the existing zero-amount and unauthorized tests.
+    #[test]
+    fn successful_request_sends_bank_msg_and_debits_window() {
+        let mut deps = mock_dependencies();
+        setup_contract(&mut deps);
+
+        let factory_addr = MockApi::default().addr_make("factory");
+        let user_addr = MockApi::default().addr_make("user");
+        install_factory_denom_mock(&mut deps, factory_addr.clone(), "ubluechip");
+
+        deps.querier
+            .bank
+            .update_balance(
+                &mock_env().contract.address,
+                coins(50_000_000, "ubluechip"),
+            );
+
+        let amount = Uint128::new(10_000_000);
+        let res = execute(
+            deps.as_mut(),
+            mock_env(),
+            message_info(&factory_addr, &[]),
+            ExecuteMsg::ExpandEconomy(ExpandEconomyMsg::RequestExpansion {
+                recipient: user_addr.to_string(),
+                amount,
+            }),
+        )
+        .unwrap();
+
+        // Exactly one BankMsg::Send to the recipient for the right amount.
+        assert_eq!(res.messages.len(), 1);
+        match &res.messages[0].msg {
+            CosmosMsg::Bank(BankMsg::Send {
+                to_address,
+                amount: coins,
+            }) => {
+                assert_eq!(to_address, &user_addr.to_string());
+                assert_eq!(coins.len(), 1);
+                assert_eq!(coins[0].amount, amount);
+                assert_eq!(coins[0].denom, "ubluechip");
+            }
+            other => panic!("expected BankMsg::Send, got {:?}", other),
+        }
+
+        // Window debit equals the request amount.
+        let w = EXPANSION_WINDOW.load(&deps.storage).unwrap();
+        assert_eq!(w.spent_in_window, amount);
+    }
 }

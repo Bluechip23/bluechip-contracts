@@ -14,7 +14,7 @@ use crate::internal_bluechip_price_oracle::{
 };
 use crate::mock_querier::WasmMockQuerier;
 use crate::msg::{CreatorTokenInfo, ExecuteMsg};
-use crate::pool_struct::{CommitFeeInfo, CreatePool, PoolConfigUpdate, PoolDetails};
+use crate::pool_struct::{CreatePool, PoolConfigUpdate, PoolDetails};
 use crate::state::{
     EligiblePoolSnapshot, FactoryInstantiate, ELIGIBLE_POOL_SNAPSHOT, PENDING_CONFIG,
     POOLS_BY_CONTRACT_ADDRESS, POOLS_BY_ID, POOL_COUNTER, POOL_THRESHOLD_MINTED,
@@ -1827,9 +1827,7 @@ mod standard_pool_rate_limit_tests {
 mod anchor_bluechip_index_cache_tests {
     use super::*;
     use crate::internal_bluechip_price_oracle::INTERNAL_ORACLE;
-    use crate::state::{
-        EligiblePoolSnapshot, ELIGIBLE_POOL_SNAPSHOT, INITIAL_ANCHOR_SET, POOLS_BY_ID,
-    };
+    use crate::state::INITIAL_ANCHOR_SET;
 
     /// Register a Native/Native standard anchor pool with a chosen
     /// (bluechip, atom) ordering so we can drive both `index = 0` and
@@ -2214,6 +2212,455 @@ mod warmup_best_effort_tests {
         // works under the same setup).
         bluechip_to_usd(deps.as_ref(), amount, &env)
             .expect("bluechip_to_usd strict in steady state must succeed");
+    }
+}
+
+// ---------------------------------------------------------------------------
+// Pool-admin forwarder tests (PausePool / UnpausePool / EmergencyWithdraw /
+//                             CancelEmergencyWithdraw / RecoverStuckStates)
+// ---------------------------------------------------------------------------
+//
+// These factory handlers forward an admin-issued message to the target pool
+// contract via WasmMsg::Execute. The pool itself rejects anything not from
+// `pool_info.factory_addr`, so the factory is the only entity that can issue
+// these. Tests here verify:
+//   - Auth gate: non-admin sender → Unauthorized.
+//   - Pool registry gate: unknown pool_id → "not found in registry".
+//   - Forwarding shape: admin sender → exactly one WasmMsg::Execute targeting
+//     the registered pool address with the right inner message.
+mod pool_admin_forwarder_tests {
+    use super::*;
+    use cosmwasm_std::{from_json, CosmosMsg, WasmMsg};
+    use serde::{Deserialize, Serialize};
+
+    /// Mirror of the factory's private `PoolAdminMsg` enum so tests can
+    /// decode and assert on the forwarded body. Wire format must stay in
+    /// lock-step with `factory/src/execute/pool_lifecycle/admin.rs`.
+    #[derive(Serialize, Deserialize, Debug, PartialEq)]
+    #[serde(rename_all = "snake_case")]
+    enum PoolAdminMsgMirror {
+        Pause {},
+        Unpause {},
+        EmergencyWithdraw {},
+        CancelEmergencyWithdraw {},
+        RecoverStuckStates {
+            recovery_type: crate::pool_struct::RecoveryType,
+        },
+    }
+
+    fn setup_factory_with_pool(pool_id: u64) -> (
+        OwnedDeps<MockStorage, MockApi, WasmMockQuerier>,
+        Addr,
+    ) {
+        let mut deps = mock_deps_with_querier(&[]);
+        setup_factory(&mut deps);
+        let pool_addr = make_addr(&format!("pool_{}", pool_id));
+        register_test_pool_addr(&mut deps.storage, pool_id, &pool_addr);
+        (deps, pool_addr)
+    }
+
+    fn assert_forwards_to_pool(
+        res: cosmwasm_std::Response,
+        expected_pool_addr: &Addr,
+        expected_inner: PoolAdminMsgMirror,
+    ) {
+        assert_eq!(res.messages.len(), 1, "expected exactly one forwarded msg");
+        match &res.messages[0].msg {
+            CosmosMsg::Wasm(WasmMsg::Execute {
+                contract_addr,
+                msg,
+                funds,
+            }) => {
+                assert_eq!(contract_addr, &expected_pool_addr.to_string());
+                assert!(funds.is_empty(), "admin forwards must not attach funds");
+                let inner: PoolAdminMsgMirror = from_json(msg).unwrap();
+                assert_eq!(inner, expected_inner);
+            }
+            other => panic!("expected WasmMsg::Execute, got {:?}", other),
+        }
+    }
+
+    #[test]
+    fn pause_pool_admin_forwards_to_pool() {
+        let (mut deps, pool_addr) = setup_factory_with_pool(42);
+        let res = execute(
+            deps.as_mut(),
+            mock_env(),
+            message_info(&admin_addr(), &[]),
+            ExecuteMsg::PausePool { pool_id: 42 },
+        )
+        .unwrap();
+        assert_forwards_to_pool(res, &pool_addr, PoolAdminMsgMirror::Pause {});
+    }
+
+    #[test]
+    fn pause_pool_non_admin_rejected() {
+        let (mut deps, _) = setup_factory_with_pool(42);
+        let err = execute(
+            deps.as_mut(),
+            mock_env(),
+            message_info(&Addr::unchecked("hacker"), &[]),
+            ExecuteMsg::PausePool { pool_id: 42 },
+        )
+        .unwrap_err();
+        assert!(err.to_string().contains("Only the admin"));
+    }
+
+    #[test]
+    fn pause_pool_unknown_pool_id_rejected() {
+        let (mut deps, _) = setup_factory_with_pool(42);
+        let err = execute(
+            deps.as_mut(),
+            mock_env(),
+            message_info(&admin_addr(), &[]),
+            ExecuteMsg::PausePool { pool_id: 999 }, // not registered
+        )
+        .unwrap_err();
+        assert!(err.to_string().contains("not found in registry"));
+    }
+
+    #[test]
+    fn unpause_pool_admin_forwards_to_pool() {
+        let (mut deps, pool_addr) = setup_factory_with_pool(7);
+        let res = execute(
+            deps.as_mut(),
+            mock_env(),
+            message_info(&admin_addr(), &[]),
+            ExecuteMsg::UnpausePool { pool_id: 7 },
+        )
+        .unwrap();
+        assert_forwards_to_pool(res, &pool_addr, PoolAdminMsgMirror::Unpause {});
+    }
+
+    #[test]
+    fn unpause_pool_non_admin_rejected() {
+        let (mut deps, _) = setup_factory_with_pool(7);
+        let err = execute(
+            deps.as_mut(),
+            mock_env(),
+            message_info(&Addr::unchecked("hacker"), &[]),
+            ExecuteMsg::UnpausePool { pool_id: 7 },
+        )
+        .unwrap_err();
+        assert!(err.to_string().contains("Only the admin"));
+    }
+
+    #[test]
+    fn emergency_withdraw_admin_forwards_to_pool() {
+        let (mut deps, pool_addr) = setup_factory_with_pool(123);
+        let res = execute(
+            deps.as_mut(),
+            mock_env(),
+            message_info(&admin_addr(), &[]),
+            ExecuteMsg::EmergencyWithdrawPool { pool_id: 123 },
+        )
+        .unwrap();
+        assert_forwards_to_pool(res, &pool_addr, PoolAdminMsgMirror::EmergencyWithdraw {});
+    }
+
+    #[test]
+    fn emergency_withdraw_non_admin_rejected() {
+        let (mut deps, _) = setup_factory_with_pool(123);
+        let err = execute(
+            deps.as_mut(),
+            mock_env(),
+            message_info(&Addr::unchecked("hacker"), &[]),
+            ExecuteMsg::EmergencyWithdrawPool { pool_id: 123 },
+        )
+        .unwrap_err();
+        assert!(err.to_string().contains("Only the admin"));
+    }
+
+    #[test]
+    fn cancel_emergency_withdraw_admin_forwards_to_pool() {
+        let (mut deps, pool_addr) = setup_factory_with_pool(456);
+        let res = execute(
+            deps.as_mut(),
+            mock_env(),
+            message_info(&admin_addr(), &[]),
+            ExecuteMsg::CancelEmergencyWithdrawPool { pool_id: 456 },
+        )
+        .unwrap();
+        assert_forwards_to_pool(
+            res,
+            &pool_addr,
+            PoolAdminMsgMirror::CancelEmergencyWithdraw {},
+        );
+    }
+
+    #[test]
+    fn recover_stuck_states_admin_forwards_to_pool_with_recovery_type() {
+        let (mut deps, pool_addr) = setup_factory_with_pool(99);
+        // Each RecoveryType variant must round-trip through the forwarded
+        // payload — exercise all four.
+        for recovery in [
+            crate::pool_struct::RecoveryType::StuckThreshold,
+            crate::pool_struct::RecoveryType::StuckDistribution,
+            crate::pool_struct::RecoveryType::StuckReentrancyGuard,
+            crate::pool_struct::RecoveryType::Both,
+        ] {
+            let res = execute(
+                deps.as_mut(),
+                mock_env(),
+                message_info(&admin_addr(), &[]),
+                ExecuteMsg::RecoverPoolStuckStates {
+                    pool_id: 99,
+                    recovery_type: recovery.clone(),
+                },
+            )
+            .unwrap();
+            assert_forwards_to_pool(
+                res,
+                &pool_addr,
+                PoolAdminMsgMirror::RecoverStuckStates {
+                    recovery_type: recovery,
+                },
+            );
+        }
+    }
+
+    #[test]
+    fn recover_stuck_states_non_admin_rejected() {
+        let (mut deps, _) = setup_factory_with_pool(99);
+        let err = execute(
+            deps.as_mut(),
+            mock_env(),
+            message_info(&Addr::unchecked("hacker"), &[]),
+            ExecuteMsg::RecoverPoolStuckStates {
+                pool_id: 99,
+                recovery_type: crate::pool_struct::RecoveryType::StuckThreshold,
+            },
+        )
+        .unwrap_err();
+        assert!(err.to_string().contains("Only the admin"));
+    }
+}
+
+// ---------------------------------------------------------------------------
+// Anchor validation failure-mode tests
+// ---------------------------------------------------------------------------
+//
+// `validate_anchor_pool_choice` enforces the strict shape an anchor pool
+// must have: PoolKind::Standard, Native+Native pair of exactly
+// (bluechip_denom, atom_denom) in either order. The audit-fix
+// `anchor_bluechip_index_cache_tests` exercises the happy paths through
+// `SetAnchorPool`. These tests cover the rejection paths — the failure
+// modes that prevent a hostile or misconfigured anchor from being set.
+mod anchor_validation_failure_tests {
+    use super::*;
+    use crate::state::INITIAL_ANCHOR_SET;
+
+    fn fresh_factory_with_anchor_unset() -> OwnedDeps<MockStorage, MockApi, WasmMockQuerier> {
+        let mut deps = mock_deps_with_querier(&[]);
+        setup_factory(&mut deps);
+        // Reset one-shot guard so SetAnchorPool can fire.
+        INITIAL_ANCHOR_SET
+            .save(deps.as_mut().storage, &false)
+            .unwrap();
+        deps
+    }
+
+    /// SetAnchorPool against a Commit pool (not Standard) → rejected.
+    /// The anchor MUST be a standard pool because commit pools have a
+    /// pre-threshold phase where they can't serve swaps.
+    #[test]
+    fn set_anchor_rejects_commit_pool() {
+        let mut deps = fresh_factory_with_anchor_unset();
+        let pool_addr = make_addr("commit_pool_attempted_as_anchor");
+        // Register as Commit kind with the right denom pair shape.
+        let pool_details = PoolDetails {
+            pool_id: 50,
+            pool_token_info: [
+                TokenType::Native {
+                    denom: "ubluechip".to_string(),
+                },
+                TokenType::Native {
+                    denom: "uatom".to_string(),
+                },
+            ],
+            creator_pool_addr: pool_addr,
+            pool_kind: pool_factory_interfaces::PoolKind::Commit, // wrong kind
+            commit_pool_ordinal: 0,
+        };
+        POOLS_BY_ID
+            .save(&mut deps.storage, 50, &pool_details)
+            .unwrap();
+
+        let err = execute(
+            deps.as_mut(),
+            mock_env(),
+            message_info(&admin_addr(), &[]),
+            ExecuteMsg::SetAnchorPool { pool_id: 50 },
+        )
+        .unwrap_err();
+        assert!(
+            err.to_string().contains("Anchor pool must be a standard pool"),
+            "got: {}",
+            err
+        );
+    }
+
+    /// SetAnchorPool against a Standard pool whose pair has a CreatorToken
+    /// instead of two Natives → rejected. Anchor must price ATOM/USD via
+    /// Pyth, and a CW20 side breaks that derivation.
+    #[test]
+    fn set_anchor_rejects_native_creator_pair() {
+        let mut deps = fresh_factory_with_anchor_unset();
+        let pool_addr = make_addr("std_native_creator_pool");
+        let pool_details = PoolDetails {
+            pool_id: 51,
+            pool_token_info: [
+                TokenType::Native {
+                    denom: "ubluechip".to_string(),
+                },
+                TokenType::CreatorToken {
+                    contract_addr: Addr::unchecked("some_cw20"),
+                },
+            ],
+            creator_pool_addr: pool_addr,
+            pool_kind: pool_factory_interfaces::PoolKind::Standard,
+            commit_pool_ordinal: 0,
+        };
+        POOLS_BY_ID
+            .save(&mut deps.storage, 51, &pool_details)
+            .unwrap();
+
+        let err = execute(
+            deps.as_mut(),
+            mock_env(),
+            message_info(&admin_addr(), &[]),
+            ExecuteMsg::SetAnchorPool { pool_id: 51 },
+        )
+        .unwrap_err();
+        assert!(
+            err.to_string().contains("Anchor pool must be a Native/Native pair"),
+            "got: {}",
+            err
+        );
+    }
+
+    /// SetAnchorPool against a Standard Native+Native pool whose denoms
+    /// don't match `(bluechip_denom, atom_denom)` exactly → rejected.
+    /// Specifically a bluechip + IBC-not-atom pair: the pool has bluechip
+    /// on one side but the other side is an unrelated IBC denom. Anchor
+    /// must price ATOM/USD via Pyth, so any non-atom companion breaks
+    /// the derivation.
+    #[test]
+    fn set_anchor_rejects_bluechip_with_wrong_companion_denom() {
+        let mut deps = fresh_factory_with_anchor_unset();
+        let pool_addr = make_addr("std_bluechip_wrongibc_pool");
+        let pool_details = PoolDetails {
+            pool_id: 52,
+            pool_token_info: [
+                TokenType::Native {
+                    denom: "ubluechip".to_string(),
+                },
+                TokenType::Native {
+                    denom: "ibc/UNRELATED_DENOM".to_string(), // not uatom
+                },
+            ],
+            creator_pool_addr: pool_addr,
+            pool_kind: pool_factory_interfaces::PoolKind::Standard,
+            commit_pool_ordinal: 0,
+        };
+        POOLS_BY_ID
+            .save(&mut deps.storage, 52, &pool_details)
+            .unwrap();
+
+        let err = execute(
+            deps.as_mut(),
+            mock_env(),
+            message_info(&admin_addr(), &[]),
+            ExecuteMsg::SetAnchorPool { pool_id: 52 },
+        )
+        .unwrap_err();
+        assert!(
+            err.to_string().contains("Anchor pool must be a Native/Native pair"),
+            "got: {}",
+            err
+        );
+    }
+
+    /// SetAnchorPool against an unregistered pool_id → "not found in registry".
+    #[test]
+    fn set_anchor_rejects_unregistered_pool_id() {
+        let mut deps = fresh_factory_with_anchor_unset();
+        let err = execute(
+            deps.as_mut(),
+            mock_env(),
+            message_info(&admin_addr(), &[]),
+            ExecuteMsg::SetAnchorPool { pool_id: 9999 },
+        )
+        .unwrap_err();
+        assert!(err.to_string().contains("not found in registry"));
+    }
+
+    /// SetAnchorPool from a non-admin sender → Unauthorized.
+    #[test]
+    fn set_anchor_rejects_non_admin() {
+        let mut deps = fresh_factory_with_anchor_unset();
+        let err = execute(
+            deps.as_mut(),
+            mock_env(),
+            message_info(&Addr::unchecked("hacker"), &[]),
+            ExecuteMsg::SetAnchorPool { pool_id: 1 },
+        )
+        .unwrap_err();
+        assert!(err.to_string().contains("Only the admin"));
+    }
+
+    /// One-shot guard: after a successful SetAnchorPool, a second call
+    /// (even from admin against a different valid pool) is rejected
+    /// because INITIAL_ANCHOR_SET is now true. Subsequent anchor changes
+    /// must go through the timelocked propose/apply config flow.
+    #[test]
+    fn set_anchor_one_shot_rejects_second_call() {
+        let mut deps = fresh_factory_with_anchor_unset();
+        let pool_addr_a = make_addr("first_anchor");
+        let pool_addr_b = make_addr("second_anchor_attempt");
+        for (pid, addr) in [(60, &pool_addr_a), (61, &pool_addr_b)] {
+            let pool_details = PoolDetails {
+                pool_id: pid,
+                pool_token_info: [
+                    TokenType::Native {
+                        denom: "ubluechip".to_string(),
+                    },
+                    TokenType::Native {
+                        denom: "uatom".to_string(),
+                    },
+                ],
+                creator_pool_addr: addr.clone(),
+                pool_kind: pool_factory_interfaces::PoolKind::Standard,
+                commit_pool_ordinal: 0,
+            };
+            POOLS_BY_ID
+                .save(&mut deps.storage, pid, &pool_details)
+                .unwrap();
+        }
+
+        // First call succeeds.
+        execute(
+            deps.as_mut(),
+            mock_env(),
+            message_info(&admin_addr(), &[]),
+            ExecuteMsg::SetAnchorPool { pool_id: 60 },
+        )
+        .unwrap();
+
+        // Second call rejects with the one-shot error.
+        let err = execute(
+            deps.as_mut(),
+            mock_env(),
+            message_info(&admin_addr(), &[]),
+            ExecuteMsg::SetAnchorPool { pool_id: 61 },
+        )
+        .unwrap_err();
+        assert!(
+            err.to_string()
+                .contains("Anchor pool has already been set"),
+            "expected one-shot guard error, got: {}",
+            err
+        );
     }
 }
 
