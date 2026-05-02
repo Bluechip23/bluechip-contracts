@@ -67,6 +67,34 @@ impl TokenType {
         }
     }
 
+    /// Strict variant of `query_pool`: propagates the underlying CW20
+    /// query error instead of swallowing it as a zero balance.
+    ///
+    /// Used by callers where a silent zero on a failed CW20 balance
+    /// query would corrupt downstream accounting — e.g. the router's
+    /// slippage assertion (`router::execution`), where pre/post balance
+    /// reads of the recipient's CW20 holdings need to fail-closed: a
+    /// swallowed pre-balance error would let the user's pre-existing
+    /// CW20 holdings count toward the post-route "received" total and
+    /// silently weaken slippage protection by up to that amount.
+    /// Native bank queries already propagate via the `?` in
+    /// `query_balance`, so the only behavioural difference is on the
+    /// CW20 side.
+    pub fn query_pool_strict(
+        &self,
+        querier: &QuerierWrapper,
+        pool_addr: Addr,
+    ) -> StdResult<Uint128> {
+        match self {
+            TokenType::CreatorToken { contract_addr, .. } => {
+                query_token_balance_strict(querier, contract_addr, &pool_addr)
+            }
+            TokenType::Native { denom, .. } => {
+                query_balance(querier, pool_addr, denom.to_string())
+            }
+        }
+    }
+
     pub fn equal(&self, asset: &TokenType) -> bool {
         match (self, asset) {
             (

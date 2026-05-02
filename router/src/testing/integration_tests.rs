@@ -813,16 +813,16 @@ fn commit_phase_pool_rejected_in_execution() {
 }
 
 #[test]
-fn update_config_admin_only() {
+fn propose_config_update_admin_only() {
     let mut world = setup_world();
 
-    // Non-admin attempt rejected.
+    // Non-admin propose: rejected.
     let err = world
         .app
         .execute_contract(
             world.user.clone(),
             world.router.clone(),
-            &RouterExecuteMsg::UpdateConfig {
+            &RouterExecuteMsg::ProposeConfigUpdate {
                 admin: Some(world.user.to_string()),
                 factory_addr: None,
             },
@@ -831,16 +831,118 @@ fn update_config_admin_only() {
         .unwrap_err();
     assert!(err.root_cause().to_string().contains("Unauthorized"));
 
-    // Admin can rotate.
+    // Admin propose: succeeds.
     world
         .app
         .execute_contract(
             world.admin.clone(),
             world.router.clone(),
-            &RouterExecuteMsg::UpdateConfig {
+            &RouterExecuteMsg::ProposeConfigUpdate {
                 admin: Some(world.user.to_string()),
                 factory_addr: None,
             },
+            &[],
+        )
+        .unwrap();
+
+    // Live config is unchanged at this point — only PENDING_CONFIG was
+    // written. Admin can still configure further (proposal hasn't applied).
+    let cfg: ConfigResponse = world
+        .app
+        .wrap()
+        .query_wasm_smart(&world.router, &RouterQueryMsg::Config {})
+        .unwrap();
+    assert_eq!(cfg.admin, world.admin);
+}
+
+#[test]
+fn update_config_before_timelock_rejected() {
+    let mut world = setup_world();
+
+    // Propose now.
+    world
+        .app
+        .execute_contract(
+            world.admin.clone(),
+            world.router.clone(),
+            &RouterExecuteMsg::ProposeConfigUpdate {
+                admin: Some(world.user.to_string()),
+                factory_addr: None,
+            },
+            &[],
+        )
+        .unwrap();
+
+    // Try to apply immediately (no time advance): must reject with
+    // TimelockNotExpired.
+    let err = world
+        .app
+        .execute_contract(
+            world.admin.clone(),
+            world.router.clone(),
+            &RouterExecuteMsg::UpdateConfig {},
+            &[],
+        )
+        .unwrap_err();
+    assert!(
+        err.root_cause()
+            .to_string()
+            .contains("timelock not expired"),
+        "got: {err}"
+    );
+
+    // Live config still unchanged.
+    let cfg: ConfigResponse = world
+        .app
+        .wrap()
+        .query_wasm_smart(&world.router, &RouterQueryMsg::Config {})
+        .unwrap();
+    assert_eq!(cfg.admin, world.admin);
+}
+
+#[test]
+fn update_config_applies_after_timelock() {
+    let mut world = setup_world();
+
+    world
+        .app
+        .execute_contract(
+            world.admin.clone(),
+            world.router.clone(),
+            &RouterExecuteMsg::ProposeConfigUpdate {
+                admin: Some(world.user.to_string()),
+                factory_addr: None,
+            },
+            &[],
+        )
+        .unwrap();
+
+    // Advance past the 48h timelock + 1s buffer.
+    world.app.update_block(|block| {
+        block.time = block
+            .time
+            .plus_seconds(crate::state::ROUTER_TIMELOCK_SECONDS + 1);
+    });
+
+    // Non-admin apply: still rejected (auth check is on apply too).
+    let err = world
+        .app
+        .execute_contract(
+            world.user.clone(),
+            world.router.clone(),
+            &RouterExecuteMsg::UpdateConfig {},
+            &[],
+        )
+        .unwrap_err();
+    assert!(err.root_cause().to_string().contains("Unauthorized"));
+
+    // Admin apply: succeeds, live config updates, pending clears.
+    world
+        .app
+        .execute_contract(
+            world.admin.clone(),
+            world.router.clone(),
+            &RouterExecuteMsg::UpdateConfig {},
             &[],
         )
         .unwrap();
@@ -852,4 +954,134 @@ fn update_config_admin_only() {
         .unwrap();
     assert_eq!(cfg.admin, world.user);
     assert_eq!(cfg.bluechip_denom, BLUECHIP_DENOM);
+}
+
+#[test]
+fn re_propose_while_pending_rejected() {
+    let mut world = setup_world();
+
+    world
+        .app
+        .execute_contract(
+            world.admin.clone(),
+            world.router.clone(),
+            &RouterExecuteMsg::ProposeConfigUpdate {
+                admin: Some(world.user.to_string()),
+                factory_addr: None,
+            },
+            &[],
+        )
+        .unwrap();
+
+    // Re-propose while a prior proposal is still pending: rejected. The
+    // admin must explicitly cancel before re-proposing.
+    let err = world
+        .app
+        .execute_contract(
+            world.admin.clone(),
+            world.router.clone(),
+            &RouterExecuteMsg::ProposeConfigUpdate {
+                admin: Some(world.admin.to_string()),
+                factory_addr: None,
+            },
+            &[],
+        )
+        .unwrap_err();
+    assert!(
+        err.root_cause().to_string().contains("already pending"),
+        "got: {err}"
+    );
+}
+
+#[test]
+fn cancel_config_update_clears_pending() {
+    let mut world = setup_world();
+
+    world
+        .app
+        .execute_contract(
+            world.admin.clone(),
+            world.router.clone(),
+            &RouterExecuteMsg::ProposeConfigUpdate {
+                admin: Some(world.user.to_string()),
+                factory_addr: None,
+            },
+            &[],
+        )
+        .unwrap();
+
+    // Non-admin cancel: rejected.
+    let err = world
+        .app
+        .execute_contract(
+            world.user.clone(),
+            world.router.clone(),
+            &RouterExecuteMsg::CancelConfigUpdate {},
+            &[],
+        )
+        .unwrap_err();
+    assert!(err.root_cause().to_string().contains("Unauthorized"));
+
+    // Admin cancel: succeeds.
+    world
+        .app
+        .execute_contract(
+            world.admin.clone(),
+            world.router.clone(),
+            &RouterExecuteMsg::CancelConfigUpdate {},
+            &[],
+        )
+        .unwrap();
+
+    // Cancel again: NoPendingConfigUpdate.
+    let err = world
+        .app
+        .execute_contract(
+            world.admin.clone(),
+            world.router.clone(),
+            &RouterExecuteMsg::CancelConfigUpdate {},
+            &[],
+        )
+        .unwrap_err();
+    assert!(
+        err.root_cause()
+            .to_string()
+            .contains("No pending config update"),
+        "got: {err}"
+    );
+
+    // After cancel, a fresh propose works (the gate is per-pending, not
+    // a one-shot).
+    world
+        .app
+        .execute_contract(
+            world.admin.clone(),
+            world.router.clone(),
+            &RouterExecuteMsg::ProposeConfigUpdate {
+                admin: Some(world.admin.to_string()),
+                factory_addr: None,
+            },
+            &[],
+        )
+        .unwrap();
+}
+
+#[test]
+fn apply_with_no_pending_rejected() {
+    let mut world = setup_world();
+    let err = world
+        .app
+        .execute_contract(
+            world.admin.clone(),
+            world.router.clone(),
+            &RouterExecuteMsg::UpdateConfig {},
+            &[],
+        )
+        .unwrap_err();
+    assert!(
+        err.root_cause()
+            .to_string()
+            .contains("No pending config update"),
+        "got: {err}"
+    );
 }

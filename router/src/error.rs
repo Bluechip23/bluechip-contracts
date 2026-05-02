@@ -63,4 +63,21 @@ pub enum RouterError {
 
     #[error("Slippage exceeded: minimum receive {minimum}, actual {actual}")]
     SlippageExceeded { minimum: Uint128, actual: Uint128 },
+
+    /// Config-update propose/apply timelock has not yet elapsed. Carries
+    /// the effective-after timestamp so callers can compute the wait.
+    #[error("Config update timelock not expired (effective after {effective_after})")]
+    TimelockNotExpired { effective_after: u64 },
+
+    /// `UpdateConfig` (apply) was called with no pending proposal. The
+    /// admin must run `ProposeConfigUpdate` first.
+    #[error("No pending config update; call ProposeConfigUpdate first")]
+    NoPendingConfigUpdate,
+
+    /// `ProposeConfigUpdate` was called while a prior pending proposal
+    /// still exists. The admin must `CancelConfigUpdate` first so that
+    /// any community watcher polling `PENDING_CONFIG` sees an explicit
+    /// cancellation event before a replacement proposal lands.
+    #[error("A config update is already pending; cancel it first via CancelConfigUpdate")]
+    ConfigUpdateAlreadyPending,
 }

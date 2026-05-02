@@ -174,7 +174,14 @@ fn start_multi_hop(
     };
 
     let final_ask = operations.last().unwrap().ask_asset_info.clone();
-    let recipient_initial_balance = final_ask.query_pool(&deps.querier, recipient_addr.clone())?;
+    // Strict query (audit fix R1): on a CW20 final-ask, a swallowed
+    // pre-balance query would silently report zero and let the recipient's
+    // pre-existing CW20 holdings count toward the post-route "received"
+    // total — eroding slippage protection by up to that amount. The strict
+    // variant propagates query errors so a failed CW20 read fails the
+    // entire route closed instead of corrupting the assertion.
+    let recipient_initial_balance =
+        final_ask.query_pool_strict(&deps.querier, recipient_addr.clone())?;
 
     let last_idx = operations.len() - 1;
     let mut messages: Vec<SubMsg> = Vec::with_capacity(operations.len() + 1);
@@ -258,9 +265,14 @@ pub fn execute_swap_operation(
     }
     let to_addr = deps.api.addr_validate(&to)?;
 
+    // Strict query (audit fix R1). The router's own balance is what
+    // becomes the swap input for this hop; if a CW20 balance query
+    // silently returns zero on error we'd dispatch a zero-amount swap
+    // and the explicit zero-check below would mask the underlying
+    // query failure. Strict propagation surfaces the real cause.
     let offer_balance = operation
         .offer_asset_info
-        .query_pool(&deps.querier, env.contract.address.clone())?;
+        .query_pool_strict(&deps.querier, env.contract.address.clone())?;
     if offer_balance.is_zero() {
         return Err(RouterError::HopFailed {
             hop_index: hop_index as usize,
@@ -294,7 +306,11 @@ pub fn execute_assert_received(
         return Err(RouterError::Unauthorized);
     }
     let recipient_addr = deps.api.addr_validate(&recipient)?;
-    let current_balance = ask_info.query_pool(&deps.querier, recipient_addr.clone())?;
+    // Strict query (audit fix R1). Symmetric with the pre-route read in
+    // `start_multi_hop` — both must use the same strict variant so a
+    // CW20 query failure fails the assertion closed.
+    let current_balance =
+        ask_info.query_pool_strict(&deps.querier, recipient_addr.clone())?;
     let received = current_balance.checked_sub(prev_balance).map_err(|_| {
         RouterError::Std(StdError::generic_err(
             "recipient balance decreased during route; impossible state",
