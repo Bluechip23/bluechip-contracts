@@ -1177,3 +1177,320 @@ fn test_unpaused_pool_accepts_commit_after_previously_paused() {
     // Now should succeed (pre-threshold commit path).
     execute(deps.as_mut(), env, info, msg).unwrap();
 }
+
+// ===========================================================================
+// Fix 6 (audit): NATIVE_RAISED_FROM_COMMIT stores net-of-fees, not gross
+// ===========================================================================
+//
+// Coverage for the gross→net refactor in commit handlers + the matching
+// no-recovery read in `trigger_threshold_payout`. Each of the three commit
+// branches stores a different "what actually entered the pool's bank
+// balance" value:
+//
+//   - pre_threshold:           amount_after_fees
+//   - exact-threshold-hit:     amount_after_fees
+//   - threshold_crossing:      threshold_portion_after_fees only
+//                              (excess routes through the inline AMM swap)
+//
+// The matching read at threshold-cross time:
+//   pools_bluechip_seed = NATIVE_RAISED_FROM_COMMIT.load(...)   // direct
+//
+// (no `* (1 - fee_rate)` multiply — the per-commit fee floor is the only
+// floor applied end-to-end).
+mod native_raised_net_semantics_tests {
+    use super::*;
+    use crate::state::NATIVE_RAISED_FROM_COMMIT;
+
+    /// Pre-threshold commit must store `amount - total_fees` in
+    /// NATIVE_RAISED_FROM_COMMIT, NOT the gross `asset.amount`.
+    /// With commit_fee_bluechip=1% + commit_fee_creator=5% = 6% total,
+    /// a 1_000_000 ubluechip commit nets 940_000 (after subtracting
+    /// 10_000 + 50_000 = 60_000 in fees).
+    #[test]
+    fn pre_threshold_commit_stores_net_not_gross() {
+        let mut deps = mock_dependencies_with_balance(&[Coin {
+            denom: "ubluechip".to_string(),
+            amount: Uint128::new(100_000_000_000),
+        }]);
+        setup_pool_storage(&mut deps);
+        check_correct_factory(&mut deps);
+        with_factory_oracle(&mut deps, Uint128::new(1_000_000));
+
+        // Sanity: NATIVE_RAISED starts at zero.
+        let pre = NATIVE_RAISED_FROM_COMMIT.load(&deps.storage).unwrap();
+        assert!(pre.is_zero(), "NATIVE_RAISED must start at zero");
+
+        let commit_amount = Uint128::new(1_000_000_000); // 1000 bluechip = $1000 USD
+        let env = mock_env();
+        let info = message_info(
+            &Addr::unchecked("alice"),
+            &[Coin {
+                denom: "ubluechip".to_string(),
+                amount: commit_amount,
+            }],
+        );
+        let msg = ExecuteMsg::Commit {
+            asset: TokenInfo {
+                info: TokenType::Native {
+                    denom: "ubluechip".to_string(),
+                },
+                amount: commit_amount,
+            },
+            transaction_deadline: None,
+            belief_price: None,
+            max_spread: None,
+        };
+
+        execute(deps.as_mut(), env, info, msg).expect("pre-threshold commit must succeed");
+
+        // 1% bluechip fee + 5% creator fee = 6% total.
+        // 1_000_000_000 * 6 / 100 = 60_000_000 fees.
+        // NET = 1_000_000_000 - 60_000_000 = 940_000_000.
+        let post = NATIVE_RAISED_FROM_COMMIT.load(&deps.storage).unwrap();
+        assert_eq!(
+            post,
+            Uint128::new(940_000_000),
+            "NATIVE_RAISED must store the post-fee NET amount, not gross. Got {} (gross would be 1_000_000_000)",
+            post
+        );
+        assert_ne!(
+            post,
+            commit_amount,
+            "regression guard: NATIVE_RAISED must NOT equal the gross asset.amount"
+        );
+    }
+
+    /// Exact-threshold-hit commit (USD raised reaches exactly the
+    /// threshold via this commit) must also store the NET amount.
+    #[test]
+    fn exact_threshold_hit_stores_net_not_gross() {
+        let mut deps = mock_dependencies_with_balance(&[Coin {
+            denom: "ubluechip".to_string(),
+            amount: Uint128::new(100_000_000_000),
+        }]);
+        setup_pool_storage(&mut deps);
+        check_correct_factory(&mut deps);
+        with_factory_oracle(&mut deps, Uint128::new(1_000_000));
+
+        // Pre-seed: 24_000_000_000 NET already raised, 24_000_000_000 USD raised
+        // ($1/bluechip implied via the oracle mock).
+        NATIVE_RAISED_FROM_COMMIT
+            .save(&mut deps.storage, &Uint128::new(24_000_000_000))
+            .unwrap();
+        USD_RAISED_FROM_COMMIT
+            .save(&mut deps.storage, &Uint128::new(24_000_000_000))
+            .unwrap();
+
+        // Commit exactly $1000 (1_000_000_000 ubluechip at $1/bluechip)
+        // — pushes USD raised to exactly $25,000 (the threshold). This
+        // routes to the `threshold_hit_exact` branch (NOT
+        // process_threshold_crossing_with_excess, which fires only when
+        // usd_value > usd_to_threshold).
+        let commit_amount = Uint128::new(1_000_000_000);
+        let env = mock_env();
+        let info = message_info(
+            &Addr::unchecked("crosser"),
+            &[Coin {
+                denom: "ubluechip".to_string(),
+                amount: commit_amount,
+            }],
+        );
+        let msg = ExecuteMsg::Commit {
+            asset: TokenInfo {
+                info: TokenType::Native {
+                    denom: "ubluechip".to_string(),
+                },
+                amount: commit_amount,
+            },
+            transaction_deadline: None,
+            belief_price: None,
+            max_spread: None,
+        };
+
+        let res = execute(deps.as_mut(), env, info, msg)
+            .expect("exact-hit commit must succeed and trigger threshold");
+
+        // Verify we landed on the exact-hit branch (phase attribute).
+        let phase = res
+            .attributes
+            .iter()
+            .find(|a| a.key == "phase")
+            .expect("phase attribute must be present");
+        assert_eq!(
+            phase.value, "threshold_hit_exact",
+            "this commit should hit threshold exactly, got phase={}",
+            phase.value
+        );
+
+        // NATIVE_RAISED += amount_after_fees = 1_000_000_000 - 60_000_000 = 940_000_000
+        // Total: 24_000_000_000 + 940_000_000 = 24_940_000_000.
+        let total = NATIVE_RAISED_FROM_COMMIT.load(&deps.storage).unwrap();
+        assert_eq!(
+            total,
+            Uint128::new(24_940_000_000),
+            "exact-hit must add NET (940M) — not gross (1B). Got {}",
+            total
+        );
+    }
+
+    /// Threshold-crossing commit (usd_value > usd_to_threshold, the
+    /// "with excess" branch) must store ONLY the
+    /// `threshold_portion_after_fees` — NOT the gross
+    /// `bluechip_to_threshold`, NOT the full `amount_after_fees`. The
+    /// excess (post-fee) goes through the AMM swap inline and lands
+    /// in `pool_state.reserve0` directly, NOT in NATIVE_RAISED.
+    #[test]
+    fn threshold_crossing_stores_only_threshold_portion_after_fees() {
+        let mut deps = mock_dependencies_with_balance(&[Coin {
+            denom: "ubluechip".to_string(),
+            amount: Uint128::new(100_000_000_000),
+        }]);
+        setup_pool_storage(&mut deps);
+        check_correct_factory(&mut deps);
+        with_factory_oracle(&mut deps, Uint128::new(1_000_000));
+
+        // Pre-seed: $24,995 raised (matching NET), $5 short of threshold.
+        NATIVE_RAISED_FROM_COMMIT
+            .save(&mut deps.storage, &Uint128::new(24_995_000_000))
+            .unwrap();
+        USD_RAISED_FROM_COMMIT
+            .save(&mut deps.storage, &Uint128::new(24_995_000_000))
+            .unwrap();
+
+        // Commit $10 — overshoots threshold by $5 — routes to the
+        // threshold_crossing (with excess) branch.
+        let commit_amount = Uint128::new(10_000_000);
+        let env = mock_env();
+        let info = message_info(
+            &Addr::unchecked("crosser"),
+            &[Coin {
+                denom: "ubluechip".to_string(),
+                amount: commit_amount,
+            }],
+        );
+        let msg = ExecuteMsg::Commit {
+            asset: TokenInfo {
+                info: TokenType::Native {
+                    denom: "ubluechip".to_string(),
+                },
+                amount: commit_amount,
+            },
+            transaction_deadline: None,
+            belief_price: None,
+            max_spread: None,
+        };
+
+        let res = execute(deps.as_mut(), env, info, msg)
+            .expect("threshold-crossing commit must succeed");
+
+        // Verify we landed on threshold_crossing branch.
+        let phase = res
+            .attributes
+            .iter()
+            .find(|a| a.key == "phase")
+            .expect("phase attr must exist");
+        assert_eq!(phase.value, "threshold_crossing");
+
+        // Compute expected NET threshold portion. The handler computes:
+        //   amount_after_fees = amount - total_fees
+        //                     = 10_000_000 - (1% + 5%) * 10_000_000
+        //                     = 10_000_000 - 600_000 = 9_400_000.
+        //   bluechip_to_threshold = usd_to_bluechip_at_rate(usd_to_threshold=$5,
+        //                                                   rate=1_000_000)
+        //                         = $5 * 1e6 / 1_000_000 = 5_000_000 ubluechip.
+        //   threshold_portion_after_fees =
+        //       amount_after_fees * bluechip_to_threshold / amount
+        //     = 9_400_000 * 5_000_000 / 10_000_000 = 4_700_000.
+        // NATIVE_RAISED = 24_995_000_000 + 4_700_000 = 24_999_700_000.
+        let total = NATIVE_RAISED_FROM_COMMIT.load(&deps.storage).unwrap();
+        assert_eq!(
+            total,
+            Uint128::new(24_999_700_000),
+            "threshold-crossing must add ONLY threshold_portion_after_fees (4.7M), \
+             not gross bluechip_to_threshold (5M), not full amount_after_fees (9.4M). Got {}",
+            total
+        );
+
+        // Defense-in-depth: explicitly confirm we did NOT add the
+        // pre-refactor gross value.
+        let gross_would_be = Uint128::new(24_995_000_000 + 5_000_000);
+        assert_ne!(
+            total, gross_would_be,
+            "regression guard: NATIVE_RAISED must NOT equal pre-refactor gross"
+        );
+    }
+
+    /// `trigger_threshold_payout` reads NATIVE_RAISED_FROM_COMMIT
+    /// directly into `pools_bluechip_seed` with NO `(1 - fee_rate)`
+    /// recovery multiply. End-to-end: a pre-seeded NATIVE_RAISED of
+    /// 1_000_000 (under the max_bluechip_lock_per_pool cap) must produce
+    /// `pool_state.reserve0 = 1_000_000` after threshold-cross — the
+    /// pre-refactor code would have produced `1_000_000 * 0.94 = 940_000`.
+    #[test]
+    fn trigger_threshold_payout_reads_native_raised_directly_no_recovery_multiply() {
+        use crate::generic_helpers::trigger_threshold_payout;
+        use crate::state::{
+            COMMIT_LIMIT_INFO, POOL_FEE_STATE, POOL_INFO, POOL_STATE, THRESHOLD_PAYOUT_AMOUNTS,
+        };
+
+        let mut deps = mock_dependencies();
+        setup_pool_storage(&mut deps);
+
+        // Seed NATIVE_RAISED with a value below max_bluechip_lock_per_pool
+        // (which is 10_000_000_000 in setup_pool_storage). After the
+        // refactor, this entire amount becomes `pools_bluechip_seed`
+        // and lands as `pool_state.reserve0` (no excess carve-off).
+        let seeded_net = Uint128::new(1_000_000);
+        NATIVE_RAISED_FROM_COMMIT
+            .save(&mut deps.storage, &seeded_net)
+            .unwrap();
+
+        // Pre-load required items (as production would have at threshold-
+        // cross time).
+        let pool_info = POOL_INFO.load(&deps.storage).unwrap();
+        let mut pool_state = POOL_STATE.load(&deps.storage).unwrap();
+        let mut pool_fee_state = POOL_FEE_STATE.load(&deps.storage).unwrap();
+        let commit_config = COMMIT_LIMIT_INFO.load(&deps.storage).unwrap();
+        let payout = THRESHOLD_PAYOUT_AMOUNTS.load(&deps.storage).unwrap();
+        let fee_info = COMMITFEEINFO.load(&deps.storage).unwrap();
+
+        let _payout_msgs = trigger_threshold_payout(
+            &mut deps.storage,
+            &pool_info,
+            &mut pool_state,
+            &mut pool_fee_state,
+            &commit_config,
+            &payout,
+            &fee_info,
+            &mock_env(),
+        )
+        .expect("trigger_threshold_payout must succeed");
+
+        // Net invariant: pool_state.reserve0 == NATIVE_RAISED_FROM_COMMIT
+        // (provided we're under the cap, which we are: 1M ≪ 10B).
+        // Pre-refactor would have produced 1_000_000 * 0.94 = 940_000.
+        assert_eq!(
+            pool_state.reserve0, seeded_net,
+            "post-refactor: pool_state.reserve0 must equal NATIVE_RAISED directly. \
+             Got reserve0={}, seeded={}. (Pre-refactor would have produced 940_000.)",
+            pool_state.reserve0, seeded_net
+        );
+
+        // Defense-in-depth: the pre-refactor `gross * (1 - fee_rate)`
+        // result is explicitly NOT what we got.
+        let pre_refactor_seed = seeded_net.checked_mul_floor(Decimal::percent(94)).unwrap();
+        assert_ne!(
+            pool_state.reserve0, pre_refactor_seed,
+            "regression guard: must not produce pre-refactor recovery-multiplied seed"
+        );
+
+        // pool_state.reserve1 lands the full `payout.pool_seed_amount`
+        // creator-token allocation (this is independent of the
+        // gross→net refactor, included as a sanity check that the
+        // payout math is otherwise unchanged).
+        assert_eq!(
+            pool_state.reserve1, payout.pool_seed_amount,
+            "creator-token side of seed should be the full pool_seed_amount"
+        );
+    }
+}
