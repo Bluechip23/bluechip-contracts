@@ -4,8 +4,14 @@ use crate::pyth_types::{PriceFeedResponse, PythQueryMsg};
 use crate::state::{
     EligiblePoolSnapshot, ELIGIBLE_POOL_REFRESH_BLOCKS, ELIGIBLE_POOL_SNAPSHOT,
     FACTORYINSTANTIATEINFO, ORACLE_BOUNTY_DENOM, ORACLE_UPDATE_BOUNTY_USD,
-    POOLS_BY_CONTRACT_ADDRESS, POOLS_BY_ID, POOL_THRESHOLD_MINTED,
+    POOLS_BY_ID, POOL_THRESHOLD_MINTED,
 };
+// `POOLS_BY_CONTRACT_ADDRESS` is read only by the `#[cfg(test)]` branch
+// of `query_pool_safe` (the prod path goes through `deps.querier`).
+// Gating the import on the same cfg avoids the unused-import warning in
+// release builds while keeping the test path compiling unchanged.
+#[cfg(test)]
+use crate::state::POOLS_BY_CONTRACT_ADDRESS;
 use crate::{asset::TokenType, error::ContractError};
 use cosmwasm_schema::cw_serde;
 use cosmwasm_std::{
