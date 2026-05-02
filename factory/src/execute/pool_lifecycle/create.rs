@@ -158,6 +158,72 @@ pub(crate) fn execute_create_creator_pool(
     let factory_cw20 = FACTORYINSTANTIATEINFO.load(deps.storage)?;
     validate_pool_token_info(&pool_msg.pool_token_info, &factory_cw20.bluechip_denom)?;
 
+    // Charge a USD-denominated creation fee (paid in canonical bluechip)
+    // for commit-pool creation as anti-spam friction. Reuses the same
+    // fee knob as standard pools so deployments can enable/disable from
+    // a single config value.
+    let usd_fee = factory_cw20.standard_pool_creation_fee_usd;
+    let (required_bluechip, fee_source) = if usd_fee.is_zero() {
+        (Uint128::zero(), "disabled")
+    } else {
+        match crate::internal_bluechip_price_oracle::usd_to_bluechip_best_effort(
+            deps.as_ref(),
+            usd_fee,
+            &env,
+        ) {
+            Ok(conv) if !conv.amount.is_zero() => (conv.amount, "oracle"),
+            _ => (
+                crate::state::STANDARD_POOL_CREATION_FEE_FALLBACK_BLUECHIP,
+                "fallback",
+            ),
+        }
+    };
+    let paid_bluechip = info
+        .funds
+        .iter()
+        .find(|c| c.denom == factory_cw20.bluechip_denom)
+        .map(|c| c.amount)
+        .unwrap_or_default();
+    if paid_bluechip < required_bluechip {
+        return Err(ContractError::Std(StdError::generic_err(format!(
+            "Insufficient commit-pool creation fee: required {} {}, paid {} {}",
+            required_bluechip, factory_cw20.bluechip_denom, paid_bluechip, factory_cw20.bluechip_denom
+        ))));
+    }
+    let surplus = paid_bluechip.checked_sub(required_bluechip)?;
+    let mut fee_messages: Vec<CosmosMsg> = Vec::new();
+    if !required_bluechip.is_zero() {
+        fee_messages.push(CosmosMsg::Bank(cosmwasm_std::BankMsg::Send {
+            to_address: factory_cw20.bluechip_wallet_address.to_string(),
+            amount: vec![cosmwasm_std::Coin {
+                denom: factory_cw20.bluechip_denom.clone(),
+                amount: required_bluechip,
+            }],
+        }));
+    }
+    if !surplus.is_zero() {
+        fee_messages.push(CosmosMsg::Bank(cosmwasm_std::BankMsg::Send {
+            to_address: info.sender.to_string(),
+            amount: vec![cosmwasm_std::Coin {
+                denom: factory_cw20.bluechip_denom.clone(),
+                amount: surplus,
+            }],
+        }));
+    }
+    let mut refund_extras: Vec<cosmwasm_std::Coin> = info
+        .funds
+        .iter()
+        .filter(|c| c.denom != factory_cw20.bluechip_denom && !c.amount.is_zero())
+        .cloned()
+        .collect();
+    refund_extras.sort_by(|a, b| a.denom.cmp(&b.denom));
+    if !refund_extras.is_empty() {
+        fee_messages.push(CosmosMsg::Bank(cosmwasm_std::BankMsg::Send {
+            to_address: info.sender.to_string(),
+            amount: refund_extras,
+        }));
+    }
+
     // Per-address rate limit. Reject if `info.sender` already
     // created a commit pool within the last
     // COMMIT_POOL_CREATE_RATE_LIMIT_SECONDS. Stamps the new timestamp
@@ -249,29 +315,38 @@ pub(crate) fn execute_create_creator_pool(
     )];
 
     Ok(Response::new()
+        .add_messages(fee_messages)
         .add_attribute("action", "create")
         .add_attribute("creator", creator_attr)
         .add_attribute("pool_id", pool_id.to_string())
+        .add_attribute("required_fee_bluechip", required_bluechip.to_string())
+        .add_attribute("paid_fee_bluechip", paid_bluechip.to_string())
+        .add_attribute("refunded_bluechip", surplus.to_string())
+        .add_attribute("fee_source", fee_source)
         .add_submessages(sub_msg))
 }
 
 /// Validates a `[TokenType; 2]` pair supplied to `CreateStandardPool`.
 ///
 /// Rules (looser than the commit-pool validator at `validate_pool_token_info`
-/// because standard pools can hold ANY pair, not just bluechip + creator):
+/// because standard pools can hold canonical-bluechip/native, canonical-
+/// bluechip/CW20, or mixed-native pairs as long as the canonical bluechip is
+/// present on one side):
 ///   - No self-pair: the two entries must differ. Same denom on both sides
 ///     (`Bluechip("uatom")` + `Bluechip("uatom")`) or same address on both
 ///     sides (`CreatorToken("cosmos1...")` ×2) is rejected.
-///   - `Bluechip { denom }`: denom must be non-empty. We do NOT enforce the
-///     canonical bluechip_denom check here — standard pools can include
-///     arbitrary native or IBC denoms (this is how the ATOM/bluechip
-///     anchor pool is built).
+///   - `Bluechip { denom }`: each native denom must be non-empty.
+///   - Canonical inclusion: at least one leg must equal the factory's
+///     canonical `bluechip_denom`. This keeps standard pools anchored to
+///     protocol bluechip liquidity while still allowing a second native
+///     denom (e.g. ATOM) or a CW20 leg.
 ///   - `CreatorToken { contract_addr }`: address must bech32-validate, AND
 ///     the address must answer a `Cw20QueryMsg::TokenInfo {}` query (so we
 ///     reject typos and non-CW20 contracts at creation rather than at first
 ///     deposit).
 fn validate_standard_pool_token_info(
     deps: Deps,
+    canonical_bluechip_denom: &str,
     pair: &[crate::asset::TokenType; 2],
 ) -> Result<(), ContractError> {
     use crate::asset::TokenType;
@@ -294,6 +369,7 @@ fn validate_standard_pool_token_info(
         _ => {}
     }
 
+    let mut has_canonical_bluechip = false;
     for entry in pair.iter() {
         match entry {
             TokenType::Native { denom } => {
@@ -301,6 +377,9 @@ fn validate_standard_pool_token_info(
                     return Err(ContractError::Std(StdError::generic_err(
                         "Standard pool: Bluechip denom must be non-empty",
                     )));
+                }
+                if denom == canonical_bluechip_denom {
+                    has_canonical_bluechip = true;
                 }
             }
             TokenType::CreatorToken { contract_addr } => {
@@ -329,6 +408,12 @@ fn validate_standard_pool_token_info(
             }
         }
     }
+    if !has_canonical_bluechip {
+        return Err(ContractError::Std(StdError::generic_err(format!(
+            "Standard pool must include canonical bluechip denom \"{}\" on at least one side",
+            canonical_bluechip_denom
+        ))));
+    }
 
     Ok(())
 }
@@ -353,7 +438,11 @@ pub(crate) fn execute_create_standard_pool(
 
     // Pair-shape validation runs first so bad input fails before we charge
     // the fee or write any state.
-    validate_standard_pool_token_info(deps.as_ref(), &pool_token_info)?;
+    validate_standard_pool_token_info(
+        deps.as_ref(),
+        &factory_config.bluechip_denom,
+        &pool_token_info,
+    )?;
 
     // Per-address rate limit on standard-pool creation (audit fix). Mirror
     // of the commit-pool rate-limit at `execute_create_creator_pool`.

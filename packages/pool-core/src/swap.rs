@@ -178,6 +178,7 @@ pub fn compute_offer_amount(
 pub fn assert_max_spread(
     belief_price: Option<Decimal>,
     max_spread: Option<Decimal>,
+    allow_high_max_spread: Option<bool>,
     offer_amount: Uint128,
     return_amount: Uint128,
     spread_amount: Uint128,
@@ -185,6 +186,14 @@ pub fn assert_max_spread(
     let default_spread = Decimal::from_str(DEFAULT_SLIPPAGE)?;
 
     let max_spread = max_spread.unwrap_or(default_spread);
+    let hard_cap = if allow_high_max_spread.unwrap_or(false) {
+        Decimal::percent(10)
+    } else {
+        Decimal::percent(5)
+    };
+    if max_spread > hard_cap {
+        return Err(ContractError::MaxSpreadAssertion {});
+    }
     if belief_price == Some(Decimal::zero()) {
         return Err(ContractError::InvalidBeliefPrice {});
     }
@@ -252,6 +261,7 @@ pub fn execute_swap_cw20(
         Ok(Cw20HookMsg::Swap {
             belief_price,
             max_spread,
+            allow_high_max_spread,
             to,
             transaction_deadline,
         }) => {
@@ -275,6 +285,7 @@ pub fn execute_swap_cw20(
                 },
                 belief_price,
                 max_spread,
+                allow_high_max_spread,
                 to_addr,
                 transaction_deadline,
             )
@@ -292,6 +303,7 @@ pub fn simple_swap(
     offer_asset: TokenInfo,
     belief_price: Option<Decimal>,
     max_spread: Option<Decimal>,
+    allow_high_max_spread: Option<bool>,
     to: Option<Addr>,
     transaction_deadline: Option<cosmwasm_std::Timestamp>,
 ) -> Result<Response, ContractError> {
@@ -316,6 +328,7 @@ pub fn simple_swap(
         offer_asset,
         belief_price,
         max_spread,
+        allow_high_max_spread,
         to,
     );
     REENTRANCY_LOCK.save(deps.storage, &false)?;
@@ -331,6 +344,7 @@ pub fn execute_simple_swap(
     offer_asset: TokenInfo,
     belief_price: Option<Decimal>,
     max_spread: Option<Decimal>,
+    allow_high_max_spread: Option<bool>,
     to: Option<Addr>,
 ) -> Result<Response, ContractError> {
     let PoolCtx {
@@ -397,6 +411,7 @@ pub fn execute_simple_swap(
     assert_max_spread(
         belief_price,
         max_spread,
+        allow_high_max_spread,
         offer_asset.amount,
         return_amt.checked_add(commission_amt)?,
         spread_amt,

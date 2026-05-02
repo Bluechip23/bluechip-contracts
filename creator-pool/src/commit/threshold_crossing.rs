@@ -206,6 +206,7 @@ pub(super) fn process_threshold_crossing_with_excess(
             assert_max_spread(
                 belief_price,
                 effective_max_spread,
+                None,
                 capped_excess,
                 return_amt.checked_add(commission_amt)?,
                 spread_amt,

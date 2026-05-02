@@ -50,6 +50,8 @@ pub enum Cw20HookMsg {
     Swap {
         belief_price: Option<Decimal>,
         max_spread: Option<Decimal>,
+        #[serde(default)]
+        allow_high_max_spread: Option<bool>,
         to: Option<String>,
         transaction_deadline: Option<Timestamp>,
     },
