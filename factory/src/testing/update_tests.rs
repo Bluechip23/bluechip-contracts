@@ -3,7 +3,7 @@ use cosmwasm_std::testing::{
     MOCK_CONTRACT_ADDR,
 };
 use cosmwasm_std::{
-    from_json, to_json_binary, Addr, Coin, CosmosMsg, Decimal, Empty, OwnedDeps, Uint128, WasmMsg,
+    to_json_binary, Addr, Coin, CosmosMsg, Decimal, Empty, OwnedDeps, Uint128, WasmMsg,
 };
 
 use crate::asset::TokenType;

@@ -21,7 +21,7 @@ use crate::internal_bluechip_price_oracle::{
 };
 use crate::mock_querier::{mock_dependencies, WasmMockQuerier};
 use crate::msg::{CreatorTokenInfo, ExecuteMsg};
-use crate::pool_struct::{CommitFeeInfo, CreatePool, PoolDetails, TempPoolCreation};
+use crate::pool_struct::{CreatePool, PoolDetails, TempPoolCreation};
 use cosmwasm_std::testing::{message_info, mock_env, MockApi, MockStorage};
 use pool_factory_interfaces::PoolStateResponseForFactory;
 
@@ -461,7 +461,10 @@ fn test_create_pair_with_custom_params() {
     let info = message_info(&admin_addr(), &[]);
     instantiate(deps.as_mut(), env, info, msg).unwrap();
 
-    let custom_params = Binary::from(b"custom_pool_params");
+    // (custom_params field on CreatePool was removed in the audit refactor —
+    // see `pool_struct::CreatePool` doc-comment. Caller-supplied threshold
+    // params are no longer honored; the factory config is the single source
+    // of truth. This test now exercises the simplified shape.)
 
     let create_msg = ExecuteMsg::Create {
         pool_msg: CreatePool { pool_token_info: [
