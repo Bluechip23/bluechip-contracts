@@ -95,7 +95,6 @@ hdr "3. INSTANTIATING FACTORY (mock oracle mode)"
 FINIT=$(cat <<EOF
 {
   "factory_admin_address":"$ALICE",
-  "commit_amount_for_threshold_bluechip":"0",
   "commit_threshold_limit_usd":"1000000000",
   "pyth_contract_addr_for_conversions":"$ORACLE",
   "pyth_atom_usd_price_feed_id":"ATOM_USD",
@@ -110,8 +109,9 @@ FINIT=$(cat <<EOF
   "creator_excess_liquidity_lock_days":7,
   "atom_bluechip_anchor_pool_address":"$ALICE",
   "bluechip_mint_contract_address":null,
-  "bluechip_denom": "ubluechip",
-  "standard_pool_creation_fee_usd": "1000000"
+  "bluechip_denom":"ubluechip",
+  "atom_denom":"uatom",
+  "standard_pool_creation_fee_usd":"1000000"
 }
 EOF
 )
@@ -152,24 +152,7 @@ CREATE=$(cat <<EOF
       "pool_token_info":[
         {"bluechip":{"denom":"$DENOM"}},
         {"creator_token":{"contract_addr":"WILL_BE_CREATED_BY_FACTORY"}}
-      ],
-      "cw20_token_contract_id":1,
-      "factory_to_create_pool_addr":"$FACTORY",
-      "threshold_payout":null,
-      "commit_fee_info":{
-        "bluechip_wallet_address":"$ALICE",
-        "creator_wallet_address":"$ALICE",
-        "commit_fee_bluechip":"0.01",
-        "commit_fee_creator":"0.05"
-      },
-      "creator_token_address":"$ALICE",
-      "commit_amount_for_threshold":"0",
-      "commit_limit_usd":"100000000",
-      "pyth_contract_addr_for_conversions":"$ORACLE",
-      "pyth_atom_usd_price_feed_id":"ATOM_USD",
-      "max_bluechip_lock_per_pool":"10000000000",
-      "creator_excess_liquidity_lock_days":7,
-      "is_standard_pool":false
+      ]
     },
     "token_info":{"name":"TestToken","symbol":"TEST","decimal":6}
   }
@@ -184,7 +167,7 @@ POOL=$(wa "$H" "pool_address")
 [ -z "$POOL" ] && POOL=$(wa "$H" "pool_contract_address")
 [ -n "$POOL" ] && pass "Pool: $POOL" || { fail "No pool address"; exit 1; }
 
-CW20=$(q $POOL '{"pair":{}}' | jq -r '.data.asset_infos[1].creator_token.contract_addr // empty')
+CW20=$(q $POOL '{"pair":{}}' | jq -r '.data.pool_token_info[1].creator_token.contract_addr // empty')
 info "CW20: $CW20"
 
 # Check pre-threshold
@@ -197,7 +180,7 @@ hdr "6. COMMITTING TO POOL"
 # TokenInfo = {"info": TokenType, "amount": Uint128}
 # TokenType::Bluechip = {"bluechip":{"denom":"ubluechip"}}
 commit_msg() {
-  echo "{\"commit\":{\"asset\":{\"info\":{\"bluechip\":{\"denom\":\"$DENOM\"}},\"amount\":\"$1\"},\"amount\":\"$1\"}}"
+  echo "{\"commit\":{\"asset\":{\"info\":{\"bluechip\":{\"denom\":\"$DENOM\"}},\"amount\":\"$1\"}}}"
 }
 
 info "Alice committing 30M (~\$300)..."
@@ -210,9 +193,9 @@ H=$(send wasm execute $POOL "$(commit_msg 30000000)" --amount "30000000${DENOM}"
 C=$(chk $H)
 [ "$C" = "0" ] && pass "Bob commit 30M OK" || { fail "Bob commit 30M ($C)"; rawlog $H; }
 
-AC=$(q $POOL "{\"commiting_info\":{\"wallet\":\"$ALICE\"}}" | jq -c '.data // null')
+AC=$(q $POOL "{\"committing_info\":{\"wallet\":\"$ALICE\"}}" | jq -c '.data // null')
 info "Alice commit info: $AC"
-BC=$(q $POOL "{\"commiting_info\":{\"wallet\":\"$BOB\"}}" | jq -c '.data // null')
+BC=$(q $POOL "{\"committing_info\":{\"wallet\":\"$BOB\"}}" | jq -c '.data // null')
 info "Bob commit info: $BC"
 
 # =====================================================================
