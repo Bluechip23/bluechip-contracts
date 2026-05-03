@@ -1,6 +1,6 @@
 use cosmwasm_schema::cw_serde;
 use cosmwasm_std::{Addr, Timestamp, Uint128};
-use cw_storage_plus::Item;
+use cw_storage_plus::{Item, Map};
 
 /// Rolling 24-hour cap on `RequestExpansion` payouts (ubluechip, base
 /// units). Bounds the worst-case daily drain if the configured factory
@@ -35,6 +35,35 @@ pub struct ExpansionWindow {
 
 /// Persisted rolling-window state for `RequestExpansion` cap accounting.
 pub const EXPANSION_WINDOW: Item<ExpansionWindow> = Item::new("expansion_window");
+
+/// Per-recipient rate limit on `RequestExpansion`. Maps recipient address
+/// (as String — the wire format the factory passes) to the block-time of
+/// the most recent successful expansion paid to that recipient.
+///
+/// Defends against `RetryFactoryNotify` storms exhausting the daily
+/// `DAILY_EXPANSION_CAP` budget. A per-pool rate limit would have to
+/// include the pool's controlling identity to be effective, which would
+/// eliminate the permissionlessness of `RetryFactoryNotify` (the design
+/// goal there is that any keeper or committer can nudge the system back
+/// to consistent state). A per-recipient limit keeps retry permissionless
+/// while preventing a flurry of retries against a single bluechip wallet
+/// from burning the rolling window's budget on no-op (already-minted)
+/// or compressed-into-one-burst payouts.
+///
+/// Updated only on successful payouts (skipped requests — insufficient
+/// balance, dormant economy — do not stamp the timestamp).
+pub const LAST_EXPANSION_AT_RECIPIENT: Map<&str, Timestamp> =
+    Map::new("last_expansion_at_recipient");
+
+/// Minimum interval between successive `RequestExpansion` payouts to the
+/// same recipient. 60s is well below the natural protocol cadence (the
+/// factory's `update_internal_oracle_price` is gated at `UPDATE_INTERVAL =
+/// 300s`, and threshold-crossings happen at human-driven cadence) but tight
+/// enough that retry-storms cannot empty the daily budget faster than
+/// `DAILY_EXPANSION_CAP / interval`. With the 100k-bluechip cap and 60s
+/// floor, the worst-case drain rate is bounded at the natural rate of
+/// legitimate threshold mints.
+pub const RECIPIENT_EXPANSION_RATE_LIMIT_SECONDS: u64 = 60;
 
 #[cw_serde]
 pub struct Config {

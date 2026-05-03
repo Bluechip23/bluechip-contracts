@@ -13,7 +13,8 @@ use crate::msg::{ConfigResponse, ExecuteMsg, ExpandEconomyMsg, InstantiateMsg, M
 use crate::state::{
     Config, ExpansionWindow, PendingConfigUpdate, PendingWithdrawal, CONFIG,
     CONFIG_TIMELOCK_SECONDS, DAILY_EXPANSION_CAP, DAILY_WINDOW_SECONDS, DEFAULT_BLUECHIP_DENOM,
-    EXPANSION_WINDOW, PENDING_CONFIG_UPDATE, PENDING_WITHDRAWAL, WITHDRAW_TIMELOCK_SECONDS,
+    EXPANSION_WINDOW, LAST_EXPANSION_AT_RECIPIENT, PENDING_CONFIG_UPDATE, PENDING_WITHDRAWAL,
+    RECIPIENT_EXPANSION_RATE_LIMIT_SECONDS, WITHDRAW_TIMELOCK_SECONDS,
 };
 
 /// Minimal subset of the factory's query interface that this contract
@@ -298,6 +299,31 @@ pub fn execute_expand_economy(
             // accidentally forwarding an IBC-wrapped / wrong-prefix string.
             let recipient_addr = deps.api.addr_validate(&recipient)?;
 
+            // Per-recipient rate limit. Defends against `RetryFactoryNotify`
+            // storms compressing many threshold-mint payouts into a single
+            // burst that empties the rolling daily budget. Per-pool would
+            // require including the pool's controlling identity to be
+            // effective, eliminating retry permissionlessness; per-recipient
+            // keeps retry permissionless while bounding the worst-case rate
+            // at one payout per RECIPIENT_EXPANSION_RATE_LIMIT_SECONDS to
+            // any single bluechip wallet. Enforced on the recipient address
+            // (the factory passes `bluechip_wallet_address` here), so it
+            // also globally rate-limits the typical single-recipient
+            // deployment. Stamped only on a successful payout below.
+            let now = env.block.time;
+            if let Some(last) =
+                LAST_EXPANSION_AT_RECIPIENT.may_load(deps.storage, recipient_addr.as_str())?
+            {
+                let next_allowed = last.plus_seconds(RECIPIENT_EXPANSION_RATE_LIMIT_SECONDS);
+                if now < next_allowed {
+                    return Err(ContractError::Std(StdError::generic_err(format!(
+                        "Rate-limited: recipient {} can receive another expansion payout at {} \
+                         (last payout {}, cooldown {}s)",
+                        recipient_addr, next_allowed, last, RECIPIENT_EXPANSION_RATE_LIMIT_SECONDS
+                    ))));
+                }
+            }
+
             // Rolling 24-hour spend cap. Defense-in-depth against a
             // compromised factory key forwarding huge RequestExpansion
             // calls. The legitimate threshold-mint schedule is well below
@@ -306,7 +332,6 @@ pub fn execute_expand_economy(
             // path. Window resets opportunistically on the first call after
             // expiry rather than continuously, which is fine for cap
             // semantics — see ExpansionWindow doc.
-            let now = env.block.time;
             let window = match EXPANSION_WINDOW.may_load(deps.storage)? {
                 Some(w)
                     if now.seconds().saturating_sub(w.window_start.seconds())
@@ -363,6 +388,19 @@ pub fn execute_expand_economy(
                     window_start: window.window_start,
                     spent_in_window: new_spent,
                 },
+            )?;
+
+            // Stamp the per-recipient rate-limit timestamp on the success
+            // path only — a skipped (insufficient_balance) payout above
+            // returned early without reaching here, so the recipient is
+            // not penalized for outages of the reservoir. CosmWasm reverts
+            // every storage write on Err, so a downstream failure (e.g.
+            // BankMsg dispatch error) atomically rolls back this stamp
+            // along with the window debit.
+            LAST_EXPANSION_AT_RECIPIENT.save(
+                deps.storage,
+                recipient_addr.as_str(),
+                &now,
             )?;
 
             let send_msg = BankMsg::Send {

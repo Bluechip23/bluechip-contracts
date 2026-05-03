@@ -907,10 +907,14 @@ mod tests {
         assert_eq!(w.spent_in_window, half_cap);
 
         // Call 2: another (just-under) half — total is still <= cap, lands.
+        // Advance block time past the per-recipient rate-limit window so the
+        // same recipient can receive the next payout.
         let just_under_half = half_cap - Uint128::new(1);
+        let mut env_call2 = mock_env();
+        env_call2.block.time = env_call2.block.time.plus_seconds(120);
         execute(
             deps.as_mut(),
-            mock_env(),
+            env_call2.clone(),
             message_info(&factory_addr, &[]),
             ExecuteMsg::ExpandEconomy(ExpandEconomyMsg::RequestExpansion {
                 recipient: user_addr.to_string(),
@@ -922,11 +926,15 @@ mod tests {
         assert_eq!(w.spent_in_window, half_cap + just_under_half);
 
         // Call 3: another half — overshoots. Reject with prior debits
-        // intact.
+        // intact. Same rate-limit advance as call 2 so the rejection
+        // exercises the daily-cap branch rather than the per-recipient
+        // rate-limit branch.
         let pre_call3 = w.spent_in_window;
+        let mut env_call3 = mock_env();
+        env_call3.block.time = env_call3.block.time.plus_seconds(240);
         let err = execute(
             deps.as_mut(),
-            mock_env(),
+            env_call3,
             message_info(&factory_addr, &[]),
             ExecuteMsg::ExpandEconomy(ExpandEconomyMsg::RequestExpansion {
                 recipient: user_addr.to_string(),
