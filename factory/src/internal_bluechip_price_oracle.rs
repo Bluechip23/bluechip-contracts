@@ -1344,7 +1344,7 @@ pub fn query_pyth_atom_usd_price(deps: Deps, env: &Env) -> StdResult<Uint128> {
                 }
             };
 
-        let current_time = env.block.time.seconds() as i64;
+        let current_time = env.block.time.seconds();
 
         // Extract price data from either standard Pyth response or Mock Oracle response
         let price_data = if let Some(feed) = response.price_feed {
@@ -1357,9 +1357,36 @@ pub fn query_pyth_atom_usd_price(deps: Deps, env: &Env) -> StdResult<Uint128> {
             ));
         };
 
-        if current_time - price_data.publish_time
-            > crate::state::MAX_PRICE_AGE_SECONDS_BEFORE_STALE as i64
-        {
+        // Reject negative publish_time. Honest Pyth feeds always emit a
+        // positive Unix timestamp; a negative value indicates a malformed
+        // or attacker-crafted response. Without this guard the staleness
+        // arithmetic below would wrap on i64 - i64 in release wasm and
+        // a far-past i64::MIN publish_time could vacuously pass the cap.
+        if price_data.publish_time < 0 {
+            return Err(StdError::generic_err(
+                "Pyth publish_time is negative",
+            ));
+        }
+        let publish_time_u64 = price_data.publish_time as u64;
+
+        // Reject publish_time meaningfully in the future. A 5-second tolerance
+        // covers honest clock skew between Pyth publishers and the chain;
+        // anything beyond that is either (a) a buggy/malicious publisher
+        // posting a far-future timestamp to bypass the staleness window, or
+        // (b) a feed mis-routing where the consumed value is unrelated to
+        // the current chain epoch. Either way, refuse to use it.
+        const PYTH_FUTURE_SKEW_TOLERANCE_SECONDS: u64 = 5;
+        if publish_time_u64 > current_time.saturating_add(PYTH_FUTURE_SKEW_TOLERANCE_SECONDS) {
+            return Err(StdError::generic_err(
+                "Pyth publish_time is in the future beyond the allowed skew tolerance",
+            ));
+        }
+
+        // Saturating subtraction prevents any wrap on borderline cases
+        // (publish_time slightly ahead of current_time within tolerance,
+        // which is permitted above and yields age == 0 here).
+        let age_seconds = current_time.saturating_sub(publish_time_u64);
+        if age_seconds > crate::state::MAX_PRICE_AGE_SECONDS_BEFORE_STALE {
             return Err(StdError::generic_err("ATOM price is stale"));
         }
 
