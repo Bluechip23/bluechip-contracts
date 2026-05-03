@@ -167,7 +167,7 @@ C=$(chk $H)
 POOL=$(wa "$H" "pool_address")
 [ -z "$POOL" ] && POOL=$(wa "$H" "pool_contract_address")
 info "Pool: $POOL"
-CW20=$(q $POOL '{"pair":{}}' | jq -r '.data.asset_infos[1].creator_token.contract_addr // empty')
+CW20=$(q $POOL '{"pair":{}}' | jq -r '.data.pool_token_info[1].creator_token.contract_addr // empty')
 info "CW20: $CW20"
 
 commit_msg() {

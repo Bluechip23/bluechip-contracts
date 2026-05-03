@@ -167,7 +167,7 @@ POOL=$(wa "$H" "pool_address")
 [ -z "$POOL" ] && POOL=$(wa "$H" "pool_contract_address")
 [ -n "$POOL" ] && pass "Pool: $POOL" || { fail "No pool address"; exit 1; }
 
-CW20=$(q $POOL '{"pair":{}}' | jq -r '.data.asset_infos[1].creator_token.contract_addr // empty')
+CW20=$(q $POOL '{"pair":{}}' | jq -r '.data.pool_token_info[1].creator_token.contract_addr // empty')
 info "CW20: $CW20"
 
 # Check pre-threshold
@@ -193,9 +193,9 @@ H=$(send wasm execute $POOL "$(commit_msg 30000000)" --amount "30000000${DENOM}"
 C=$(chk $H)
 [ "$C" = "0" ] && pass "Bob commit 30M OK" || { fail "Bob commit 30M ($C)"; rawlog $H; }
 
-AC=$(q $POOL "{\"commiting_info\":{\"wallet\":\"$ALICE\"}}" | jq -c '.data // null')
+AC=$(q $POOL "{\"committing_info\":{\"wallet\":\"$ALICE\"}}" | jq -c '.data // null')
 info "Alice commit info: $AC"
-BC=$(q $POOL "{\"commiting_info\":{\"wallet\":\"$BOB\"}}" | jq -c '.data // null')
+BC=$(q $POOL "{\"committing_info\":{\"wallet\":\"$BOB\"}}" | jq -c '.data // null')
 info "Bob commit info: $BC"
 
 # =====================================================================

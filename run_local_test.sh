@@ -319,7 +319,7 @@ CREATOR_A=$(qry "$POOL_A" '{"pair":{}}' \
   | python3 -c "
 import json, sys
 d = json.load(sys.stdin)
-for t in d.get('data', {}).get('asset_infos', []):
+for t in d.get('data', {}).get('pool_token_info', []):
     ct = t.get('creator_token', {})
     if ct:
         print(ct.get('contract_addr', 'ERR')); exit()
@@ -611,7 +611,7 @@ CREATOR_B=$(qry "$POOL_B" '{"pair":{}}' \
   | python3 -c "
 import json, sys
 d = json.load(sys.stdin)
-for t in d.get('data', {}).get('asset_infos', []):
+for t in d.get('data', {}).get('pool_token_info', []):
     ct = t.get('creator_token', {})
     if ct:
         print(ct.get('contract_addr', 'ERR')); exit()

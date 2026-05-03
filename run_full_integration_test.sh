@@ -228,7 +228,7 @@ C=$(chk $H)
 POOL=$(wa "$H" "pool_address")
 [ -z "$POOL" ] && POOL=$(wa "$H" "pool_contract_address")
 info "Pool: $POOL"
-CW20=$(q $POOL '{"pair":{}}' | jq -r '.data.asset_infos[1].creator_token.contract_addr // empty')
+CW20=$(q $POOL '{"pair":{}}' | jq -r '.data.pool_token_info[1].creator_token.contract_addr // empty')
 info "CW20: $CW20"
 
 # Verify pool is pre-threshold
@@ -359,7 +359,7 @@ C=$(chk $H)
 [ "$C" = "0" ] && pass "Pool2 created" || { fail "Pool2 create ($C)"; }
 POOL2=$(wa "$H" "pool_address")
 [ -z "$POOL2" ] && POOL2=$(wa "$H" "pool_contract_address")
-CW20_2=$(q $POOL2 '{"pair":{}}' | jq -r '.data.asset_infos[1].creator_token.contract_addr // empty')
+CW20_2=$(q $POOL2 '{"pair":{}}' | jq -r '.data.pool_token_info[1].creator_token.contract_addr // empty')
 info "Pool2: $POOL2  CW20_2: $CW20_2"
 
 # Alice commits 95M (~$950) — close to threshold
@@ -798,7 +798,7 @@ C=$(chk $H)
 [ "$C" = "0" ] && pass "Pool3 created" || { fail "Pool3 create ($C)"; }
 POOL3=$(wa "$H" "pool_address")
 [ -z "$POOL3" ] && POOL3=$(wa "$H" "pool_contract_address")
-CW20_3=$(q $POOL3 '{"pair":{}}' | jq -r '.data.asset_infos[1].creator_token.contract_addr // empty')
+CW20_3=$(q $POOL3 '{"pair":{}}' | jq -r '.data.pool_token_info[1].creator_token.contract_addr // empty')
 info "Pool3: $POOL3  CW20_3: $CW20_3"
 
 # Pool2 already crossed threshold in Phase 8.
@@ -974,7 +974,7 @@ C=$(chk $H)
 [ "$C" = "0" ] && pass "Pool4 created" || { fail "Pool4 create ($C)"; rawlog $H; }
 POOL4=$(wa "$H" "pool_address")
 [ -z "$POOL4" ] && POOL4=$(wa "$H" "pool_contract_address")
-CW20_4=$(q $POOL4 '{"pair":{}}' | jq -r '.data.asset_infos[1].creator_token.contract_addr // empty')
+CW20_4=$(q $POOL4 '{"pair":{}}' | jq -r '.data.pool_token_info[1].creator_token.contract_addr // empty')
 info "Pool4: $POOL4  CW20_4: $CW20_4"
 
 info "Alice crosses threshold on Pool4 (single-shot 100000001)..."

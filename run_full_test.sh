@@ -393,7 +393,7 @@ CREATOR_TOKEN=$(qry "$POOL_ADDR" '{"pair":{}}' \
   | python3 -c "
 import json, sys
 d = json.load(sys.stdin)
-for t in d.get('data', {}).get('asset_infos', []):
+for t in d.get('data', {}).get('pool_token_info', []):
     ct = t.get('creator_token', {})
     if ct:
         print(ct.get('contract_addr', 'ERR')); exit()
@@ -507,9 +507,9 @@ print(f'    USD raised: {d.get(\"usd_raised_from_commit\",\"?\")}  Native raised
 
 # Check committing info for both wallets
 echo "  Alice commit info:"
-qry "$POOL_ADDR" "{\"commiting_info\":{\"wallet\":\"$ALICE\"}}" | python3 -c "import json,sys; d=json.load(sys.stdin).get('data',{}); print(f'    usd_committed={d}')" 2>/dev/null
+qry "$POOL_ADDR" "{\"committing_info\":{\"wallet\":\"$ALICE\"}}" | python3 -c "import json,sys; d=json.load(sys.stdin).get('data',{}); print(f'    usd_committed={d}')" 2>/dev/null
 echo "  Bob commit info:"
-qry "$POOL_ADDR" "{\"commiting_info\":{\"wallet\":\"$BOB\"}}" | python3 -c "import json,sys; d=json.load(sys.stdin).get('data',{}); print(f'    usd_committed={d}')" 2>/dev/null
+qry "$POOL_ADDR" "{\"committing_info\":{\"wallet\":\"$BOB\"}}" | python3 -c "import json,sys; d=json.load(sys.stdin).get('data',{}); print(f'    usd_committed={d}')" 2>/dev/null
 
 # =====================================================================
 # PHASE 4: THRESHOLD CROSSING
