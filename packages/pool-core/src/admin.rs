@@ -15,9 +15,8 @@ use crate::error::ContractError;
 use crate::msg::PoolConfigUpdate;
 use crate::state::{
     EmergencyWithdrawalInfo, COMMITFEEINFO, CREATOR_FEE_POT, EMERGENCY_DRAINED,
-    EMERGENCY_WITHDRAWAL, EMERGENCY_WITHDRAW_DELAY_SECONDS, MIN_LIQUIDITY_FLOOR_OVERRIDE,
-    PENDING_EMERGENCY_WITHDRAW, POOL_FEE_STATE, POOL_INFO, POOL_PAUSED, POOL_PAUSED_AUTO,
-    POOL_SPECS, POOL_STATE,
+    EMERGENCY_WITHDRAWAL, EMERGENCY_WITHDRAW_DELAY_SECONDS, PENDING_EMERGENCY_WITHDRAW,
+    POOL_FEE_STATE, POOL_INFO, POOL_PAUSED, POOL_PAUSED_AUTO, POOL_SPECS, POOL_STATE,
 };
 use cosmwasm_std::{
     Addr, CosmosMsg, Decimal, DepsMut, Env, MessageInfo, Response, StdError, Storage, Uint128,
@@ -344,25 +343,6 @@ pub fn execute_update_config_from_factory(
 
     if specs_changed {
         POOL_SPECS.save(deps.storage, &specs)?;
-    }
-
-    // Per-pool min-liquidity floor override. Stored in a dedicated Item
-    // (not on `PoolSpecs`) so the wire format of the existing PoolSpecs
-    // struct stays unchanged for already-deployed pools. Setting to
-    // `Some(zero)` clears the override and reverts to the global
-    // `MINIMUM_LIQUIDITY` floor; non-zero values raise the per-side floor
-    // proportionally. Used by the factory to harden the ATOM/bluechip
-    // anchor pool against drain-the-anchor oracle DoS — see
-    // `factory::execute::oracle::execute_set_anchor_pool` and
-    // `refresh_internal_oracle_for_anchor_change` for the dispatch sites.
-    if let Some(floor) = update.min_liquidity_floor {
-        if floor.is_zero() {
-            MIN_LIQUIDITY_FLOOR_OVERRIDE.remove(deps.storage);
-            attributes.push(("min_liquidity_floor", "cleared"));
-        } else {
-            MIN_LIQUIDITY_FLOOR_OVERRIDE.save(deps.storage, &floor)?;
-            attributes.push(("min_liquidity_floor", "updated"));
-        }
     }
 
     // Per-pool `oracle_address` rotation removed (audit fix). The oracle

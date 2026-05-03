@@ -272,62 +272,11 @@ pub fn execute_set_anchor_pool(
 
     crate::state::INITIAL_ANCHOR_SET.save(deps.storage, &true)?;
 
-    // Pin a high per-side reserve floor on the new anchor so its
-    // reserves can never be drained below the oracle's MIN_POOL_LIQUIDITY
-    // eligibility threshold. Dispatched as a same-tx WasmMsg — atomic
-    // with the anchor designation, so a successful SetAnchorPool always
-    // leaves the anchor with the protective floor in place.
-    let floor_msg = build_anchor_floor_update_msg(
-        &pool_addr,
-        crate::state::ANCHOR_PER_SIDE_LIQUIDITY_FLOOR,
-    )?;
-
     Ok(Response::new()
-        .add_message(floor_msg)
         .add_attribute("action", "set_anchor_pool")
         .add_attribute("pool_id", pool_id.to_string())
         .add_attribute("pool_addr", pool_addr.to_string())
-        .add_attribute("pools_in_oracle_after_refresh", pools_in_oracle.to_string())
-        .add_attribute(
-            "anchor_min_liquidity_floor",
-            crate::state::ANCHOR_PER_SIDE_LIQUIDITY_FLOOR.to_string(),
-        ))
-}
-
-/// Builds the `UpdateConfigFromFactory` WasmMsg that pins a per-side
-/// reserve floor on the anchor pool. Used by `execute_set_anchor_pool`
-/// (one-shot bootstrap) and by the timelocked anchor-change apply path
-/// in `execute_update_factory_config` so the floor is dispatched on
-/// every transition into "this address is now the anchor".
-///
-/// Pool-side validation: `pool_core::admin::execute_update_config_from_factory`
-/// rejects unless `info.sender == pool.factory_addr`, so this dispatch
-/// lands cleanly when sent from the factory contract address.
-pub(crate) fn build_anchor_floor_update_msg(
-    pool_addr: &cosmwasm_std::Addr,
-    floor: cosmwasm_std::Uint128,
-) -> Result<cosmwasm_std::CosmosMsg, ContractError> {
-    use cosmwasm_std::{to_json_binary, WasmMsg};
-
-    #[derive(serde::Serialize)]
-    #[serde(rename_all = "snake_case")]
-    enum PoolExecuteMsg {
-        UpdateConfigFromFactory {
-            update: crate::pool_struct::PoolConfigUpdate,
-        },
-    }
-
-    Ok(CosmosMsg::Wasm(WasmMsg::Execute {
-        contract_addr: pool_addr.to_string(),
-        msg: to_json_binary(&PoolExecuteMsg::UpdateConfigFromFactory {
-            update: crate::pool_struct::PoolConfigUpdate {
-                lp_fee: None,
-                min_commit_interval: None,
-                min_liquidity_floor: Some(floor),
-            },
-        })?,
-        funds: vec![],
-    }))
+        .add_attribute("pools_in_oracle_after_refresh", pools_in_oracle.to_string()))
 }
 
 /// Strict shape check for an anchor-pool candidate. The anchor MUST be a

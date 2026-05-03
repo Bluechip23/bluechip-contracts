@@ -367,39 +367,6 @@ pub const POST_THRESHOLD_COOLDOWN_UNTIL_BLOCK: Item<u64> =
 /// Uniswap-V2-style minimum-liquidity floor permanently locked on the
 /// first deposit, and the per-reserve floor used by auto-pause checks.
 pub const MINIMUM_LIQUIDITY: Uint128 = Uint128::new(1000);
-
-/// Per-pool override of the per-side reserve floor. When set non-zero,
-/// every drain-side path (swap pre/post checks, auto-pause arming,
-/// auto-unpause clearing) compares reserves against
-/// `max(MINIMUM_LIQUIDITY, override)` instead of the global default.
-///
-/// Wired to defend the ATOM/bluechip anchor pool. The factory's
-/// `SetAnchorPool` (and the timelocked anchor-change path) dispatches
-/// an `UpdateConfigFromFactory { min_liquidity_floor: Some(...) }` to
-/// the newly-anchored pool so the anchor's reserves can never be
-/// pushed below the oracle's `MIN_POOL_LIQUIDITY` eligibility
-/// threshold by an attacker draining via swaps or by an LP withdrawing
-/// down to the global 1000-unit floor.
-///
-/// `may_load.unwrap_or(zero)` semantics — absent storage is "no
-/// override", and `effective_min_liquidity` collapses to the global
-/// `MINIMUM_LIQUIDITY`. Backward-compatible with every pool deployed
-/// before this Item existed.
-pub const MIN_LIQUIDITY_FLOOR_OVERRIDE: Item<Uint128> =
-    Item::new("min_liquidity_floor_override");
-
-/// Resolves the effective per-side reserve floor for a pool.
-///
-/// Returns `max(MINIMUM_LIQUIDITY, MIN_LIQUIDITY_FLOOR_OVERRIDE)`. Used
-/// at every drain-side check so a single pool-level override (set by the
-/// factory on the anchor) propagates through swaps, removes, and the
-/// auto-pause/unpause arming uniformly.
-pub fn effective_min_liquidity(storage: &dyn Storage) -> StdResult<Uint128> {
-    let override_floor = MIN_LIQUIDITY_FLOOR_OVERRIDE
-        .may_load(storage)?
-        .unwrap_or(Uint128::zero());
-    Ok(MINIMUM_LIQUIDITY.max(override_floor))
-}
 /// 24 hours, in seconds — timelock between emergency_withdraw_initiate
 /// and emergency_withdraw_core_drain.
 pub const EMERGENCY_WITHDRAW_DELAY_SECONDS: u64 = 86_400;
@@ -456,8 +423,8 @@ pub fn maybe_auto_pause_on_low_liquidity(
     storage: &mut dyn Storage,
     pool_state: &PoolState,
 ) -> StdResult<bool> {
-    let floor = effective_min_liquidity(storage)?;
-    let drained = pool_state.reserve0 < floor || pool_state.reserve1 < floor;
+    let drained =
+        pool_state.reserve0 < MINIMUM_LIQUIDITY || pool_state.reserve1 < MINIMUM_LIQUIDITY;
     if !drained {
         return Ok(false);
     }

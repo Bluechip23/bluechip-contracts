@@ -30,22 +30,6 @@ pub struct CommitFeeInfo {
 pub struct PoolConfigUpdate {
     pub lp_fee: Option<Decimal>,
     pub min_commit_interval: Option<u64>,
-    /// Per-pool override of the per-side reserve floor enforced by every
-    /// drain path (swaps, removes, auto-pause). When `Some(value)`, the
-    /// effective floor is `max(MINIMUM_LIQUIDITY, value)`. Used to harden
-    /// the ATOM/bluechip anchor pool against drain-the-anchor oracle DoS
-    /// attacks: the factory dispatches this update with a high floor on
-    /// `SetAnchorPool` so the anchor's reserves can never be pushed below
-    /// the oracle's `MIN_POOL_LIQUIDITY` eligibility threshold via swaps
-    /// or LP withdrawals.
-    ///
-    /// `None` leaves the existing override (or its absence) unchanged on
-    /// apply. Pass `Some(Uint128::zero())` to explicitly clear an
-    /// existing override and revert to the global `MINIMUM_LIQUIDITY`
-    /// floor. Update is admin-gated through the same factory-only path
-    /// as the other fields.
-    #[serde(default)]
-    pub min_liquidity_floor: Option<Uint128>,
     // `usd_payment_tolerance_bps` removed — see `PoolSpecs` doc-comment
     // in `pool-core::state` for rationale.
     //

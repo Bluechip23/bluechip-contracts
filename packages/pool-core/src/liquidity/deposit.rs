@@ -26,10 +26,10 @@ use crate::liquidity_helpers::{
     calc_liquidity_for_deposit, calculate_fee_size_multiplier, check_slippage,
 };
 use crate::state::{
-    effective_min_liquidity, DepositVerifyContext, PoolInfo, PoolSpecs, Position, TokenMetadata,
-    DEPOSIT_VERIFY_CTX, DEPOSIT_VERIFY_REPLY_ID, LIQUIDITY_POSITIONS, MINIMUM_LIQUIDITY,
-    NEXT_POSITION_ID, OWNER_POSITIONS, POOL_ANALYTICS, POOL_FEE_STATE, POOL_INFO, POOL_PAUSED,
-    POOL_PAUSED_AUTO, POOL_SPECS, POOL_STATE, REENTRANCY_LOCK,
+    DepositVerifyContext, PoolInfo, PoolSpecs, Position, TokenMetadata, DEPOSIT_VERIFY_CTX,
+    DEPOSIT_VERIFY_REPLY_ID, LIQUIDITY_POSITIONS, MINIMUM_LIQUIDITY, NEXT_POSITION_ID,
+    OWNER_POSITIONS, POOL_ANALYTICS, POOL_FEE_STATE, POOL_INFO, POOL_PAUSED, POOL_PAUSED_AUTO,
+    POOL_SPECS, POOL_STATE, REENTRANCY_LOCK,
 };
 use crate::swap::update_price_accumulator;
 
@@ -448,9 +448,8 @@ fn execute_deposit_liquidity_inner(
     // invariant — defense-in-depth against any future call site that
     // bypasses the dispatch gate.
     let was_auto_paused = POOL_PAUSED_AUTO.may_load(deps.storage)?.unwrap_or(false);
-    let auto_unpause_floor = effective_min_liquidity(deps.storage)?;
     let reserves_recovered =
-        pool_state.reserve0 >= auto_unpause_floor && pool_state.reserve1 >= auto_unpause_floor;
+        pool_state.reserve0 >= MINIMUM_LIQUIDITY && pool_state.reserve1 >= MINIMUM_LIQUIDITY;
     let unpaused = was_auto_paused && reserves_recovered;
     if unpaused {
         POOL_PAUSED.save(deps.storage, &false)?;

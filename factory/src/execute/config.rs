@@ -207,31 +207,10 @@ pub fn execute_update_factory_config(
             &env,
             &new_anchor,
         )?;
-        // Pin the protective per-side reserve floor on the newly-anchored
-        // pool. Same dispatch as `execute_set_anchor_pool`'s one-shot
-        // path so both routes into "this pool is now the anchor" leave
-        // the anchor with the floor in place.
-        //
-        // Note: the previous anchor's floor is intentionally NOT cleared
-        // here — leaving an old anchor with a high floor is benign
-        // (LPs of the no-longer-anchor pool retain their fee rights and
-        // can still trade; they just can't drain reserves below the
-        // higher floor). Operators who want to release the old anchor's
-        // floor can run a follow-up `ProposePoolConfigUpdate` with
-        // `min_liquidity_floor: Some(zero)` through the standard 48h flow.
-        let floor_msg = super::oracle::build_anchor_floor_update_msg(
-            &new_anchor,
-            crate::state::ANCHOR_PER_SIDE_LIQUIDITY_FLOOR,
-        )?;
         response = response
-            .add_message(floor_msg)
             .add_attribute("anchor_changed", "true")
             .add_attribute("new_anchor_addr", new_anchor.to_string())
-            .add_attribute("pools_in_oracle_after_refresh", pools_in_oracle.to_string())
-            .add_attribute(
-                "anchor_min_liquidity_floor",
-                crate::state::ANCHOR_PER_SIDE_LIQUIDITY_FLOOR.to_string(),
-            );
+            .add_attribute("pools_in_oracle_after_refresh", pools_in_oracle.to_string());
     }
     Ok(response)
 }

@@ -253,7 +253,6 @@ fn test_update_pool_config_sends_message_to_pool() {
     let update = PoolConfigUpdate {
         lp_fee: Some(Decimal::percent(5)),
         min_commit_interval: Some(120),
-        min_liquidity_floor: None,
     };
 
     // Step 1: Propose — no messages sent yet
@@ -296,7 +295,6 @@ fn test_update_pool_config_unauthorized() {
     let update = PoolConfigUpdate {
         lp_fee: Some(Decimal::percent(5)),
         min_commit_interval: None,
-        min_liquidity_floor: None,
     };
 
     let msg = ExecuteMsg::ProposePoolConfigUpdate {
@@ -320,7 +318,6 @@ fn test_update_pool_config_nonexistent_pool() {
     let update = PoolConfigUpdate {
         lp_fee: None,
         min_commit_interval: None,
-        min_liquidity_floor: None,
     };
 
     let msg = ExecuteMsg::ProposePoolConfigUpdate {

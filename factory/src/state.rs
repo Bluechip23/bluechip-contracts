@@ -155,29 +155,6 @@ pub const INITIAL_ANCHOR_SET: Item<bool> = Item::new("initial_anchor_set");
 // `FactoryInstantiate.standard_pool_creation_fee_usd`.
 pub const STANDARD_POOL_CREATION_FEE_FALLBACK_BLUECHIP: Uint128 = Uint128::new(100_000_000);
 
-// Per-side reserve floor pinned on the ATOM/bluechip anchor pool when the
-// factory designates it (one-shot `SetAnchorPool` and timelocked
-// anchor-change in `UpdateConfig` both dispatch this). Defends against
-// drain-the-anchor oracle DoS: an attacker who could swap-drain the anchor
-// down to the global per-side `MINIMUM_LIQUIDITY = 1000` floor would push
-// the anchor's reserve sum well below the oracle's
-// `MIN_POOL_LIQUIDITY = 10_000_000_000` eligibility threshold, making the
-// oracle skip the anchor on every sample, which after
-// `MAX_ORACLE_STALENESS_SECONDS = 360s` freezes every commit and post-
-// threshold swap protocol-wide until liquidity is restored or admin
-// runs the 48h-timelocked force-rotate path.
-//
-// 50_000_000_000 base units = 50,000 of each token-side at 6-decimal
-// denoms. With both sides floored at 50k, the anchor's reserve sum is
-// always ≥ 100,000 — 10× the oracle's 10k threshold, leaving margin
-// even if one side drifts well below the other through normal trading.
-//
-// Tunable post-deployment via the standard 48h `ProposePoolConfigUpdate`
-// flow if a different chain's economics warrant a higher (or lower)
-// floor — set to a non-zero value to raise; pass `Some(zero)` to
-// clear back to the global default.
-pub const ANCHOR_PER_SIDE_LIQUIDITY_FLOOR: Uint128 = Uint128::new(50_000_000_000);
-
 #[cw_serde]
 pub struct PendingPoolConfig {
     pub pool_id: u64,

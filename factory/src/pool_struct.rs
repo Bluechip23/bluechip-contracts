@@ -27,17 +27,6 @@ pub struct CreatePool {
 pub struct PoolConfigUpdate {
     pub lp_fee: Option<Decimal>,
     pub min_commit_interval: Option<u64>,
-    /// Mirrors `pool_core::msg::PoolConfigUpdate.min_liquidity_floor`.
-    /// Wire format must match exactly: this struct is serialised to JSON
-    /// in `execute_apply_pool_config_update` and deserialised on the
-    /// pool side using `pool_core::msg::PoolConfigUpdate`. See the
-    /// pool-side struct for full semantics — short version: `Some(value)`
-    /// raises the per-side reserve floor used by every drain-side path
-    /// (swap pre/post checks, auto-pause arming) to
-    /// `max(MINIMUM_LIQUIDITY, value)`. `Some(zero)` clears any prior
-    /// override. `None` leaves the existing override unchanged.
-    #[serde(default)]
-    pub min_liquidity_floor: Option<cosmwasm_std::Uint128>,
     // `oracle_address` removed (audit fix). Mirrors the same field's
     // removal from `pool_core::msg::PoolConfigUpdate`. Per-pool oracle
     // rotation was an admin-compromise vector — a malicious oracle could
