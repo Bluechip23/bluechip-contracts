@@ -141,9 +141,9 @@ COMMIT_MSG() {
   local AMT="$1"
   local SPREAD="${2:-}"
   if [ -n "$SPREAD" ]; then
-    python3 -c "import json; print(json.dumps({'commit':{'asset':{'info':{'bluechip':{'denom':'$DENOM'}},'amount':'$AMT'},'amount':'$AMT','transaction_deadline':None,'belief_price':None,'max_spread':'$SPREAD'}}))"
+    python3 -c "import json; print(json.dumps({'commit':{'asset':{'info':{'bluechip':{'denom':'$DENOM'}},'amount':'$AMT'},'transaction_deadline':None,'belief_price':None,'max_spread':'$SPREAD'}}))"
   else
-    python3 -c "import json; print(json.dumps({'commit':{'asset':{'info':{'bluechip':{'denom':'$DENOM'}},'amount':'$AMT'},'amount':'$AMT','transaction_deadline':None,'belief_price':None,'max_spread':None}}))"
+    python3 -c "import json; print(json.dumps({'commit':{'asset':{'info':{'bluechip':{'denom':'$DENOM'}},'amount':'$AMT'},'transaction_deadline':None,'belief_price':None,'max_spread':None}}))"
   fi
 }
 
@@ -269,23 +269,6 @@ print(json.dumps({
                 {'bluechip': {'denom': '$DENOM'}},
                 {'creator_token': {'contract_addr': 'WILL_BE_CREATED_BY_FACTORY'}}
             ],
-            'cw20_token_contract_id':          int('$CW20_CODE'),
-            'factory_to_create_pool_addr':     '$FACTORY_ADDR',
-            'threshold_payout':                None,
-            'commit_fee_info': {
-                'bluechip_wallet_address':     '$ALICE',
-                'creator_wallet_address':      '$ALICE',
-                'commit_fee_bluechip':         '0.01',
-                'commit_fee_creator':          '0.05',
-            },
-            'creator_token_address':           '$ALICE',
-            'commit_amount_for_threshold':     '0',
-            'commit_limit_usd':                '25000000000',
-            'pyth_contract_addr_for_conversions': '$ORACLE_ADDR',
-            'pyth_atom_usd_price_feed_id':    'ATOM_USD',
-            'max_bluechip_lock_per_pool':      '25000000000',
-            'creator_excess_liquidity_lock_days': 7,
-            'is_standard_pool':                False,
         },
         'token_info': {'name': 'ConcurrentTest', 'symbol': 'CTEST', 'decimal': 6},
     }
@@ -671,7 +654,6 @@ FACTORY_B_MSG=$(python3 -c "
 import json
 print(json.dumps({
     'factory_admin_address':              '$ALICE',
-    'commit_amount_for_threshold_bluechip': '0',
     'commit_threshold_limit_usd':         '25000000000',
     'pyth_contract_addr_for_conversions': '$ORACLE_ADDR',
     'pyth_atom_usd_price_feed_id':        'ATOM_USD',
@@ -687,6 +669,7 @@ print(json.dumps({
     'atom_bluechip_anchor_pool_address':  '$ALICE',
     'bluechip_mint_contract_address':     '$EXP_ADDR',
     'bluechip_denom':                      'ubluechip',
+    'atom_denom':                          'uatom',
     'standard_pool_creation_fee_usd':      '1000000',
 }))
 ")
@@ -714,23 +697,6 @@ print(json.dumps({
                 {'bluechip': {'denom': '$DENOM'}},
                 {'creator_token': {'contract_addr': 'WILL_BE_CREATED_BY_FACTORY'}}
             ],
-            'cw20_token_contract_id':          int('$CW20_CODE'),
-            'factory_to_create_pool_addr':     '$FACTORY_B_ADDR',
-            'threshold_payout':                None,
-            'commit_fee_info': {
-                'bluechip_wallet_address':     '$ALICE',
-                'creator_wallet_address':      '$ALICE',
-                'commit_fee_bluechip':         '0.01',
-                'commit_fee_creator':          '0.05',
-            },
-            'creator_token_address':           '$ALICE',
-            'commit_amount_for_threshold':     '0',
-            'commit_limit_usd':                '25000000000',
-            'pyth_contract_addr_for_conversions': '$ORACLE_ADDR',
-            'pyth_atom_usd_price_feed_id':    'ATOM_USD',
-            'max_bluechip_lock_per_pool':      '1000000',
-            'creator_excess_liquidity_lock_days': 0,
-            'is_standard_pool':                False,
         },
         'token_info': {'name': 'ExcessTest', 'symbol': 'XTEST', 'decimal': 6},
     }

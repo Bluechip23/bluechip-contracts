@@ -3,7 +3,7 @@
 # FULL INTEGRATION TEST SUITE
 # =====================================================================
 # Covers: factory config, pool creation, commits, fees, threshold,
-#   20% guard, distribution, swaps, liquidity, NFT transfer, partial
+#   3% guard, distribution, swaps, liquidity, NFT transfer, partial
 #   remove, pause/unpause, emergency withdraw, recover stuck states,
 #   governance timelocks, oracle, slippage, deadline, multipool, and more.
 # =====================================================================
@@ -85,7 +85,7 @@ upload() {
   echo "$c"
 }
 commit_msg() {
-  echo "{\"commit\":{\"asset\":{\"info\":{\"bluechip\":{\"denom\":\"$DENOM\"}},\"amount\":\"$1\"},\"amount\":\"$1\"}}"
+  echo "{\"commit\":{\"asset\":{\"info\":{\"bluechip\":{\"denom\":\"$DENOM\"}},\"amount\":\"$1\"}}}"
 }
 
 ALICE=$(bluechipChaind keys show alice -a --keyring-backend $KR 2>/dev/null)
@@ -120,7 +120,6 @@ P=$(q $ORACLE '{"get_price":{"price_id":"ATOM_USD"}}' | jq -r '.data.price')
 FINIT=$(cat <<EOF
 {
   "factory_admin_address":"$ALICE",
-  "commit_amount_for_threshold_bluechip":"0",
   "commit_threshold_limit_usd":"1000000000",
   "pyth_contract_addr_for_conversions":"$ORACLE",
   "pyth_atom_usd_price_feed_id":"ATOM_USD",
@@ -135,8 +134,9 @@ FINIT=$(cat <<EOF
   "creator_excess_liquidity_lock_days":7,
   "atom_bluechip_anchor_pool_address":"$ALICE",
   "bluechip_mint_contract_address":null,
-  "bluechip_denom": "ubluechip",
-  "standard_pool_creation_fee_usd": "1000000"
+  "bluechip_denom":"ubluechip",
+  "atom_denom":"uatom",
+  "standard_pool_creation_fee_usd":"1000000"
 }
 EOF
 )
@@ -162,7 +162,6 @@ hdr "===== PHASE 3: FACTORY CONFIG EDIT + GOVERNANCE TIMELOCKS ====="
 NEW_CFG=$(cat <<EOF
 {
   "factory_admin_address":"$ALICE",
-  "commit_amount_for_threshold_bluechip":"0",
   "commit_threshold_limit_usd":"2000000000",
   "pyth_contract_addr_for_conversions":"$ORACLE",
   "pyth_atom_usd_price_feed_id":"ATOM_USD",
@@ -177,8 +176,9 @@ NEW_CFG=$(cat <<EOF
   "creator_excess_liquidity_lock_days":7,
   "atom_bluechip_anchor_pool_address":"$ALICE",
   "bluechip_mint_contract_address":null,
-  "bluechip_denom": "ubluechip",
-  "standard_pool_creation_fee_usd": "1000000"
+  "bluechip_denom":"ubluechip",
+  "atom_denom":"uatom",
+  "standard_pool_creation_fee_usd":"1000000"
 }
 EOF
 )
@@ -215,24 +215,7 @@ CREATE=$(cat <<EOF
       "pool_token_info":[
         {"bluechip":{"denom":"$DENOM"}},
         {"creator_token":{"contract_addr":"WILL_BE_CREATED_BY_FACTORY"}}
-      ],
-      "cw20_token_contract_id":$CW20_CODE,
-      "factory_to_create_pool_addr":"$FACTORY",
-      "threshold_payout":null,
-      "commit_fee_info":{
-        "bluechip_wallet_address":"$ALICE",
-        "creator_wallet_address":"$ALICE",
-        "commit_fee_bluechip":"0.01",
-        "commit_fee_creator":"0.05"
-      },
-      "creator_token_address":"$ALICE",
-      "commit_amount_for_threshold":"0",
-      "commit_limit_usd":"100000000",
-      "pyth_contract_addr_for_conversions":"$ORACLE",
-      "pyth_atom_usd_price_feed_id":"ATOM_USD",
-      "max_bluechip_lock_per_pool":"10000000000",
-      "creator_excess_liquidity_lock_days":7,
-      "is_standard_pool":false
+      ]
     },
     "token_info":{"name":"TestToken","symbol":"TEST","decimal":6}
   }
@@ -353,9 +336,9 @@ info "Post-threshold reserves: bluechip=$R0 creator=$R1"
 [ "$R0" != "0" ] && [ "$R1" != "0" ] && pass "Pool has reserves" || fail "Pool reserves empty"
 
 # #####################################################################
-hdr "===== PHASE 8: 20% GUARD ON THRESHOLD-CROSSING EXCESS ====="
+hdr "===== PHASE 8: 3% GUARD ON THRESHOLD-CROSSING EXCESS ====="
 # #####################################################################
-# Create a second pool and test the 20% cap.
+# Create a second pool and test the 3% cap.
 CREATE2=$(cat <<EOF
 {
   "create":{
@@ -363,31 +346,14 @@ CREATE2=$(cat <<EOF
       "pool_token_info":[
         {"bluechip":{"denom":"$DENOM"}},
         {"creator_token":{"contract_addr":"WILL_BE_CREATED_BY_FACTORY"}}
-      ],
-      "cw20_token_contract_id":$CW20_CODE,
-      "factory_to_create_pool_addr":"$FACTORY",
-      "threshold_payout":null,
-      "commit_fee_info":{
-        "bluechip_wallet_address":"$ALICE",
-        "creator_wallet_address":"$ALICE",
-        "commit_fee_bluechip":"0.01",
-        "commit_fee_creator":"0.05"
-      },
-      "creator_token_address":"$ALICE",
-      "commit_amount_for_threshold":"0",
-      "commit_limit_usd":"100000000",
-      "pyth_contract_addr_for_conversions":"$ORACLE",
-      "pyth_atom_usd_price_feed_id":"ATOM_USD",
-      "max_bluechip_lock_per_pool":"10000000000",
-      "creator_excess_liquidity_lock_days":7,
-      "is_standard_pool":false
+      ]
     },
     "token_info":{"name":"GuardToken","symbol":"GRD","decimal":6}
   }
 }
 EOF
 )
-info "Creating second pool for 20% guard test..."
+info "Creating second pool for 3% guard test..."
 H=$(send wasm execute $FACTORY "$CREATE2" --from alice --gas 5000000)
 C=$(chk $H)
 [ "$C" = "0" ] && pass "Pool2 created" || { fail "Pool2 create ($C)"; }
@@ -402,11 +368,11 @@ H=$(send wasm execute $POOL2 "$(commit_msg 95000000)" --amount "95000000${DENOM}
 C=$(chk $H)
 [ "$C" = "0" ] && pass "Pool2 pre-threshold commit OK" || { fail "Pool2 pre-commit ($C)"; }
 
-# Bob overshoots with 80M — triggers 20% guard
+# Bob overshoots with 80M — triggers 3% guard
 info "Waiting 14s for rate limiter..."
 sleep 14
 BOB_PRE=$(bal $BOB)
-info "Bob overshoot commit: 80M on Pool2 (excess ~75M >> 20% of reserves)..."
+info "Bob overshoot commit: 80M on Pool2 (excess ~75M >> 3% of reserves)..."
 H=$(send wasm execute $POOL2 "$(commit_msg 80000000)" --amount "80000000${DENOM}" --from bob)
 C=$(chk $H)
 [ "$C" = "0" ] && pass "Overshoot commit landed" || { fail "Overshoot ($C)"; rawlog $H; }
@@ -419,9 +385,9 @@ info "swap_amount_bluechip_pre_cap:    $SWAP_PRE_CAP"
 info "bluechip_excess_refunded:        $REFUNDED"
 
 if [ -n "$REFUNDED" ] && [ "$REFUNDED" != "0" ] && [ "$REFUNDED" != "" ]; then
-  pass "20% guard fired — refunded $REFUNDED ubluechip"
+  pass "3% guard fired — refunded $REFUNDED ubluechip"
 else
-  fail "Expected non-zero refund from 20% guard"
+  fail "Expected non-zero refund from 3% guard"
 fi
 
 BOB_POST=$(bal $BOB)
@@ -634,7 +600,8 @@ fi
 hdr "===== PHASE 12: PAUSE / UNPAUSE (VIA FACTORY ROUTING) ====="
 # #####################################################################
 # We're testing on Pool3 here because Pool1 has live liquidity/position state
-# we don't want to disturb, and Pool2 already had its 20% guard run.
+# we don't want to disturb, and Pool2 already had its 3% guard run.
+
 
 # 12a. Direct pause from Alice (should fail — pool checks factory_addr)
 info "Alice tries to pause Pool3 directly (should fail)..."
@@ -818,24 +785,7 @@ CREATE3=$(cat <<EOF
       "pool_token_info":[
         {"bluechip":{"denom":"$DENOM"}},
         {"creator_token":{"contract_addr":"WILL_BE_CREATED_BY_FACTORY"}}
-      ],
-      "cw20_token_contract_id":$CW20_CODE,
-      "factory_to_create_pool_addr":"$FACTORY",
-      "threshold_payout":null,
-      "commit_fee_info":{
-        "bluechip_wallet_address":"$ALICE",
-        "creator_wallet_address":"$ALICE",
-        "commit_fee_bluechip":"0.01",
-        "commit_fee_creator":"0.05"
-      },
-      "creator_token_address":"$ALICE",
-      "commit_amount_for_threshold":"0",
-      "commit_limit_usd":"100000000",
-      "pyth_contract_addr_for_conversions":"$ORACLE",
-      "pyth_atom_usd_price_feed_id":"ATOM_USD",
-      "max_bluechip_lock_per_pool":"10000000000",
-      "creator_excess_liquidity_lock_days":7,
-      "is_standard_pool":false
+      ]
     },
     "token_info":{"name":"MultiToken","symbol":"MLT","decimal":6}
   }
@@ -977,7 +927,6 @@ info "Instantiating second factory with max_bluechip_lock_per_pool = 100..."
 FINIT2=$(cat <<EOF
 {
   "factory_admin_address":"$ALICE",
-  "commit_amount_for_threshold_bluechip":"0",
   "commit_threshold_limit_usd":"1000000000",
   "pyth_contract_addr_for_conversions":"$ORACLE",
   "pyth_atom_usd_price_feed_id":"ATOM_USD",
@@ -992,8 +941,9 @@ FINIT2=$(cat <<EOF
   "creator_excess_liquidity_lock_days":7,
   "atom_bluechip_anchor_pool_address":"$ALICE",
   "bluechip_mint_contract_address":null,
-  "bluechip_denom": "ubluechip",
-  "standard_pool_creation_fee_usd": "1000000"
+  "bluechip_denom":"ubluechip",
+  "atom_denom":"uatom",
+  "standard_pool_creation_fee_usd":"1000000"
 }
 EOF
 )
@@ -1011,24 +961,7 @@ CREATE4=$(cat <<EOF
       "pool_token_info":[
         {"bluechip":{"denom":"$DENOM"}},
         {"creator_token":{"contract_addr":"WILL_BE_CREATED_BY_FACTORY"}}
-      ],
-      "cw20_token_contract_id":$CW20_CODE,
-      "factory_to_create_pool_addr":"$FACTORY2",
-      "threshold_payout":null,
-      "commit_fee_info":{
-        "bluechip_wallet_address":"$ALICE",
-        "creator_wallet_address":"$ALICE",
-        "commit_fee_bluechip":"0.01",
-        "commit_fee_creator":"0.05"
-      },
-      "creator_token_address":"$ALICE",
-      "commit_amount_for_threshold":"0",
-      "commit_limit_usd":"100000000",
-      "pyth_contract_addr_for_conversions":"$ORACLE",
-      "pyth_atom_usd_price_feed_id":"ATOM_USD",
-      "max_bluechip_lock_per_pool":"100",
-      "creator_excess_liquidity_lock_days":7,
-      "is_standard_pool":false
+      ]
     },
     "token_info":{"name":"DrainToken","symbol":"DRN","decimal":6}
   }
@@ -1125,7 +1058,7 @@ echo "    - Pool creation via factory"
 echo "    - Pre-threshold: swaps/deposits blocked"
 echo "    - Commit flow: fees, recording, threshold crossing"
 echo "    - ContinueDistribution + creator token payouts"
-echo "    - 20% guard on threshold-crossing excess"
+echo "    - 3% guard on threshold-crossing excess"
 echo "    - Normal swaps: native->CW20 and CW20->native"
 echo "    - Swap fees (LP commission)"
 echo "    - Slippage rejection (max_spread)"
