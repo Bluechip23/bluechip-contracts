@@ -556,7 +556,7 @@ The standard-pool reply handler will reject the transaction if the CW20 has a tr
 - Warm-up gate (6 successive observations) re-arms after every bootstrap, anchor change, and admin-triggered force-rotate, preventing first-observation-after-reset from being locked in.
 - Per-update TWAP circuit breaker (30% max drift) rejects out-of-band price moves on every update after the first.
 - Random pool rotation every 3600 seconds.
-- Stale-price rejection at 90 seconds (Pyth).
+- Stale-price rejection at 90 seconds (Pyth). The staleness check uses `u64` saturating subtraction and explicitly rejects negative `publish_time` values plus any `publish_time` more than 5 seconds in the future, so a buggy or malicious Pyth publisher cannot wrap signed-`i64` arithmetic in release wasm to make a far-past or far-future timestamp pass the cap vacuously.
 - Oracle update interval rate-limit (300 seconds) bounds bounty drain.
 - Keeper bounty USD-denominated and hard-capped at $0.10 — caps yearly drain at ~$10.5k worst-case if admin is compromised.
 
@@ -676,6 +676,10 @@ Where:
 ### Daily Expansion Cap
 
 `DAILY_EXPANSION_CAP = 100,000,000,000 ubluechip` (= 100,000 bluechip) bounds the worst-case daily drain if the configured factory address is ever compromised. The window is a single bucket that resets opportunistically on the first call after `DAILY_WINDOW_SECONDS = 86,400` has elapsed since the bucket's start. Skipped requests (insufficient balance, dormant decay) do not burn cap budget.
+
+### Per-Recipient Rate Limit
+
+Every successful `RequestExpansion` payout stamps the recipient address with the block time and rejects any subsequent payout to the same recipient within `RECIPIENT_EXPANSION_RATE_LIMIT_SECONDS = 60`. Defends against `RetryFactoryNotify` storms (the pool-side retry path is permissionless by design) compressing many threshold-mint payouts into a single burst that empties the rolling daily budget. A per-pool limit would have required including the pool's controlling identity to be effective, eliminating retry permissionlessness; per-recipient keeps retry permissionless while bounding the worst-case rate to one payout per 60 seconds per any single bluechip wallet. Skipped requests (insufficient balance, dormant decay) do not stamp the timestamp, so a recipient is not penalized for outages of the reservoir.
 
 ### Cross-Validation
 
@@ -891,6 +895,8 @@ Every contract (factory, creator-pool, standard-pool, expand-economy) exports a 
 | Distribution batch bounty cap | $0.10 USD (6 dec) | Per successful batch |
 | Expand-economy daily cap | 100,000,000,000 ubluechip | Rolling 24h cap on `RequestExpansion` |
 | Expand-economy window | 86,400 seconds | Single-bucket reset interval |
+| Expand-economy per-recipient rate limit | 60 seconds | Min interval between payouts to the same recipient |
+| Pyth `publish_time` future-skew tolerance | 5 seconds | Max allowed clock skew between Pyth publishers and chain block time |
 
 ---
 
