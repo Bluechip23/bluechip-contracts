@@ -20,7 +20,7 @@ use crate::generic::{check_rate_limit, decimal2decimal256, enforce_transaction_d
     update_pool_fee_growth};
 use crate::msg::Cw20HookMsg;
 use crate::state::{
-    PoolCtx, PoolInfo, PoolState, IS_THRESHOLD_HIT, MINIMUM_LIQUIDITY, POOL_ANALYTICS,
+    effective_min_liquidity, PoolCtx, PoolInfo, PoolState, IS_THRESHOLD_HIT, POOL_ANALYTICS,
     POOL_FEE_STATE, POOL_INFO, POOL_PAUSED, POOL_STATE,
     POST_THRESHOLD_COOLDOWN_UNTIL_BLOCK, REENTRANCY_LOCK,
 };
@@ -386,13 +386,20 @@ pub fn execute_simple_swap(
             until_block: cooldown_until,
         });
     }
-    // Drain guard: reject swaps when either side is below MINIMUM_LIQUIDITY.
-    // Don't try to persist POOL_PAUSED here — returning Err would revert the
-    // save, so it's dead state. The reserve check alone is sufficient to
-    // block every swap path; admins unlock the pool by restoring reserves or
-    // by calling the factory's explicit UnpausePool route if POOL_PAUSED was
-    // ever set by a successful admin action.
-    if pool_state.reserve0 < MINIMUM_LIQUIDITY || pool_state.reserve1 < MINIMUM_LIQUIDITY {
+    // Drain guard: reject swaps when either side is below the effective
+    // per-side floor. The default floor is `MINIMUM_LIQUIDITY` (1000) but
+    // pools can carry a per-pool override (set by the factory on the
+    // anchor pool to defend against drain-the-anchor oracle DoS), in
+    // which case the effective floor is `max(MINIMUM_LIQUIDITY, override)`.
+    // Don't try to persist POOL_PAUSED here — returning Err would revert
+    // the save, so it's dead state. The reserve check alone is sufficient
+    // to block every swap path; admins unlock the pool by restoring
+    // reserves or by calling the factory's explicit UnpausePool route if
+    // POOL_PAUSED was ever set by a successful admin action.
+    let min_liquidity_floor = effective_min_liquidity(deps.storage)?;
+    if pool_state.reserve0 < min_liquidity_floor
+        || pool_state.reserve1 < min_liquidity_floor
+    {
         return Err(ContractError::InsufficientReserves {});
     }
 
@@ -420,7 +427,7 @@ pub fn execute_simple_swap(
     let offer_pool_post = offer_pool.checked_add(offer_asset.amount)?;
     let ask_pool_post = ask_pool.checked_sub(return_amt.checked_add(commission_amt)?)?;
 
-    if ask_pool_post < MINIMUM_LIQUIDITY {
+    if ask_pool_post < min_liquidity_floor {
         return Err(ContractError::InsufficientReserves {});
     }
 

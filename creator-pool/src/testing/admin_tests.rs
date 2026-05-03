@@ -265,6 +265,7 @@ fn test_update_config_all() {
     let update = PoolConfigUpdate {
         lp_fee: Some(Decimal::percent(5)),    // was 0.3%
         min_commit_interval: Some(60),        // was something else
+        min_liquidity_floor: None,
     };
 
     let exec_msg = ExecuteMsg::UpdateConfigFromFactory { update };
@@ -324,6 +325,7 @@ fn test_unauthorized_admin_actions() {
     let update = PoolConfigUpdate {
         lp_fee: Some(Decimal::percent(100)),
         min_commit_interval: None,
+        min_liquidity_floor: None,
     };
     let err = execute(
         deps.as_mut(),
