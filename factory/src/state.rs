@@ -133,6 +133,47 @@ pub const MAX_DISTRIBUTION_BOUNTY_USD: Uint128 = Uint128::new(100_000);
 // community to notice and respond.
 pub const PENDING_ORACLE_ROTATION: Item<Timestamp> = Item::new("pending_oracle_rotation");
 
+/// Bootstrap price candidate (HIGH-4 audit fix). At true bootstrap
+/// (`prior == 0 && pre_reset == 0 && pending_first_price == None`), the
+/// oracle's first published TWAP previously landed in `last_price`
+/// directly with no circuit-breaker protection — a single-block
+/// manipulation of the freshly-seeded anchor reserves could anchor the
+/// breaker to an attacker-chosen value.
+///
+/// New flow: branch (d) of `update_internal_oracle_price` writes the
+/// candidate here instead of publishing to `last_price`. Each
+/// subsequent successful TWAP round in branch (d) overwrites the
+/// price (with `proposed_at` preserved from the first proposal so the
+/// observation window is enforced from the FIRST observation forward).
+/// Once the admin is satisfied — typically after watching the
+/// candidate stabilize for ≥ `BOOTSTRAP_OBSERVATION_SECONDS` —
+/// `ConfirmBootstrapPrice` publishes the latest candidate as
+/// `last_price`. `CancelBootstrapPrice` discards the pending and
+/// forces re-bootstrap on the next update.
+///
+/// Reachable only on first deployment OR when
+/// `INITIAL_ANCHOR_SET == false`. Once a price is published, the
+/// breaker takes over via branches (a)/(b)/(c) on subsequent updates
+/// and this item stays empty.
+#[cw_serde]
+pub struct PendingBootstrapPrice {
+    pub price: Uint128,
+    pub proposed_at: Timestamp,
+    pub observation_count: u32,
+}
+
+pub const PENDING_BOOTSTRAP_PRICE: Item<PendingBootstrapPrice> =
+    Item::new("pending_bootstrap_price");
+
+/// Minimum observation window between the first bootstrap-candidate
+/// proposal and the earliest moment the admin may call
+/// `ConfirmBootstrapPrice`. 1h forces the admin to watch the
+/// candidate move across at least 12 successful update rounds
+/// (UPDATE_INTERVAL = 300s) before locking it in, which makes a
+/// sustained-manipulation attack noticeably more expensive than a
+/// single-block perturbation.
+pub const BOOTSTRAP_OBSERVATION_SECONDS: u64 = 3600;
+
 // One-shot bootstrap flag for the anchor pool. False until the admin
 // invokes `ExecuteMsg::SetAnchorPool { pool_id }` exactly once; flipped
 // to true at that point. After flip, any subsequent change to

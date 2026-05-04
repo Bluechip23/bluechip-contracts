@@ -4,11 +4,29 @@ use crate::{
 };
 use cosmwasm_std::{BankMsg, Coin, CosmosMsg, DepsMut, Env, StdError, StdResult, Uint128};
 
+/// Saturating cap on the mint-decay polynomial input (MEDIUM-4 audit
+/// fix). Realistic upper bound: per-address 1h create cooldown caps a
+/// single attacker at ~8.7k commit pools/year/address, so reaching 1B
+/// would need ~115k addresses operating continuously for 1000 years.
+/// Far above that, the polynomial output is structurally zero anyway
+/// (`(5x²+x) / (s/6 + 333x)` exceeds the 500e6 base around x ≈ 33e9
+/// for s == 0). Capping defensively avoids the theoretical u128
+/// overflow surface should a buggy migration or storage corruption
+/// ever inject an absurd ordinal directly.
+const MAX_DECAY_X: u128 = 1_000_000_000;
+
 pub fn calculate_mint_amount(seconds_elapsed: u64, pools_created: u64) -> StdResult<Uint128> {
     // Formula: 500 - (((5x^2 + x) / ((s/6) + 333x))
 
     let x = pools_created as u128;
     let s = seconds_elapsed as u128;
+
+    // Defense-in-depth saturating cap. For x > MAX_DECAY_X the
+    // polynomial output is zero by definition; short-circuit rather
+    // than risk overflow in `5 * x * x`.
+    if x > MAX_DECAY_X {
+        return Ok(Uint128::zero());
+    }
 
     let five_x_squared = 5u128
         .checked_mul(x)

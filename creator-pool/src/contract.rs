@@ -226,25 +226,51 @@ fn check_pool_writable(storage: &dyn Storage) -> Result<(), ContractError> {
     check_pool_not_paused(storage)
 }
 
-/// Deposit-side gate: rejects hard pauses (admin / emergency) but
-/// PERMITS auto-pause-on-low-liquidity. The deposit handler then either
-/// (a) restores reserves above MIN and auto-clears both flags, or
-/// (b) leaves the pool still auto-paused if the deposit didn't restore
-/// enough. Either way the deposit completes and adds liquidity.
+/// Deposit-side gate: rejects hard pauses (admin / emergency-pending)
+/// but PERMITS auto-pause-on-low-liquidity. The deposit handler then
+/// either (a) restores reserves above MIN and auto-clears both flags,
+/// or (b) leaves the pool still auto-paused if the deposit didn't
+/// restore enough. Either way the deposit completes and adds
+/// liquidity.
 ///
 /// Auto-pause vs. hard pause distinction:
 ///   - `PauseKind::AutoLowLiquidity`: this gate accepts. The deposit's
 ///     post-state branch in `execute_deposit_liquidity_inner` clears the
 ///     flags if reserves recover.
-///   - `PauseKind::Hard`: rejected — emergency-pending pool must wait
-///     for the 24h timelock or admin cancel; admin-paused pool must wait
-///     for explicit Unpause.
+///   - `PauseKind::EmergencyPending` / `PauseKind::Hard`: rejected —
+///     emergency-pending pool must wait for the 24h timelock or admin
+///     cancel; admin-paused pool must wait for explicit Unpause.
+///     Letting fresh capital into a pool that is about to be drained
+///     would funnel new deposits into the emergency-drain recipient.
 fn check_pool_writable_for_deposit(storage: &dyn Storage) -> Result<(), ContractError> {
     use crate::state::{pause_kind, PauseKind};
     ensure_not_drained(storage)?;
     match pause_kind(storage)? {
         PauseKind::None | PauseKind::AutoLowLiquidity => Ok(()),
-        PauseKind::Hard => Err(ContractError::PoolPausedLowLiquidity {}),
+        PauseKind::EmergencyPending | PauseKind::Hard => {
+            Err(ContractError::PoolPausedLowLiquidity {})
+        }
+    }
+}
+
+/// LP-exit gate. Permits `Remove*Liquidity` and `CollectFees` while
+/// the pool is open OR while it's in the 24h emergency-withdraw
+/// timelock window (PauseKind::EmergencyPending). Auto-pause and
+/// admin Hard pause still reject — same rationale as standard-pool's
+/// equivalent helper.
+///
+/// Closes the LP-trap window surfaced by the audit (HIGH-1): without
+/// this, post-threshold LPs whose pool is emergency-withdrawn cannot
+/// exit during the timelock and lose their entire principal on the
+/// Phase-2 drain.
+fn check_pool_writable_for_remove(storage: &dyn Storage) -> Result<(), ContractError> {
+    use crate::state::{pause_kind, PauseKind};
+    ensure_not_drained(storage)?;
+    match pause_kind(storage)? {
+        PauseKind::None | PauseKind::EmergencyPending => Ok(()),
+        PauseKind::AutoLowLiquidity | PauseKind::Hard => {
+            Err(ContractError::PoolPausedLowLiquidity {})
+        }
     }
 }
 
@@ -391,7 +417,10 @@ pub fn execute(
             )
         }
         ExecuteMsg::CollectFees { position_id } => {
-            check_pool_writable(deps.storage)?;
+            // Permitted during EmergencyPending so an LP about to remove
+            // can sweep their share of fee_reserve before the drain
+            // (HIGH-1 audit fix).
+            check_pool_writable_for_remove(deps.storage)?;
             execute_collect_fees(deps, env, info, position_id)
         }
         ExecuteMsg::RemovePartialLiquidity {
@@ -409,7 +438,10 @@ pub fn execute(
             // leaves non-zero total_liquidity after EMERGENCY_DRAINED is set,
             // an explicit check here keeps users from pulling against
             // already-swept reserves with arbitrary math.
-            check_pool_writable(deps.storage)?;
+            //
+            // EmergencyPending is permitted so LPs can race the 24h drain
+            // (HIGH-1 audit fix). Hard / auto-pause / drained still reject.
+            check_pool_writable_for_remove(deps.storage)?;
             execute_remove_partial_liquidity(
                 deps,
                 env,
@@ -429,7 +461,7 @@ pub fn execute(
             min_amount0,
             max_ratio_deviation_bps,
         } => {
-            check_pool_writable(deps.storage)?;
+            check_pool_writable_for_remove(deps.storage)?;
             execute_remove_all_liquidity(
                 deps,
                 env,
@@ -449,7 +481,7 @@ pub fn execute(
             min_amount1,
             max_ratio_deviation_bps,
         } => {
-            check_pool_writable(deps.storage)?;
+            check_pool_writable_for_remove(deps.storage)?;
             execute_remove_partial_liquidity_by_percent(
                 deps,
                 env,
