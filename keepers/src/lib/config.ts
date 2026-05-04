@@ -80,6 +80,20 @@ export const ConfigSchema = z.object({
   // Oracle keeper tuning
   ORACLE_POLL_INTERVAL_MS: positiveIntString({ default: "330000" }), // 5.5 min
 
+  // Rate-limit prune sweep cadence (folded into the oracle keeper).
+  // Once every N oracle iterations the keeper also dispatches
+  // factory.PruneRateLimits {}. Default 200 × 5.5min ≈ 18h, so the
+  // sweep runs roughly daily per process. Set to 0 to disable
+  // entirely (e.g., for testnets where rate-limit growth doesn't
+  // matter or for ops who'd rather run prune as a separate cron).
+  ORACLE_PRUNE_EVERY_N: positiveIntString({ allowZero: true, default: "200" }),
+  // Per-call work cap passed to PruneRateLimits. Contract enforces a
+  // hard ceiling of 500; we default to 100 which is plenty for the
+  // expected drift rate (≪ 100 stale entries per day on a healthy
+  // protocol). Tunable upward for backlog catch-up after a long
+  // prune outage.
+  PRUNE_BATCH_SIZE: positiveIntString({ default: "100" }),
+
   // Distribution keeper tuning
   DISTRIBUTION_POLL_INTERVAL_MS: positiveIntString({ default: "1800000" }), // 30 min
   // 0 means "no breather"; default is a 2s pause between pool calls so we

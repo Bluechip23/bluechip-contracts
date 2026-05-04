@@ -116,12 +116,42 @@ every ORACLE_POLL_INTERVAL_MS (default 5.5 min):
     failed    → log error, keep going
   catch cooldown / beaten-to-the-punch errors as info-level
   warn if wallet balance < MIN_KEEPER_BALANCE_UBLUECHIP
+
+  # Folded-in maintenance sweep — see "Rate-limit prune" below.
+  every ORACLE_PRUNE_EVERY_N iterations (default 200 ≈ once per 18h):
+    submit factory.PruneRateLimits { batch_size: PRUNE_BATCH_SIZE }
 ```
+
+#### Rate-limit prune
+
+The factory tracks per-address create cooldowns in
+`LAST_COMMIT_POOL_CREATE_AT` and `LAST_STANDARD_POOL_CREATE_AT`. These
+maps grow monotonically — every new creator address adds an entry that
+is never removed by the cooldown logic itself. `PruneRateLimits` is a
+permissionless handler that removes entries older than 10× the cooldown
+(currently 10 hours). The oracle keeper dispatches it once every
+`ORACLE_PRUNE_EVERY_N` iterations rather than running a separate bot
+because:
+
+- there's no bounty (no economic reason to spin up a third process)
+- the cadence is wildly relaxed (daily is plenty)
+- the oracle keeper already runs on a fast loop and absorbs the gas
+  cost as part of "running keepers"
+
+Set `ORACLE_PRUNE_EVERY_N=0` to disable the sweep entirely (e.g., on a
+testnet where storage growth doesn't matter, or if you'd rather run
+prune from a separate cron).
 
 ### Distribution keeper
 
 ```
 every DISTRIBUTION_POLL_INTERVAL_MS (default 30 min):
+  # Pre-sweep: settle any stuck factory-notify state — see "Retry-notify" below.
+  for each pool in POOL_ADDRESSES:
+    query pool.FactoryNotifyStatus {}
+    if pending=true → submit pool.RetryFactoryNotify {}
+
+  # Main sweep: process pending committer payouts.
   for each pool in POOL_ADDRESSES:
     loop (bounded):
       submit pool.ContinueDistribution {}
@@ -133,6 +163,27 @@ every DISTRIBUTION_POLL_INTERVAL_MS (default 30 min):
 
 The per-pool inner loop is capped at 200 batches per sweep as a safety valve.
 Exceeding that is logged loudly — it means something is stuck.
+
+#### Retry-notify
+
+When a commit pool crosses its threshold, it dispatches
+`NotifyThresholdCrossed` to the factory as a `reply_on_error` SubMsg.
+If the factory rejects (e.g., transient expand-economy issue),
+`PENDING_FACTORY_NOTIFY` flips to `true` on the pool and the bluechip
+mint reward is held until somebody calls `RetryFactoryNotify`.
+
+The contract handler is permissionless on purpose — anyone can settle
+the stuck mint. The distribution keeper polls each pool's
+`FactoryNotifyStatus` query first and only spends gas on the (rare)
+pools that report `pending=true`. The factory's
+`POOL_THRESHOLD_MINTED` idempotency gate makes a redundant retry
+harmless: at worst the keeper wastes its own gas, never a double-mint.
+
+No bounty exists for this action; it's folded into the distribution
+keeper rather than running as a third bot because it iterates the same
+`POOL_ADDRESSES` list at a similar cadence and a 30-minute recovery
+latency on a stuck notify is fine — the failure mode is rare and not
+time-sensitive.
 
 ## Monitoring
 
@@ -146,6 +197,9 @@ Datadog, CloudWatch). The events you want to alert on:
 | `warn` | `keeper balance below threshold` | Top up the wallet. |
 | `warn` | `bounty skipped`, reason=`insufficient_factory_balance` | Top up the factory. |
 | `warn` | `bounty skipped`, reason=`price_unavailable` | Pyth outage. Check upstream. |
+| `error` | `retry_factory_notify errored` | Investigate — pool reported pending notify but retry failed for an unexpected reason. |
+| `warn` | `factory_notify_status query failed` | Single-pool RPC blip; ignore unless persistent. |
+| `warn` | `rate-limit prune errored (non-fatal)` | Investigate — prune is best-effort; persistent failures should be looked at. |
 
 And a liveness check: if you haven't seen an `oracle keeper starting` or
 `sleeping` log line from the oracle keeper in >15 minutes, assume it's
@@ -191,14 +245,23 @@ against a testnet:
 ```
 src/
 ├── lib/
-│   ├── config.ts        # env parsing (zod-validated)
-│   ├── client.ts        # CosmJS wallet + signing client
-│   ├── decisions.ts     # pure tx-outcome classification
-│   ├── logger.ts        # structured JSON output
-│   └── types.ts         # contract message shapes
+│   ├── config.ts             # env parsing (zod-validated)
+│   ├── client.ts             # CosmJS wallet + signing client
+│   ├── decisions.ts          # pure tx-outcome classification
+│   ├── logger.ts             # structured JSON output
+│   ├── types.ts              # contract message + query shapes
+│   ├── oracle-loop.ts        # one UpdateOraclePrice iteration
+│   ├── distribution-loop.ts  # per-pool ContinueDistribution drain
+│   ├── prune-loop.ts         # one PruneRateLimits iteration
+│   └── retry-notify-loop.ts  # query-then-retry per pool
 ├── __tests__/
 │   ├── config.test.ts
-│   └── decisions.test.ts
-├── oracle-keeper.ts          # entrypoint
-└── distribution-keeper.ts    # entrypoint
+│   ├── decisions.test.ts
+│   ├── oracle-keeper.mock-push.test.ts
+│   ├── distribution-keeper.integration.test.ts
+│   ├── prune-loop.test.ts
+│   ├── retry-notify-loop.test.ts
+│   └── factory-balance-check.test.ts
+├── oracle-keeper.ts          # entrypoint: oracle update + prune sweep
+└── distribution-keeper.ts    # entrypoint: retry-notify + distribution drain
 ```

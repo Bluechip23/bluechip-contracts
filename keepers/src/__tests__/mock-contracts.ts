@@ -48,6 +48,21 @@ interface PoolState {
    * outages.
    */
   oracleUnavailable?: boolean;
+  /**
+   * Mirrors the on-chain `PENDING_FACTORY_NOTIFY` flag. True when the
+   * pool's threshold-cross commit landed but the factory-side
+   * NotifyThresholdCrossed SubMsg failed. RetryFactoryNotify clears
+   * this on success. Tests set it explicitly to drive the retry-notify
+   * keeper.
+   */
+  pendingFactoryNotify?: boolean;
+  /**
+   * If true, RetryFactoryNotify dispatches against this pool throw
+   * synthetically — e.g., simulating a still-failing factory side
+   * (idempotency error). Used to exercise the "tx_skip" expected-error
+   * branch of the retry-notify keeper.
+   */
+  retryFails?: boolean;
 }
 
 let txCounter = 0;
@@ -131,6 +146,43 @@ export class MockContracts implements Executor {
     this.unregisteredPools.add(address);
   }
 
+  /** Test hook: arm a pool's PENDING_FACTORY_NOTIFY flag. */
+  setPendingFactoryNotify(address: string, pending: boolean): void {
+    const pool = this.pools.get(address) ?? {
+      isDistributing: false,
+      batchesRemaining: 0,
+    };
+    pool.pendingFactoryNotify = pending;
+    this.pools.set(address, pool);
+  }
+
+  /** Test hook: future RetryFactoryNotify on this pool throws. */
+  failNextRetryNotify(address: string, fail: boolean = true): void {
+    const pool = this.pools.get(address) ?? {
+      isDistributing: false,
+      batchesRemaining: 0,
+    };
+    pool.retryFails = fail;
+    this.pools.set(address, pool);
+  }
+
+  /**
+   * Test hook: track every PruneRateLimits call dispatched against the
+   * factory so tests can assert cadence and batch_size threading.
+   */
+  public readonly pruneCalls: Array<{ batchSize: number }> = [];
+  /**
+   * Test hook: programmable counters returned by the next prune call.
+   * Defaults to (0, 0) — i.e., a steady-state "nothing to prune" sweep.
+   */
+  private nextPruneCounters: { commit: number; standard: number } = {
+    commit: 0,
+    standard: 0,
+  };
+  setNextPruneCounters(commit: number, standard: number): void {
+    this.nextPruneCounters = { commit, standard };
+  }
+
   /** Test hook: the next execute() against `address` throws. One-shot. */
   failNextExecute(address: string): void {
     this.failOnceAddresses.add(address);
@@ -171,13 +223,56 @@ export class MockContracts implements Executor {
     return 0n;
   }
 
+  async queryContractSmart<T>(contract: string, msg: Record<string, unknown>): Promise<T> {
+    if ("factory_notify_status" in msg) {
+      // Mirror creator-pool::query::query_factory_notify_status —
+      // returns { pending: bool } reading from the pool's
+      // PENDING_FACTORY_NOTIFY storage. We model "no pool entry" as
+      // pending=false, matching the contract's `unwrap_or(false)`.
+      const pool = this.pools.get(contract);
+      return { pending: pool?.pendingFactoryNotify ?? false } as unknown as T;
+    }
+    throw new Error(`mock query unsupported: ${JSON.stringify(msg)}`);
+  }
+
   // Factory handlers -----------------------------------------------------
 
   private executeFactory(msg: Record<string, unknown>): TxResult {
     if ("update_oracle_price" in msg) {
       return this.executeUpdateOraclePrice();
     }
+    if ("prune_rate_limits" in msg) {
+      return this.executePruneRateLimits(msg);
+    }
     throw new Error(`factory: unknown message ${JSON.stringify(msg)}`);
+  }
+
+  private executePruneRateLimits(msg: Record<string, unknown>): TxResult {
+    // Capture the batch_size so tests can assert it threaded through
+    // from PRUNE_BATCH_SIZE config.
+    const inner = (msg as { prune_rate_limits: { batch_size?: number } })
+      .prune_rate_limits;
+    const batchSize = inner?.batch_size ?? 100;
+    this.pruneCalls.push({ batchSize });
+
+    const counters = this.nextPruneCounters;
+    // Reset for next call to the steady-state default; tests opt back
+    // in via setNextPruneCounters.
+    this.nextPruneCounters = { commit: 0, standard: 0 };
+
+    return {
+      code: 0,
+      transactionHash: nextHash(),
+      events: [
+        wasmEvent([
+          ["action", "prune_rate_limits"],
+          ["commit_pruned", counters.commit.toString()],
+          ["standard_pruned", counters.standard.toString()],
+          ["stale_after_secs", "36000"],
+          ["batch_size", batchSize.toString()],
+        ]),
+      ],
+    };
   }
 
   private executeUpdateOraclePrice(): TxResult {
@@ -231,7 +326,44 @@ export class MockContracts implements Executor {
     if ("continue_distribution" in msg) {
       return this.executeContinueDistribution(poolAddress);
     }
+    if ("retry_factory_notify" in msg) {
+      return this.executeRetryFactoryNotify(poolAddress);
+    }
     throw new Error(`pool: unknown message ${JSON.stringify(msg)}`);
+  }
+
+  /**
+   * Mirror creator-pool::contract::execute_retry_factory_notify.
+   *
+   * Three behaviors:
+   *   - pool has no pending notify → throw the canonical
+   *     "No pending factory notification to retry" error (treated as
+   *     an expected skip by the keeper).
+   *   - pool's `retryFails` flag is set → throw a generic factory-side
+   *     error like "Bluechip mint already triggered" so we exercise
+   *     the keeper's tx_skip recovery branch.
+   *   - happy path → clear pendingFactoryNotify, emit attributes.
+   */
+  private executeRetryFactoryNotify(poolAddress: string): TxResult {
+    const pool = this.pools.get(poolAddress);
+    if (!pool || !pool.pendingFactoryNotify) {
+      throw new Error("No pending factory notification to retry");
+    }
+    if (pool.retryFails) {
+      pool.retryFails = false;
+      throw new Error("Bluechip mint already triggered for this pool");
+    }
+    pool.pendingFactoryNotify = false;
+    return {
+      code: 0,
+      transactionHash: nextHash(),
+      events: [
+        wasmEvent([
+          ["action", "retry_factory_notify"],
+          ["pool_id", "1"],
+        ]),
+      ],
+    };
   }
 
   private executeContinueDistribution(poolAddress: string): TxResult {

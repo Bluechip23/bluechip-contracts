@@ -29,4 +29,18 @@ export interface Executor {
    * operators can top up before bounties start getting skipped.
    */
   getAddressBalance(address: string, denom: string): Promise<bigint>;
+
+  /**
+   * Read-only smart query against a contract. Used by the
+   * retry-factory-notify keeper to poll each pool's
+   * `FactoryNotifyStatus` query before deciding whether to dispatch a
+   * RetryFactoryNotify tx. Querying first means we only spend gas on
+   * the (rare) pools that actually need a retry rather than blasting
+   * every pool every round.
+   *
+   * `T` is the deserialised JSON shape the contract returns for `msg`.
+   * Errors propagate so callers can decide policy (ignore-and-skip vs
+   * propagate-and-stop).
+   */
+  queryContractSmart<T>(contract: string, msg: Record<string, unknown>): Promise<T>;
 }
