@@ -23,17 +23,21 @@ PROPTEST_QUICK_CASES="${PROPTEST_QUICK_CASES:-32}"
 PROPTEST_FULL_CASES="${PROPTEST_FULL_CASES:-256}"
 CARGO_FUZZ_SECS="${CARGO_FUZZ_SECS:-300}"
 
-echo "==> [1/3] Stateful proptest harness ($PROPTEST_QUICK_CASES quick cases)"
-PROPTEST_CASES="$PROPTEST_QUICK_CASES" cargo test \
-  -p fuzz-stateful --release --test fuzz_stateful fuzz_stateful_quick
-
 if [ "$MODE" = "quick" ]; then
+  echo "==> [1/2] Stateful proptest harness ($PROPTEST_QUICK_CASES quick cases)"
+  PROPTEST_CASES="$PROPTEST_QUICK_CASES" cargo test \
+    -p fuzz-stateful --release --test fuzz_stateful -- --exact fuzz_stateful_quick
+
   echo "==> [2/2] Pure-math proptests (stable mirror of cargo-fuzz targets)"
   cargo test -p fuzz-stateful --release --test proptest_pure_math
 else
+  echo "==> [1/3] Stateful proptest harness ($PROPTEST_QUICK_CASES quick cases)"
+  PROPTEST_CASES="$PROPTEST_QUICK_CASES" cargo test \
+    -p fuzz-stateful --release --test fuzz_stateful -- --exact fuzz_stateful_quick
+
   echo "==> [2/3] Stateful proptest harness ($PROPTEST_FULL_CASES full cases)"
   PROPTEST_CASES="$PROPTEST_FULL_CASES" cargo test \
-    -p fuzz-stateful --release --test fuzz_stateful fuzz_stateful
+    -p fuzz-stateful --release --test fuzz_stateful -- --exact fuzz_stateful
 
   echo "==> [3/3] Pure-math proptests (stable mirror of cargo-fuzz targets)"
   cargo test -p fuzz-stateful --release --test proptest_pure_math

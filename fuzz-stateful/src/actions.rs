@@ -1,14 +1,49 @@
 //! Action enum and applier for the stateful fuzzer.
 
-use cosmwasm_std::{Coin, Decimal, Uint128};
+use cosmwasm_std::{Coin, Decimal, Timestamp, Uint128, Uint256};
 use cw20::Cw20ExecuteMsg;
 use cw_multi_test::Executor;
+use pool_core::msg::PoolStateResponse;
 use pool_factory_interfaces::asset::{TokenInfo, TokenType};
 use proptest_derive::Arbitrary;
 
 use crate::world::{
-    advance_block, set_oracle_rate, PoolKind, World, BLUECHIP_DENOM,
+    advance_block, set_oracle_rate, PoolHandle, PoolKind, World, BLUECHIP_DENOM,
 };
+
+/// Snapshot a pool's reserves so we can assert constant-product
+/// monotonicity across a single swap. Returns `None` if the query
+/// fails (e.g. pool just drained); callers treat that as "skip the
+/// check" rather than failing — the drained-pool invariant covers
+/// post-drain behaviour separately.
+fn pool_reserves(world: &World, pool_addr: &cosmwasm_std::Addr) -> Option<(Uint128, Uint128)> {
+    let s: PoolStateResponse = world
+        .app
+        .wrap()
+        .query_wasm_smart(pool_addr, &creator_pool::msg::QueryMsg::PoolState {})
+        .ok()?;
+    Some((s.reserve0, s.reserve1))
+}
+
+/// Assert k = reserve0 * reserve1 did not decrease across a successful
+/// swap. Panics with `INVARIANT BROKEN` on regression — the proptest
+/// runner picks that up as a failure, so the offending sequence is
+/// preserved in `proptest-regressions/`.
+fn assert_swap_k_monotone(
+    pool_addr: &cosmwasm_std::Addr,
+    pre: (Uint128, Uint128),
+    post: (Uint128, Uint128),
+) {
+    let pre_k = Uint256::from(pre.0) * Uint256::from(pre.1);
+    let post_k = Uint256::from(post.0) * Uint256::from(post.1);
+    if post_k < pre_k {
+        panic!(
+            "INVARIANT BROKEN: swap reduced constant product on pool {}: \
+             pre_k={} (r0={}, r1={}) post_k={} (r0={}, r1={})",
+            pool_addr, pre_k, pre.0, pre.1, post_k, post.0, post.1
+        );
+    }
+}
 
 /// Every meaningful state transition + a few illegal-but-typed variants.
 #[derive(Debug, Clone, Arbitrary)]
@@ -197,6 +232,92 @@ pub enum Action {
         #[proptest(strategy = "0usize..8usize")]
         pool_idx: usize,
     },
+
+    // -----------------------------------------------------------------
+    // Pool LP-position lifecycle (post-threshold for creator pools)
+    // -----------------------------------------------------------------
+    /// Add to an existing position. Uses the user's first position
+    /// (same lookup pattern as `RemoveLiquidityPercent`).
+    AddToPosition {
+        #[proptest(strategy = "0usize..5usize")]
+        user_idx: usize,
+        #[proptest(strategy = "0usize..8usize")]
+        pool_idx: usize,
+        #[proptest(strategy = "1u128..1_000_000_000u128")]
+        amount0: u128,
+        #[proptest(strategy = "1u128..1_000_000_000u128")]
+        amount1: u128,
+    },
+    /// Remove a raw liquidity amount from the user's first position.
+    /// `liquidity_to_remove` is interpreted as a fraction (in basis
+    /// points) of the looked-up position's current liquidity, so we
+    /// always pass the contract a value bounded by the position size.
+    RemoveLiquidityRaw {
+        #[proptest(strategy = "0usize..5usize")]
+        user_idx: usize,
+        #[proptest(strategy = "0usize..8usize")]
+        pool_idx: usize,
+        #[proptest(strategy = "1u16..=10_000u16")]
+        fraction_bps: u16,
+    },
+    /// Remove all liquidity from the user's first position.
+    RemoveAllLiquidity {
+        #[proptest(strategy = "0usize..5usize")]
+        user_idx: usize,
+        #[proptest(strategy = "0usize..8usize")]
+        pool_idx: usize,
+    },
+    /// Collect accrued fees on the user's first position.
+    CollectFees {
+        #[proptest(strategy = "0usize..5usize")]
+        user_idx: usize,
+        #[proptest(strategy = "0usize..8usize")]
+        pool_idx: usize,
+    },
+
+    // -----------------------------------------------------------------
+    // Pause / unpause via the factory_shim (the pool's expected factory)
+    // -----------------------------------------------------------------
+    /// Factory-only Pause forwarded directly. Should always succeed
+    /// when invoked from the factory_shim (the pool's `factory_addr`).
+    PausePool {
+        #[proptest(strategy = "0usize..8usize")]
+        pool_idx: usize,
+    },
+    /// Factory-only Unpause forwarded directly.
+    UnpausePool {
+        #[proptest(strategy = "0usize..8usize")]
+        pool_idx: usize,
+    },
+
+    // -----------------------------------------------------------------
+    // Pending-notify retry (creator pools only)
+    // -----------------------------------------------------------------
+    /// Permissionless. Re-fires the threshold-crossed notification when
+    /// `PENDING_FACTORY_NOTIFY` is set. Almost always a no-op in the
+    /// harness because the shim's NotifyThresholdCrossed succeeds
+    /// first time, but its idempotency / authorisation path is
+    /// nonetheless valuable to fuzz.
+    RetryFactoryNotify {
+        #[proptest(strategy = "0usize..5usize")]
+        caller_idx: usize,
+        #[proptest(strategy = "0usize..8usize")]
+        pool_idx: usize,
+    },
+
+    // -----------------------------------------------------------------
+    // Illegal: deadline already in the past
+    // -----------------------------------------------------------------
+    /// Native swap with `transaction_deadline = now - 1`. Pool MUST
+    /// reject with `TransactionExpired`.
+    AttemptSwapExpiredDeadline {
+        #[proptest(strategy = "0usize..5usize")]
+        user_idx: usize,
+        #[proptest(strategy = "0usize..8usize")]
+        pool_idx: usize,
+        #[proptest(strategy = "1u128..1_000_000_000u128")]
+        amount: u128,
+    },
 }
 
 #[derive(Debug)]
@@ -304,6 +425,7 @@ pub fn apply(world: &mut World, action: Action) -> ActionOutcome {
                 to: None,
                 transaction_deadline: None,
             };
+            let pre = pool_reserves(world, &pool.pool_addr);
             let res = world.app.execute_contract(
                 user.clone(),
                 pool.pool_addr.clone(),
@@ -311,7 +433,12 @@ pub fn apply(world: &mut World, action: Action) -> ActionOutcome {
                 &[Coin::new(amount, BLUECHIP_DENOM)],
             );
             match res {
-                Ok(_) => mk_ok(action_dbg, "swap_native ok"),
+                Ok(_) => {
+                    if let (Some(pre), Some(post)) = (pre, pool_reserves(world, &pool.pool_addr)) {
+                        assert_swap_k_monotone(&pool.pool_addr, pre, post);
+                    }
+                    mk_ok(action_dbg, "swap_native ok")
+                }
                 Err(e) => mk_rejected(action_dbg, &format!("swap_native: {e}")),
             }
         }
@@ -332,9 +459,15 @@ pub fn apply(world: &mut World, action: Action) -> ActionOutcome {
                 amount: Uint128::new(amount),
                 msg: cosmwasm_std::to_json_binary(&hook).unwrap(),
             };
+            let pre = pool_reserves(world, &pool.pool_addr);
             let res = world.app.execute_contract(user, pool.cw20_addr.clone(), &send, &[]);
             match res {
-                Ok(_) => mk_ok(action_dbg, "swap_cw20 ok"),
+                Ok(_) => {
+                    if let (Some(pre), Some(post)) = (pre, pool_reserves(world, &pool.pool_addr)) {
+                        assert_swap_k_monotone(&pool.pool_addr, pre, post);
+                    }
+                    mk_ok(action_dbg, "swap_cw20 ok")
+                }
                 Err(e) => mk_rejected(action_dbg, &format!("swap_cw20: {e}")),
             }
         }
@@ -378,20 +511,7 @@ pub fn apply(world: &mut World, action: Action) -> ActionOutcome {
                 return mk_rejected(action_dbg, "no pool");
             };
             let user = world.users[user_idx % world.users.len()].clone();
-            // Look up the user's first position via PositionsByOwner.
-            let positions: pool_core::msg::PositionsResponse =
-                match world.app.wrap().query_wasm_smart(
-                    &pool.pool_addr,
-                    &creator_pool::msg::QueryMsg::PositionsByOwner {
-                        owner: user.to_string(),
-                        start_after: None,
-                        limit: Some(1),
-                    },
-                ) {
-                    Ok(p) => p,
-                    Err(_) => return mk_rejected(action_dbg, "positions query failed"),
-                };
-            let Some(first) = positions.positions.first() else {
+            let Some(first) = first_position(world, &pool, &user) else {
                 return mk_rejected(action_dbg, "no position");
             };
             let msg = creator_pool::msg::ExecuteMsg::RemovePartialLiquidityByPercent {
@@ -673,6 +793,194 @@ pub fn apply(world: &mut World, action: Action) -> ActionOutcome {
                 Ok(_) => panic!("INVARIANT BROKEN: pool accepted EmergencyWithdraw from non-factory"),
             }
         }
+        Action::AddToPosition { user_idx, pool_idx, amount0, amount1 } => {
+            let Some(pool) = pick_pool(world, pool_idx, None) else {
+                return mk_rejected(action_dbg, "no pool");
+            };
+            let user = world.users[user_idx % world.users.len()].clone();
+            let Some(first) = first_position(world, &pool, &user) else {
+                return mk_rejected(action_dbg, "no position");
+            };
+            let _ = world.app.execute_contract(
+                user.clone(),
+                pool.cw20_addr.clone(),
+                &Cw20ExecuteMsg::IncreaseAllowance {
+                    spender: pool.pool_addr.to_string(),
+                    amount: Uint128::new(amount1),
+                    expires: None,
+                },
+                &[],
+            );
+            let msg = creator_pool::msg::ExecuteMsg::AddToPosition {
+                position_id: first.position_id,
+                amount0: Uint128::new(amount0),
+                amount1: Uint128::new(amount1),
+                min_amount0: None,
+                min_amount1: None,
+                transaction_deadline: None,
+            };
+            let res = world.app.execute_contract(
+                user,
+                pool.pool_addr.clone(),
+                &msg,
+                &[Coin::new(amount0, BLUECHIP_DENOM)],
+            );
+            match res {
+                Ok(_) => mk_ok(action_dbg, "add_to_position ok"),
+                Err(e) => mk_rejected(action_dbg, &format!("add_to_position: {e}")),
+            }
+        }
+        Action::RemoveLiquidityRaw { user_idx, pool_idx, fraction_bps } => {
+            let Some(pool) = pick_pool(world, pool_idx, None) else {
+                return mk_rejected(action_dbg, "no pool");
+            };
+            let user = world.users[user_idx % world.users.len()].clone();
+            let Some(first) = first_position(world, &pool, &user) else {
+                return mk_rejected(action_dbg, "no position");
+            };
+            // Translate the bps fraction to a raw liquidity amount that
+            // is guaranteed to be ≤ the position's current liquidity.
+            // Bound below by 1 so we never request 0 (which the contract
+            // would reject anyway).
+            let liq = first.liquidity.u128();
+            let removed = liq
+                .saturating_mul(fraction_bps as u128)
+                / 10_000u128;
+            let removed = if removed == 0 { 1u128.min(liq) } else { removed };
+            let msg = creator_pool::msg::ExecuteMsg::RemovePartialLiquidity {
+                position_id: first.position_id,
+                liquidity_to_remove: Uint128::new(removed),
+                transaction_deadline: None,
+                min_amount0: None,
+                min_amount1: None,
+                max_ratio_deviation_bps: Some(10_000),
+            };
+            let res = world.app.execute_contract(user, pool.pool_addr.clone(), &msg, &[]);
+            match res {
+                Ok(_) => mk_ok(action_dbg, "remove_raw ok"),
+                Err(e) => mk_rejected(action_dbg, &format!("remove_raw: {e}")),
+            }
+        }
+        Action::RemoveAllLiquidity { user_idx, pool_idx } => {
+            let Some(pool) = pick_pool(world, pool_idx, None) else {
+                return mk_rejected(action_dbg, "no pool");
+            };
+            let user = world.users[user_idx % world.users.len()].clone();
+            let Some(first) = first_position(world, &pool, &user) else {
+                return mk_rejected(action_dbg, "no position");
+            };
+            let msg = creator_pool::msg::ExecuteMsg::RemoveAllLiquidity {
+                position_id: first.position_id,
+                transaction_deadline: None,
+                min_amount0: None,
+                min_amount1: None,
+                max_ratio_deviation_bps: Some(10_000),
+            };
+            let res = world.app.execute_contract(user, pool.pool_addr.clone(), &msg, &[]);
+            match res {
+                Ok(_) => mk_ok(action_dbg, "remove_all ok"),
+                Err(e) => mk_rejected(action_dbg, &format!("remove_all: {e}")),
+            }
+        }
+        Action::CollectFees { user_idx, pool_idx } => {
+            let Some(pool) = pick_pool(world, pool_idx, None) else {
+                return mk_rejected(action_dbg, "no pool");
+            };
+            let user = world.users[user_idx % world.users.len()].clone();
+            let Some(first) = first_position(world, &pool, &user) else {
+                return mk_rejected(action_dbg, "no position");
+            };
+            let msg = creator_pool::msg::ExecuteMsg::CollectFees {
+                position_id: first.position_id,
+            };
+            let res = world.app.execute_contract(user, pool.pool_addr.clone(), &msg, &[]);
+            match res {
+                Ok(_) => mk_ok(action_dbg, "collect_fees ok"),
+                Err(e) => mk_rejected(action_dbg, &format!("collect_fees: {e}")),
+            }
+        }
+        Action::PausePool { pool_idx } => {
+            let Some(pool) = pick_pool(world, pool_idx, None) else {
+                return mk_rejected(action_dbg, "no pool");
+            };
+            // Sender = factory_shim, which is the pool's expected
+            // factory_addr. This should always succeed unless the pool
+            // is already drained.
+            let res = world.app.execute_contract(
+                world.factory_shim.clone(),
+                pool.pool_addr.clone(),
+                &creator_pool::msg::ExecuteMsg::Pause {},
+                &[],
+            );
+            match res {
+                Ok(_) => mk_ok(action_dbg, "pause ok"),
+                Err(e) => mk_rejected(action_dbg, &format!("pause: {e}")),
+            }
+        }
+        Action::UnpausePool { pool_idx } => {
+            let Some(pool) = pick_pool(world, pool_idx, None) else {
+                return mk_rejected(action_dbg, "no pool");
+            };
+            let res = world.app.execute_contract(
+                world.factory_shim.clone(),
+                pool.pool_addr.clone(),
+                &creator_pool::msg::ExecuteMsg::Unpause {},
+                &[],
+            );
+            match res {
+                Ok(_) => mk_ok(action_dbg, "unpause ok"),
+                Err(e) => mk_rejected(action_dbg, &format!("unpause: {e}")),
+            }
+        }
+        Action::RetryFactoryNotify { caller_idx, pool_idx } => {
+            let Some(pool) = pick_pool(world, pool_idx, Some(PoolKind::Commit)) else {
+                return mk_rejected(action_dbg, "no creator pool");
+            };
+            let caller = world.users[caller_idx % world.users.len()].clone();
+            let res = world.app.execute_contract(
+                caller,
+                pool.pool_addr.clone(),
+                &creator_pool::msg::ExecuteMsg::RetryFactoryNotify {},
+                &[],
+            );
+            match res {
+                Ok(_) => mk_ok(action_dbg, "retry_notify ok"),
+                Err(e) => mk_rejected(action_dbg, &format!("retry_notify: {e}")),
+            }
+        }
+        Action::AttemptSwapExpiredDeadline { user_idx, pool_idx, amount } => {
+            let Some(pool) = pick_pool(world, pool_idx, None) else {
+                return mk_rejected(action_dbg, "no pool");
+            };
+            let user = world.users[user_idx % world.users.len()].clone();
+            let bal = world.app.wrap().query_balance(&user, BLUECHIP_DENOM)
+                .map(|b| b.amount.u128()).unwrap_or(0);
+            if amount > bal { return mk_rejected(action_dbg, "insufficient bluechip"); }
+            let now = world.app.block_info().time.seconds();
+            // 1 second in the past — any positive Δ would do.
+            let expired = Timestamp::from_seconds(now.saturating_sub(1));
+            let msg = creator_pool::msg::ExecuteMsg::SimpleSwap {
+                offer_asset: TokenInfo {
+                    info: TokenType::Native { denom: BLUECHIP_DENOM.to_string() },
+                    amount: Uint128::new(amount),
+                },
+                belief_price: None,
+                max_spread: Some(Decimal::percent(10)),
+                allow_high_max_spread: Some(true),
+                to: None,
+                transaction_deadline: Some(expired),
+            };
+            let res = world.app.execute_contract(
+                user,
+                pool.pool_addr.clone(),
+                &msg,
+                &[Coin::new(amount, BLUECHIP_DENOM)],
+            );
+            match res {
+                Err(_) => mk_expected(action_dbg, "expired deadline rejected"),
+                Ok(_) => panic!("INVARIANT BROKEN: pool accepted swap with deadline in the past"),
+            }
+        }
         Action::AttemptUnauthorizedCreatorClaim { attacker_idx, pool_idx } => {
             let Some(pool) = pick_pool(world, pool_idx, Some(PoolKind::Commit)) else {
                 return mk_rejected(action_dbg, "no creator pool");
@@ -703,6 +1011,26 @@ fn pick_pool(world: &World, idx: usize, kind: Option<PoolKind>) -> Option<crate:
     };
     if candidates.is_empty() { return None; }
     Some(candidates[idx % candidates.len()].clone())
+}
+
+fn first_position(
+    world: &World,
+    pool: &PoolHandle,
+    user: &cosmwasm_std::Addr,
+) -> Option<pool_core::msg::PositionResponse> {
+    let resp: pool_core::msg::PositionsResponse = world
+        .app
+        .wrap()
+        .query_wasm_smart(
+            &pool.pool_addr,
+            &creator_pool::msg::QueryMsg::PositionsByOwner {
+                owner: user.to_string(),
+                start_after: None,
+                limit: Some(1),
+            },
+        )
+        .ok()?;
+    resp.positions.into_iter().next()
 }
 
 fn mk_ok(a: Action, n: &str) -> ActionOutcome {

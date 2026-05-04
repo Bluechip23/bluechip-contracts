@@ -175,8 +175,17 @@ Invariants implemented in `fuzz-stateful/src/invariants.rs`:
 - `threshold_unsticky` — `IS_THRESHOLD_HIT` once true, never false.
 - `usd_raised_decreased` — pre-threshold `USD_RAISED_FROM_COMMIT`
   monotonically non-decreasing.
+- `threshold_phase_inconsistent_in_progress` — while `CommitStatus`
+  reports `InProgress { raised, target }`, `raised < target` strictly.
+  The pool MUST flip to `FullyCommitted` the moment the target is
+  reached.
 - `threshold_minted_flag_regressed` — factory shim's `MINTED[pool_id]`
   monotonically non-decreasing.
+- `swap reduced constant product` — checked inline in the swap
+  action handlers (`SwapNativeIn`, `SwapCw20In`): `reserve0 *
+  reserve1` after a successful swap is always at least the
+  pre-swap value. Panics on regression so proptest captures the
+  failing sequence in `proptest-regressions/`.
 
 Authorization invariants are enforced *inline* in `actions.rs::apply`:
 the illegal-by-design actions (`AttemptUnauthorizedConfigUpdate`,

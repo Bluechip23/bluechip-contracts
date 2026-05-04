@@ -111,14 +111,28 @@ fn check_pool_invariants(world: &mut World, i: usize, snap: &crate::world::PoolH
                 format!("pool {} was FullyCommitted, now InProgress", pool_addr),
             ));
         }
-        // USD raised monotonic pre-threshold
-        if let CommitStatus::InProgress { raised, .. } = &status {
+        // USD raised monotonic pre-threshold AND consistent with the
+        // FullyCommitted/InProgress branch: while InProgress, raised
+        // must always be strictly below the configured target. The
+        // moment raised >= target the pool must transition to
+        // FullyCommitted; the inverse is also asserted (the
+        // post-threshold Commit probe below).
+        if let CommitStatus::InProgress { raised, target } = &status {
             if *raised < snap.last_observed_usd_raised {
                 return Err(violation(
                     "usd_raised_decreased",
                     format!(
                         "pool {} prev_usd={} now_usd={}",
                         pool_addr, snap.last_observed_usd_raised, raised
+                    ),
+                ));
+            }
+            if raised >= target {
+                return Err(violation(
+                    "threshold_phase_inconsistent_in_progress",
+                    format!(
+                        "pool {} reports InProgress but raised={} >= target={}",
+                        pool_addr, raised, target
                     ),
                 ));
             }
@@ -218,6 +232,14 @@ fn check_pool_invariants(world: &mut World, i: usize, snap: &crate::world::PoolH
         )
         .map_err(|e| violation("positions_integrity_query_failed", format!("{e:?}")))?;
     for p in owner_page.positions {
+        // The sentinel "0" position is saved to LIQUIDITY_POSITIONS at
+        // pool instantiate (see creator-pool::contract instantiate, which
+        // runs `LIQUIDITY_POSITIONS.save(storage, "0", &..)`) but no NFT
+        // is ever minted for it, so the cw721 OwnerOf query is expected
+        // to error. Skip it.
+        if p.position_id == "0" || p.liquidity.is_zero() {
+            continue;
+        }
         let q = pool_factory_interfaces::cw721_msgs::Cw721QueryMsg::OwnerOf {
             token_id: p.position_id.clone(),
             include_expired: None,
@@ -227,7 +249,7 @@ fn check_pool_invariants(world: &mut World, i: usize, snap: &crate::world::PoolH
             .wrap()
             .query_wasm_smart(&snap.nft_addr, &q)
             .map_err(|e| violation("nft_owner_query_failed", format!("{e:?}")))?;
-        if owner.owner != p.owner {
+        if owner.owner != p.owner.as_str() {
             return Err(violation(
                 "position_nft_owner_mismatch",
                 format!("position {} owner {} != nft owner {}", p.position_id, p.owner, owner.owner),
