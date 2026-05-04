@@ -82,24 +82,16 @@ describe("retry-notify keeper", () => {
   });
 
   it("reports query_failed when the read errors and does not dispatch a tx", async () => {
-    // Override queryContractSmart on the mock to throw once.
-    const original = mock.queryContractSmart.bind(mock);
-    let calls = 0;
-    mock.queryContractSmart = async <T,>(
-      contract: string,
-      msg: Record<string, unknown>,
-    ): Promise<T> => {
-      calls += 1;
-      if (calls === 1) throw new Error("RPC: connection reset");
-      return original<T>(contract, msg);
-    };
+    mock.failNextQuery(POOL_A, "RPC: connection reset");
 
     const outcome = await checkAndRetryPool(mock, POOL_A);
     expect(outcome.kind).toBe("query_failed");
     if (outcome.kind === "query_failed") {
       expect(outcome.detail).toContain("RPC");
     }
-    // No execute call should have fired.
+    // No execute call should have fired — the keeper must never dispatch
+    // a tx on the back of a failed query (would waste gas on a pool
+    // whose pending state we don't actually know).
     const retryCalls = mock.calls.filter((c) => "retry_factory_notify" in c.msg);
     expect(retryCalls).toHaveLength(0);
   });

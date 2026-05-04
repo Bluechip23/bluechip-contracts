@@ -952,17 +952,18 @@ pub fn update_internal_oracle_price(
         // Pop the just-pushed observation: branch (b) does the same
         // thing for symmetric reasons. Unconfirmed candidates must
         // not accumulate in the TWAP window.
-        let _ = current_time; // currently used only via env.block.time below
         oracle.bluechip_price_cache.twap_observations.pop();
 
         let pending = match crate::state::PENDING_BOOTSTRAP_PRICE.may_load(deps.storage)? {
             Some(prev) => crate::state::PendingBootstrapPrice {
                 price: twap_price,
+                atom_pool_price: atom_price,
                 proposed_at: prev.proposed_at,
                 observation_count: prev.observation_count.saturating_add(1),
             },
             None => crate::state::PendingBootstrapPrice {
                 price: twap_price,
+                atom_pool_price: atom_price,
                 proposed_at: env.block.time,
                 observation_count: 1,
             },
@@ -2061,14 +2062,18 @@ pub fn execute_confirm_bootstrap_price(
     oracle.bluechip_price_cache.last_price = pending.price;
     oracle.bluechip_price_cache.last_update = current_time;
     // Push the confirmed price as a real observation so the next
-    // round's TWAP window has prior data to compute against.
+    // round's TWAP window has prior data to compute against. The
+    // observation's `atom_pool_price` mirrors the value captured at
+    // the round that produced the candidate, NOT the candidate's own
+    // price (those are two different quantities — anchor-pool TWAP
+    // vs. cross-pool weighted bluechip-per-atom TWAP).
     oracle
         .bluechip_price_cache
         .twap_observations
         .push(PriceObservation {
             timestamp: current_time,
             price: pending.price,
-            atom_pool_price: pending.price,
+            atom_pool_price: pending.atom_pool_price,
         });
     // Cache the Pyth price too, mirroring the steady-state success tail.
     if let Ok(pyth_price) = query_pyth_atom_usd_price(deps.as_ref(), &env) {

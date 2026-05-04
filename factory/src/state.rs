@@ -158,6 +158,13 @@ pub const PENDING_ORACLE_ROTATION: Item<Timestamp> = Item::new("pending_oracle_r
 #[cw_serde]
 pub struct PendingBootstrapPrice {
     pub price: Uint128,
+    /// ATOM-pool individual TWAP captured on the same round that
+    /// produced `price`. Carried through so `ConfirmBootstrapPrice`
+    /// can push a `PriceObservation` whose `atom_pool_price` field
+    /// matches the observation it's anchoring (rather than
+    /// duplicating `price` and misleading any downstream observability
+    /// query that reads the field).
+    pub atom_pool_price: Uint128,
     pub proposed_at: Timestamp,
     pub observation_count: u32,
 }

@@ -188,6 +188,17 @@ export class MockContracts implements Executor {
     this.failOnceAddresses.add(address);
   }
 
+  /**
+   * Test hook: the next queryContractSmart() against `address` throws
+   * with `error`. One-shot. Used to simulate transient RPC blips on
+   * the retry-notify keeper's pre-flight FactoryNotifyStatus query so
+   * we can assert it logs query_failed and never dispatches a tx.
+   */
+  private failOnceQueryAddresses = new Map<string, string>();
+  failNextQuery(address: string, error: string = "RPC: connection reset"): void {
+    this.failOnceQueryAddresses.set(address, error);
+  }
+
   // Executor impl --------------------------------------------------------
 
   async execute(contract: string, msg: Record<string, unknown>): Promise<TxResult> {
@@ -224,6 +235,11 @@ export class MockContracts implements Executor {
   }
 
   async queryContractSmart<T>(contract: string, msg: Record<string, unknown>): Promise<T> {
+    const failError = this.failOnceQueryAddresses.get(contract);
+    if (failError !== undefined) {
+      this.failOnceQueryAddresses.delete(contract);
+      throw new Error(failError);
+    }
     if ("factory_notify_status" in msg) {
       // Mirror creator-pool::query::query_factory_notify_status —
       // returns { pending: bool } reading from the pool's

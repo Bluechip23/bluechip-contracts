@@ -4465,6 +4465,7 @@ mod validate_pool_token_info_tests {
 // math via successive UpdateOraclePrice executions.
 mod post_reset_buffer_tests {
     use super::*;
+    use crate::error::ContractError;
     use crate::internal_bluechip_price_oracle::{
         ANCHOR_CHANGE_WARMUP_OBSERVATIONS, MAX_POST_RESET_CONSECUTIVE_FAILURES,
     };
@@ -4924,5 +4925,215 @@ mod post_reset_buffer_tests {
             .expect("pending bootstrap price must be populated");
         assert!(!pending.price.is_zero(), "buffered candidate is non-zero");
         assert_eq!(pending.observation_count, 1);
+    }
+
+    /// HIGH-4 confirm path: after the 1h observation window elapses,
+    /// admin can publish the buffered candidate and warmup decrements.
+    #[test]
+    fn confirm_bootstrap_price_publishes_after_observation_window() {
+        let mut deps = mock_dependencies(&[]);
+        setup_factory_for_oracle_tests(&mut deps);
+        prime_post_reset_oracle(&mut deps, Uint128::zero());
+
+        // First update buffers a candidate.
+        let mut env = mock_env();
+        env.block.time = env.block.time.plus_seconds(360);
+        execute(
+            deps.as_mut(),
+            env.clone(),
+            message_info(&admin_addr(), &[]),
+            ExecuteMsg::UpdateOraclePrice {},
+        )
+        .expect("buffered round");
+        let pending = crate::state::PENDING_BOOTSTRAP_PRICE
+            .load(&deps.storage)
+            .expect("buffered candidate populated");
+        let candidate_price = pending.price;
+
+        // Advance past the 1h observation window AND past the
+        // 5-minute UpdateOraclePrice cooldown.
+        let mut confirm_env = env.clone();
+        confirm_env.block.time = confirm_env
+            .block
+            .time
+            .plus_seconds(crate::state::BOOTSTRAP_OBSERVATION_SECONDS + 1);
+
+        let res = execute(
+            deps.as_mut(),
+            confirm_env,
+            message_info(&admin_addr(), &[]),
+            ExecuteMsg::ConfirmBootstrapPrice {},
+        )
+        .expect("confirm should succeed after observation window");
+
+        assert!(
+            res.attributes
+                .iter()
+                .any(|a| a.key == "action" && a.value == "confirm_bootstrap_price"),
+        );
+
+        let oracle = INTERNAL_ORACLE.load(&deps.storage).unwrap();
+        assert_eq!(
+            oracle.bluechip_price_cache.last_price, candidate_price,
+            "confirmed candidate must land in last_price"
+        );
+        assert_eq!(
+            oracle.warmup_remaining,
+            ANCHOR_CHANGE_WARMUP_OBSERVATIONS - 1,
+            "warmup decrements once on confirm"
+        );
+        assert!(
+            crate::state::PENDING_BOOTSTRAP_PRICE
+                .may_load(&deps.storage)
+                .unwrap()
+                .is_none(),
+            "pending candidate is cleared after confirm"
+        );
+    }
+
+    /// HIGH-4 timelock: confirm before the 1h observation window has
+    /// elapsed must reject. This is the main defense against an admin
+    /// (or compromised admin key) who tries to lock in a manipulated
+    /// first observation immediately.
+    #[test]
+    fn confirm_bootstrap_price_rejects_before_observation_window() {
+        let mut deps = mock_dependencies(&[]);
+        setup_factory_for_oracle_tests(&mut deps);
+        prime_post_reset_oracle(&mut deps, Uint128::zero());
+
+        let mut env = mock_env();
+        env.block.time = env.block.time.plus_seconds(360);
+        execute(
+            deps.as_mut(),
+            env.clone(),
+            message_info(&admin_addr(), &[]),
+            ExecuteMsg::UpdateOraclePrice {},
+        )
+        .expect("buffered round");
+
+        // Try to confirm only 5 minutes later (well within the 1h window).
+        let mut early_env = env.clone();
+        early_env.block.time = early_env.block.time.plus_seconds(300);
+
+        let err = execute(
+            deps.as_mut(),
+            early_env,
+            message_info(&admin_addr(), &[]),
+            ExecuteMsg::ConfirmBootstrapPrice {},
+        )
+        .expect_err("confirm before observation window must error");
+
+        let msg = format!("{}", err);
+        assert!(
+            msg.contains("observation window"),
+            "expected observation-window error, got: {}",
+            msg
+        );
+
+        // last_price MUST still be zero — the buffered candidate has
+        // not been published.
+        let oracle = INTERNAL_ORACLE.load(&deps.storage).unwrap();
+        assert!(oracle.bluechip_price_cache.last_price.is_zero());
+    }
+
+    /// HIGH-4 auth: only the factory admin can confirm. A non-admin
+    /// caller — even one who's been watching the candidate stabilize
+    /// for hours — cannot publish it.
+    #[test]
+    fn confirm_bootstrap_price_rejects_non_admin() {
+        let mut deps = mock_dependencies(&[]);
+        setup_factory_for_oracle_tests(&mut deps);
+        prime_post_reset_oracle(&mut deps, Uint128::zero());
+
+        let mut env = mock_env();
+        env.block.time = env.block.time.plus_seconds(360);
+        execute(
+            deps.as_mut(),
+            env.clone(),
+            message_info(&admin_addr(), &[]),
+            ExecuteMsg::UpdateOraclePrice {},
+        )
+        .expect("buffered round");
+
+        let mut later_env = env.clone();
+        later_env.block.time = later_env
+            .block
+            .time
+            .plus_seconds(crate::state::BOOTSTRAP_OBSERVATION_SECONDS + 1);
+
+        let err = execute(
+            deps.as_mut(),
+            later_env,
+            message_info(&Addr::unchecked("not_admin"), &[]),
+            ExecuteMsg::ConfirmBootstrapPrice {},
+        )
+        .expect_err("non-admin must be rejected");
+        assert!(matches!(err, ContractError::Unauthorized {}));
+    }
+
+    /// HIGH-4 cancel: admin can discard the candidate, forcing the
+    /// next round to start the observation window over from scratch.
+    #[test]
+    fn cancel_bootstrap_price_clears_pending_and_resets_window() {
+        let mut deps = mock_dependencies(&[]);
+        setup_factory_for_oracle_tests(&mut deps);
+        prime_post_reset_oracle(&mut deps, Uint128::zero());
+
+        let mut env = mock_env();
+        env.block.time = env.block.time.plus_seconds(360);
+        execute(
+            deps.as_mut(),
+            env.clone(),
+            message_info(&admin_addr(), &[]),
+            ExecuteMsg::UpdateOraclePrice {},
+        )
+        .expect("first buffered round");
+        let proposed_at_first = crate::state::PENDING_BOOTSTRAP_PRICE
+            .load(&deps.storage)
+            .unwrap()
+            .proposed_at;
+
+        execute(
+            deps.as_mut(),
+            env.clone(),
+            message_info(&admin_addr(), &[]),
+            ExecuteMsg::CancelBootstrapPrice {},
+        )
+        .expect("admin can cancel");
+        assert!(
+            crate::state::PENDING_BOOTSTRAP_PRICE
+                .may_load(&deps.storage)
+                .unwrap()
+                .is_none(),
+            "cancel clears the pending candidate"
+        );
+
+        // After UPDATE_INTERVAL elapses, next update buffers a fresh
+        // candidate with a NEW proposed_at — confirming that the
+        // observation window restarts after cancel rather than
+        // carrying over from the discarded proposal.
+        //
+        // Drive the anchor pool's cumulative forward so the next
+        // `calculate_weighted_price_with_atom` round produces a real
+        // TWAP (rather than the snapshots-only no-op path that fires
+        // when there's no anchor activity between rounds).
+        advance_anchor_cumulative(&mut deps, 100, 1_000);
+        let mut next_env = env.clone();
+        next_env.block.time = next_env.block.time.plus_seconds(310);
+        execute(
+            deps.as_mut(),
+            next_env,
+            message_info(&admin_addr(), &[]),
+            ExecuteMsg::UpdateOraclePrice {},
+        )
+        .expect("second buffered round");
+        let proposed_at_second = crate::state::PENDING_BOOTSTRAP_PRICE
+            .load(&deps.storage)
+            .unwrap()
+            .proposed_at;
+        assert!(
+            proposed_at_second > proposed_at_first,
+            "cancel + re-buffer restarts the observation window"
+        );
     }
 }
