@@ -186,13 +186,22 @@ pub fn execute(
 
 /// Permissionless storage hygiene (MEDIUM-2 audit fix). Iterates the
 /// per-address rate-limit maps and removes entries older than 10× the
-/// per-map cooldown window. Caller-supplied `batch_size` caps work
-/// per call (default 100, hard cap 500) so a large backlog doesn't
-/// exceed block gas limits in a single tx.
+/// per-map cooldown window.
 ///
-/// Without this, the rate-limit maps grow monotonically as new
-/// addresses interact and never shrink — a soft storage-bloat surface
-/// that compounds over the protocol's lifetime. Pruning is anybody's
+/// `batch_size` caps the number of entries REMOVED per call (default
+/// 100, hard cap 500). It does NOT cap the number iterated — each
+/// phase walks its map until either `batch_size` stale entries have
+/// been collected or the map ends. For realistic deployment scales
+/// this is fine: per-address 1h cooldowns mean the map can't grow
+/// faster than ~24 entries/day/active-address, and the keeper runs
+/// prune ~daily, so the map stays small enough that full iteration
+/// is well within block gas. If the map ever does balloon (extended
+/// prune outage, deliberate storage-bloat attack), operators tune
+/// the keeper to run more frequently AND can manually invoke this
+/// handler with larger `batch_size` to drain the backlog.
+///
+/// Without this handler, the rate-limit maps grow monotonically as
+/// new addresses interact and never shrink. Pruning is anybody's
 /// job: ops, keepers, or any community member can run it.
 fn execute_prune_rate_limits(
     deps: DepsMut,

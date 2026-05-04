@@ -518,10 +518,8 @@ pub(crate) fn execute_create_standard_pool(
         ))));
     }
 
-    // Compute required fee. USD-denominated config converted to bluechip
-    // via the oracle; falls back to the hardcoded constant when the oracle
-    // is unavailable (the bootstrap case — the very first standard pool,
-    // typically the anchor itself, has no oracle data to draw on).
+    // Compute required fee. See the per-branch policy doc on the
+    // `match` below for the full fallback logic.
     let usd_fee = factory_config.standard_pool_creation_fee_usd;
     let (required_bluechip, fee_source) = if usd_fee.is_zero() {
         (Uint128::zero(), "disabled")

@@ -217,10 +217,23 @@ fn check_pool_not_paused(storage: &dyn Storage) -> Result<(), ContractError> {
     Ok(())
 }
 
-/// Liquidity-write gate: hard-rejects when the pool is paused for any
-/// reason — admin pause, emergency-pending, or auto-pause due to low
-/// liquidity. Used for swaps, removes, fee collects, claims — i.e., paths
-/// that either drain reserves further or rely on healthy reserves.
+/// Strict liquidity gate: hard-rejects whenever the pool is paused
+/// for ANY reason — admin Pause, emergency-pending, or auto-pause due
+/// to low liquidity — and rejects when the pool is permanently
+/// drained.
+///
+/// Used by the creator-only claim paths (`ClaimCreatorExcessLiquidity`,
+/// `ClaimCreatorFees`). LP-mutating paths use the more permissive
+/// gates instead:
+///   - `check_pool_writable_for_remove` permits LP exits during the
+///     emergency-withdraw timelock window so LPs can race the drain.
+///   - `check_pool_writable_for_deposit` permits deposits during
+///     auto-pause so reserves can be restored.
+///
+/// Creator claims do not benefit from those relaxations: the creator
+/// excess + fee pot are admin-controlled fund flows, and the safer
+/// default during any non-None pause is to wait for the explicit
+/// resume signal (admin Unpause / emergency cancel).
 fn check_pool_writable(storage: &dyn Storage) -> Result<(), ContractError> {
     ensure_not_drained(storage)?;
     check_pool_not_paused(storage)

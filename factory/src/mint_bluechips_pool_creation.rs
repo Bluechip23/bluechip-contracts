@@ -5,14 +5,23 @@ use crate::{
 use cosmwasm_std::{BankMsg, Coin, CosmosMsg, DepsMut, Env, StdError, StdResult, Uint128};
 
 /// Saturating cap on the mint-decay polynomial input (MEDIUM-4 audit
-/// fix). Realistic upper bound: per-address 1h create cooldown caps a
-/// single attacker at ~8.7k commit pools/year/address, so reaching 1B
-/// would need ~115k addresses operating continuously for 1000 years.
-/// Far above that, the polynomial output is structurally zero anyway
-/// (`(5x²+x) / (s/6 + 333x)` exceeds the 500e6 base around x ≈ 33e9
-/// for s == 0). Capping defensively avoids the theoretical u128
-/// overflow surface should a buggy migration or storage corruption
-/// ever inject an absurd ordinal directly.
+/// fix). Two concentric bounds are at play:
+///
+///   1. **Polynomial-is-zero bound (≈ 33,300):** `(5x²+x) / (s/6 + 333x)`
+///      crosses the 500e6 base around `x ≈ 33,300` at s == 0, so the
+///      polynomial output is structurally zero for any larger ordinal.
+///      Any cap above this is purely conservative.
+///
+///   2. **u128 overflow bound (≈ 8 × 10^18):** the inner `5 * x * x`
+///      overflows u128 around `x ≈ sqrt(2^128 / 5) ≈ 8 × 10^18`.
+///
+/// `MAX_DECAY_X = 1_000_000_000` sits comfortably between the two —
+/// well above any realistic ordinal an honest deployment will ever
+/// see, and well below the overflow ceiling. The cap exists purely
+/// as defense-in-depth against a buggy migration or storage
+/// corruption that injects an absurd ordinal directly into a
+/// `PoolDetails.commit_pool_ordinal`; under normal operation the
+/// per-address 1h create cooldown bounds the ordinal far below this.
 const MAX_DECAY_X: u128 = 1_000_000_000;
 
 pub fn calculate_mint_amount(seconds_elapsed: u64, pools_created: u64) -> StdResult<Uint128> {
