@@ -733,7 +733,7 @@ fn short_ticker(prefix: &str, pool_id: u64) -> String {
     s
 }
 
-pub fn set_oracle_rate(world: &mut World, new_rate: Uint128) -> Result<(), String> {
+pub fn set_oracle_rate(world: &mut World, new_rate: Uint128, timestamp: u64) -> Result<(), String> {
     world
         .app
         .execute_contract(
@@ -741,7 +741,7 @@ pub fn set_oracle_rate(world: &mut World, new_rate: Uint128) -> Result<(), Strin
             world.factory_shim.clone(),
             &factory_shim::HarnessExecuteMsg::SetRate {
                 new_rate,
-                timestamp: 0,
+                timestamp,
             },
             &[],
         )
