@@ -82,6 +82,8 @@ pub enum Action {
     UpdateOraclePrice {
         #[proptest(strategy = "::proptest::sample::select(vec![0u128, 1u128, 1_000u128, 1_000_000u128, 5_000_000u128, 1_000_000_000_000u128])")]
         new_rate: u128,
+        #[proptest(strategy = "::proptest::sample::select(vec![0u64, 30u64, 120u64, 3600u64])")]
+        stale_secs: u64,
     },
     /// Skip forward in time + block height.
     AdvanceBlock {
@@ -406,8 +408,10 @@ pub fn apply(world: &mut World, action: Action) -> ActionOutcome {
                 Err(e) => mk_rejected(action_dbg, &format!("remove: {e}")),
             }
         }
-        Action::UpdateOraclePrice { new_rate } => {
-            let res = set_oracle_rate(world, Uint128::new(new_rate));
+        Action::UpdateOraclePrice { new_rate, stale_secs } => {
+            let now = world.app.block_info().time.seconds();
+            let ts = now.saturating_sub(stale_secs);
+            let res = set_oracle_rate(world, Uint128::new(new_rate), ts);
             match (new_rate, res) {
                 (0, Err(_)) => mk_expected(action_dbg, "rate=0 rejected"),
                 (0, Ok(_)) => panic!("INVARIANT BROKEN: shim accepted rate=0"),
