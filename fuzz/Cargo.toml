@@ -1,0 +1,57 @@
+[package]
+name = "bluechip-fuzz"
+version = "0.0.0"
+publish = false
+edition = "2021"
+
+# IMPORTANT: this crate is excluded from the workspace (see top-level
+# Cargo.toml `[workspace.exclude]`). Build with:
+#   cargo +nightly fuzz run <target> -- -max_total_time=60
+#
+# It depends on libFuzzer via libfuzzer-sys; that requires nightly
+# rustc. We pin a minimum version that ships the sanitizer runtime.
+
+[package.metadata]
+cargo-fuzz = true
+
+[dependencies]
+libfuzzer-sys = "0.4"
+arbitrary = { version = "1", features = ["derive"] }
+
+cosmwasm-std = "2.2.0"
+
+# Path deps. Setting `default-features = false` where possible to avoid
+# pulling in unused features. The math we fuzz is in pool-core::swap
+# and factory::mint_bluechips_pool_creation; those are pure functions
+# with no entry-point dependencies.
+pool-core = { path = "../packages/pool-core" }
+factory = { path = "../factory", features = ["library"] }
+creator-pool = { path = "../creator-pool", features = ["library"] }
+
+# Workspace inheritance is unavailable here (we're outside the
+# workspace) so we restate the cosmwasm version explicitly.
+
+[[bin]]
+name = "fuzz_expand_economy_formula"
+path = "fuzz_targets/fuzz_expand_economy_formula.rs"
+test = false
+doc = false
+bench = false
+
+[[bin]]
+name = "fuzz_swap_math"
+path = "fuzz_targets/fuzz_swap_math.rs"
+test = false
+doc = false
+bench = false
+
+[[bin]]
+name = "fuzz_threshold_check"
+path = "fuzz_targets/fuzz_threshold_check.rs"
+test = false
+doc = false
+bench = false
+
+[profile.release]
+overflow-checks = true
+debug = 1

@@ -718,6 +718,32 @@ source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "3f9eec918d3f24069decb9af1554cad7c880e2da24a9afd88aca000531ab82c1"
 
 [[package]]
+name = "fuzz-stateful"
+version = "1.0.0"
+dependencies = [
+ "cosmwasm-schema",
+ "cosmwasm-std",
+ "creator-pool",
+ "cw-multi-test",
+ "cw-storage-plus",
+ "cw-utils",
+ "cw20",
+ "cw20-base",
+ "expand-economy",
+ "factory",
+ "oracle",
+ "pool-core",
+ "pool-factory-interfaces",
+ "proptest",
+ "proptest-derive",
+ "router",
+ "schemars",
+ "serde",
+ "standard-pool",
+ "thiserror 2.0.12",
+]
+
+[[package]]
 name = "generic-array"
 version = "0.14.7"
 source = "registry+https://github.com/rust-lang/crates.io-index"
@@ -1008,6 +1034,17 @@ dependencies = [
  "rusty-fork",
  "tempfile",
  "unarray",
+]
+
+[[package]]
+name = "proptest-derive"
+version = "0.4.0"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "9cf16337405ca084e9c78985114633b6827711d22b9e6ef6c6c0d665eb3f0b6e"
+dependencies = [
+ "proc-macro2",
+ "quote",
+ "syn 1.0.109",
 ]
 
 [[package]]
