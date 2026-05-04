@@ -142,6 +142,26 @@ pub enum ExecuteMsg {
     SetAnchorPool {
         pool_id: u64,
     },
+    // HIGH-4 audit fix: bootstrap-price candidate confirmation. Branch (d)
+    // of `update_internal_oracle_price` writes the very-first published
+    // TWAP to a pending candidate slot rather than directly into
+    // `last_price`. The admin observes the candidate stabilize (≥ 1h
+    // BOOTSTRAP_OBSERVATION_SECONDS) and then calls `ConfirmBootstrapPrice`
+    // to publish it. Mitigates the single-block anchor-manipulation
+    // window that would otherwise let an attacker anchor the breaker
+    // for branch (a) to a chosen value.
+    ConfirmBootstrapPrice {},
+    CancelBootstrapPrice {},
+    // MEDIUM-2 audit fix: permissionless storage hygiene. Iterates the
+    // per-address rate-limit maps (commit-pool create, standard-pool
+    // create) and removes entries older than 10× the cooldown window.
+    // `batch_size` caps work per call so large maps don't exceed gas
+    // limits; defaults to 100, hard-capped at 500. Anyone may call;
+    // there is no bounty (the work is cheap and ops/keepers run it as
+    // part of normal housekeeping).
+    PruneRateLimits {
+        batch_size: Option<u32>,
+    },
 }
 
 #[cw_serde]

@@ -379,8 +379,9 @@ pub const EMERGENCY_WITHDRAW_DELAY_SECONDS: u64 = 86_400;
 pub const POST_THRESHOLD_COOLDOWN_BLOCKS: u64 = 2;
 
 /// Classify the pool's current pause state. Used by the dispatch
-/// gates to allow deposits during auto-pause (recovery) but reject them
-/// during admin / emergency pause.
+/// gates to allow deposits during auto-pause (recovery), permit
+/// LP exits during emergency-pending (so LPs can race the drain),
+/// and reject everything during a Hard admin pause.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum PauseKind {
     /// Pool is open. POOL_PAUSED == false.
@@ -388,23 +389,40 @@ pub enum PauseKind {
     /// Reserves fell below MINIMUM_LIQUIDITY after a swap or remove.
     /// Deposits are allowed (recovery path); other ops reject.
     AutoLowLiquidity,
-    /// Admin or emergency-withdraw pending. Everything rejects.
+    /// Phase-1 emergency-withdraw is armed and inside the 24h timelock
+    /// (PENDING_EMERGENCY_WITHDRAW set; POOL_PAUSED_AUTO == false).
+    /// Trades + adds reject so the drain settles against a stable
+    /// state, but LP exits (Remove*Liquidity) and CollectFees are
+    /// permitted so LPs can withdraw their principal/fees rather than
+    /// being trapped until the drain confiscates them.
+    EmergencyPending,
+    /// Explicit admin Pause (or any other non-emergency hard pause).
+    /// Everything rejects until admin Unpause.
     Hard,
 }
 
-/// Resolve POOL_PAUSED + POOL_PAUSED_AUTO into a `PauseKind`. Reads
-/// only — does not mutate. `may_load.unwrap_or(false)` means absent
-/// storage decodes as "not set", preserving backward-compat with
-/// pools deployed before POOL_PAUSED_AUTO existed.
+/// Resolve POOL_PAUSED + POOL_PAUSED_AUTO + PENDING_EMERGENCY_WITHDRAW
+/// into a `PauseKind`. Reads only — does not mutate.
+/// `may_load.unwrap_or(false)` means absent storage decodes as "not
+/// set", preserving backward-compat with pools deployed before
+/// POOL_PAUSED_AUTO existed.
+///
+/// Distinction between EmergencyPending and Hard: both have
+/// POOL_PAUSED == true and POOL_PAUSED_AUTO == false. The presence of
+/// PENDING_EMERGENCY_WITHDRAW disambiguates — emergency-withdraw
+/// initiate sets it; admin Pause does not. Cancel emergency-withdraw
+/// or core-drain clears it.
 pub fn pause_kind(storage: &dyn Storage) -> StdResult<PauseKind> {
     if !POOL_PAUSED.may_load(storage)?.unwrap_or(false) {
         return Ok(PauseKind::None);
     }
     if POOL_PAUSED_AUTO.may_load(storage)?.unwrap_or(false) {
-        Ok(PauseKind::AutoLowLiquidity)
-    } else {
-        Ok(PauseKind::Hard)
+        return Ok(PauseKind::AutoLowLiquidity);
     }
+    if PENDING_EMERGENCY_WITHDRAW.may_load(storage)?.is_some() {
+        return Ok(PauseKind::EmergencyPending);
+    }
+    Ok(PauseKind::Hard)
 }
 
 /// Arm the auto-pause flag after a liquidity-out operation if

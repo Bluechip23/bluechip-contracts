@@ -932,17 +932,64 @@ pub fn update_internal_oracle_price(
     } else {
         // Branch (d): bootstrap. No prior price (`prior == 0`), no
         // pre-reset price to protect against (`pre_reset == 0`), no
-        // candidate buffered (`candidate == None`). Publish directly.
-        // The buffer adds no security at bootstrap because there's no
-        // prior trusted price for an attacker to anchor the breaker
-        // against; the first published value will itself be the
-        // breaker's anchor for branch (a) on the next update. The
-        // warm-up gate (`warmup_remaining`) still holds downstream
-        // consumers off the new value for `ANCHOR_CHANGE_WARMUP_OBSERVATIONS`
-        // additional rounds, providing the same observability window
-        // as for an anchor change.
-        oracle.bluechip_price_cache.last_price = twap_price;
-        oracle.bluechip_price_cache.last_update = current_time;
+        // candidate buffered (`candidate == None`).
+        //
+        // HIGH-4 audit fix: do NOT publish directly. Buffer the TWAP
+        // to `PENDING_BOOTSTRAP_PRICE` and require an admin
+        // `ConfirmBootstrapPrice` call (after a 1h observation
+        // window) to publish it. Without this gate, a single-block
+        // manipulation of the freshly-seeded anchor's reserves could
+        // anchor the breaker for branch (a) to an attacker-chosen
+        // value, and the warm-up window alone wouldn't catch it
+        // because the pricing arithmetic is locked in once warm-up
+        // clears.
+        //
+        // Each successive (d) round overwrites the candidate `price`
+        // and increments `observation_count`. `proposed_at` is fixed
+        // at the FIRST proposal so the 1h observation window can't
+        // be reset by a fresh-looking but stale candidate.
+        //
+        // Pop the just-pushed observation: branch (b) does the same
+        // thing for symmetric reasons. Unconfirmed candidates must
+        // not accumulate in the TWAP window.
+        let _ = current_time; // currently used only via env.block.time below
+        oracle.bluechip_price_cache.twap_observations.pop();
+
+        let pending = match crate::state::PENDING_BOOTSTRAP_PRICE.may_load(deps.storage)? {
+            Some(prev) => crate::state::PendingBootstrapPrice {
+                price: twap_price,
+                proposed_at: prev.proposed_at,
+                observation_count: prev.observation_count.saturating_add(1),
+            },
+            None => crate::state::PendingBootstrapPrice {
+                price: twap_price,
+                proposed_at: env.block.time,
+                observation_count: 1,
+            },
+        };
+        let earliest_confirm = pending
+            .proposed_at
+            .plus_seconds(crate::state::BOOTSTRAP_OBSERVATION_SECONDS);
+
+        crate::state::PENDING_BOOTSTRAP_PRICE.save(deps.storage, &pending)?;
+        INTERNAL_ORACLE.save(deps.storage, &oracle)?;
+        return Ok(Response::new()
+            .add_attribute("action", "update_oracle")
+            .add_attribute("price_published", "false")
+            .add_attribute("reason", "bootstrap_awaiting_admin_confirmation")
+            .add_attribute("candidate_price", twap_price.to_string())
+            .add_attribute(
+                "observation_count",
+                pending.observation_count.to_string(),
+            )
+            .add_attribute(
+                "earliest_confirm_time",
+                earliest_confirm.seconds().to_string(),
+            )
+            .add_attribute(
+                "warmup_remaining",
+                oracle.warmup_remaining.to_string(),
+            ));
     }
 
     // Cache the Pyth ATOM/USD price alongside the TWAP update.
@@ -1952,4 +1999,125 @@ pub fn execute_force_rotate_pools(
             "warmup_remaining",
             ANCHOR_CHANGE_WARMUP_OBSERVATIONS.to_string(),
         ))
+}
+
+// ---------------------------------------------------------------------------
+// Bootstrap-price confirmation (HIGH-4 audit fix)
+// ---------------------------------------------------------------------------
+//
+// Two admin-only handlers that gate the very-first published TWAP
+// behind an explicit confirmation step. See the module-level
+// `PendingBootstrapPrice` doc on `state.rs` and branch (d) of
+// `update_internal_oracle_price` above for the full flow.
+
+/// Admin-only. Reads the buffered bootstrap-price candidate (set by
+/// branch (d) of `update_internal_oracle_price`), enforces the
+/// `BOOTSTRAP_OBSERVATION_SECONDS` (1h) observation window from the
+/// candidate's `proposed_at`, then publishes it as `last_price`
+/// (decrementing `warmup_remaining` like a normal successful update
+/// would). Future updates resume the steady-state breaker on
+/// branch (a).
+///
+/// Reverts when:
+///   - sender is not the factory admin
+///   - no candidate is pending (admin has nothing to confirm)
+///   - `block.time < proposed_at + BOOTSTRAP_OBSERVATION_SECONDS`
+///     (insufficient observation window — admin must wait)
+pub fn execute_confirm_bootstrap_price(
+    deps: DepsMut,
+    env: Env,
+    info: MessageInfo,
+) -> Result<Response, ContractError> {
+    let config = FACTORYINSTANTIATEINFO.load(deps.storage)?;
+    if info.sender != config.factory_admin_address {
+        return Err(ContractError::Unauthorized {});
+    }
+
+    let pending = crate::state::PENDING_BOOTSTRAP_PRICE
+        .may_load(deps.storage)?
+        .ok_or_else(|| {
+            ContractError::Std(StdError::generic_err(
+                "No pending bootstrap price to confirm. Wait for the next \
+                 successful UpdateOraclePrice in branch (d) to populate one.",
+            ))
+        })?;
+
+    let earliest_confirm = pending
+        .proposed_at
+        .plus_seconds(crate::state::BOOTSTRAP_OBSERVATION_SECONDS);
+    if env.block.time < earliest_confirm {
+        return Err(ContractError::Std(StdError::generic_err(format!(
+            "Bootstrap-price observation window not yet elapsed; earliest confirm at {} \
+             (proposed at {}, required window {}s)",
+            earliest_confirm,
+            pending.proposed_at,
+            crate::state::BOOTSTRAP_OBSERVATION_SECONDS
+        ))));
+    }
+
+    let mut oracle = INTERNAL_ORACLE.load(deps.storage)?;
+    let current_time = env.block.time.seconds();
+
+    oracle.bluechip_price_cache.last_price = pending.price;
+    oracle.bluechip_price_cache.last_update = current_time;
+    // Push the confirmed price as a real observation so the next
+    // round's TWAP window has prior data to compute against.
+    oracle
+        .bluechip_price_cache
+        .twap_observations
+        .push(PriceObservation {
+            timestamp: current_time,
+            price: pending.price,
+            atom_pool_price: pending.price,
+        });
+    // Cache the Pyth price too, mirroring the steady-state success tail.
+    if let Ok(pyth_price) = query_pyth_atom_usd_price(deps.as_ref(), &env) {
+        oracle.bluechip_price_cache.cached_pyth_price = pyth_price;
+        oracle.bluechip_price_cache.cached_pyth_timestamp = current_time;
+    }
+    let warmup_remaining_before = oracle.warmup_remaining;
+    oracle.warmup_remaining = oracle.warmup_remaining.saturating_sub(1);
+
+    INTERNAL_ORACLE.save(deps.storage, &oracle)?;
+    crate::state::PENDING_BOOTSTRAP_PRICE.remove(deps.storage);
+
+    Ok(Response::new()
+        .add_attribute("action", "confirm_bootstrap_price")
+        .add_attribute("published_price", pending.price.to_string())
+        .add_attribute("observation_count", pending.observation_count.to_string())
+        .add_attribute("proposed_at", pending.proposed_at.to_string())
+        .add_attribute(
+            "warmup_remaining_before",
+            warmup_remaining_before.to_string(),
+        )
+        .add_attribute(
+            "warmup_remaining_after",
+            oracle.warmup_remaining.to_string(),
+        ))
+}
+
+/// Admin-only. Discards the buffered bootstrap-price candidate. The
+/// next successful `UpdateOraclePrice` round in branch (d) starts
+/// over with a fresh candidate and a fresh observation window.
+///
+/// Reverts when sender is not the factory admin or when there is no
+/// pending candidate to cancel.
+pub fn execute_cancel_bootstrap_price(
+    deps: DepsMut,
+    info: MessageInfo,
+) -> Result<Response, ContractError> {
+    let config = FACTORYINSTANTIATEINFO.load(deps.storage)?;
+    if info.sender != config.factory_admin_address {
+        return Err(ContractError::Unauthorized {});
+    }
+    if crate::state::PENDING_BOOTSTRAP_PRICE
+        .may_load(deps.storage)?
+        .is_none()
+    {
+        return Err(ContractError::Std(StdError::generic_err(
+            "No pending bootstrap price to cancel",
+        )));
+    }
+    crate::state::PENDING_BOOTSTRAP_PRICE.remove(deps.storage);
+    Ok(Response::new().add_attribute("action", "cancel_bootstrap_price"))
 }

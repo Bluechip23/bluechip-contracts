@@ -35,7 +35,8 @@ pub use upgrades::*;
 
 use crate::error::ContractError;
 use crate::internal_bluechip_price_oracle::{
-    execute_cancel_force_rotate_pools, execute_force_rotate_pools,
+    execute_cancel_bootstrap_price, execute_cancel_force_rotate_pools,
+    execute_confirm_bootstrap_price, execute_force_rotate_pools,
     execute_propose_force_rotate_pools, initialize_internal_bluechip_oracle,
     update_internal_oracle_price,
 };
@@ -173,7 +174,90 @@ pub fn execute(
         ExecuteMsg::SetAnchorPool { pool_id } => {
             execute_set_anchor_pool(deps, env, info, pool_id)
         }
+        ExecuteMsg::ConfirmBootstrapPrice {} => {
+            execute_confirm_bootstrap_price(deps, env, info)
+        }
+        ExecuteMsg::CancelBootstrapPrice {} => execute_cancel_bootstrap_price(deps, info),
+        ExecuteMsg::PruneRateLimits { batch_size } => {
+            execute_prune_rate_limits(deps, env, batch_size)
+        }
     }
+}
+
+/// Permissionless storage hygiene (MEDIUM-2 audit fix). Iterates the
+/// per-address rate-limit maps and removes entries older than 10× the
+/// per-map cooldown window. Caller-supplied `batch_size` caps work
+/// per call (default 100, hard cap 500) so a large backlog doesn't
+/// exceed block gas limits in a single tx.
+///
+/// Without this, the rate-limit maps grow monotonically as new
+/// addresses interact and never shrink — a soft storage-bloat surface
+/// that compounds over the protocol's lifetime. Pruning is anybody's
+/// job: ops, keepers, or any community member can run it.
+fn execute_prune_rate_limits(
+    deps: DepsMut,
+    env: Env,
+    batch_size: Option<u32>,
+) -> Result<Response, ContractError> {
+    use cosmwasm_std::Order;
+
+    let batch = batch_size.unwrap_or(100).min(500) as usize;
+    let now_secs = env.block.time.seconds();
+
+    // 10× the longer of the two cooldowns. Both are 1h today so this
+    // is 10h, well beyond any legitimate user's natural retry cadence.
+    let stale_after_secs = std::cmp::max(
+        crate::state::COMMIT_POOL_CREATE_RATE_LIMIT_SECONDS,
+        crate::state::STANDARD_POOL_CREATE_RATE_LIMIT_SECONDS,
+    )
+    .saturating_mul(10);
+
+    let mut commit_pruned: u32 = 0;
+    let mut std_pruned: u32 = 0;
+
+    // Phase 1: commit-pool rate-limit map.
+    let mut to_remove: Vec<cosmwasm_std::Addr> = Vec::new();
+    for entry in crate::state::LAST_COMMIT_POOL_CREATE_AT
+        .range(deps.storage, None, None, Order::Ascending)
+    {
+        if to_remove.len() >= batch {
+            break;
+        }
+        let (addr, ts) = entry?;
+        if now_secs.saturating_sub(ts.seconds()) >= stale_after_secs {
+            to_remove.push(addr);
+        }
+    }
+    for addr in to_remove.iter() {
+        crate::state::LAST_COMMIT_POOL_CREATE_AT.remove(deps.storage, addr.clone());
+        commit_pruned = commit_pruned.saturating_add(1);
+    }
+
+    // Phase 2: standard-pool rate-limit map. Independent budget from
+    // phase 1 so a `batch_size` of 100 prunes up to 100 from each.
+    to_remove.clear();
+    for entry in crate::state::LAST_STANDARD_POOL_CREATE_AT
+        .range(deps.storage, None, None, Order::Ascending)
+    {
+        if to_remove.len() >= batch {
+            break;
+        }
+        let (addr, ts) = entry?;
+        if now_secs.saturating_sub(ts.seconds()) >= stale_after_secs {
+            to_remove.push(addr);
+        }
+    }
+    for addr in to_remove.iter() {
+        crate::state::LAST_STANDARD_POOL_CREATE_AT.remove(deps.storage, addr.clone());
+        std_pruned = std_pruned.saturating_add(1);
+    }
+
+    Ok(Response::new()
+        .add_attribute("action", "prune_rate_limits")
+        .add_attribute("commit_pruned", commit_pruned.to_string())
+        .add_attribute("standard_pruned", std_pruned.to_string())
+        .add_attribute("stale_after_secs", stale_after_secs.to_string())
+        .add_attribute("batch_size", batch.to_string()))
 }
 
 #[cfg_attr(not(feature = "library"), entry_point)]

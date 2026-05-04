@@ -191,6 +191,14 @@ pub fn prime_oracle_for_first_update(
         block_time: 0,
     }];
     oracle.warmup_remaining = 0;
+    // HIGH-4 audit fix: branch (d) now buffers the first publish to
+    // PENDING_BOOTSTRAP_PRICE rather than committing it to last_price.
+    // Tests that use this helper want the FIRST UpdateOraclePrice to
+    // route through the steady-state branch (a) — i.e. drift-check + publish
+    // — not the new bootstrap-confirmation flow. Seed `last_price` to the
+    // value the first round computes (10_000_000, see comment above) so
+    // branch (a) runs with zero drift and publishes the same value.
+    oracle.bluechip_price_cache.last_price = Uint128::new(10_000_000);
     INTERNAL_ORACLE.save(&mut deps.storage, &oracle).unwrap();
 }
 
@@ -278,10 +286,12 @@ fn test_oracle_initialization_with_no_other_pools() {
     let info = message_info(&admin_addr(), &[]);
 
     instantiate(deps.as_mut(), env.clone(), info, msg).unwrap();
-    // Pre-seed prior snapshots and clear the warm-up gate so the first
-    // UpdateOraclePrice call can produce a TWAP without going through the
-    // snapshots-only bootstrap round.
-    prime_oracle_for_first_update(&mut deps);
+    // This test asserts the post-`instantiate` oracle state directly —
+    // it does NOT exercise UpdateOraclePrice — so we deliberately do
+    // NOT call prime_oracle_for_first_update here. (That helper now
+    // seeds `last_price = 10_000_000` to route subsequent updates
+    // through branch (a); calling it here would falsify the
+    // "last_price starts at zero" assertion below.)
 
     let oracle = INTERNAL_ORACLE.load(&deps.storage).unwrap();
     assert_eq!(
@@ -4220,6 +4230,14 @@ fn test_distribution_bounty_skips_when_oracle_unavailable() {
     prime_oracle_for_first_update(&mut deps);
     // Deliberately do NOT seed oracle price — last_price stays zero so
     // get_bluechip_usd_price errors with "TWAP price is zero".
+    // (Override the seed introduced into prime_oracle_for_first_update by
+    // the HIGH-4 audit fix; this test specifically wants the oracle to
+    // appear unavailable.)
+    {
+        let mut oracle = INTERNAL_ORACLE.load(&deps.storage).unwrap();
+        oracle.bluechip_price_cache.last_price = Uint128::zero();
+        INTERNAL_ORACLE.save(&mut deps.storage, &oracle).unwrap();
+    }
 
     execute(
         deps.as_mut(),
@@ -4847,13 +4865,21 @@ mod post_reset_buffer_tests {
         );
     }
 
-    /// Bootstrap (branch d): no prior trusted price (`pre_reset == 0`),
-    /// the very first observation publishes directly without buffering.
-    /// Pre-existing tests already cover this implicitly; explicit coverage
-    /// here locks in the gating logic so a future change can't accidentally
-    /// route bootstrap through the buffer.
+    /// Bootstrap (branch d) — HIGH-4 audit fix.
+    ///
+    /// Before the fix: the very first oracle update published directly to
+    /// `last_price` with no circuit-breaker protection, letting a single-
+    /// block manipulation of the freshly-seeded anchor anchor the breaker
+    /// to a chosen value.
+    ///
+    /// After the fix: branch (d) buffers the candidate to
+    /// `PENDING_BOOTSTRAP_PRICE`, leaves `last_price = 0`, does NOT
+    /// decrement `warmup_remaining`, and emits
+    /// `reason=bootstrap_awaiting_admin_confirmation`. Admin must then
+    /// observe the candidate stabilize for ≥ BOOTSTRAP_OBSERVATION_SECONDS
+    /// and call `ConfirmBootstrapPrice` to publish.
     #[test]
-    fn bootstrap_publishes_directly_without_buffering() {
+    fn bootstrap_buffers_for_admin_confirmation() {
         let mut deps = mock_dependencies(&[]);
         setup_factory_for_oracle_tests(&mut deps);
         // No pre-reset price → bootstrap. Use the same priming helper but
@@ -4869,9 +4895,8 @@ mod post_reset_buffer_tests {
             message_info(&admin_addr(), &[]),
             ExecuteMsg::UpdateOraclePrice {},
         )
-        .expect("bootstrap round must publish directly");
+        .expect("bootstrap round must succeed (buffered)");
 
-        // No buffered/replaced reason — branch (d) is a publishing round.
         let reasons: Vec<&str> = res
             .attributes
             .iter()
@@ -4879,24 +4904,25 @@ mod post_reset_buffer_tests {
             .map(|a| a.value.as_str())
             .collect();
         assert!(
-            !reasons.contains(&"first_post_reset_observation_buffered"),
-            "bootstrap must not buffer; got: {:?}",
+            reasons.contains(&"bootstrap_awaiting_admin_confirmation"),
+            "bootstrap must buffer to PENDING_BOOTSTRAP_PRICE; got: {:?}",
             res.attributes
         );
 
         let oracle = INTERNAL_ORACLE.load(&deps.storage).unwrap();
         assert!(
-            !oracle.bluechip_price_cache.last_price.is_zero(),
-            "bootstrap publishes last_price directly"
-        );
-        assert!(
-            oracle.pending_first_price.is_none(),
-            "bootstrap leaves pending_first_price as None"
+            oracle.bluechip_price_cache.last_price.is_zero(),
+            "bootstrap MUST NOT publish last_price directly anymore"
         );
         assert_eq!(
             oracle.warmup_remaining,
-            ANCHOR_CHANGE_WARMUP_OBSERVATIONS - 1,
-            "bootstrap counts as a publishing round → warmup decrements"
+            ANCHOR_CHANGE_WARMUP_OBSERVATIONS,
+            "buffered round MUST NOT decrement warmup until admin confirms"
         );
+        let pending = crate::state::PENDING_BOOTSTRAP_PRICE
+            .load(&deps.storage)
+            .expect("pending bootstrap price must be populated");
+        assert!(!pending.price.is_zero(), "buffered candidate is non-zero");
+        assert_eq!(pending.observation_count, 1);
     }
 }
