@@ -4,6 +4,7 @@ import { buildKeeperClient } from "./lib/client.js";
 import { nextDistributionSleepMs } from "./lib/decisions.js";
 import { runDistributionSweep } from "./lib/distribution-loop.js";
 import { checkFactoryBalance, checkKeeperBalance } from "./lib/oracle-loop.js";
+import { runRetryNotifySweep } from "./lib/retry-notify-loop.js";
 import { interruptibleSleep } from "./lib/sleep.js";
 import { log } from "./lib/logger.js";
 
@@ -34,6 +35,18 @@ async function main(): Promise<void> {
   process.on("SIGTERM", stop);
 
   while (!stopped) {
+    // Run the retry-factory-notify sweep BEFORE the distribution sweep.
+    // Order matters: a stuck factory-notify means POOL_THRESHOLD_MINTED
+    // never landed on the factory side, which blocks the bluechip
+    // mint reward but does NOT block distribution itself (distribution
+    // mints creator-tokens, which is a pool-side action). Still,
+    // settling the notify first means the same iteration can leave
+    // the pool fully consistent rather than half. Each pool's
+    // RetryFactoryNotify is itself permissionless and idempotent on
+    // the factory side (POOL_THRESHOLD_MINTED gate), so a redundant
+    // call is at worst wasted gas — never a double-mint.
+    await runRetryNotifySweep(client, cfg.POOL_ADDRESSES);
+
     const { madeProgress } = await runDistributionSweep(
       client,
       cfg.POOL_ADDRESSES,

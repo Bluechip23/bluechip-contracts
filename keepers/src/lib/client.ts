@@ -52,6 +52,13 @@ export async function buildKeeperClient(cfg: Config): Promise<KeeperClient> {
       const coin = await signer.getBalance(target, denom);
       return BigInt(coin.amount);
     },
+    async queryContractSmart<T>(contract: string, msg: Record<string, unknown>): Promise<T> {
+      // SigningCosmWasmClient extends CosmWasmClient, which exposes
+      // queryContractSmart. The CosmJS return type is `unknown`; we
+      // assert to `T` here and trust the caller to declare the right
+      // shape (matching the contract's `#[returns(...)]` annotation).
+      return (await signer.queryContractSmart(contract, msg)) as T;
+    },
     close: () => signer.disconnect(),
   };
 }
