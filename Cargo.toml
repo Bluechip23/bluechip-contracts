@@ -7,6 +7,12 @@ members = [
     "mockoracle",
     "expand-economy",
     "router",
+    "fuzz-stateful",
+]
+exclude = [
+    # cargo-fuzz crate uses libFuzzer + nightly; excluded from the
+    # default workspace so stable `cargo build` doesn't try to compile it.
+    "fuzz",
 ]
 
 resolver = "2"
