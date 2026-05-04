@@ -1,16 +1,20 @@
-# Fuzz harness findings — initial setup run
+# Fuzz harness findings — setup + expansion run
 
 ## TL;DR
 
-No invariant violations found across:
+After two passes (initial setup + an expansion that more than doubled
+the action enum and added new invariants), no invariant violations
+remain across:
 
 | Harness | Cases | Wall-clock | Result |
 |---|---|---|---|
-| `fuzz_stateful` (stateful proptest, 30-action sequences) | 1024 | 3.10s | clean |
+| `fuzz_stateful` (stateful proptest, 30-action sequences, 20-action enum) | 1024 | 2.41s | clean |
 | `fuzz_stateful_quick` (stateful proptest, 5–15 action sequences) | 256 | 0.81s | clean |
 | `proptest_pure_math::expand_economy_formula` | 8192 | <1s | clean |
 | `proptest_pure_math::swap_math_invariants` | 8192 | <1s | clean |
 | `proptest_pure_math::threshold_check_matches_reference` | 8192 | <1s | clean |
+| `smoke_create_commit_swap` | 1 | <1s | clean |
+| `smoke_emergency_withdraw_lifecycle` (initiate → cancel → re-initiate → 24h timelock → drain → drain-blocks-ops invariant) | 1 | <1s | clean |
 
 > Note on cargo-fuzz: the `fuzz/fuzz_targets/*` libFuzzer harnesses are
 > written and compile-ready, but the sandbox running this initial setup
@@ -43,6 +47,65 @@ The five illegal-by-design actions all consistently error:
 - `AttemptOraclePriceZero` → mockoracle "price must be > 0"
 - `UpdateOraclePrice { new_rate: 0 }` → factory shim "rate must be > 0"
 
+## Action enum after expansion
+
+The action enum now covers (added in the expansion pass marked **NEW**):
+- `CreateCreatorPool`, `CreateStandardPool`
+- `Commit`, `SwapNativeIn`, `SwapCw20In`
+- `DepositLiquidity`, `RemoveLiquidityPercent`
+- `UpdateOraclePrice`, `AdvanceBlock`
+- `AttemptUnauthorizedConfigUpdate` (illegal)
+- `AttemptUnauthorizedThresholdNotify` (illegal)
+- `AttemptUnauthorizedRouterInternal` (illegal)
+- `AttemptOraclePriceZero` (illegal)
+- **NEW** `EmergencyInitiate`, `EmergencyCancel`, `EmergencyExecute`
+  — full 24h-timelocked emergency-withdraw lifecycle from factory.
+- **NEW** `ContinueDistribution` — permissionless keeper batch advance.
+- **NEW** `ClaimCreatorFees`, `ClaimCreatorExcess` — creator-only.
+- **NEW** `RouterSingleHop` — native→CW20 swap through the router with
+  `minimum_receive` slippage assertion.
+- **NEW** `AttemptUnauthorizedEmergency`, `AttemptUnauthorizedCreatorClaim`
+  (illegal — non-factory / non-creator paths).
+
+Invariants checked after each action:
+- `conservation_native_underwater`, `conservation_cw20_underwater` —
+  pool's bank/cw20 balance always ≥ its claimed reserves.
+- `minimum_liquidity_breached` — both reserves zero or both ≥ 1000.
+- `threshold_unsticky` — `IS_THRESHOLD_HIT` once true, never false.
+- `usd_raised_decreased` — pre-threshold USD raised non-decreasing.
+- `threshold_minted_flag_regressed` — factory shim's `MINTED[pool_id]`
+  monotonically non-decreasing.
+- **NEW** `positions_overclaim_liquidity` — sum of every active LP
+  position's liquidity never exceeds `pool_state.total_liquidity`.
+- **NEW** `drained_pool_accepted_swap` /
+  `drained_pool_accepted_cw20_swap` — once we observe a successful
+  emergency drain, both bluechip and CW20 swap probes against the
+  pool must error.
+
+## Notable false positive caught and corrected
+
+While building the expansion's `total_liquidity_mismatch` invariant
+the smoke test fired with `sum(positions)=0` vs `total_liquidity=38.6B`
+on a freshly-threshold-crossed pool. Investigation showed this is
+**intended behavior**: the threshold-crossing seed liquidity (the
+`pool_seed_amount = 350B` creator tokens + matched bluechip) is
+permanently locked into pool reserves and is intentionally NOT
+recorded as a `Position`. No LP can claim it; only the trading
+spread captures it.
+
+Tightening the invariant to equality would have been wrong. The
+correct shape is **one-sided**: positions can never collectively
+claim more liquidity than `total_liquidity`. The reverse —
+`total_liquidity > sum(positions)` — is allowed because of the
+locked seed. This is now `positions_overclaim_liquidity` in
+`invariants.rs`.
+
+This is a useful illustration of the auditor-vs-fuzzer distinction
+called out in the README: the fuzzer caught a discrepancy I'd
+encoded as an invariant, but only an auditor (or careful read of the
+threshold-crossing handler) could correctly judge that the
+discrepancy was by-design rather than a bug.
+
 ## Issues found and fixed during harness construction (not contract bugs)
 
 These were friction points hit while wiring up the harness and resolved
@@ -68,6 +131,17 @@ friction:
    the same name in its `QueryMsg`. Production's two contracts agree
    on this implicitly via matching enum tags. Documented this in the
    factory_shim and added support for the wrapper variant.
+4. **CW20 minter rotation at pool creation** — the threshold-crossing
+   commit handler mints 1.2T creator tokens (creator/bluechip/pool-seed/
+   commit-return). The pool itself sends those `Cw20ExecuteMsg::Mint`
+   calls, so the CW20's minter must equal the pool address. Production
+   factory does this via the staged-instantiate reply chain (CW20
+   instantiated with factory as minter, then minter rotated to the
+   pool in a later reply). The harness now explicitly mirrors that
+   rotation: after instantiating the pool, it sends
+   `cw20_base::ExecuteMsg::UpdateMinter { new_minter: Some(pool) }`
+   from the factory_shim. Without this, the very first
+   threshold-crossing commit fails with `Unauthorized` from the CW20.
 
 None of the above represent contract security bugs. (3) is potentially
 a maintainability concern — the wire-format coupling between two

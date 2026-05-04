@@ -109,6 +109,92 @@ pub enum Action {
     },
     /// Illegal: send mockoracle SetPrice with zero (must error).
     AttemptOraclePriceZero,
+
+    // -----------------------------------------------------------------
+    // Emergency-withdraw lifecycle (factory-initiated)
+    // -----------------------------------------------------------------
+    /// Phase 1 of emergency withdraw: factory_shim sends `EmergencyWithdraw`
+    /// to a pool with no pending timelock. Arms the 24h timelock and hard-pauses
+    /// the pool.
+    EmergencyInitiate {
+        #[proptest(strategy = "0usize..8usize")]
+        pool_idx: usize,
+    },
+    /// Cancels a pending emergency withdraw. Errors if none pending.
+    EmergencyCancel {
+        #[proptest(strategy = "0usize..8usize")]
+        pool_idx: usize,
+    },
+    /// Phase 2: factory_shim re-sends `EmergencyWithdraw` after the timelock.
+    /// Drains all pool reserves + fees + creator pots. Sets `EMERGENCY_DRAINED`.
+    /// Errors if not initiated or timelock not yet elapsed.
+    EmergencyExecute {
+        #[proptest(strategy = "0usize..8usize")]
+        pool_idx: usize,
+    },
+
+    // -----------------------------------------------------------------
+    // Post-threshold distribution
+    // -----------------------------------------------------------------
+    /// Permissionless keeper: advances the per-pool committer-payout
+    /// distribution batch. Errors before threshold-cross or when nothing
+    /// to do.
+    ContinueDistribution {
+        #[proptest(strategy = "0usize..5usize")]
+        keeper_idx: usize,
+        #[proptest(strategy = "0usize..8usize")]
+        pool_idx: usize,
+    },
+
+    // -----------------------------------------------------------------
+    // Creator claims
+    // -----------------------------------------------------------------
+    /// Creator-only. Claims fees accumulated in CREATOR_FEE_POT.
+    /// In our harness `commit_fee_info.creator_wallet_address == admin`.
+    ClaimCreatorFees {
+        #[proptest(strategy = "0usize..8usize")]
+        pool_idx: usize,
+    },
+    /// Creator-only. Claims excess bluechip locked above
+    /// max_bluechip_lock_per_pool. Errors before unlock_time or before
+    /// threshold-cross.
+    ClaimCreatorExcess {
+        #[proptest(strategy = "0usize..8usize")]
+        pool_idx: usize,
+    },
+
+    // -----------------------------------------------------------------
+    // Router multi-hop happy path
+    // -----------------------------------------------------------------
+    /// Native -> CW20 single-hop swap through the router. Requires at
+    /// least one standard pool. Exercises the route validation +
+    /// minimum-receive assertion path end-to-end.
+    RouterSingleHop {
+        #[proptest(strategy = "0usize..5usize")]
+        user_idx: usize,
+        #[proptest(strategy = "0usize..8usize")]
+        pool_idx: usize,
+        #[proptest(strategy = "1u128..100_000_000u128")]
+        amount: u128,
+    },
+
+    // -----------------------------------------------------------------
+    // Illegal extras
+    // -----------------------------------------------------------------
+    /// Illegal: non-factory tries to call EmergencyWithdraw on a pool.
+    AttemptUnauthorizedEmergency {
+        #[proptest(strategy = "0usize..5usize")]
+        attacker_idx: usize,
+        #[proptest(strategy = "0usize..8usize")]
+        pool_idx: usize,
+    },
+    /// Illegal: non-creator wallet attempts ClaimCreatorFees / ClaimCreatorExcess.
+    AttemptUnauthorizedCreatorClaim {
+        #[proptest(strategy = "0usize..5usize")]
+        attacker_idx: usize,
+        #[proptest(strategy = "0usize..8usize")]
+        pool_idx: usize,
+    },
 }
 
 #[derive(Debug)]
@@ -405,6 +491,202 @@ pub fn apply(world: &mut World, action: Action) -> ActionOutcome {
             match res {
                 Err(_) => mk_expected(action_dbg, "mockoracle zero rejected"),
                 Ok(_) => panic!("INVARIANT BROKEN: mockoracle accepted price=0"),
+            }
+        }
+
+        // ---- Emergency withdraw lifecycle ----
+        Action::EmergencyInitiate { pool_idx } => {
+            let Some(pool) = pick_pool(world, pool_idx, None) else {
+                return mk_rejected(action_dbg, "no pool");
+            };
+            // Sender = factory_shim (the pool's expected factory).
+            let res = world.app.execute_contract(
+                world.factory_shim.clone(),
+                pool.pool_addr.clone(),
+                &creator_pool::msg::ExecuteMsg::EmergencyWithdraw {},
+                &[],
+            );
+            match res {
+                Ok(_) => mk_ok(action_dbg, "emergency initiated"),
+                Err(e) => mk_rejected(action_dbg, &format!("initiate: {e:?}")),
+            }
+        }
+        Action::EmergencyCancel { pool_idx } => {
+            let Some(pool) = pick_pool(world, pool_idx, None) else {
+                return mk_rejected(action_dbg, "no pool");
+            };
+            let res = world.app.execute_contract(
+                world.factory_shim.clone(),
+                pool.pool_addr.clone(),
+                &creator_pool::msg::ExecuteMsg::CancelEmergencyWithdraw {},
+                &[],
+            );
+            match res {
+                Ok(_) => mk_ok(action_dbg, "emergency cancelled"),
+                Err(e) => mk_rejected(action_dbg, &format!("cancel: {e:?}")),
+            }
+        }
+        Action::EmergencyExecute { pool_idx } => {
+            let pool = match pick_pool(world, pool_idx, None) {
+                Some(p) => p,
+                None => return mk_rejected(action_dbg, "no pool"),
+            };
+            // Phase 2: same EmergencyWithdraw entry-point — the pool
+            // itself decides between initiate/drain based on whether
+            // the timelock has elapsed.
+            let res = world.app.execute_contract(
+                world.factory_shim.clone(),
+                pool.pool_addr.clone(),
+                &creator_pool::msg::ExecuteMsg::EmergencyWithdraw {},
+                &[],
+            );
+            match res {
+                Ok(r) => {
+                    // creator-pool's wrapper emits action="emergency_withdraw"
+                    // on phase 2 drain (vs "emergency_withdraw_initiated"
+                    // on phase 1).
+                    let drained = r.events.iter().any(|e| {
+                        e.attributes.iter().any(|a| {
+                            a.key == "action" && a.value == "emergency_withdraw"
+                        })
+                    });
+                    if drained {
+                        // Track for the drain-blocks-ops invariant.
+                        if let Some(p) = world.pools.iter_mut().find(|p| p.pool_addr == pool.pool_addr) {
+                            p.drained = true;
+                        }
+                    }
+                    mk_ok(action_dbg, if drained { "drain completed" } else { "phase 2 ok (re-initiate?)" })
+                }
+                Err(e) => mk_rejected(action_dbg, &format!("execute: {e:?}")),
+            }
+        }
+
+        // ---- Post-threshold distribution ----
+        Action::ContinueDistribution { keeper_idx, pool_idx } => {
+            let Some(pool) = pick_pool(world, pool_idx, Some(PoolKind::Commit)) else {
+                return mk_rejected(action_dbg, "no creator pool");
+            };
+            let keeper = world.users[keeper_idx % world.users.len()].clone();
+            let res = world.app.execute_contract(
+                keeper,
+                pool.pool_addr.clone(),
+                &creator_pool::msg::ExecuteMsg::ContinueDistribution {},
+                &[],
+            );
+            match res {
+                Ok(_) => mk_ok(action_dbg, "distribution batch ok"),
+                Err(e) => mk_rejected(action_dbg, &format!("dist: {e:?}")),
+            }
+        }
+
+        // ---- Creator claims ----
+        Action::ClaimCreatorFees { pool_idx } => {
+            let Some(pool) = pick_pool(world, pool_idx, Some(PoolKind::Commit)) else {
+                return mk_rejected(action_dbg, "no creator pool");
+            };
+            // commit_fee_info.creator_wallet_address == admin in our harness
+            // (see world::create_creator_pool).
+            let res = world.app.execute_contract(
+                world.admin.clone(),
+                pool.pool_addr.clone(),
+                &creator_pool::msg::ExecuteMsg::ClaimCreatorFees { transaction_deadline: None },
+                &[],
+            );
+            match res {
+                Ok(_) => mk_ok(action_dbg, "creator fees claimed"),
+                Err(e) => mk_rejected(action_dbg, &format!("claim_fees: {e:?}")),
+            }
+        }
+        Action::ClaimCreatorExcess { pool_idx } => {
+            let Some(pool) = pick_pool(world, pool_idx, Some(PoolKind::Commit)) else {
+                return mk_rejected(action_dbg, "no creator pool");
+            };
+            let res = world.app.execute_contract(
+                world.admin.clone(),
+                pool.pool_addr.clone(),
+                &creator_pool::msg::ExecuteMsg::ClaimCreatorExcessLiquidity { transaction_deadline: None },
+                &[],
+            );
+            match res {
+                Ok(_) => mk_ok(action_dbg, "creator excess claimed"),
+                Err(e) => mk_rejected(action_dbg, &format!("claim_excess: {e:?}")),
+            }
+        }
+
+        // ---- Router single-hop ----
+        Action::RouterSingleHop { user_idx, pool_idx, amount } => {
+            let Some(router_addr) = world.router.clone() else {
+                return mk_rejected(action_dbg, "no router");
+            };
+            // Need a standard pool (or post-threshold creator pool) to
+            // route through. We pick a standard pool — they're always
+            // tradeable.
+            let Some(pool) = pick_pool(world, pool_idx, Some(PoolKind::Standard)) else {
+                return mk_rejected(action_dbg, "no standard pool");
+            };
+            let user = world.users[user_idx % world.users.len()].clone();
+            let bal = world.app.wrap().query_balance(&user, BLUECHIP_DENOM)
+                .map(|c| c.amount.u128()).unwrap_or(0);
+            if amount > bal { return mk_rejected(action_dbg, "insufficient bluechip"); }
+
+            let op = pool_factory_interfaces::routing::SwapOperation {
+                pool_addr: pool.pool_addr.to_string(),
+                offer_asset_info: TokenType::Native { denom: BLUECHIP_DENOM.into() },
+                ask_asset_info: TokenType::CreatorToken { contract_addr: pool.cw20_addr.clone() },
+            };
+            let res = world.app.execute_contract(
+                user,
+                router_addr,
+                &router::msg::ExecuteMsg::ExecuteMultiHop {
+                    operations: vec![op],
+                    minimum_receive: Uint128::new(1),
+                    deadline: None,
+                    recipient: None,
+                },
+                &[Coin::new(amount, BLUECHIP_DENOM)],
+            );
+            match res {
+                Ok(_) => mk_ok(action_dbg, "router single-hop ok"),
+                Err(e) => mk_rejected(action_dbg, &format!("router: {e:?}")),
+            }
+        }
+
+        // ---- Illegal extras ----
+        Action::AttemptUnauthorizedEmergency { attacker_idx, pool_idx } => {
+            let Some(pool) = pick_pool(world, pool_idx, None) else {
+                return mk_rejected(action_dbg, "no pool");
+            };
+            let attacker = world.users[attacker_idx % world.users.len()].clone();
+            let res = world.app.execute_contract(
+                attacker,
+                pool.pool_addr.clone(),
+                &creator_pool::msg::ExecuteMsg::EmergencyWithdraw {},
+                &[],
+            );
+            match res {
+                Err(_) => mk_expected(action_dbg, "non-factory emergency rejected"),
+                Ok(_) => panic!("INVARIANT BROKEN: pool accepted EmergencyWithdraw from non-factory"),
+            }
+        }
+        Action::AttemptUnauthorizedCreatorClaim { attacker_idx, pool_idx } => {
+            let Some(pool) = pick_pool(world, pool_idx, Some(PoolKind::Commit)) else {
+                return mk_rejected(action_dbg, "no creator pool");
+            };
+            let attacker = world.users[attacker_idx % world.users.len()].clone();
+            // Anyone other than admin (which is the harness's creator wallet).
+            if attacker == world.admin {
+                return mk_rejected(action_dbg, "attacker == creator wallet");
+            }
+            let res = world.app.execute_contract(
+                attacker,
+                pool.pool_addr.clone(),
+                &creator_pool::msg::ExecuteMsg::ClaimCreatorFees { transaction_deadline: None },
+                &[],
+            );
+            match res {
+                Err(_) => mk_expected(action_dbg, "non-creator claim rejected"),
+                Ok(_) => panic!("INVARIANT BROKEN: pool accepted ClaimCreatorFees from non-creator"),
             }
         }
     }

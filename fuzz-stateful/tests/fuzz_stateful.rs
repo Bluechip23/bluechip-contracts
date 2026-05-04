@@ -55,6 +55,61 @@ fn smoke_create_commit_swap() {
     apply(&mut world, Action::AttemptUnauthorizedConfigUpdate { attacker_idx: 0, pool_idx: 0 });
     apply(&mut world, Action::AttemptUnauthorizedThresholdNotify { attacker_idx: 0, forged_pool_id: 999 });
     apply(&mut world, Action::AttemptOraclePriceZero);
+    apply(&mut world, Action::AttemptUnauthorizedEmergency { attacker_idx: 0, pool_idx: 0 });
+    apply(&mut world, Action::AttemptUnauthorizedCreatorClaim { attacker_idx: 0, pool_idx: 0 });
+}
+
+/// Exercise the full emergency-withdraw lifecycle on a creator pool.
+/// Confirms (a) phase 1 initiates, (b) cancel works, (c) re-initiate
+/// works, (d) phase 2 drain succeeds after the 24h timelock, (e) the
+/// drained pool blocks subsequent ops.
+#[test]
+fn smoke_emergency_withdraw_lifecycle() {
+    let mut world = build_world(false);
+    apply(&mut world, Action::CreateCreatorPool { decimals: 6 });
+    assert_eq!(world.pools.len(), 1);
+
+    // EmergencyWithdraw on a creator pool is gated until threshold-cross
+    // (committed funds would be stranded otherwise). Push the pool past
+    // threshold first.
+    // Cross threshold incrementally: commit ~just-under, then a small
+    // top-up that crosses with minimal excess (so the post-threshold
+    // excess swap doesn't trip the 10% max_spread hard cap).
+    let c1 = apply(&mut world, Action::Commit { user_idx: 0, pool_idx: 0, amount: 20_000_000_000 });
+    eprintln!("c1: {:?} {}", c1.kind, c1.note);
+    apply(&mut world, Action::AdvanceBlock { secs: 60 });
+    // Cross with exactly the threshold amount so there is no excess
+    // swap to trip max_spread.
+    let c2 = apply(&mut world, Action::Commit { user_idx: 1, pool_idx: 0, amount: 5_000_000_000 });
+    eprintln!("c2: {:?} {}", c2.kind, c2.note);
+    apply(&mut world, Action::AdvanceBlock { secs: 60 });
+    check_all(&mut world).expect("post-threshold invariants must hold");
+    assert!(world.pools[0].threshold_hit_seen, "threshold should be hit before emergency");
+
+    let init = apply(&mut world, Action::EmergencyInitiate { pool_idx: 0 });
+    assert!(matches!(init.kind, OutcomeKind::Ok), "initiate failed: {}", init.note);
+
+    let cancel = apply(&mut world, Action::EmergencyCancel { pool_idx: 0 });
+    assert!(matches!(cancel.kind, OutcomeKind::Ok), "cancel failed: {}", cancel.note);
+
+    let init2 = apply(&mut world, Action::EmergencyInitiate { pool_idx: 0 });
+    assert!(matches!(init2.kind, OutcomeKind::Ok), "reinit failed: {}", init2.note);
+
+    // Phase 2 before timelock must fail (24h required).
+    let early = apply(&mut world, Action::EmergencyExecute { pool_idx: 0 });
+    assert!(
+        matches!(early.kind, OutcomeKind::Rejected),
+        "early execute should reject: {}", early.note
+    );
+
+    // Advance 25h.
+    apply(&mut world, Action::AdvanceBlock { secs: 25 * 3600 });
+    let drain = apply(&mut world, Action::EmergencyExecute { pool_idx: 0 });
+    assert!(matches!(drain.kind, OutcomeKind::Ok), "drain failed: {}", drain.note);
+    assert!(world.pools[0].drained, "drained flag not tracked");
+
+    // Invariants: drained pool blocks ops + state still consistent.
+    check_all(&mut world).expect("post-drain invariants must hold");
 }
 
 const SEQUENCE_LEN_DEFAULT: usize = 30;

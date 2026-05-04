@@ -103,6 +103,11 @@ pub struct PoolHandle {
     pub threshold_hit_seen: bool,
     /// Has the factory shim ever recorded `MINTED[pool_id] = true`?
     pub mint_recorded: bool,
+    /// Has emergency-withdraw drain (Phase 2) successfully completed
+    /// against this pool? Set by the EmergencyExecute action; once true
+    /// the pool's commit/swap/deposit/etc. paths must all error
+    /// (`emergency_drained_blocks_ops` invariant).
+    pub drained: bool,
 }
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
@@ -473,6 +478,24 @@ pub fn create_creator_pool(
         )
         .map_err(|e| format!("pool instantiate failed: {e:?}"))?;
 
+    // 5a. Hand the CW20 minter rights to the pool. The threshold-payout
+    //     mints (creator_reward, bluechip_reward, pool_seed,
+    //     commit_return — total 1.2T units) are issued by the pool
+    //     itself via Cw20ExecuteMsg::Mint, so the pool must be the
+    //     CW20's minter. We instantiated with factory_shim as initial
+    //     minter (the pool address didn't exist yet); transfer now.
+    world
+        .app
+        .execute_contract(
+            world.factory_shim.clone(),
+            cw20_addr.clone(),
+            &cw20_base::msg::ExecuteMsg::UpdateMinter {
+                new_minter: Some(pool_addr.to_string()),
+            },
+            &[],
+        )
+        .map_err(|e| format!("cw20 update_minter failed: {e:?}"))?;
+
     // 5. Transfer NFT minter to the pool (so pool's Mint calls succeed).
     //    Two-step: TransferOwnership from factory_shim, AcceptOwnership
     //    from pool. The pool can't AcceptOwnership directly; it does
@@ -523,6 +546,7 @@ pub fn create_creator_pool(
         last_observed_usd_raised: Uint128::zero(),
         threshold_hit_seen: false,
         mint_recorded: false,
+        drained: false,
     };
     world.pools.push(handle.clone());
     Ok(handle)
@@ -678,6 +702,7 @@ pub fn create_standard_pool(
         last_observed_usd_raised: Uint128::zero(),
         threshold_hit_seen: false,
         mint_recorded: false,
+        drained: false,
     };
     world.pools.push(handle.clone());
     Ok(handle)
