@@ -23,8 +23,9 @@ use cw_storage_plus::Bound;
 
 use crate::error::ContractError;
 use crate::state::{
-    DistributionState, PoolInfo, COMMIT_LEDGER, DISTRIBUTION_STALL_TIMEOUT_SECONDS,
-    DISTRIBUTION_STATE, MAX_CONSECUTIVE_DISTRIBUTION_FAILURES, MAX_DISTRIBUTIONS_PER_TX,
+    DistributionState, PoolInfo, COMMITFEEINFO, COMMIT_LEDGER,
+    DISTRIBUTION_STALL_TIMEOUT_SECONDS, DISTRIBUTION_STATE,
+    MAX_CONSECUTIVE_DISTRIBUTION_FAILURES, MAX_DISTRIBUTIONS_PER_TX,
 };
 
 use super::threshold_payout::mint_tokens;
@@ -79,6 +80,7 @@ pub fn process_distribution_batch(
 
     match batch_result {
         Ok(batch) => {
+            let mut batch_distributed = Uint128::zero();
             for (payer, usd_paid) in batch.iter() {
                 let reward = calculate_committer_reward(
                     *usd_paid,
@@ -88,11 +90,15 @@ pub fn process_distribution_batch(
 
                 if !reward.is_zero() {
                     msgs.push(mint_tokens(&pool_info.token_address, payer, reward)?);
+                    batch_distributed = batch_distributed.checked_add(reward)?;
                 }
                 COMMIT_LEDGER.remove(storage, payer);
                 last_processed = Some(payer.clone());
                 processed_count += 1;
             }
+            let new_distributed_so_far = dist_state
+                .distributed_so_far
+                .checked_add(batch_distributed)?;
 
             // Use the actual ledger as the source of truth for termination.
             // The cursor must start *after* whatever we last touched: either
@@ -109,9 +115,39 @@ pub fn process_distribution_batch(
                 .is_some();
 
             if !ledger_has_more {
-                // Nothing left to distribute. Clean up regardless of whether
-                // we processed any entries this call (covers both "natural
-                // completion" and "stale state with empty ledger" paths).
+                // Final batch (or stale-state cleanup with empty ledger).
+                // Settle the per-user floor-division dust deterministically
+                // by minting the residual to the creator wallet so the
+                // pool's `total_to_distribute` is fully accounted for and
+                // no portion of the threshold-payout schedule is left
+                // uncirculated. Reasoning: each per-user reward is
+                // `floor(usd_paid * total_to_distribute / total_committed_usd)`,
+                // so the sum can be up to (N - 1) base units short. The
+                // creator is the natural recipient — they have the most
+                // reputational exposure if the protocol ever leaves
+                // committer rewards unsettled, and they cannot manipulate
+                // the residual without manipulating the per-user floors
+                // in a way that already harms their committers (and is
+                // therefore self-defeating). On legacy in-progress
+                // distributions started before `distributed_so_far`
+                // existed (`#[serde(default)]` → zero) the residual would
+                // equal the full `total_to_distribute`, which would
+                // double-mint; gate the settlement on `distributed_so_far
+                // > 0` so legacy distributions complete with the
+                // pre-upgrade dust-burn behavior intact.
+                if !new_distributed_so_far.is_zero()
+                    && new_distributed_so_far < dist_state.total_to_distribute
+                {
+                    let residual = dist_state
+                        .total_to_distribute
+                        .checked_sub(new_distributed_so_far)?;
+                    let fee_info = COMMITFEEINFO.load(storage)?;
+                    msgs.push(mint_tokens(
+                        &pool_info.token_address,
+                        &fee_info.creator_wallet_address,
+                        residual,
+                    )?);
+                }
                 DISTRIBUTION_STATE.remove(storage);
             } else if processed_count > 0 {
                 // Progress made; persist the new cursor for the next call.
@@ -130,6 +166,7 @@ pub fn process_distribution_batch(
                     consecutive_failures: 0,
                     started_at: dist_state.started_at,
                     last_updated: env.block.time,
+                    distributed_so_far: new_distributed_so_far,
                 };
                 DISTRIBUTION_STATE.save(storage, &updated_state)?;
             } else {

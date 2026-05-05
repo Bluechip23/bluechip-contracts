@@ -733,6 +733,7 @@ fn test_distribution_timeout_triggers_error() {
         consecutive_failures: 0,
         started_at: old_time,
         last_updated: old_time, // Very old
+        distributed_so_far: Uint128::zero(),
     };
     DISTRIBUTION_STATE
         .save(&mut deps.storage, &dist_state)
@@ -817,6 +818,7 @@ fn test_distribution_just_below_timeout_succeeds() {
         consecutive_failures: 0,
         started_at: old_time,
         last_updated: old_time,
+        distributed_so_far: Uint128::zero(),
     };
     DISTRIBUTION_STATE
         .save(&mut deps.storage, &dist_state)

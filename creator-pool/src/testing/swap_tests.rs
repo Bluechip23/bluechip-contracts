@@ -485,6 +485,7 @@ fn test_continue_distribution_is_permissionless() {
         consecutive_failures: 0,
         started_at: env.block.time,
         last_updated: env.block.time,
+        distributed_so_far: Uint128::zero(),
     };
     DISTRIBUTION_STATE
         .save(&mut deps.storage, &dist_state)
@@ -529,6 +530,7 @@ fn test_continue_distribution_processes_batch() {
         consecutive_failures: 0,
         started_at: env.block.time,
         last_updated: env.block.time,
+        distributed_so_far: Uint128::zero(),
     };
     DISTRIBUTION_STATE
         .save(&mut deps.storage, &dist_state)
@@ -581,6 +583,7 @@ fn test_continue_distribution_batches() {
         consecutive_failures: 0,
         started_at: env.block.time,
         last_updated: env.block.time,
+        distributed_so_far: Uint128::zero(),
     };
     DISTRIBUTION_STATE
         .save(&mut deps.storage, &dist_state)
@@ -681,6 +684,7 @@ fn test_adaptive_batch_sizing_with_history() {
         consecutive_failures: 0,
         started_at: env.block.time,
         last_updated: env.block.time,
+        distributed_so_far: Uint128::zero(),
     };
     DISTRIBUTION_STATE
         .save(&mut deps.storage, &dist_state)
@@ -706,11 +710,16 @@ fn test_adaptive_batch_sizing_with_history() {
         .count();
     let actually_processed = total_before - total_after;
 
-    // Mints + 1 factory bounty WasmMsg (no self-call continuation).
+    // Mints + 1 factory bounty WasmMsg + 1 dust-settlement mint to the
+    // creator. The test inputs have `total_committed_usd = 1_000_000`
+    // but ledger sums to 2_000, so per-user floor(100 * 1_000_000 /
+    // 1_000_000) = 100; 20 * 100 = 2_000 vs total_to_distribute =
+    // 1_000_000, leaving a 998_000-base-unit residual that the final
+    // batch settles to the creator wallet (audit fix H2).
     assert_eq!(
         res.messages.len(),
-        actually_processed + 1,
-        "Expected `actually_processed` mints + 1 factory bounty msg"
+        actually_processed + 2,
+        "Expected `actually_processed` mints + 1 factory bounty msg + 1 dust-settlement mint"
     );
 
     let expected = 20;
@@ -735,6 +744,7 @@ fn test_calculate_effective_batch_size() {
         consecutive_failures: 0,
         started_at: Timestamp::from_seconds(0),
         last_updated: Timestamp::from_seconds(0),
+        distributed_so_far: Uint128::zero(),
     };
 
     let batch_size = calculate_effective_batch_size(&dist_state);
@@ -756,6 +766,7 @@ fn test_calculate_effective_batch_size() {
         consecutive_failures: 0,
         started_at: Timestamp::from_seconds(0),
         last_updated: Timestamp::from_seconds(0),
+        distributed_so_far: Uint128::zero(),
     };
 
     let batch_size = calculate_effective_batch_size(&dist_state_no_history);
@@ -793,6 +804,7 @@ fn test_batch_size_with_consecutive_failures() {
         consecutive_failures: 2,             // Had 2 failures
         started_at: env.block.time,          // Use current time
         last_updated: env.block.time,
+        distributed_so_far: Uint128::zero(),
     };
     DISTRIBUTION_STATE
         .save(&mut deps.storage, &dist_state)
@@ -844,6 +856,7 @@ fn test_final_batch_completes_distribution() {
         consecutive_failures: 0,
         started_at: env.block.time, // Use current time
         last_updated: env.block.time,
+        distributed_so_far: Uint128::zero(),
     };
     DISTRIBUTION_STATE
         .save(&mut deps.storage, &dist_state)
@@ -866,11 +879,15 @@ fn test_final_batch_completes_distribution() {
         "Distribution state should be removed after completion"
     );
 
-    // 3 mints + 1 factory bounty WasmMsg.
+    // 3 committer mints + 1 dust-settlement mint to creator + 1
+    // factory bounty WasmMsg. With 3 committers each paying 100 USD
+    // and total_to_distribute = 1_000_000, per-user reward floors to
+    // 333_333; 3 * 333_333 = 999_999, leaving 1 base unit of dust the
+    // final batch settles to the creator wallet (audit fix H2).
     assert_eq!(
         res.messages.len(),
-        4,
-        "Expected 3 mint messages for committers + 1 factory bounty msg"
+        5,
+        "Expected 3 mint messages for committers + 1 dust mint + 1 factory bounty msg"
     );
 }
 

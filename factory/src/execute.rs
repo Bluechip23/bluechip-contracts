@@ -42,7 +42,7 @@ pub use config::{
 // `instantiate` so the gate is visible at the call site.
 pub use oracle::{
     execute_pay_distribution_bounty, execute_set_anchor_pool, execute_set_distribution_bounty,
-    execute_set_oracle_update_bounty,
+    execute_set_oracle_update_bounty, execute_set_pyth_conf_threshold_bps,
 };
 pub use pool_lifecycle::admin::{
     execute_cancel_emergency_withdraw_pool, execute_emergency_withdraw_pool,
@@ -154,6 +154,9 @@ pub fn execute(
         }
         ExecuteMsg::SetDistributionBounty { new_bounty } => {
             execute_set_distribution_bounty(deps, info, new_bounty)
+        }
+        ExecuteMsg::SetPythConfThresholdBps { bps } => {
+            execute_set_pyth_conf_threshold_bps(deps, info, bps)
         }
         ExecuteMsg::PayDistributionBounty { recipient } => {
             execute_pay_distribution_bounty(deps, env, info, recipient)
