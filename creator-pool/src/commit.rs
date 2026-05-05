@@ -19,15 +19,16 @@
 //! points don't need to know about the submodule structure.
 
 pub mod distribution;
+pub mod distribution_batch;
 pub mod post_threshold;
 pub mod pre_threshold;
 pub mod threshold_crossing;
+pub mod threshold_payout;
 
 pub use distribution::execute_continue_distribution;
 
 use cosmwasm_std::{
-    Addr, CosmosMsg, Decimal, DepsMut, Env, Fraction, MessageInfo, Response, StdError, Timestamp,
-    Uint128,
+    Addr, CosmosMsg, Decimal, DepsMut, Env, Fraction, MessageInfo, Response, Timestamp, Uint128,
 };
 
 use crate::admin::ensure_not_drained;
@@ -35,20 +36,19 @@ use crate::asset::{get_native_denom, TokenInfo, TokenType};
 use crate::error::ContractError;
 use crate::generic_helpers::{
     check_rate_limit, enforce_transaction_deadline, get_bank_transfer_to_msg,
-    trigger_threshold_payout, update_commit_info,
+    with_reentrancy_guard,
 };
 use crate::msg::CommitFeeInfo;
 use crate::state::{
-    COMMITFEEINFO, COMMIT_LEDGER, COMMIT_LIMIT_INFO, IS_THRESHOLD_HIT, LAST_THRESHOLD_ATTEMPT,
-    NATIVE_RAISED_FROM_COMMIT, POOL_ANALYTICS, POOL_FEE_STATE, POOL_INFO, POOL_SPECS, POOL_STATE,
-    POST_THRESHOLD_COOLDOWN_BLOCKS, POST_THRESHOLD_COOLDOWN_UNTIL_BLOCK, REENTRANCY_LOCK,
-    THRESHOLD_PAYOUT_AMOUNTS, THRESHOLD_PROCESSING, USD_RAISED_FROM_COMMIT,
+    COMMITFEEINFO, COMMIT_LIMIT_INFO, IS_THRESHOLD_HIT, LAST_THRESHOLD_ATTEMPT, POOL_ANALYTICS,
+    POOL_FEE_STATE, POOL_INFO, POOL_SPECS, POOL_STATE, THRESHOLD_PAYOUT_AMOUNTS,
+    THRESHOLD_PROCESSING, USD_RAISED_FROM_COMMIT,
 };
 use crate::swap_helper::get_oracle_conversion_with_staleness;
 
 use post_threshold::process_post_threshold_commit;
 use pre_threshold::process_pre_threshold_commit;
-use threshold_crossing::process_threshold_crossing_with_excess;
+use threshold_crossing::{process_threshold_crossing_with_excess, process_threshold_hit_exact};
 
 // Minimum commit value in USD (6 decimals), applied ONLY to pre-threshold
 // commits. $5 = 5_000_000. The floor limits pre-threshold ledger bloat
@@ -62,27 +62,33 @@ pub const MIN_COMMIT_USD_POST_THRESHOLD: Uint128 = Uint128::new(1_000_000);
 
 /// Base attribute set shared by every commit response (pre-threshold,
 /// post-threshold, threshold_hit_exact, threshold_crossing). Each caller
-/// adds its path-specific attributes on top.
+/// adds its path-specific attributes on top via `Response::add_attributes`.
+///
+/// Returned as `Vec<(&str, String)>` for consistency with the
+/// tuple-vec form used elsewhere in this crate (admin response
+/// builders, liquidity_helpers claim handlers). `Response::add_attributes`
+/// accepts any `IntoIterator<Item = impl Into<Attribute>>` so the
+/// consuming sites are unchanged.
 pub(crate) fn commit_base_attributes(
     phase: &'static str,
     sender: &Addr,
     pool_contract: &Addr,
     total_commit_count: u64,
     env: &Env,
-) -> Vec<cosmwasm_std::Attribute> {
+) -> Vec<(&'static str, String)> {
     vec![
-        cosmwasm_std::Attribute::new("action", "commit"),
-        cosmwasm_std::Attribute::new("phase", phase),
-        cosmwasm_std::Attribute::new("committer", sender.as_str()),
-        cosmwasm_std::Attribute::new("total_commit_count", total_commit_count.to_string()),
-        cosmwasm_std::Attribute::new("pool_contract", pool_contract.as_str()),
-        cosmwasm_std::Attribute::new("block_height", env.block.height.to_string()),
-        cosmwasm_std::Attribute::new("block_time", env.block.time.seconds().to_string()),
+        ("action", "commit".to_string()),
+        ("phase", phase.to_string()),
+        ("committer", sender.to_string()),
+        ("total_commit_count", total_commit_count.to_string()),
+        ("pool_contract", pool_contract.to_string()),
+        ("block_height", env.block.height.to_string()),
+        ("block_time", env.block.time.seconds().to_string()),
     ]
 }
 
 pub fn commit(
-    mut deps: DepsMut,
+    deps: DepsMut,
     env: Env,
     info: MessageInfo,
     asset: TokenInfo,
@@ -93,31 +99,12 @@ pub fn commit(
     ensure_not_drained(deps.storage)?;
     enforce_transaction_deadline(env.block.time, transaction_deadline)?;
 
-    // Reentrancy protection
-    let reentrancy_guard = REENTRANCY_LOCK.may_load(deps.storage)?.unwrap_or(false);
-    if reentrancy_guard {
-        return Err(ContractError::ReentrancyGuard {});
-    }
-    REENTRANCY_LOCK.save(deps.storage, &true)?;
-
-    let pool_specs = POOL_SPECS.load(deps.storage)?;
-    let sender = info.sender.clone();
-
-    if let Err(e) = check_rate_limit(&mut deps, &env, &pool_specs, &sender) {
-        REENTRANCY_LOCK.save(deps.storage, &false)?;
-        return Err(e);
-    }
-
-    let result = execute_commit_logic(
-        &mut deps,
-        env,
-        info,
-        asset,
-        belief_price,
-        max_spread,
-    );
-    REENTRANCY_LOCK.save(deps.storage, &false)?;
-    result
+    with_reentrancy_guard(deps, |mut deps| {
+        let pool_specs = POOL_SPECS.load(deps.storage)?;
+        let sender = info.sender.clone();
+        check_rate_limit(&mut deps, &env, &pool_specs, &sender)?;
+        execute_commit_logic(&mut deps, env, info, asset, belief_price, max_spread)
+    })
 }
 
 fn execute_commit_logic(
@@ -175,15 +162,16 @@ fn execute_commit_logic(
         MIN_COMMIT_USD_PRE_THRESHOLD
     };
     if usd_value < min_commit {
-        let (phase, dollars) = if threshold_already_hit {
-            ("post-threshold", "1")
+        let phase: &'static str = if threshold_already_hit {
+            "post-threshold"
         } else {
-            ("pre-threshold", "5")
+            "pre-threshold"
         };
-        return Err(ContractError::Std(StdError::generic_err(format!(
-            "Commit too small: ${} USD (minimum ${} USD {})",
-            usd_value, dollars, phase
-        ))));
+        return Err(ContractError::CommitTooSmall {
+            got: usd_value,
+            min: min_commit,
+            phase,
+        });
     }
 
     let bluechip_denom = get_native_denom(&pool_info.pool_info.asset_infos)?;
@@ -207,12 +195,9 @@ fn execute_commit_logic(
             // via `confirm_sent_native_balance` (which delegates to
             // must_pay too).
             let sent = cw_utils::must_pay(&info, denom.as_str()).map_err(|e| {
-                ContractError::Std(StdError::generic_err(format!(
-                    "Invalid commit funds: {}. Commit must attach exactly the bluechip \
-                     denom — additional denoms (e.g., gas tokens, IBC assets) would be \
-                     stranded in the pool with no withdrawal path.",
-                    e
-                )))
+                ContractError::InvalidCommitFunds {
+                    reason: e.to_string(),
+                }
             })?;
             if sent != amount {
                 return Err(ContractError::MismatchAmount {});
@@ -229,7 +214,7 @@ fn execute_commit_logic(
                 return Err(ContractError::InvalidFee {});
             }
 
-            let mut messages = build_fee_messages(
+            let messages = build_fee_messages(
                 &fee_info,
                 denom,
                 commit_fee_bluechip_amt,
@@ -240,8 +225,8 @@ fn execute_commit_logic(
             // `total_commit_count` bump is universal to every commit
             // branch below, so we increment here and let each handler
             // mutate swap-specific fields on the shared `&mut analytics`.
-            // The single save at the bottom of the Native arm subsumes
-            // what was previously a load+save inside each handler.
+            // A single save at the bottom of the Native arm persists the
+            // result for all four phase handlers.
             let mut analytics = POOL_ANALYTICS.may_load(deps.storage)?.unwrap_or_default();
             analytics.total_commit_count += 1;
 
@@ -279,13 +264,7 @@ fn execute_commit_logic(
                         .may_load(deps.storage)?
                         .unwrap_or(false)
                     {
-                        return Err(ContractError::Std(StdError::generic_err(
-                            "THRESHOLD_PROCESSING is stuck = true; should be \
-                             unreachable in normal operation. Use the factory's \
-                             RecoverPoolStuckStates with StuckThreshold to \
-                             clear it (waits 1 hour from LAST_THRESHOLD_ATTEMPT), \
-                             then retry the commit.",
-                        )));
+                        return Err(ContractError::StuckThresholdProcessing);
                     }
                     THRESHOLD_PROCESSING.save(deps.storage, &true)?;
 
@@ -319,78 +298,28 @@ fn execute_commit_logic(
                             &mut analytics,
                         )?
                     } else {
-                        // Threshold hit exactly
-                        COMMIT_LEDGER.update::<_, ContractError>(deps.storage, &sender, |v| {
-                            Ok(v.unwrap_or_default().checked_add(usd_value)?)
-                        })?;
-                        let final_usd =
-                            new_total.min(commit_config.commit_amount_for_threshold_usd);
-                        USD_RAISED_FROM_COMMIT.save(deps.storage, &final_usd)?;
-                        // Store the net-of-fees bluechip that actually enters
-                        // the contract's bank balance (audit fix; see
-                        // pre_threshold.rs comment block). Eliminates the
-                        // dust-stranding mismatch between per-commit fee
-                        // floors and the recovery formula in
-                        // `trigger_threshold_payout`.
-                        NATIVE_RAISED_FROM_COMMIT
-                            .update::<_, ContractError>(deps.storage, |r| {
-                                Ok(r.checked_add(amount_after_fees)?)
-                            })?;
-                        IS_THRESHOLD_HIT.save(deps.storage, &true)?;
-                        // Arm the post-threshold cooldown so other actors
-                        // can't atomically sandwich the freshly-seeded pool
-                        // in the same block (or the next two). Crossing tx
-                        // itself is unaffected — the writes here land
-                        // before the next tx ever runs the cooldown check.
-                        POST_THRESHOLD_COOLDOWN_UNTIL_BLOCK.save(
-                            deps.storage,
-                            &(env.block.height + POST_THRESHOLD_COOLDOWN_BLOCKS + 1),
-                        )?;
-
-                        let payout = trigger_threshold_payout(
-                            deps.storage,
-                            &pool_info,
+                        // Threshold hit exactly — extracted to
+                        // `commit::threshold_crossing::process_threshold_hit_exact`
+                        // so all four phase handlers sit at the same module
+                        // depth (pre / post / threshold-with-excess /
+                        // threshold-hit-exact / distribution batch).
+                        process_threshold_hit_exact(
+                            deps,
+                            env,
+                            sender,
+                            &asset,
+                            amount_after_fees,
+                            usd_value,
+                            new_total,
                             &mut pool_state,
                             &mut pool_fee_state,
+                            &pool_info,
                             &commit_config,
                             &threshold_payout,
                             &fee_info,
-                            &env,
-                        )?;
-                        messages.extend(payout.other_msgs);
-                        update_commit_info(
-                            deps.storage,
-                            &sender,
-                            &pool_state.pool_contract_address,
-                            asset.amount,
-                            usd_value,
-                            env.block.time,
-                        )?;
-                        THRESHOLD_PROCESSING.save(deps.storage, &false)?;
-
-                        // Analytics counter is incremented and persisted by
-                        // the dispatcher (see the `analytics` binding above
-                        // and the `POOL_ANALYTICS.save` below the cascade);
-                        // this branch only needs to read the already-bumped
-                        // `total_commit_count` for response attributes.
-
-                        // `payout.factory_notify` is attached as a SubMsg so a
-                        // factory-side failure lands in the pool's reply handler
-                        // rather than reverting the commit.
-                        let base = commit_base_attributes(
-                            "threshold_hit_exact",
-                            &sender,
-                            &pool_state.pool_contract_address,
-                            analytics.total_commit_count,
-                            &env,
-                        );
-                        Response::new()
-                            .add_submessage(payout.factory_notify)
-                            .add_messages(messages)
-                            .add_attributes(base)
-                            .add_attribute("commit_amount_bluechip", asset.amount.to_string())
-                            .add_attribute("commit_amount_usd", usd_value.to_string())
-                            .add_attribute("total_usd_raised_after", new_total.to_string())
+                            messages,
+                            &analytics,
+                        )?
                     }
                 } else {
                     process_pre_threshold_commit(
@@ -427,9 +356,9 @@ fn execute_commit_logic(
                 )?
             };
 
-            // Single analytics save subsumes what each handler used to do
-            // individually. If anything above returned `Err`, the whole
-            // tx aborts (CosmWasm storage is transactional), so this save
+            // Single analytics save covers every commit branch. If
+            // anything above returned `Err`, the whole tx aborts
+            // (CosmWasm storage is transactional), so this save
             // never persists in error paths.
             POOL_ANALYTICS.save(deps.storage, &analytics)?;
             Ok(response)

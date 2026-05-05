@@ -20,7 +20,7 @@ use crate::state::RecoveryType;
 // outer allow keeps the schema-suppression scoped (so an unused-import
 // on `TokenInfo` / `RecoveryType` would still get reported), and folds
 // the four prior `#[allow(unused_imports)]` directives into a single
-// block. `PoolAnalytics` was removed — it was never referenced.
+// block.
 #[allow(unused_imports)]
 use {
     crate::state::{Committing, PoolDetails},
@@ -253,7 +253,12 @@ pub struct PoolInstantiateMsg {
 
 #[cw_serde]
 pub struct PoolCommitResponse {
-    pub total_count: u32,
+    /// Number of `committers` entries in THIS page after filtering by
+    /// `pool_contract_address` / `min_payment_usd` / `after_timestamp`
+    /// and capping at `limit`. NOT a pre-filter total — paginating
+    /// callers should treat `committers.len() < limit` as the
+    /// end-of-data signal rather than relying on this field.
+    pub page_count: u32,
     pub committers: Vec<CommitterInfo>,
 }
 

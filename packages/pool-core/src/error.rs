@@ -113,6 +113,93 @@ pub enum ContractError {
 
     #[error("Cannot remove locked liquidity (this position has {locked} locked)")]
     LockedLiquidity { locked: Uint128 },
+
+    // ---------------------------------------------------------------------
+    // Domain-specific variants used by creator-pool. Replace earlier
+    // `Std(StdError::generic_err(...))` sites so off-chain consumers can
+    // match structurally rather than regex an English message.
+    // ---------------------------------------------------------------------
+    #[error(
+        "lp_fee {got} is outside the allowed range [{min}, {max}] (set via UpdateFees)"
+    )]
+    LpFeeOutOfRange {
+        got: Decimal,
+        min: Decimal,
+        max: Decimal,
+    },
+
+    #[error("Distribution timeout - requires manual recovery")]
+    DistributionTimeout,
+
+    #[error(
+        "Distribution failed too many times ({attempts} >= cap {cap}) - manual recovery needed: {reason}"
+    )]
+    DistributionFailedTooManyTimes {
+        attempts: u32,
+        cap: u32,
+        reason: String,
+    },
+
+    #[error("Batch processing failed (attempt {attempt}): {reason}")]
+    DistributionBatchFailed { attempt: u32, reason: String },
+
+    #[error(
+        "THRESHOLD_PROCESSING is stuck = true; should be unreachable in normal operation. \
+         Use the factory's RecoverPoolStuckStates with StuckThreshold to clear it \
+         (waits 1 hour from LAST_THRESHOLD_ATTEMPT), then retry the commit."
+    )]
+    StuckThresholdProcessing,
+
+    #[error("Threshold payout corruption detected: components do not sum to expected total")]
+    ThresholdPayoutCorruption,
+
+    #[error("Migration would downgrade contract from {stored} to {current}; refusing.")]
+    DowngradeRefused { stored: String, current: String },
+
+    #[error("Stored cw2 contract version {version} is not valid semver: {msg}")]
+    StoredVersionInvalid { version: String, msg: String },
+
+    #[error("Compile-time CONTRACT_VERSION {version} is not valid semver: {msg}")]
+    CurrentVersionInvalid { version: String, msg: String },
+
+    #[error("Unknown reply id {id}")]
+    UnknownReplyId { id: u64 },
+
+    #[error("Invalid pair shape: {reason}")]
+    InvalidPairShape { reason: String },
+
+    #[error("Commit too small: ${got} USD (minimum ${min} USD {phase})")]
+    CommitTooSmall {
+        got: Uint128,
+        min: Uint128,
+        phase: &'static str,
+    },
+
+    #[error(
+        "Invalid commit funds: {reason}. Commit must attach exactly the bluechip denom — \
+         additional denoms (e.g., gas tokens, IBC assets) would be stranded in the pool with \
+         no withdrawal path."
+    )]
+    InvalidCommitFunds { reason: String },
+
+    #[error("No pending factory notification to retry")]
+    NoPendingFactoryNotify,
+
+    #[error(
+        "EmergencyWithdraw is disabled before the commit threshold has been crossed. \
+         Committed funds are untracked in pool_state reserves and would be stranded."
+    )]
+    EmergencyWithdrawPreThreshold,
+
+    #[error(
+        "Rate-limited: this address can call ContinueDistribution again at {earliest_next} \
+         (last call {last_call}, cooldown {cooldown_seconds}s)"
+    )]
+    ContinueDistributionRateLimited {
+        earliest_next: u64,
+        last_call: u64,
+        cooldown_seconds: u64,
+    },
 }
 
 impl From<OverflowError> for ContractError {
