@@ -125,7 +125,17 @@ pub enum ExecuteMsg {
 
 #[cw_serde]
 pub enum MigrateMsg {
+    /// Tune `PoolSpecs.lp_fee` to `new_fees`. Accepted range:
+    /// `MIN_LP_FEE` (0.1% / `Decimal::permille(1)`) up to
+    /// `MAX_LP_FEE` (10% / `Decimal::percent(10)`) inclusive. Values
+    /// outside this range are rejected at runtime with
+    /// `ContractError::LpFeeOutOfRange`. The schema accepts any
+    /// `Decimal` so client tooling that wants to encode the bounds
+    /// must do so out-of-band; the runtime gate is authoritative.
     UpdateFees { new_fees: Decimal },
+    /// No-op variant. Bumps the cw2 stored version on a successful
+    /// migrate without touching any other state. Use when the only
+    /// change between releases is the wasm code id.
     UpdateVersion {},
 }
 

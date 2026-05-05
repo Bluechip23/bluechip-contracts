@@ -587,10 +587,10 @@ mod tests {
         let r = assert_max_spread(
             None,
             Some(Decimal::percent(1)),
+            None,
             Uint128::new(1_000_000),
             Uint128::new(995),
-            Uint128::new(5),
-        );
+            Uint128::new(5));
         assert!(r.is_ok());
     }
 
@@ -600,10 +600,10 @@ mod tests {
         let r = assert_max_spread(
             None,
             Some(Decimal::percent(1)),
+            None,
             Uint128::new(1_000_000),
             Uint128::new(980),
-            Uint128::new(20),
-        );
+            Uint128::new(20));
         assert!(matches!(r, Err(ContractError::MaxSpreadAssertion {})));
     }
 
@@ -612,10 +612,10 @@ mod tests {
         let r = assert_max_spread(
             Some(Decimal::zero()),
             None,
+            None,
             Uint128::new(1),
             Uint128::new(1),
-            Uint128::zero(),
-        );
+            Uint128::zero());
         assert!(matches!(r, Err(ContractError::InvalidBeliefPrice {})));
     }
 
@@ -625,11 +625,10 @@ mod tests {
         // offer = 100, expected = 200, got 190 → spread = 10 → 5% > default 0.5% → reject
         let r = assert_max_spread(
             Some(Decimal::from_ratio(1u128, 2u128)),
-            Some(Decimal::permille(5)), // 0.5% tolerance
+            Some(Decimal::permille(5)), None, // 0.5% tolerance
             Uint128::new(100),
             Uint128::new(190),
-            Uint128::zero(),
-        );
+            Uint128::zero());
         assert!(matches!(r, Err(ContractError::MaxSpreadAssertion {})));
     }
 }

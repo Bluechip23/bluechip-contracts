@@ -383,22 +383,35 @@ pub const POST_THRESHOLD_COOLDOWN_BLOCKS: u64 = 2;
 /// `block_time + 1s` budget on most Cosmos chains — tight enough to
 /// deflate same-block spam, loose enough that a human-driven commit
 /// flow never sees the gate.
-pub const DEFAULT_MIN_COMMIT_INTERVAL_SECONDS: u64 = 13;
+///
+/// Both `creator-pool` and `standard-pool` instantiate `PoolSpecs`
+/// with this value so a future cadence change lands in one place.
+pub const DEFAULT_SWAP_RATE_LIMIT_SECS: u64 = 13;
 
 /// Default LP fee charged on every swap (creator-pool + standard-pool).
 /// 30 bps = 0.3%, the canonical Uniswap-V2 default. Tunable per-pool
-/// via the factory's 48h `ProposeConfigUpdate` flow up to `MAX_LP_FEE`.
-pub const DEFAULT_LP_FEE_PERMILLE: u64 = 3;
+/// via the factory's 48h `ProposeConfigUpdate` flow up to [`MAX_LP_FEE`].
+pub const DEFAULT_LP_FEE: Decimal = Decimal::permille(3);
 /// Hard ceiling on `PoolSpecs.lp_fee` (`UpdateFees` migrate). 10% is
 /// well above any reasonable retail-trading fee — the cap exists to
 /// prevent admin-compromise scenarios where a malicious fee could
 /// effectively confiscate the entire swap volume into the LP pot.
-pub const MAX_LP_FEE_PERCENT: u64 = 10;
+pub const MAX_LP_FEE: Decimal = Decimal::percent(10);
 /// Hard floor on `PoolSpecs.lp_fee` (`UpdateFees` migrate). 0.1% rules
 /// out a zero-fee admin attack that would drain LPs over time on every
 /// swap (no fee growth → no creator/LP rewards → infinite-loss
 /// liquidity provision).
-pub const MIN_LP_FEE_PERMILLE: u64 = 1;
+pub const MIN_LP_FEE: Decimal = Decimal::permille(1);
+
+/// `pool_kind` attribute value emitted in `instantiate` responses by
+/// the standard-pool wasm. Pinned here so off-chain indexers can pin
+/// against `pool_core::state::POOL_KIND_STANDARD` rather than the raw
+/// string literal.
+pub const POOL_KIND_STANDARD: &str = "standard";
+/// `pool_kind` attribute value emitted in `instantiate` responses by
+/// the creator-pool wasm. Pinned alongside `POOL_KIND_STANDARD` so
+/// future pool kinds get added in one place.
+pub const POOL_KIND_COMMIT: &str = "commit";
 
 /// Recovery window between `LAST_THRESHOLD_ATTEMPT` and the moment
 /// `RecoverPoolStuckStates::StuckThreshold` is allowed to flip

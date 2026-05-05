@@ -34,11 +34,14 @@ use cosmwasm_std::{Addr, DepsMut, Storage, Timestamp, Uint128};
 /// `liquidity_helpers::execute_claim_creator_fees`,
 /// `liquidity_helpers::execute_claim_creator_excess`).
 ///
-/// The `save(false)` at the end is a redundant belt to CosmWasm tx
-/// atomicity (any error propagated back through this helper would
-/// revert the `save(true)` along with all other tx state) but keeps
-/// the pre-refactor surface behavior of explicitly clearing the guard
-/// on the success path.
+/// The guard is cleared **unconditionally** before returning, on both
+/// success and error paths. Production CosmWasm reverts every staged
+/// storage write when a handler returns `Err`, so the explicit
+/// `save(false)` on the error path is redundant in production —
+/// but mock test environments (`mock_dependencies`) do **not** revert,
+/// and a follow-up call in the same `#[test]` would otherwise see
+/// a stuck `REENTRANCY_LOCK = true` from the prior failed attempt.
+/// Always clearing keeps the helper safe under both runtimes.
 pub fn with_reentrancy_guard<F, T>(
     mut deps: DepsMut,
     body: F,
@@ -51,12 +54,10 @@ where
     }
     REENTRANCY_LOCK.save(deps.storage, &true)?;
     let result = body(deps.branch());
-    // Clear the guard on the success path. On Err, CosmWasm reverts the
-    // entire tx — including the `save(true)` above — so this branch is
-    // semantically a no-op and intentionally skipped.
-    if result.is_ok() {
-        REENTRANCY_LOCK.save(deps.storage, &false)?;
-    }
+    // Unconditional clear. See doc-comment above for why this matters
+    // for the test mock-storage path even though production tx
+    // atomicity makes it redundant on the error branch.
+    REENTRANCY_LOCK.save(deps.storage, &false)?;
     result
 }
 

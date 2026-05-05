@@ -111,6 +111,16 @@ pub fn get_bank_transfer_to_msg(
     Ok(transfer_bank_cosmos_msg)
 }
 
+/// Canonical "unknown reply id" message format shared by the
+/// creator-pool and standard-pool `reply()` entry points. Including
+/// the `pool_kind` discriminator in the message makes off-chain log
+/// scrapers able to filter by pool kind without parsing the
+/// surrounding event context. Use [`crate::state::POOL_KIND_STANDARD`]
+/// or [`crate::state::POOL_KIND_COMMIT`] for `pool_kind`.
+pub fn unknown_reply_id_msg(pool_kind: &str, reply_id: u64) -> String {
+    format!("{}-pool reply: unknown reply id {}", pool_kind, reply_id)
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;

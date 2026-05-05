@@ -11,6 +11,13 @@
 use crate::internal_bluechip_price_oracle::{bluechip_to_usd, usd_to_bluechip, INTERNAL_ORACLE};
 use cosmwasm_schema::{cw_serde, QueryResponses};
 use cosmwasm_std::{to_json_binary, Binary, Deps, Env, StdResult, Uint128};
+// Referenced only by `#[returns(ConversionResponse)]` annotations on the
+// `QueryMsg` variants below. cosmwasm-schema's `QueryResponses` derive
+// reads it when the `schema` feature is active; the wasm release build
+// drops the derive and sees the import as unused. Per-import allow is
+// the convention shared with `standard-pool/src/msg.rs` — see that
+// file for the cargo-fix safety note.
+#[allow(unused_imports)]
 use pool_factory_interfaces::ConversionResponse;
 
 #[cw_serde]

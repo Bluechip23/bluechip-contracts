@@ -16,19 +16,30 @@ use cosmwasm_schema::{cw_serde, QueryResponses};
 use cosmwasm_std::{Decimal, Timestamp, Uint128};
 use cw20::Cw20ReceiveMsg;
 use pool_core::asset::TokenInfo;
-// Response types referenced only by `#[returns(T)]` annotations on QueryMsg
-// variants. cosmwasm-schema's QueryResponses derive needs them in scope
-// when the schema feature is active; the wasm release build drops the
-// derive and sees them as unused. `#[allow(unused_imports)]` matches
-// creator-pool's convention for the same pattern.
-#[allow(unused_imports)]
-use pool_core::state::PoolDetails;
+
+// Response types referenced ONLY by the `#[returns(T)]` annotations on
+// `QueryMsg` variants below. cosmwasm-schema's `QueryResponses` derive
+// reads these when the `schema` feature is active (`cargo schema`), but
+// the wasm release build drops the derive and sees them as unused —
+// hence the per-import `#[allow(unused_imports)]` annotations.
+//
+// Important: do NOT collapse these into the regular `use` blocks above.
+// `cargo fix` (and tooling that piggy-backs on it) does not understand
+// the cfg-gated derive that consumes them and will helpfully delete
+// every one, breaking schema generation. Each annotation is per-import
+// so a future addition only needs to copy the surrounding line shape.
+//
+// If schema generation breaks after a `cargo fix` run, this block is
+// the most likely culprit — restore the imports + the allow attributes
+// from git history.
 #[allow(unused_imports)]
 use pool_core::msg::{
     ConfigResponse, CumulativePricesResponse, FeeInfoResponse, PoolAnalyticsResponse,
     PoolConfigUpdate, PoolFeeStateResponse, PoolInfoResponse, PoolStateResponse, PositionResponse,
     PositionsResponse, ReverseSimulationResponse, SimulationResponse,
 };
+#[allow(unused_imports)]
+use pool_core::state::PoolDetails;
 #[allow(unused_imports)]
 use pool_factory_interfaces::{AllPoolsResponse, IsPausedResponse, PoolStateResponseForFactory};
 
@@ -122,6 +133,13 @@ pub enum QueryMsg {
     CumulativePrices {},
     #[returns(FeeInfoResponse)]
     FeeInfo {},
+    /// Returns the LP-side pool state shape — `PoolStateResponse`
+    /// (reserves, total liquidity, cumulative prices, NFT-ownership
+    /// flag). This is the response used by frontends and SDKs.
+    /// Do NOT confuse with the factory-facing `GetPoolState {}`
+    /// variant below, which returns a DIFFERENT type
+    /// (`PoolStateResponseForFactory`) consumed by the factory's
+    /// oracle / liquidity-snapshot machinery.
     #[returns(PoolStateResponse)]
     PoolState {},
     #[returns(PoolFeeStateResponse)]
@@ -143,16 +161,37 @@ pub enum QueryMsg {
     PoolInfo {},
     #[returns(PoolAnalyticsResponse)]
     Analytics {},
+    /// Factory-facing variant — returns `PoolStateResponseForFactory`
+    /// (different shape from the LP-side `PoolState {}` above).
+    /// Forwarded to `pool_core::query::query_for_factory`. Frontend
+    /// consumers should use `PoolState {}` instead.
     #[returns(PoolStateResponseForFactory)]
     GetPoolState {},
+    /// Factory-facing list query. Returns `AllPoolsResponse`. Used by
+    /// the factory's pool-set scans; not intended for direct LP / SDK
+    /// consumption.
     #[returns(AllPoolsResponse)]
     GetAllPools {},
+    /// Factory-facing pause-status query. Returns `IsPausedResponse`.
+    /// Used by the factory's oracle / health-checks; LP-facing pause
+    /// state is exposed indirectly via `PoolState {}` reserves and the
+    /// per-handler error responses.
     #[returns(IsPausedResponse)]
     IsPaused {},
 }
 
 #[cw_serde]
 pub enum MigrateMsg {
+    /// Tune `PoolSpecs.lp_fee` to `new_fees`. Accepted range:
+    /// `MIN_LP_FEE` (0.1% / `Decimal::permille(1)`) up to
+    /// `MAX_LP_FEE` (10% / `Decimal::percent(10)`) inclusive. Values
+    /// outside this range are rejected at runtime with
+    /// `ContractError::LpFeeOutOfRange`. The schema accepts any
+    /// `Decimal` so client tooling that wants to encode the bounds
+    /// must do so out-of-band; the runtime gate is authoritative.
     UpdateFees { new_fees: Decimal },
+    /// No-op variant. Bumps the cw2 stored version on a successful
+    /// migrate without touching any other state. Use when the only
+    /// change between releases is the wasm code id.
     UpdateVersion {},
 }
