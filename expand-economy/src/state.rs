@@ -77,6 +77,11 @@ pub struct Config {
 }
 
 /// Persisted contract `Config` (factory address, owner, bluechip denom).
+///
+/// Set in `instantiate` and never removed. Handlers use `CONFIG.load`
+/// rather than `may_load` because the absence of a value would only
+/// mean the contract was never instantiated — a programmer-error
+/// condition rather than a domain failure.
 pub const CONFIG: Item<Config> = Item::new("config");
 
 /// Default `bluechip_denom` for `InstantiateMsg` when the field is omitted.
@@ -84,12 +89,20 @@ pub const CONFIG: Item<Config> = Item::new("config");
 /// anything unless the chain denom changes.
 pub const DEFAULT_BLUECHIP_DENOM: &str = "ubluechip";
 
+/// Pending withdrawal awaiting timelock expiry.
+///
+/// `recipient` is stored as `Addr` after `addr_validate` at propose time
+/// so the apply path doesn't have to re-validate. `unlocks_at` is the
+/// block time at-or-after which the withdrawal becomes executable;
+/// `serde(alias = "execute_after")` keeps records written by the
+/// pre-rename code path deserializing cleanly.
 #[cw_serde]
 pub struct PendingWithdrawal {
     pub amount: Uint128,
     pub denom: String,
-    pub recipient: String,
-    pub execute_after: Timestamp,
+    pub recipient: Addr,
+    #[serde(alias = "execute_after")]
+    pub unlocks_at: Timestamp,
 }
 
 /// Timelock between `ProposeWithdrawal` and `ExecuteWithdrawal` (48 hours).
@@ -99,16 +112,25 @@ pub const CONFIG_TIMELOCK_SECONDS: u64 = 172_800;
 /// Pending withdrawal awaiting timelock expiry.
 pub const PENDING_WITHDRAWAL: Item<PendingWithdrawal> = Item::new("pending_withdrawal");
 
+/// Pending config update awaiting timelock expiry.
+///
+/// Address fields are validated at propose time and stored as
+/// `Option<Addr>` so the apply path doesn't have to re-validate. The
+/// `unlocks_at` field uses `serde(alias = "effective_after")` so
+/// records written by the pre-rename code path deserialize cleanly.
 #[cw_serde]
 pub struct PendingConfigUpdate {
-    pub factory_address: Option<String>,
-    pub owner: Option<String>,
+    pub factory_address: Option<Addr>,
+    pub owner: Option<Addr>,
     /// If set, applied to `Config.bluechip_denom` when the timelock expires.
-    /// Unset means "don't change the denom". Stored as raw String — validated
-    /// at propose time, not at apply time, so an empty string fails early.
+    /// Unset means "don't change the denom". Validated at propose time
+    /// against the cosmos-sdk denom rules (length, leading char, allowed
+    /// inner chars) so an invalid string fails at propose rather than 48h
+    /// later at apply.
     #[serde(default)]
     pub bluechip_denom: Option<String>,
-    pub effective_after: Timestamp,
+    #[serde(alias = "effective_after")]
+    pub unlocks_at: Timestamp,
 }
 /// Pending config update awaiting timelock expiry.
 pub const PENDING_CONFIG_UPDATE: Item<PendingConfigUpdate> = Item::new("pending_config_update");
