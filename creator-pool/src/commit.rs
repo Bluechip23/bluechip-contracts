@@ -62,22 +62,28 @@ pub const MIN_COMMIT_USD_POST_THRESHOLD: Uint128 = Uint128::new(1_000_000);
 
 /// Base attribute set shared by every commit response (pre-threshold,
 /// post-threshold, threshold_hit_exact, threshold_crossing). Each caller
-/// adds its path-specific attributes on top.
+/// adds its path-specific attributes on top via `Response::add_attributes`.
+///
+/// Returned as `Vec<(&str, String)>` for consistency with the
+/// tuple-vec form used elsewhere in this crate (admin response
+/// builders, liquidity_helpers claim handlers). `Response::add_attributes`
+/// accepts any `IntoIterator<Item = impl Into<Attribute>>` so the
+/// consuming sites are unchanged.
 pub(crate) fn commit_base_attributes(
     phase: &'static str,
     sender: &Addr,
     pool_contract: &Addr,
     total_commit_count: u64,
     env: &Env,
-) -> Vec<cosmwasm_std::Attribute> {
+) -> Vec<(&'static str, String)> {
     vec![
-        cosmwasm_std::Attribute::new("action", "commit"),
-        cosmwasm_std::Attribute::new("phase", phase),
-        cosmwasm_std::Attribute::new("committer", sender.as_str()),
-        cosmwasm_std::Attribute::new("total_commit_count", total_commit_count.to_string()),
-        cosmwasm_std::Attribute::new("pool_contract", pool_contract.as_str()),
-        cosmwasm_std::Attribute::new("block_height", env.block.height.to_string()),
-        cosmwasm_std::Attribute::new("block_time", env.block.time.seconds().to_string()),
+        ("action", "commit".to_string()),
+        ("phase", phase.to_string()),
+        ("committer", sender.to_string()),
+        ("total_commit_count", total_commit_count.to_string()),
+        ("pool_contract", pool_contract.to_string()),
+        ("block_height", env.block.height.to_string()),
+        ("block_time", env.block.time.seconds().to_string()),
     ]
 }
 

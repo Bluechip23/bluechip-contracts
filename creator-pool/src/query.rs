@@ -15,7 +15,8 @@ use crate::msg::{
 };
 use crate::state::{
     COMMIT_INFO, COMMIT_LIMIT_INFO, DISTRIBUTION_STALL_TIMEOUT_SECONDS, DISTRIBUTION_STATE,
-    IS_THRESHOLD_HIT, NATIVE_RAISED_FROM_COMMIT, PENDING_FACTORY_NOTIFY, USD_RAISED_FROM_COMMIT,
+    IS_THRESHOLD_HIT, NATIVE_RAISED_FROM_COMMIT, PENDING_FACTORY_NOTIFY,
+    POOL_COMMITS_QUERY_DEFAULT_LIMIT, POOL_COMMITS_QUERY_MAX_LIMIT, USD_RAISED_FROM_COMMIT,
 };
 use cosmwasm_std::{
     entry_point, to_json_binary, Addr, Binary, Deps, Env, Order, StdResult, Uint128,
@@ -143,16 +144,12 @@ pub fn query_distribution_state(
     }))
 }
 
-pub fn query_check_threshold_limit(deps: Deps) -> StdResult<CommitStatus> {
-    let usd_raised = USD_RAISED_FROM_COMMIT.load(deps.storage)?;
-    threshold_status_from(deps, usd_raised)
-}
-
-/// Like `query_check_threshold_limit` but reuses a caller-supplied
-/// `usd_raised` to skip one redundant storage read. Callers that already
-/// loaded `USD_RAISED_FROM_COMMIT` for their own response (e.g.
-/// `query_analytics`) should prefer this variant.
-fn threshold_status_from(deps: Deps, usd_raised: Uint128) -> StdResult<CommitStatus> {
+/// Public threshold-status helper that takes an already-loaded
+/// `usd_raised`. Callers that already loaded `USD_RAISED_FROM_COMMIT`
+/// for their own response (e.g. `query_analytics`) call this directly
+/// to skip one redundant storage read; standalone callers go through
+/// `query_check_threshold_limit` which performs the load.
+pub fn threshold_status_from(deps: Deps, usd_raised: Uint128) -> StdResult<CommitStatus> {
     let threshold_hit = IS_THRESHOLD_HIT.load(deps.storage)?;
     if threshold_hit {
         Ok(CommitStatus::FullyCommitted)
@@ -163,6 +160,14 @@ fn threshold_status_from(deps: Deps, usd_raised: Uint128) -> StdResult<CommitSta
             target: commit_config.commit_amount_for_threshold_usd,
         })
     }
+}
+
+/// Standalone wrapper around [`threshold_status_from`] that loads
+/// `USD_RAISED_FROM_COMMIT` itself. Use when you don't already have
+/// the raised total in scope.
+pub fn query_check_threshold_limit(deps: Deps) -> StdResult<CommitStatus> {
+    let usd_raised = USD_RAISED_FROM_COMMIT.load(deps.storage)?;
+    threshold_status_from(deps, usd_raised)
 }
 
 /// Creator-pool wrapper around `query_analytics_core`. Loads commit-
@@ -183,7 +188,9 @@ pub fn query_pool_committers(
     start_after: Option<String>,
     limit: Option<u32>,
 ) -> StdResult<PoolCommitResponse> {
-    let limit = limit.unwrap_or(30).min(100) as usize;
+    let limit = limit
+        .unwrap_or(POOL_COMMITS_QUERY_DEFAULT_LIMIT)
+        .min(POOL_COMMITS_QUERY_MAX_LIMIT) as usize;
 
     let start_addr = start_after
         .map(|addr_str| deps.api.addr_validate(&addr_str))
@@ -224,7 +231,7 @@ pub fn query_pool_committers(
     let committers = committers?;
 
     Ok(PoolCommitResponse {
-        total_count: committers.len() as u32,
+        page_count: committers.len() as u32,
         committers,
     })
 }
