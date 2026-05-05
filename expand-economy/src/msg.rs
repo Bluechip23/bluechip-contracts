@@ -1,5 +1,12 @@
 use cosmwasm_schema::{cw_serde, QueryResponses};
 use cosmwasm_std::{Addr, Uint128};
+/// Wire-compatible payload for the cross-contract `RequestExpansion`
+/// call from the factory. Owned by `pool_factory_interfaces` so the
+/// factory and this contract share one source of truth — wire-format
+/// changes here MUST be coordinated with the factory crate. If the
+/// upstream type is renamed, downstream JSON deserialization here will
+/// fail at runtime with an opaque error; pin against this re-export
+/// rather than re-implementing the shape.
 pub use pool_factory_interfaces::ExpandEconomyMsg;
 
 #[cw_serde]
