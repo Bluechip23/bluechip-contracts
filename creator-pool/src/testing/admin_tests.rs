@@ -86,6 +86,7 @@ fn test_pause_unpause() {
         },
         belief_price: None,
         max_spread: None,
+        allow_high_max_spread: None,
         to: None,
         transaction_deadline: None,
     };

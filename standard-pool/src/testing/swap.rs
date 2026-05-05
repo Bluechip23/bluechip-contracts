@@ -54,6 +54,7 @@ fn simple_swap_native_to_cw20_returns_token_transfer() {
             },
             belief_price: None,
             max_spread: None,
+            allow_high_max_spread: None,
             to: None,
             transaction_deadline: None,
         },
@@ -87,6 +88,7 @@ fn cw20_hook_swap_dispatches_via_receive() {
     let hook = Cw20HookMsg::Swap {
         belief_price: None,
         max_spread: None,
+        allow_high_max_spread: None,
         to: None,
         transaction_deadline: None,
     };
@@ -127,6 +129,7 @@ fn cw20_hook_rejects_unknown_cw20_contract() {
     let hook = Cw20HookMsg::Swap {
         belief_price: None,
         max_spread: None,
+        allow_high_max_spread: None,
         to: None,
         transaction_deadline: None,
     };
@@ -170,6 +173,7 @@ fn simple_swap_rejects_when_pool_paused() {
             },
             belief_price: None,
             max_spread: None,
+            allow_high_max_spread: None,
             to: None,
             transaction_deadline: None,
         },
@@ -200,6 +204,7 @@ fn simple_swap_rejects_wrong_asset() {
             },
             belief_price: None,
             max_spread: None,
+            allow_high_max_spread: None,
             to: None,
             transaction_deadline: None,
         },
@@ -226,6 +231,7 @@ fn swap_rejected_if_threshold_flag_toggled_off() {
     let hook = Cw20HookMsg::Swap {
         belief_price: None,
         max_spread: None,
+        allow_high_max_spread: None,
         to: None,
         transaction_deadline: None,
     };
@@ -265,6 +271,7 @@ fn swap_updates_reserves_per_constant_product() {
             },
             belief_price: None,
             max_spread: None,
+            allow_high_max_spread: None,
             to: None,
             transaction_deadline: None,
         },

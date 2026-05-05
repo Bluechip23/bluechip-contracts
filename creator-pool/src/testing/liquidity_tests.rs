@@ -624,6 +624,7 @@ fn test_zero_liquidity_fee_collection() {
         },
         belief_price: None,
         max_spread: None,
+        allow_high_max_spread: None,
         to: None,
         transaction_deadline: None,
     };

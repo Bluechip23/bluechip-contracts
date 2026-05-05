@@ -267,7 +267,7 @@ fn test_race_condition_commits_crossing_threshold() {
         },
         transaction_deadline: None,
         belief_price: None,
-        max_spread: Some(Decimal::percent(99)),
+        max_spread: Some(Decimal::percent(10)),
     };
     // After the H-cooldown change, a follower commit landing in the same
     // block as the threshold-crossing tx is rejected outright with
@@ -1023,6 +1023,7 @@ fn test_simple_swap_bluechip_to_cw20() {
         },
         belief_price: None,
         max_spread: None,
+        allow_high_max_spread: None,
         to: None,
         transaction_deadline: None,
     };
@@ -1071,6 +1072,7 @@ fn test_swap_with_max_spread() {
         },
         belief_price: None,
         max_spread: Some(Decimal::permille(1)), // 0.1%
+        allow_high_max_spread: None,
         to: None,
         transaction_deadline: None,
     };
@@ -1127,6 +1129,7 @@ fn test_swap_cw20_via_hook() {
         msg: to_json_binary(&Cw20HookMsg::Swap {
             belief_price: None,
             max_spread: Some(Decimal::percent(10)),
+            allow_high_max_spread: Some(true),
             to: None,
             transaction_deadline: None,
         })
@@ -1172,6 +1175,7 @@ fn test_swap_wrong_asset() {
         },
         belief_price: None,
         max_spread: None,
+        allow_high_max_spread: None,
         to: None,
         transaction_deadline: None,
     };
@@ -1211,6 +1215,7 @@ fn test_swap_price_accumulator_update() {
         },
         belief_price: None,
         max_spread: None,
+        allow_high_max_spread: None,
         to: None,
         transaction_deadline: None,
     };
@@ -1831,6 +1836,7 @@ fn test_swap_with_belief_price_protection() {
         },
         belief_price,
         max_spread: None,
+        allow_high_max_spread: None,
         to: None,
         transaction_deadline: None,
     };
@@ -1878,6 +1884,7 @@ fn test_swap_belief_price_rejects_bad_price_corrected() {
         },
         belief_price,
         max_spread: Some(Decimal::percent(1)), // Tight spread to ensure failure
+        allow_high_max_spread: None,
         to: None,
         transaction_deadline: None,
     };
@@ -1912,6 +1919,7 @@ fn test_belief_price_with_zero_price() {
         },
         belief_price: Some(Decimal::zero()),
         max_spread: None,
+        allow_high_max_spread: None,
         to: None,
         transaction_deadline: None,
     };
@@ -1959,6 +1967,7 @@ fn test_swap_cw20_to_bluechip_direct() {
         msg: to_json_binary(&Cw20HookMsg::Swap {
             belief_price: None,
             max_spread: Some(Decimal::percent(5)), // Allow 5% slippage for this large swap
+            allow_high_max_spread: None,
             to: None,
             transaction_deadline: None,
         })
@@ -2031,6 +2040,7 @@ fn test_swap_cw20_with_custom_recipient() {
         msg: to_json_binary(&Cw20HookMsg::Swap {
             belief_price: None,
             max_spread: Some(Decimal::percent(2)), // Allow 2% slippage
+            allow_high_max_spread: None,
             to: Some(recipient.clone()),
             transaction_deadline: None,
         })
@@ -2096,6 +2106,7 @@ fn test_cw20_swap_with_belief_price() {
         msg: to_json_binary(&Cw20HookMsg::Swap {
             belief_price,
             max_spread: Some(Decimal::percent(10)),
+            allow_high_max_spread: Some(true),
             to: None,
             transaction_deadline: None,
         })
@@ -2186,7 +2197,7 @@ fn test_race_condition_not_manually_set() {
         },
         transaction_deadline: None,
         belief_price: None,
-        max_spread: Some(Decimal::percent(99)),
+        max_spread: Some(Decimal::percent(10)),
     };
 
     // Same-block follower commit is now blocked by the post-threshold
@@ -2317,7 +2328,11 @@ fn test_concurrent_commits_both_recorded() {
         },
         transaction_deadline: None,
         belief_price: None,
-        max_spread: Some(Decimal::percent(50)),
+        // `Commit` doesn't expose `allow_high_max_spread`; the
+        // post-threshold AMM swap path passes None to assert_max_spread,
+        // so the hard cap on Bob's max_spread is 5% (the default-cap
+        // ceiling). 10% (pre-audit) is now rejected.
+        max_spread: Some(Decimal::percent(5)),
     };
 
     // Same-block follower: rejected by post-threshold cooldown.
@@ -2495,7 +2510,7 @@ fn test_swap_fails_when_reserves_below_pause_threshold() {
         None,
         None,
         None,
-    );
+        None);
 
     // Swap must be rejected when a side is below MINIMUM_LIQUIDITY. The drain
     // guard no longer tries to persist POOL_PAUSED on this path — a Wasm Err
@@ -2536,7 +2551,7 @@ fn test_swap_fails_when_pool_already_paused() {
         None,
         None,
         None,
-    );
+        None);
 
     assert!(matches!(
         result,
@@ -2576,14 +2591,23 @@ fn test_swap_prevented_if_would_deplete_below_minimum() {
         Addr::unchecked("user"),
         offer,
         None,
-        Some(Decimal::percent(50)), // Allow high spread
+        Some(Decimal::percent(10)),
+        Some(true),
         None,
     );
 
-    // Should fail with InsufficientReserves (based on your actual code)
+    // Pre-audit this test asserted `InsufficientReserves` on a swap that
+    // would deplete reserves below `MINIMUM_LIQUIDITY`. The audit's
+    // 10%-with-override hard cap on realised slippage now fires first
+    // for any swap large enough to deplete reserves to that floor — the
+    // pre-cap arithmetic that surfaced the InsufficientReserves error
+    // is structurally unreachable. Re-purpose this regression test to
+    // confirm the audit's slippage gate IS the now-binding guard for
+    // depletion-bordering swaps. The MIN-reserve guard is still
+    // exercised from `liquidity_tests` via direct AMM math.
     assert!(
-        matches!(result, Err(ContractError::InsufficientReserves {})),
-        "Expected InsufficientReserves error for post-swap depletion, got: {:?}",
+        matches!(result, Err(ContractError::MaxSpreadAssertion {})),
+        "Expected MaxSpreadAssertion (audit's pre-MIN-floor slippage cap), got: {:?}",
         result
     );
 }
@@ -2624,7 +2648,7 @@ fn test_swap_triggers_pause_at_threshold() {
         None,
         Some(Decimal::percent(50)),
         None,
-    );
+        None);
 
     // The drain guard rejects the swap. On chain, any attempt to persist
     // POOL_PAUSED here would be rolled back with the Err, so the guard
@@ -2746,7 +2770,7 @@ fn test_both_reserves_checked() {
         None,
         None,
         None,
-    );
+        None);
 
     assert!(matches!(
         result1,
@@ -2776,7 +2800,7 @@ fn test_both_reserves_checked() {
         None,
         None,
         None,
-    );
+        None);
 
     assert!(matches!(
         result2,
@@ -2807,7 +2831,7 @@ fn test_pause_state_persistence() {
         None,
         None,
         None,
-    );
+        None);
     assert!(matches!(first, Err(ContractError::InsufficientReserves {})));
 
     let second = execute_simple_swap(
@@ -2824,7 +2848,7 @@ fn test_pause_state_persistence() {
         None,
         None,
         None,
-    );
+        None);
     assert!(
         matches!(second, Err(ContractError::InsufficientReserves {})),
         "Second swap should still hit the reserve pre-check, not the pause branch. Got: {:?}",
@@ -2838,20 +2862,23 @@ fn test_pause_state_persistence() {
 
 #[test]
 fn test_swap_lopsided_pool_after_threshold() {
+    // Post-audit: a swap whose realised spread exceeds 10% is rejected
+    // even with `allow_high_max_spread = Some(true)`. This test
+    // previously validated that a 50%-of-reserve swap (extreme spread)
+    // *succeeded*; under the new hard cap it must instead be rejected
+    // with `MaxSpreadAssertion`. Re-purposed as a regression test for
+    // the audit's slippage cap, preserving the lopsided-pool setup so
+    // the cap's behaviour is exercised in the same scenario.
     let mut deps = mock_dependencies();
     setup_pool_post_threshold(&mut deps);
 
-    // Manually skew the pool to be lopsided (low bluechip, high token)
     let mut pool_state = POOL_STATE.load(&deps.storage).unwrap();
-    pool_state.reserve0 = Uint128::new(1_000_000_000); // Only 1k bluechip
+    pool_state.reserve0 = Uint128::new(1_000_000_000); // 1k bluechip
     pool_state.reserve1 = Uint128::new(100_000_000_000); // 100k tokens
     POOL_STATE.save(&mut deps.storage, &pool_state).unwrap();
 
     let env = mock_env();
-
-    // Try to swap a significant amount of bluechip (relative to reserve)
-    // 500 bluechip (50% of reserve!)
-    let swap_amount = Uint128::new(500_000_000);
+    let swap_amount = Uint128::new(500_000_000); // 50% of reserve (extreme)
 
     let info = message_info(
         &Addr::unchecked("trader"),
@@ -2869,30 +2896,19 @@ fn test_swap_lopsided_pool_after_threshold() {
             amount: swap_amount,
         },
         belief_price: None,
-        // Allow high slippage (50%) because we are intentionally swapping a huge amount relative to liquidity
-        max_spread: Some(Decimal::percent(50)),
+        max_spread: Some(Decimal::percent(10)),
+        allow_high_max_spread: Some(true),
         to: None,
         transaction_deadline: None,
     };
 
-    let res = execute(deps.as_mut(), env, info, msg).unwrap();
-
-    // Check price impact
-    let return_amount = res
-        .attributes
-        .iter()
-        .find(|a| a.key == "return_amount")
-        .unwrap()
-        .value
-        .parse::<u128>()
-        .unwrap();
-
-    // Just verify it didn't panic and returned *something* less than linear expectation
-    assert!(return_amount > 0);
-
-    // Verify pool state updated
-    let new_pool_state = POOL_STATE.load(&deps.storage).unwrap();
-    assert_eq!(new_pool_state.reserve0, Uint128::new(1_500_000_000));
+    let err = execute(deps.as_mut(), env, info, msg).unwrap_err();
+    assert!(
+        matches!(err, ContractError::MaxSpreadAssertion {}),
+        "lopsided 50%-of-reserve swap must be rejected by the post-audit \
+         10% hard cap on realised slippage; got {:?}",
+        err
+    );
 }
 
 #[test]
@@ -2925,6 +2941,7 @@ fn test_swap_slippage_lopsided() {
         },
         belief_price: Some(Decimal::percent(1)), // 0.01
         max_spread: Some(Decimal::percent(1)),   // 1% tolerance
+        allow_high_max_spread: None,
         to: None,
         transaction_deadline: None,
     };

@@ -70,7 +70,12 @@ fn test_swap_reserve_deducts_return_and_commission() {
             amount: swap_amount,
         },
         None,
-        Some(Decimal::percent(50)), // Allow wide spread for test
+        // Wide-as-allowed slippage: post-audit hard cap is 10% with
+        // `allow_high_max_spread = Some(true)`. The test swap is small
+        // enough relative to the post-threshold pool reserves that the
+        // realised spread fits comfortably under that bound.
+        Some(Decimal::percent(10)),
+        Some(true),
         None,
     )
     .unwrap();
@@ -626,7 +631,7 @@ fn test_migrate_rejects_excessive_fees() {
 
     let err = migrate(deps.as_mut(), env.clone(), msg).unwrap_err();
     assert!(
-        err.to_string().contains("must not exceed 10%"),
+        matches!(err, ContractError::LpFeeOutOfRange { .. }),
         "fees above 10% should be rejected, got: {}",
         err
     );
@@ -797,7 +802,7 @@ fn test_migrate_rejects_zero_fees() {
 
     let err = migrate(deps.as_mut(), env, msg).unwrap_err();
     assert!(
-        err.to_string().contains("at least 0.1%"),
+        matches!(err, ContractError::LpFeeOutOfRange { .. }),
         "zero fees should be rejected, got: {}",
         err
     );
@@ -816,7 +821,7 @@ fn test_migrate_rejects_below_minimum() {
 
     let err = migrate(deps.as_mut(), env, msg).unwrap_err();
     assert!(
-        err.to_string().contains("at least 0.1%"),
+        matches!(err, ContractError::LpFeeOutOfRange { .. }),
         "fees below 0.1% should be rejected, got: {}",
         err
     );

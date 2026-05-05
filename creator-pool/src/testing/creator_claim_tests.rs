@@ -219,12 +219,7 @@ fn retry_factory_notify_rejects_when_no_pending() {
 
     let info = message_info(&Addr::unchecked("anyone"), &[]);
     let err = execute_retry_factory_notify(deps.as_mut(), mock_env(), info).unwrap_err();
-    match err {
-        ContractError::Std(e) => {
-            assert!(e.to_string().contains("No pending factory notification"));
-        }
-        other => panic!("expected Std error, got {:?}", other),
-    }
+    assert!(matches!(err, ContractError::NoPendingFactoryNotify));
 }
 
 #[test]
@@ -235,7 +230,7 @@ fn retry_factory_notify_rejects_when_flag_false() {
 
     let info = message_info(&Addr::unchecked("anyone"), &[]);
     let err = execute_retry_factory_notify(deps.as_mut(), mock_env(), info).unwrap_err();
-    assert!(matches!(err, ContractError::Std(_)));
+    assert!(matches!(err, ContractError::NoPendingFactoryNotify));
 }
 
 // -- reply handler -------------------------------------------------------
@@ -394,6 +389,9 @@ mod reply_handler_tests {
 
         let r = synthetic_reply(0xDEADBEEF, true, None);
         let err = reply(deps.as_mut(), mock_env(), r).unwrap_err();
-        assert!(err.to_string().contains("Unknown reply id"));
+        // The reply handler returns `StdResult<Response>`, so the unknown-id
+        // path emits a `StdError::generic_err` whose Display contains the
+        // canonical phrase for off-chain log scrapers.
+        assert!(err.to_string().contains("unknown reply id"));
     }
 }
