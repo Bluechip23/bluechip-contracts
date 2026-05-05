@@ -16,7 +16,6 @@ use crate::state::{
     CONTINUE_DISTRIBUTION_RATE_LIMIT_SECONDS, DISTRIBUTION_STATE,
     LAST_CONTINUE_DISTRIBUTION_AT, POOL_INFO, POOL_PAUSED,
 };
-use cosmwasm_std::StdError;
 
 pub fn execute_continue_distribution(
     deps: DepsMut,
@@ -55,11 +54,11 @@ pub fn execute_continue_distribution(
     {
         let earliest_next = prev.saturating_add(CONTINUE_DISTRIBUTION_RATE_LIMIT_SECONDS);
         if now < earliest_next {
-            return Err(ContractError::Std(StdError::generic_err(format!(
-                "Rate-limited: this address can call ContinueDistribution again at {} \
-                 (last call {}, cooldown {}s)",
-                earliest_next, prev, CONTINUE_DISTRIBUTION_RATE_LIMIT_SECONDS
-            ))));
+            return Err(ContractError::ContinueDistributionRateLimited {
+                earliest_next,
+                last_call: prev,
+                cooldown_seconds: CONTINUE_DISTRIBUTION_RATE_LIMIT_SECONDS,
+            });
         }
     }
     LAST_CONTINUE_DISTRIBUTION_AT.save(deps.storage, &info.sender, &now)?;

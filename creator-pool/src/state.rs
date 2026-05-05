@@ -19,18 +19,19 @@ pub const USD_RAISED_FROM_COMMIT: Item<Uint128> = Item::new("usd_raised");
 /// Per-committer cumulative deposit/payment record.
 pub const COMMIT_INFO: Map<&Addr, Committing> = Map::new("sub_info");
 /// Running total of NET-of-fees bluechip that has actually entered the
-/// pool's bank balance from threshold-contributing commits. After the
-/// audit-fix gross→net refactor (commit handlers store the post-fee
-/// amount; `trigger_threshold_payout` reads this directly as
-/// `pools_bluechip_seed` with no `(1 - fee_rate)` recovery), the value
-/// here equals the contract's bank balance for `bluechip_denom` at
-/// threshold-crossing time modulo the per-commit fee floor (the only
-/// floor still applied). Note: query responses
-/// (`PoolAnalyticsResponse.total_bluechip_raised`) and the
-/// `total_bluechip_raised_after` event attribute also expose this
-/// post-fee value — frontends showing "X bluechip raised toward goal"
-/// will display the net amount, smaller than the pre-refactor gross.
-/// Storage key preserved as `"bluechip_raised"` for compat.
+/// pool's bank balance from threshold-contributing commits. Equals the
+/// contract's bank balance for `bluechip_denom` at threshold-crossing
+/// time, modulo the per-commit fee floor.
+///
+/// `trigger_threshold_payout` reads this directly as
+/// `pools_bluechip_seed` with no recovery math — every commit handler
+/// stores the post-fee amount and there is no second floor to
+/// reconcile. Query responses (`PoolAnalyticsResponse.total_bluechip_raised`)
+/// and the `total_bluechip_raised_after` event attribute also expose
+/// this net value, so frontends displaying "X bluechip raised toward
+/// goal" show the post-fee amount.
+///
+/// Storage key is `"bluechip_raised"` for cross-version compatibility.
 pub const NATIVE_RAISED_FROM_COMMIT: Item<Uint128> = Item::new("bluechip_raised");
 /// Per-committer USD ledger; drained during post-threshold distribution.
 pub const COMMIT_LEDGER: cw_storage_plus::Map<&Addr, Uint128> =
@@ -98,9 +99,15 @@ pub const DISTRIBUTION_STALL_TIMEOUT_SECONDS: u64 = 86_400;
 // keepers rotating through addresses (e.g. a multi-keeper service)
 // aren't blocked.
 //
-// Per-address tracker keyed on the caller. Cleared opportunistically
-// (TODO: prune entries older than the rate-limit window if storage
-// growth becomes a concern).
+// Per-address tracker keyed on the caller. The map is append-only with
+// respect to addresses: every distinct keeper that has ever called
+// gets one entry, and entries are never pruned. Long-lived popular
+// pools accumulate one entry per distinct keeper address forever.
+// Storage growth is bounded by the size of the keeper population (a
+// few addresses for typical deployments) and is not on any hot read
+// path; opportunistic pruning can be added later if a deployment ever
+// shows real growth, but it's deliberately not part of the current
+// contract's scope.
 pub const LAST_CONTINUE_DISTRIBUTION_AT: cw_storage_plus::Map<&Addr, u64> =
     cw_storage_plus::Map::new("last_continue_distribution_at");
 

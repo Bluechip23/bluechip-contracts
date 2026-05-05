@@ -25,11 +25,13 @@ use crate::error::ContractError;
 use crate::state::{
     DistributionState, RecoveryType, COMMIT_LEDGER, CREATOR_EXCESS_POSITION,
     DEFAULT_ESTIMATED_GAS_PER_DISTRIBUTION, DEFAULT_MAX_GAS_PER_TX, DISTRIBUTION_STATE,
-    EXPECTED_FACTORY, IS_THRESHOLD_HIT, LAST_THRESHOLD_ATTEMPT, PENDING_EMERGENCY_WITHDRAW,
-    POOL_INFO, REENTRANCY_LOCK, THRESHOLD_PROCESSING,
+    EXPECTED_FACTORY, IS_THRESHOLD_HIT, LAST_THRESHOLD_ATTEMPT,
+    MAX_CONSECUTIVE_DISTRIBUTION_FAILURES, PENDING_EMERGENCY_WITHDRAW, POOL_INFO, REENTRANCY_LOCK,
+    STUCK_DISTRIBUTION_RECOVERY_WINDOW_SECONDS, STUCK_THRESHOLD_RECOVERY_WINDOW_SECONDS,
+    THRESHOLD_PROCESSING,
 };
 use cosmwasm_std::{
-    DepsMut, Env, MessageInfo, Order, Response, StdError, StdResult, Storage, Timestamp, Uint128,
+    DepsMut, Env, MessageInfo, Order, Response, StdResult, Storage, Timestamp, Uint128,
 };
 
 // ---------------------------------------------------------------------------
@@ -77,9 +79,7 @@ pub fn execute_emergency_withdraw(
         .may_load(deps.storage)?
         .unwrap_or(false)
     {
-        return Err(ContractError::Std(StdError::generic_err(
-            "EmergencyWithdraw is disabled before the commit threshold has been crossed. Committed funds are untracked in pool_state reserves and would be stranded.",
-        )));
+        return Err(ContractError::EmergencyWithdrawPreThreshold);
     }
 
     // Phase 1: initiate
@@ -207,7 +207,9 @@ fn recover_threshold(
         .may_load(storage)?
         .unwrap_or(Timestamp::from_seconds(0));
 
-    if env.block.time.seconds() >= last_threshold_time.seconds() + 3600 {
+    if env.block.time.seconds()
+        >= last_threshold_time.seconds() + STUCK_THRESHOLD_RECOVERY_WINDOW_SECONDS
+    {
         let was_stuck = THRESHOLD_PROCESSING.may_load(storage)?.unwrap_or(false);
         if was_stuck {
             THRESHOLD_PROCESSING.save(storage, &false)?;
@@ -229,7 +231,9 @@ fn recover_distribution(
             .seconds()
             .saturating_sub(dist_state.last_updated.seconds());
 
-        if time_since_update >= 3600 || dist_state.consecutive_failures >= 5 {
+        if time_since_update >= STUCK_DISTRIBUTION_RECOVERY_WINDOW_SECONDS
+            || dist_state.consecutive_failures >= MAX_CONSECUTIVE_DISTRIBUTION_FAILURES
+        {
             let remaining_committers = COMMIT_LEDGER
                 .keys(storage, None, None, Order::Ascending)
                 .count() as u32;

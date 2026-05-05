@@ -378,6 +378,71 @@ pub const EMERGENCY_WITHDRAW_DELAY_SECONDS: u64 = 86_400;
 /// hurt UX for legitimate first traders.
 pub const POST_THRESHOLD_COOLDOWN_BLOCKS: u64 = 2;
 
+/// Default per-commit rate-limit floor (seconds). Pool is instantiated
+/// with this value in `PoolSpecs.min_commit_interval`. 13s is one
+/// `block_time + 1s` budget on most Cosmos chains — tight enough to
+/// deflate same-block spam, loose enough that a human-driven commit
+/// flow never sees the gate.
+pub const DEFAULT_MIN_COMMIT_INTERVAL_SECONDS: u64 = 13;
+
+/// Default LP fee charged on every swap (creator-pool + standard-pool).
+/// 30 bps = 0.3%, the canonical Uniswap-V2 default. Tunable per-pool
+/// via the factory's 48h `ProposeConfigUpdate` flow up to `MAX_LP_FEE`.
+pub const DEFAULT_LP_FEE_PERMILLE: u64 = 3;
+/// Hard ceiling on `PoolSpecs.lp_fee` (`UpdateFees` migrate). 10% is
+/// well above any reasonable retail-trading fee — the cap exists to
+/// prevent admin-compromise scenarios where a malicious fee could
+/// effectively confiscate the entire swap volume into the LP pot.
+pub const MAX_LP_FEE_PERCENT: u64 = 10;
+/// Hard floor on `PoolSpecs.lp_fee` (`UpdateFees` migrate). 0.1% rules
+/// out a zero-fee admin attack that would drain LPs over time on every
+/// swap (no fee growth → no creator/LP rewards → infinite-loss
+/// liquidity provision).
+pub const MIN_LP_FEE_PERMILLE: u64 = 1;
+
+/// Recovery window between `LAST_THRESHOLD_ATTEMPT` and the moment
+/// `RecoverPoolStuckStates::StuckThreshold` is allowed to flip
+/// `THRESHOLD_PROCESSING` back to false. 1 hour gives operators time
+/// to investigate a stuck-true flag without blocking too long; if a
+/// real threshold-cross is in flight it would have completed within
+/// one block.
+pub const STUCK_THRESHOLD_RECOVERY_WINDOW_SECONDS: u64 = 3_600;
+
+/// Recovery window between `DistributionState.last_updated` and the
+/// moment `recover_distribution` is allowed to restart the cursor.
+/// 1 hour mirrors the threshold-recovery window. The independent
+/// `consecutive_failures >= MAX_CONSECUTIVE_DISTRIBUTION_FAILURES`
+/// gate fires immediately for the genuine-bug path.
+pub const STUCK_DISTRIBUTION_RECOVERY_WINDOW_SECONDS: u64 = 3_600;
+
+/// Hard cap on consecutive distribution failures before the batch
+/// processor halts the cursor and forces operators into the recovery
+/// path. Prevents an infinite-failure loop from billing keepers gas.
+pub const MAX_CONSECUTIVE_DISTRIBUTION_FAILURES: u32 = 5;
+
+/// Seconds in a day. Used by the creator-excess unlock-time math
+/// (`creator_excess_liquidity_lock_days * SECONDS_PER_DAY`).
+pub const SECONDS_PER_DAY: u64 = 86_400;
+
+/// Default page size for `QueryMsg::PoolCommits` (per-pool committer
+/// pagination) when the caller doesn't supply `limit`.
+pub const POOL_COMMITS_QUERY_DEFAULT_LIMIT: u32 = 30;
+/// Hard ceiling on `QueryMsg::PoolCommits.limit` so a single query
+/// can't exhaust block gas on a large committer set.
+pub const POOL_COMMITS_QUERY_MAX_LIMIT: u32 = 100;
+
+/// Threshold-payout split components (bluechip base units). Total is
+/// `THRESHOLD_PAYOUT_TOTAL_BASE_UNITS`. Both
+/// `validate_pool_threshold_payments` (instantiate) and
+/// `trigger_threshold_payout` (runtime) reference these constants —
+/// previously the values lived inline in two locations and were
+/// vulnerable to silent drift.
+pub const THRESHOLD_PAYOUT_CREATOR_BASE_UNITS: u128 = 325_000_000_000;
+pub const THRESHOLD_PAYOUT_BLUECHIP_BASE_UNITS: u128 = 25_000_000_000;
+pub const THRESHOLD_PAYOUT_POOL_BASE_UNITS: u128 = 350_000_000_000;
+pub const THRESHOLD_PAYOUT_COMMIT_RETURN_BASE_UNITS: u128 = 500_000_000_000;
+pub const THRESHOLD_PAYOUT_TOTAL_BASE_UNITS: u128 = 1_200_000_000_000;
+
 /// Classify the pool's current pause state. Used by the dispatch
 /// gates to allow deposits during auto-pause (recovery), permit
 /// LP exits during emergency-pending (so LPs can race the drain),

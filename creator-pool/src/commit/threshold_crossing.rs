@@ -304,3 +304,92 @@ pub(super) fn process_threshold_crossing_with_excess(
         .add_attribute("reserve0_after", pool_state.reserve0.to_string())
         .add_attribute("reserve1_after", pool_state.reserve1.to_string()))
 }
+
+/// Threshold-hit-exact handler. Fires when a commit hits the
+/// `commit_amount_for_threshold_usd` target precisely (no excess to
+/// route through the AMM swap). Sister to
+/// [`process_threshold_crossing_with_excess`] — same payout / NFT-accept /
+/// cooldown / factory-notify pipeline, just no swap branch.
+///
+/// Extracted from `commit::execute_commit_logic` (was inlined as a 73-line
+/// match-arm body inside an if-else inside a match), so all four phase
+/// handlers (`pre_threshold`, `post_threshold`, `threshold_crossing_*`,
+/// distribution batch) now sit at the same module depth.
+#[allow(clippy::too_many_arguments)]
+pub(super) fn process_threshold_hit_exact(
+    deps: &mut DepsMut,
+    env: Env,
+    sender: Addr,
+    asset: &TokenInfo,
+    amount_after_fees: Uint128,
+    usd_value: Uint128,
+    new_total: Uint128,
+    pool_state: &mut PoolState,
+    pool_fee_state: &mut PoolFeeState,
+    pool_info: &PoolInfo,
+    commit_config: &CommitLimitInfo,
+    threshold_payout: &ThresholdPayoutAmounts,
+    fee_info: &CommitFeeInfo,
+    mut messages: Vec<CosmosMsg>,
+    analytics: &PoolAnalytics,
+) -> Result<Response, ContractError> {
+    COMMIT_LEDGER.update::<_, ContractError>(deps.storage, &sender, |v| {
+        Ok(v.unwrap_or_default().checked_add(usd_value)?)
+    })?;
+    let final_usd = new_total.min(commit_config.commit_amount_for_threshold_usd);
+    USD_RAISED_FROM_COMMIT.save(deps.storage, &final_usd)?;
+    // Store the net-of-fees bluechip that actually enters the contract's
+    // bank balance (audit fix; see pre_threshold.rs comment block).
+    // Eliminates the dust-stranding mismatch between per-commit fee
+    // floors and the recovery formula in `trigger_threshold_payout`.
+    NATIVE_RAISED_FROM_COMMIT
+        .update::<_, ContractError>(deps.storage, |r| Ok(r.checked_add(amount_after_fees)?))?;
+    IS_THRESHOLD_HIT.save(deps.storage, &true)?;
+    // Arm the post-threshold cooldown so other actors can't atomically
+    // sandwich the freshly-seeded pool in the same block (or the next
+    // two). Crossing tx itself is unaffected — the writes here land
+    // before the next tx ever runs the cooldown check.
+    POST_THRESHOLD_COOLDOWN_UNTIL_BLOCK.save(
+        deps.storage,
+        &(env.block.height + POST_THRESHOLD_COOLDOWN_BLOCKS + 1),
+    )?;
+
+    let payout = trigger_threshold_payout(
+        deps.storage,
+        pool_info,
+        pool_state,
+        pool_fee_state,
+        commit_config,
+        threshold_payout,
+        fee_info,
+        &env,
+    )?;
+    messages.extend(payout.other_msgs);
+    update_commit_info(
+        deps.storage,
+        &sender,
+        &pool_state.pool_contract_address,
+        asset.amount,
+        usd_value,
+        env.block.time,
+    )?;
+    THRESHOLD_PROCESSING.save(deps.storage, &false)?;
+
+    // `payout.factory_notify` is attached as a SubMsg so a factory-side
+    // failure lands in the pool's reply handler rather than reverting
+    // the commit.
+    let base = commit_base_attributes(
+        "threshold_hit_exact",
+        &sender,
+        &pool_state.pool_contract_address,
+        analytics.total_commit_count,
+        &env,
+    );
+    Ok(Response::new()
+        .add_submessage(payout.factory_notify)
+        .add_messages(messages)
+        .add_attributes(base)
+        .add_attribute("commit_amount_bluechip", asset.amount.to_string())
+        .add_attribute("commit_amount_usd", usd_value.to_string())
+        .add_attribute("total_usd_raised_after", new_total.to_string()))
+}

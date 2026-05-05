@@ -20,7 +20,7 @@ use crate::state::RecoveryType;
 // outer allow keeps the schema-suppression scoped (so an unused-import
 // on `TokenInfo` / `RecoveryType` would still get reported), and folds
 // the four prior `#[allow(unused_imports)]` directives into a single
-// block. `PoolAnalytics` was removed — it was never referenced.
+// block.
 #[allow(unused_imports)]
 use {
     crate::state::{Committing, PoolDetails},

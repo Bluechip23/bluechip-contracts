@@ -20,15 +20,14 @@ use crate::liquidity_helpers::{execute_claim_creator_excess, execute_claim_creat
 use crate::msg::{ExecuteMsg, MigrateMsg, PoolInstantiateMsg};
 use crate::query::query_check_commit;
 use crate::state::{
-    CommitLimitInfo, ExpectedFactory, OracleInfo, PoolAnalytics, PoolDetails, PoolFeeState,
-    PoolInfo, PoolSpecs, Position, ThresholdPayoutAmounts, COMMITFEEINFO, COMMIT_LIMIT_INFO,
-    EXPECTED_FACTORY, IS_THRESHOLD_HIT, NATIVE_RAISED_FROM_COMMIT, NEXT_POSITION_ID, ORACLE_INFO,
-    OWNER_POSITIONS, POOL_ANALYTICS, POOL_FEE_STATE, POOL_INFO, POOL_PAUSED, POOL_SPECS,
-    POOL_STATE, THRESHOLD_PAYOUT_AMOUNTS, USD_RAISED_FROM_COMMIT,
-};
-use crate::state::{
-    PoolState, LIQUIDITY_POSITIONS, PENDING_FACTORY_NOTIFY, REPLY_ID_FACTORY_NOTIFY_INITIAL,
-    REPLY_ID_FACTORY_NOTIFY_RETRY,
+    CommitLimitInfo, DEFAULT_LP_FEE_PERMILLE, DEFAULT_MIN_COMMIT_INTERVAL_SECONDS,
+    ExpectedFactory, MAX_LP_FEE_PERCENT, MIN_LP_FEE_PERMILLE, OracleInfo, PoolAnalytics,
+    PoolDetails, PoolFeeState, PoolInfo, PoolSpecs, PoolState, Position, ThresholdPayoutAmounts,
+    COMMITFEEINFO, COMMIT_LIMIT_INFO, EXPECTED_FACTORY, IS_THRESHOLD_HIT, LIQUIDITY_POSITIONS,
+    NATIVE_RAISED_FROM_COMMIT, NEXT_POSITION_ID, ORACLE_INFO, OWNER_POSITIONS, PENDING_FACTORY_NOTIFY,
+    POOL_ANALYTICS, POOL_FEE_STATE, POOL_INFO, POOL_PAUSED, POOL_SPECS, POOL_STATE,
+    REPLY_ID_FACTORY_NOTIFY_INITIAL, REPLY_ID_FACTORY_NOTIFY_RETRY, THRESHOLD_PAYOUT_AMOUNTS,
+    USD_RAISED_FROM_COMMIT,
 };
 // Swap orchestration moved to pool_core::swap; re-exported via swap_helper.
 use crate::swap_helper::{execute_swap_cw20, simple_swap};
@@ -80,21 +79,24 @@ pub fn instantiate(
     match (&msg.pool_token_info[0], &msg.pool_token_info[1]) {
         (TokenType::Native { denom }, TokenType::CreatorToken { contract_addr }) => {
             if denom.trim().is_empty() {
-                return Err(ContractError::Std(StdError::generic_err(
-                    "Bluechip denom must be non-empty",
-                )));
+                return Err(ContractError::InvalidPairShape {
+                    reason: "Bluechip denom must be non-empty".to_string(),
+                });
             }
             if contract_addr != &msg.token_address {
-                return Err(ContractError::Std(StdError::generic_err(
-                    "CreatorToken.contract_addr in pool_token_info must equal msg.token_address",
-                )));
+                return Err(ContractError::InvalidPairShape {
+                    reason: "CreatorToken.contract_addr in pool_token_info must equal \
+                             msg.token_address"
+                        .to_string(),
+                });
             }
         }
         _ => {
-            return Err(ContractError::Std(StdError::generic_err(
-                "pool_token_info must be [Bluechip(Native), CreatorToken] — \
-                 order matters: bluechip at index 0, creator-token at index 1.",
-            )));
+            return Err(ContractError::InvalidPairShape {
+                reason: "pool_token_info must be [Bluechip(Native), CreatorToken] — order \
+                         matters: bluechip at index 0, creator-token at index 1."
+                    .to_string(),
+            });
         }
     }
     if (msg.commit_fee_info.commit_fee_bluechip + msg.commit_fee_info.commit_fee_creator)
@@ -142,8 +144,8 @@ pub fn instantiate(
     };
 
     let pool_specs = PoolSpecs {
-        lp_fee: Decimal::permille(3), // 0.3% LP fee
-        min_commit_interval: 13,      // seconds
+        lp_fee: Decimal::permille(DEFAULT_LP_FEE_PERMILLE),
+        min_commit_interval: DEFAULT_MIN_COMMIT_INTERVAL_SECONDS,
     };
 
     let commit_config = CommitLimitInfo {
@@ -550,9 +552,7 @@ pub fn execute_retry_factory_notify(
         .may_load(deps.storage)?
         .unwrap_or(false);
     if !pending {
-        return Err(ContractError::Std(StdError::generic_err(
-            "No pending factory notification to retry",
-        )));
+        return Err(ContractError::NoPendingFactoryNotify);
     }
 
     let pool_info = POOL_INFO.load(deps.storage)?;
@@ -616,9 +616,9 @@ pub fn reply(deps: DepsMut, env: Env, msg: Reply) -> StdResult<Response> {
                     .add_attribute("block_time", env.block.time.seconds().to_string()))
             }
         },
-        _ => Err(StdError::generic_err(format!(
-            "Unknown reply id: {}",
-            msg.id
+        other => Err(StdError::generic_err(format!(
+            "creator-pool reply: unknown reply id {}",
+            other
         ))),
     }
 }
@@ -629,7 +629,7 @@ pub fn reply(deps: DepsMut, env: Env, msg: Reply) -> StdResult<Response> {
 // ---------------------------------------------------------------------------
 
 #[entry_point]
-pub fn migrate(deps: DepsMut, _env: Env, msg: MigrateMsg) -> StdResult<Response> {
+pub fn migrate(deps: DepsMut, _env: Env, msg: MigrateMsg) -> Result<Response, ContractError> {
     // Reject downgrades. The chain has already replaced the wasm
     // bytecode by the time this handler runs, so this is the last
     // chance to abort a downgrade — a hard `Err` here causes the chain
@@ -647,37 +647,39 @@ pub fn migrate(deps: DepsMut, _env: Env, msg: MigrateMsg) -> StdResult<Response>
     // than erroring. Production pools always set cw2 via
     // `set_contract_version` at instantiate time.
     if let Ok(stored_version) = cw2::get_contract_version(deps.storage) {
-        let stored_semver: semver::Version = stored_version.version.parse().map_err(|e| {
-            StdError::generic_err(format!(
-                "stored contract version {} is not valid semver: {}",
-                stored_version.version, e
-            ))
-        })?;
-        let current_semver: semver::Version = CONTRACT_VERSION.parse().map_err(|e| {
-            StdError::generic_err(format!(
-                "current contract version {} is not valid semver: {}",
-                CONTRACT_VERSION, e
-            ))
-        })?;
+        let stored_semver: semver::Version =
+            stored_version
+                .version
+                .parse()
+                .map_err(|e: semver::Error| ContractError::StoredVersionInvalid {
+                    version: stored_version.version.clone(),
+                    msg: e.to_string(),
+                })?;
+        let current_semver: semver::Version =
+            CONTRACT_VERSION
+                .parse()
+                .map_err(|e: semver::Error| ContractError::CurrentVersionInvalid {
+                    version: CONTRACT_VERSION.to_string(),
+                    msg: e.to_string(),
+                })?;
         if stored_semver > current_semver {
-            return Err(StdError::generic_err(format!(
-                "Migration would downgrade contract from {} to {}; refusing.",
-                stored_semver, current_semver
-            )));
+            return Err(ContractError::DowngradeRefused {
+                stored: stored_semver.to_string(),
+                current: current_semver.to_string(),
+            });
         }
     }
 
     match msg {
         MigrateMsg::UpdateFees { new_fees } => {
-            let max_lp_fee = Decimal::percent(10);
-            if new_fees > max_lp_fee {
-                return Err(StdError::generic_err("lp_fee must not exceed 10% (0.1)"));
-            }
-            let min_lp_fee = Decimal::permille(1); // 0.1%
-            if new_fees < min_lp_fee {
-                return Err(StdError::generic_err(
-                    "lp_fee must be at least 0.1% (0.001)",
-                ));
+            let max_lp_fee = Decimal::percent(MAX_LP_FEE_PERCENT);
+            let min_lp_fee = Decimal::permille(MIN_LP_FEE_PERMILLE);
+            if new_fees > max_lp_fee || new_fees < min_lp_fee {
+                return Err(ContractError::LpFeeOutOfRange {
+                    got: new_fees,
+                    min: min_lp_fee,
+                    max: max_lp_fee,
+                });
             }
             POOL_SPECS.update(deps.storage, |mut specs| -> StdResult<_> {
                 specs.lp_fee = new_fees;
