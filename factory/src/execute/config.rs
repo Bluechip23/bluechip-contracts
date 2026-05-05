@@ -120,6 +120,12 @@ pub(crate) fn validate_factory_config(
         )));
     }
 
+    // Threshold-payout splits are stored on FactoryInstantiate so they
+    // ride the standard 48h propose/apply flow rather than requiring a
+    // contract migration. Validate non-zero components + no overflow at
+    // propose time so a misconfig is caught before the timelock starts.
+    config.threshold_payout_amounts.validate()?;
+
     // Strict anchor-pool validation on the post-bootstrap path. Without
     // this gate, the propose/update flow would let an admin point the
     // anchor at any well-formed address — including a non-pool contract

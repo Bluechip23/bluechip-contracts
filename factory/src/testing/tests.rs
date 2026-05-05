@@ -1,3 +1,4 @@
+use crate::error::ContractError;
 use crate::mint_bluechips_pool_creation::calculate_mint_amount;
 use crate::state::{
     CreationStatus, FactoryInstantiate, PoolCreationContext, PoolCreationState,
@@ -69,6 +70,7 @@ fn create_default_instantiate_msg() -> FactoryInstantiate {
         bluechip_denom: "ubluechip".to_string(),
         atom_denom: "uatom".to_string(),
         standard_pool_creation_fee_usd: cosmwasm_std::Uint128::new(1_000_000),
+        threshold_payout_amounts: Default::default(),
     }
 }
 
@@ -228,6 +230,7 @@ fn proper_initialization() {
         bluechip_denom: "ubluechip".to_string(),
         atom_denom: "uatom".to_string(),
         standard_pool_creation_fee_usd: cosmwasm_std::Uint128::new(1_000_000),
+        threshold_payout_amounts: Default::default(),
     };
 
     let env = mock_env();
@@ -398,6 +401,7 @@ fn create_pair() {
         bluechip_denom: "ubluechip".to_string(),
         atom_denom: "uatom".to_string(),
         standard_pool_creation_fee_usd: cosmwasm_std::Uint128::new(1_000_000),
+        threshold_payout_amounts: Default::default(),
     };
 
     let env = mock_env();
@@ -465,6 +469,7 @@ fn test_create_pair_with_custom_params() {
         bluechip_denom: "ubluechip".to_string(),
         atom_denom: "uatom".to_string(),
         standard_pool_creation_fee_usd: cosmwasm_std::Uint128::new(1_000_000),
+        threshold_payout_amounts: Default::default(),
     };
 
     let env = mock_env();
@@ -680,6 +685,7 @@ fn test_complete_pool_creation_flow() {
         bluechip_denom: "ubluechip".to_string(),
         atom_denom: "uatom".to_string(),
         standard_pool_creation_fee_usd: cosmwasm_std::Uint128::new(1_000_000),
+        threshold_payout_amounts: Default::default(),
     };
 
     let env = mock_env();
@@ -818,6 +824,7 @@ fn test_config() {
         bluechip_denom: "ubluechip".to_string(),
         atom_denom: "uatom".to_string(),
         standard_pool_creation_fee_usd: cosmwasm_std::Uint128::new(1_000_000),
+        threshold_payout_amounts: Default::default(),
     };
 
     assert_eq!(config.factory_admin_address, Addr::unchecked("admin1..."));
@@ -859,6 +866,7 @@ fn test_reply_handling() {
         bluechip_denom: "ubluechip".to_string(),
         atom_denom: "uatom".to_string(),
         standard_pool_creation_fee_usd: cosmwasm_std::Uint128::new(1_000_000),
+        threshold_payout_amounts: Default::default(),
     };
 
     let env = mock_env();
@@ -889,9 +897,6 @@ fn test_reply_handling() {
         state: PoolCreationState {
             pool_id,
             creator: the_admin.clone(),
-            creator_token_address: None,
-            mint_new_position_nft_address: None,
-            pool_address: None,
             creation_time: env.block.time,
             status: CreationStatus::Started,
         },
@@ -1735,6 +1740,7 @@ fn test_query_pyth_atom_usd_price_success() {
         bluechip_denom: "ubluechip".to_string(),
         atom_denom: "uatom".to_string(),
         standard_pool_creation_fee_usd: cosmwasm_std::Uint128::new(1_000_000),
+        threshold_payout_amounts: Default::default(),
     };
     FACTORYINSTANTIATEINFO
         .save(deps.as_mut().storage, &config)
@@ -1780,6 +1786,7 @@ fn test_query_pyth_atom_usd_price_default() {
         bluechip_denom: "ubluechip".to_string(),
         atom_denom: "uatom".to_string(),
         standard_pool_creation_fee_usd: cosmwasm_std::Uint128::new(1_000_000),
+        threshold_payout_amounts: Default::default(),
     };
     FACTORYINSTANTIATEINFO
         .save(deps.as_mut().storage, &config)
@@ -1815,6 +1822,7 @@ fn test_query_pyth_extreme_atom_prices() {
         bluechip_denom: "ubluechip".to_string(),
         atom_denom: "uatom".to_string(),
         standard_pool_creation_fee_usd: cosmwasm_std::Uint128::new(1_000_000),
+        threshold_payout_amounts: Default::default(),
     };
     FACTORYINSTANTIATEINFO
         .save(deps.as_mut().storage, &config)
@@ -1869,6 +1877,7 @@ fn test_get_bluechip_usd_price_with_pyth() {
         bluechip_denom: "ubluechip".to_string(),
         atom_denom: "uatom".to_string(),
         standard_pool_creation_fee_usd: cosmwasm_std::Uint128::new(1_000_000),
+        threshold_payout_amounts: Default::default(),
     };
     FACTORYINSTANTIATEINFO
         .save(deps.as_mut().storage, &config)
@@ -1944,6 +1953,7 @@ fn test_bluechip_usd_price_with_different_atom_prices() {
         bluechip_denom: "ubluechip".to_string(),
         atom_denom: "uatom".to_string(),
         standard_pool_creation_fee_usd: cosmwasm_std::Uint128::new(1_000_000),
+        threshold_payout_amounts: Default::default(),
     };
     FACTORYINSTANTIATEINFO
         .save(deps.as_mut().storage, &config)
@@ -2022,6 +2032,7 @@ fn test_conversion_functions_with_pyth() {
         bluechip_denom: "ubluechip".to_string(),
         atom_denom: "uatom".to_string(),
         standard_pool_creation_fee_usd: cosmwasm_std::Uint128::new(1_000_000),
+        threshold_payout_amounts: Default::default(),
     };
     FACTORYINSTANTIATEINFO
         .save(deps.as_mut().storage, &config)
@@ -2110,6 +2121,7 @@ fn test_bluechip_minting_on_threshold_crossing() {
         bluechip_denom: "ubluechip".to_string(),
         atom_denom: "uatom".to_string(),
         standard_pool_creation_fee_usd: cosmwasm_std::Uint128::new(1_000_000),
+        threshold_payout_amounts: Default::default(),
     };
 
     let env = mock_env();
@@ -2209,6 +2221,7 @@ fn test_no_mint_when_amount_is_zero() {
         bluechip_denom: "ubluechip".to_string(),
         atom_denom: "uatom".to_string(),
         standard_pool_creation_fee_usd: cosmwasm_std::Uint128::new(1_000_000),
+        threshold_payout_amounts: Default::default(),
     };
 
     let env = mock_env();
@@ -2302,11 +2315,10 @@ fn test_set_oracle_update_bounty_admin_only() {
         },
     )
     .unwrap_err();
-    let err_msg = format!("{}", err);
     assert!(
-        err_msg.contains("admin") || err_msg.contains("Admin"),
-        "expected admin error, got: {}",
-        err_msg
+        matches!(err, ContractError::Unauthorized {}),
+        "expected Unauthorized, got: {}",
+        err
     );
 
     // Admin should succeed
@@ -3256,7 +3268,7 @@ fn test_oracle_update_no_bounty_when_disabled() {
 // rule and both boundaries. They exist to pin the spec: accidental weakening
 // of any rule (e.g. allowing lowercase symbols) would break a test here.
 
-use crate::execute::validate_creator_token_info;
+use crate::execute::pool_lifecycle::create::validate_creator_token_info;
 
 fn valid_token_info() -> CreatorTokenInfo {
     CreatorTokenInfo {
@@ -3792,8 +3804,8 @@ fn test_set_distribution_bounty_admin_only() {
     )
     .unwrap_err();
     assert!(
-        format!("{}", err).contains("admin") || format!("{}", err).contains("Admin"),
-        "expected admin error, got: {}",
+        matches!(err, ContractError::Unauthorized {}),
+        "expected Unauthorized, got: {}",
         err
     );
 

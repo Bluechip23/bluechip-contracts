@@ -68,6 +68,7 @@ fn default_factory_config() -> FactoryInstantiate {
         bluechip_denom: "ubluechip".to_string(),
         atom_denom: "uatom".to_string(),
         standard_pool_creation_fee_usd: cosmwasm_std::Uint128::new(1_000_000),
+        threshold_payout_amounts: Default::default(),
     }
 }
 
@@ -196,7 +197,7 @@ fn test_cancel_config_update_unauthorized() {
     let hacker_info = message_info(&Addr::unchecked("hacker"), &[]);
     let cancel_msg = ExecuteMsg::CancelConfigUpdate {};
     let err = execute(deps.as_mut(), env, hacker_info, cancel_msg).unwrap_err();
-    assert!(err.to_string().contains("Only the admin"));
+    assert!(matches!(err, ContractError::Unauthorized {}));
 }
 
 #[test]
@@ -303,7 +304,7 @@ fn test_update_pool_config_unauthorized() {
     };
 
     let err = execute(deps.as_mut(), env, hacker_info, msg).unwrap_err();
-    assert!(err.to_string().contains("Only the admin"));
+    assert!(matches!(err, ContractError::Unauthorized {}));
 }
 
 #[test]
@@ -2303,7 +2304,7 @@ mod pool_admin_forwarder_tests {
             ExecuteMsg::PausePool { pool_id: 42 },
         )
         .unwrap_err();
-        assert!(err.to_string().contains("Only the admin"));
+        assert!(matches!(err, ContractError::Unauthorized {}));
     }
 
     #[test]
@@ -2342,7 +2343,7 @@ mod pool_admin_forwarder_tests {
             ExecuteMsg::UnpausePool { pool_id: 7 },
         )
         .unwrap_err();
-        assert!(err.to_string().contains("Only the admin"));
+        assert!(matches!(err, ContractError::Unauthorized {}));
     }
 
     #[test]
@@ -2368,7 +2369,7 @@ mod pool_admin_forwarder_tests {
             ExecuteMsg::EmergencyWithdrawPool { pool_id: 123 },
         )
         .unwrap_err();
-        assert!(err.to_string().contains("Only the admin"));
+        assert!(matches!(err, ContractError::Unauthorized {}));
     }
 
     #[test]
@@ -2432,7 +2433,7 @@ mod pool_admin_forwarder_tests {
             },
         )
         .unwrap_err();
-        assert!(err.to_string().contains("Only the admin"));
+        assert!(matches!(err, ContractError::Unauthorized {}));
     }
 }
 
@@ -2606,7 +2607,7 @@ mod anchor_validation_failure_tests {
             ExecuteMsg::SetAnchorPool { pool_id: 1 },
         )
         .unwrap_err();
-        assert!(err.to_string().contains("Only the admin"));
+        assert!(matches!(err, ContractError::Unauthorized {}));
     }
 
     /// One-shot guard: after a successful SetAnchorPool, a second call

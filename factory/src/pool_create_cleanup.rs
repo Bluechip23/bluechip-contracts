@@ -4,6 +4,11 @@ use pool_factory_interfaces::cw721_msgs::{Action, Cw721ExecuteMsg};
 
 use crate::error::ContractError;
 
+/// Protobuf type URL for `MsgInstantiateContractResponse`. Hoisted to
+/// module scope so a future wasmd version bump (or a new caller that
+/// also needs to inspect SubMsg responses) has one place to update.
+const INSTANTIATE_RESPONSE_TYPE: &str = "/cosmwasm.wasm.v1.MsgInstantiateContractResponse";
+
 // NOTE: The pool-creation reply chain uses `SubMsg::reply_on_success` at every
 // step (see execute::execute_create_creator_pool, pool_creation_reply::set_tokens,
 // and pool_creation_reply::mint_create_pool). Under reply_on_success, a failing
@@ -39,9 +44,6 @@ pub fn extract_contract_address(
     //      explicit-fallback use only).
     //   3. events scan (last-ditch fallback for environments that emit
     //      neither — none we ship on, kept for forward-compat).
-    const INSTANTIATE_RESPONSE_TYPE: &str =
-        "/cosmwasm.wasm.v1.MsgInstantiateContractResponse";
-
     let payload: Option<Vec<u8>> = result
         .msg_responses
         .iter()

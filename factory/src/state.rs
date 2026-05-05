@@ -1,5 +1,27 @@
+// ---------------------------------------------------------------------------
+// Storage-key CHANGELOG
+//
+// Most `Item` / `Map` constants in this file use a key string that matches
+// the Rust identifier (e.g. `POOLS_BY_ID -> "pools_by_id"`). The drifts
+// below are kept on purpose for migration compatibility — renaming the
+// key would orphan existing chain state. Add a row here when introducing
+// a new drift, or removing one (which is a breaking migration in itself).
+//
+//   Const                          Storage key                     Reason
+//   ------------------------------ ------------------------------- -------------------------------------------------
+//   FIRST_THRESHOLD_TIMESTAMP      "first_pool_timestamp"          Renamed from FIRST_POOL_TIMESTAMP; key preserved.
+//   POOL_CREATION_CONTEXT          "pool_creation_ctx_v3"          v3 schema; v1/v2 predate the unified Temp+State context.
+//   COMMIT_POOL_COUNTER            "commit_pool_counter"           Matches.
+//   POOLS_BY_CONTRACT_ADDRESS      "pools_by_contract_address"     Matches.
+//   STANDARD_POOL_CREATION_CONTEXT "std_pool_ctx"                  Shorter key chosen to keep prefix bytes small.
+//   LAST_STANDARD_POOL_CREATE_AT   "last_std_pool_create_at"       Shorter key (per above).
+//
+// Unlisted Items/Maps follow the convention "key == lowercase(IDENT)";
+// any future addition that diverges should be appended here.
+// ---------------------------------------------------------------------------
+
 use crate::asset::TokenType;
-use crate::pool_struct::{PoolDetails, TempPoolCreation};
+use crate::pool_struct::{PoolDetails, TempPoolCreation, ThresholdPayoutAmounts};
 use cosmwasm_schema::cw_serde;
 use cosmwasm_std::{Addr, Binary, Decimal, StdResult, Storage, Timestamp, Uint128};
 use cw_storage_plus::{Item, Map};
@@ -276,6 +298,20 @@ pub struct FactoryInstantiate {
     /// Setting this to zero disables the fee entirely (legitimate
     /// configuration choice for permissioned deployments).
     pub standard_pool_creation_fee_usd: Uint128,
+    /// Per-pool threshold-payout splits applied when a commit pool
+    /// crosses its USD threshold. The sum is also used as the CW20
+    /// mint cap pinned at create time, so changing these values
+    /// after launch only affects pools created AFTER the timelock
+    /// expires — already-instantiated pools have their cap baked in.
+    ///
+    /// `#[serde(default)]` lets pre-this-field factory records
+    /// deserialize cleanly with the launch defaults
+    /// (creator 325e9 / bluechip 25e9 / pool_seed 350e9 / commit_return 500e9
+    /// = 1.2e12 total). New deployments must still pass an explicit value
+    /// at instantiate time; the default exists purely for migration
+    /// compatibility with old serialized config snapshots.
+    #[serde(default)]
+    pub threshold_payout_amounts: ThresholdPayoutAmounts,
 }
 
 #[cw_serde]
@@ -288,9 +324,6 @@ pub struct PendingConfig {
 pub struct PoolCreationState {
     pub pool_id: u64,
     pub creator: Addr,
-    pub creator_token_address: Option<Addr>,
-    pub mint_new_position_nft_address: Option<Addr>,
-    pub pool_address: Option<Addr>,
     pub creation_time: Timestamp,
     pub status: CreationStatus,
 }

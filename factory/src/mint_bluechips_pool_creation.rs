@@ -25,32 +25,32 @@ use cosmwasm_std::{BankMsg, Coin, CosmosMsg, DepsMut, Env, StdError, StdResult, 
 const MAX_DECAY_X: u128 = 1_000_000_000;
 
 pub fn calculate_mint_amount(seconds_elapsed: u64, pools_created: u64) -> StdResult<Uint128> {
-    // Formula: 500 - (((5x^2 + x) / ((s/6) + 333x))
+    // Formula (with `x = pools_created`, `s = seconds_elapsed`):
+    //   500 - ((5x^2 + x) / ((s/6) + 333x))
+    let pools_created = pools_created as u128;
+    let seconds_elapsed = seconds_elapsed as u128;
 
-    let x = pools_created as u128;
-    let s = seconds_elapsed as u128;
-
-    // Defense-in-depth saturating cap. For x > MAX_DECAY_X the
+    // Defense-in-depth saturating cap. For pools_created > MAX_DECAY_X the
     // polynomial output is zero by definition; short-circuit rather
-    // than risk overflow in `5 * x * x`.
-    if x > MAX_DECAY_X {
+    // than risk overflow in `5 * pools_created * pools_created`.
+    if pools_created > MAX_DECAY_X {
         return Ok(Uint128::zero());
     }
 
     let five_x_squared = 5u128
-        .checked_mul(x)
+        .checked_mul(pools_created)
         .ok_or_else(|| StdError::generic_err("Overflow in numerator"))?
-        .checked_mul(x)
+        .checked_mul(pools_created)
         .ok_or_else(|| StdError::generic_err("Overflow in numerator"))?;
 
     let numerator = five_x_squared
-        .checked_add(x)
+        .checked_add(pools_created)
         .ok_or_else(|| StdError::generic_err("Overflow in numerator addition"))?;
-    let s_div_6 = s / 6;
+    let s_div_6 = seconds_elapsed / 6;
     let denominator = s_div_6
         .checked_add(
             333u128
-                .checked_mul(x)
+                .checked_mul(pools_created)
                 .ok_or_else(|| StdError::generic_err("Overflow in denominator"))?,
         )
         .ok_or_else(|| StdError::generic_err("Overflow in denominator"))?;
@@ -95,8 +95,6 @@ pub fn calculate_and_mint_bluechip(
     env: Env,
     pool_id: u64,
 ) -> Result<Vec<CosmosMsg>, ContractError> {
-    let messages = vec![];
-
     // Defense-in-depth: hard guard that this function is only
     // ever called for commit pools. Belongs above the mock-feature
     // short-circuit so even mock builds enforce the invariant.
@@ -115,7 +113,7 @@ pub fn calculate_and_mint_bluechip(
     // so `s == 0` for the pool that triggers this branch for the very
     // first time. Subsequent pools see a growing `s`, which shrinks
     // the mint amount per the polynomial below.
-    let first_threshold_time = match FIRST_THRESHOLD_TIMESTAMP.may_load(deps.storage)? {
+    let _first_threshold_time = match FIRST_THRESHOLD_TIMESTAMP.may_load(deps.storage)? {
         Some(time) => time,
         None => {
             FIRST_THRESHOLD_TIMESTAMP.save(deps.storage, &env.block.time)?;
@@ -125,9 +123,13 @@ pub fn calculate_and_mint_bluechip(
 
     #[cfg(feature = "mock")]
     {
-        return Ok(messages);
+        return Ok(Vec::new());
     }
 
+    #[cfg(not(feature = "mock"))]
+    {
+    let first_threshold_time = _first_threshold_time;
+    let mut msgs: Vec<CosmosMsg> = Vec::new();
     let config = FACTORYINSTANTIATEINFO.load(deps.storage)?;
     let seconds_elapsed = env
         .block
@@ -149,7 +151,6 @@ pub fn calculate_and_mint_bluechip(
         pool_details.commit_pool_ordinal
     };
     let mint_amount = calculate_mint_amount(seconds_elapsed, decay_x)?;
-    let mut msgs = Vec::new();
 
     if !mint_amount.is_zero() {
         if let Some(expand_economy_contract) = config.bluechip_mint_contract_address {
@@ -179,8 +180,8 @@ pub fn calculate_and_mint_bluechip(
                 }],
             }));
         }
-        return Ok(msgs);
     }
 
-    Ok(messages)
+    Ok(msgs)
+    }
 }

@@ -38,6 +38,69 @@ pub enum ContractError {
         drift_bps: u128,
         max_bps: u64,
     },
+
+    // ---------------------------------------------------------------------
+    // Oracle / Pyth domain errors. Replace earlier `Std(generic_err(...))`
+    // sites so off-chain consumers (monitoring, retry, indexers) can match
+    // structurally rather than regex an English message.
+    // ---------------------------------------------------------------------
+    #[error("Internal oracle not initialized")]
+    OracleNotInitialized,
+
+    #[error("Pyth ATOM/USD price unavailable: {reason}")]
+    PythUnavailable { reason: String },
+
+    #[error("Oracle price is stale (last update {last_update}s, now {now}s, max age {max_age}s)")]
+    OraclePriceStale {
+        last_update: u64,
+        now: u64,
+        max_age: u64,
+    },
+
+    #[error("Oracle TWAP price is zero")]
+    TwapPriceZero,
+
+    #[error("Calculated bluechip price is zero")]
+    BluechipPriceZero,
+
+    // ---------------------------------------------------------------------
+    // Force-rotate / bootstrap timelock errors.
+    // ---------------------------------------------------------------------
+    #[error("A force-rotate is already pending. Cancel it first.")]
+    ForceRotateAlreadyPending,
+
+    #[error("No pending force-rotate to cancel")]
+    NoPendingForceRotate,
+
+    #[error("No pending bootstrap price to confirm. Wait for the next successful UpdateOraclePrice in branch (d) to populate one.")]
+    NoPendingBootstrapPriceToConfirm,
+
+    #[error("No pending bootstrap price to cancel")]
+    NoPendingBootstrapPriceToCancel,
+
+    // ---------------------------------------------------------------------
+    // Pool-creation reply chain errors.
+    // ---------------------------------------------------------------------
+    #[error("Pool reply '{step}' missing address: {kind}")]
+    ReplyMissingAddress {
+        step: &'static str,
+        kind: &'static str,
+    },
+
+    #[error("Threshold payout corruption detected: components do not match factory config")]
+    ThresholdPayoutCorruption,
+
+    #[error("Reply for SubMsg id={id} returned an error in a reply_on_success path: {msg}")]
+    ReplyOnSuccessSawError { id: u64, msg: String },
+
+    #[error("Invalid pair shape: {reason}")]
+    InvalidPairShape { reason: String },
+
+    // ---------------------------------------------------------------------
+    // Migration / config errors.
+    // ---------------------------------------------------------------------
+    #[error("Downgrade refused: stored {stored}, current {current}")]
+    DowngradeRefused { stored: String, current: String },
 }
 
 impl From<OverflowError> for ContractError {

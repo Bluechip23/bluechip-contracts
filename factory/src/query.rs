@@ -26,9 +26,20 @@ pub struct CreatorTokenInfoResponse {
     pub token_address: Addr,
 }
 
+/// Configured oracle-update keeper bounty (paid per successful
+/// `UpdateOraclePrice`). USD-denominated, 6 decimals.
 #[cw_serde]
-pub struct BountyResponse {
-    /// Configured bounty in USD (6 decimals: 1_000_000 = $1.00).
+pub struct OracleUpdateBountyResponse {
+    pub bounty_usd: Uint128,
+}
+
+/// Configured pool-distribution keeper bounty (paid per successful
+/// `pool.ContinueDistribution` batch). USD-denominated, 6 decimals.
+/// Held as a distinct type from [`OracleUpdateBountyResponse`] so that
+/// future per-bounty extensions (e.g. min-batch-size, per-batch caps)
+/// can land on one without rippling through the other's wire format.
+#[cw_serde]
+pub struct DistributionBountyResponse {
     pub bounty_usd: Uint128,
 }
 
@@ -56,9 +67,9 @@ pub enum QueryMsg {
     CreatorTokenInfo { pool_id: u64 },
     #[returns(cosmwasm_std::Binary)]
     InternalBlueChipOracleQuery(FactoryQueryMsg),
-    #[returns(BountyResponse)]
+    #[returns(OracleUpdateBountyResponse)]
     OracleUpdateBounty {},
-    #[returns(BountyResponse)]
+    #[returns(DistributionBountyResponse)]
     DistributionBounty {},
     /// Returns the in-flight creation status for a given pool_id, or None
     /// when creation completed cleanly and the entry was reaped.
@@ -100,33 +111,35 @@ pub fn query_pool_creation_status(
     Ok(Some(PoolCreationStatusResponse {
         pool_id: state.pool_id,
         creator: state.creator,
-        // Prefer ctx.temp (the single source of truth for new contexts);
-        // fall back to ctx.state for pre-consolidation records that still
-        // carry the mirror field.
-        creator_token_address: temp
-            .creator_token_addr
-            .or(state.creator_token_address),
-        mint_new_position_nft_address: temp
-            .nft_addr
-            .or(state.mint_new_position_nft_address),
-        pool_address: state.pool_address,
+        // `ctx.temp` is now the single source of truth for these
+        // addresses. The `state` mirrors that previously held them
+        // were never written by current code paths and have been
+        // removed; the wire-format response retains
+        // `creator_token_address` / `mint_new_position_nft_address`
+        // / `pool_address` slots so downstream consumers continue
+        // to deserialize cleanly. `pool_address` is unset by the
+        // current reply chain (no field on `temp` holds it yet);
+        // populate when wiring becomes worthwhile.
+        creator_token_address: temp.creator_token_addr,
+        mint_new_position_nft_address: temp.nft_addr,
+        pool_address: None,
         creation_time: state.creation_time,
         status: state.status,
     }))
 }
 
-pub fn query_oracle_update_bounty(deps: Deps) -> StdResult<BountyResponse> {
+pub fn query_oracle_update_bounty(deps: Deps) -> StdResult<OracleUpdateBountyResponse> {
     let bounty_usd = ORACLE_UPDATE_BOUNTY_USD
         .may_load(deps.storage)?
         .unwrap_or_default();
-    Ok(BountyResponse { bounty_usd })
+    Ok(OracleUpdateBountyResponse { bounty_usd })
 }
 
-pub fn query_distribution_bounty(deps: Deps) -> StdResult<BountyResponse> {
+pub fn query_distribution_bounty(deps: Deps) -> StdResult<DistributionBountyResponse> {
     let bounty_usd = DISTRIBUTION_BOUNTY_USD
         .may_load(deps.storage)?
         .unwrap_or_default();
-    Ok(BountyResponse { bounty_usd })
+    Ok(DistributionBountyResponse { bounty_usd })
 }
 
 pub fn query_creator_token_info(deps: Deps, pool_id: u64) -> StdResult<CreatorTokenInfoResponse> {

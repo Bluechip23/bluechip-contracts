@@ -41,6 +41,7 @@ fn default_init() -> FactoryInstantiate {
         bluechip_denom: "ubluechip".to_string(),
         atom_denom: "uatom".to_string(),
         standard_pool_creation_fee_usd: cosmwasm_std::Uint128::new(1_000_000),
+        threshold_payout_amounts: Default::default(),
     }
 }
 
