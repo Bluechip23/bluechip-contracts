@@ -836,10 +836,13 @@ pub fn update_internal_oracle_price(
         BreakerOutcome::Published(p) => p,
     };
 
-    // Shared success tail. Reached only by branches (a), (c-success), and
-    // (c-fail-force-accept) — the rounds that committed to a new
-    // `last_price`. Caches the Pyth ATOM/USD price, decrements the
-    // warm-up counter, persists the oracle, and pays the keeper bounty.
+    // Shared success tail. Reached only by branches (a) and (c-success) —
+    // the regular price-publishing rounds. Caches the Pyth ATOM/USD price,
+    // decrements the warm-up counter, persists the oracle, and pays the
+    // keeper bounty. (c-fail-force-accept) commits a new `last_price` too
+    // but does its own pyth/warmup/save inline and returns EarlyReturn so
+    // it can skip the bounty — force-accept is a liveness escape valve,
+    // not a regular publishing event, mirroring the pre-refactor handler.
     if let Ok(pyth_price) = query_pyth_atom_usd_price(deps.as_ref(), &env) {
         oracle.bluechip_price_cache.cached_pyth_price = pyth_price;
         oracle.bluechip_price_cache.cached_pyth_timestamp = current_time;
@@ -907,9 +910,10 @@ pub fn update_internal_oracle_price(
 
 /// Carries the data the shared success tail needs from a published
 /// branch: the price actually written to `last_price` (`twap_price`
-/// for branch (a), the candidate/twap median for c-success and
-/// c-fail-force-accept) plus per-branch attributes the tail appends
-/// after the standard set.
+/// for branch (a), the candidate/twap median for c-success) plus
+/// per-branch attributes the tail appends after the standard set.
+/// `c-fail-force-accept` does NOT route through here — it builds its
+/// own response (no bounty) and returns `EarlyReturn`.
 struct BreakerPublished {
     published_price: Uint128,
     extra_attrs: Vec<(&'static str, String)>,
@@ -975,17 +979,20 @@ fn breaker_branch_b(
 ///   - drift OK → publish median (Published).
 ///   - drift fail, failures < cap → discard candidate, replace,
 ///     return early (EarlyReturn).
-///   - drift fail, failures hits cap → liveness force-accept the median
-///     (Published with `force_accept_*` attrs). Strict callers stay
-///     frozen for the remainder of the warm-up window.
+///   - drift fail, failures hits cap → liveness force-accept the median.
+///     Returns `EarlyReturn` (with its own pyth caching + warmup
+///     decrement + save inlined) so this path bypasses the shared
+///     success tail's keeper-bounty payout — force-accept is a liveness
+///     escape, not a normal price-publishing event, and the original
+///     pre-refactor handler did not pay a bounty here.
 fn breaker_branch_c(
     deps: DepsMut,
-    _env: &Env,
+    env: &Env,
     oracle: &mut BlueChipPriceInternalOracle,
     twap_price: Uint128,
     candidate: Uint128,
     current_time: u64,
-    _pools_used: usize,
+    pools_used: usize,
 ) -> Result<BreakerOutcome, ContractError> {
     let drift_bps_u128 = drift_bps_saturating(twap_price, candidate);
 
@@ -999,9 +1006,12 @@ fn breaker_branch_c(
         if next_failures >= MAX_POST_RESET_CONSECUTIVE_FAILURES {
             // c-fail-force-accept: keep the just-pushed observation,
             // overwrite its price with the median so the observation
-            // series and last_price stay in lock-step. Reset state and
-            // let the shared tail finish (cache pyth + decrement warmup
-            // + save + bounty + response).
+            // series and last_price stay in lock-step. Inline the
+            // pyth-cache + warmup-decrement + save here, then return
+            // EarlyReturn so the shared success tail (which would pay
+            // the keeper bounty) is bypassed — force-accept is a
+            // liveness escape valve, not a regular price-publishing
+            // round, and the original handler skipped the bounty here.
             if let Some(last) = oracle.bluechip_price_cache.twap_observations.last_mut() {
                 last.price = median;
             }
@@ -1009,25 +1019,38 @@ fn breaker_branch_c(
             oracle.bluechip_price_cache.last_update = current_time;
             oracle.pending_first_price = None;
             oracle.post_reset_consecutive_failures = 0;
-            return Ok(BreakerOutcome::Published(BreakerPublished {
-                published_price: median,
-                extra_attrs: vec![
-                    ("force_accept", "true".to_string()),
-                    (
-                        "force_accept_reason",
-                        "post_reset_consecutive_failures_cap".to_string(),
-                    ),
-                    (
+            if let Ok(pyth_price) = query_pyth_atom_usd_price(deps.as_ref(), env) {
+                oracle.bluechip_price_cache.cached_pyth_price = pyth_price;
+                oracle.bluechip_price_cache.cached_pyth_timestamp = current_time;
+            }
+            let warmup_remaining_before = oracle.warmup_remaining;
+            oracle.warmup_remaining = oracle.warmup_remaining.saturating_sub(1);
+            INTERNAL_ORACLE.save(deps.storage, oracle)?;
+            return Ok(BreakerOutcome::EarlyReturn(
+                Response::new()
+                    .add_attribute("action", "update_oracle")
+                    .add_attribute("twap_price", median.to_string())
+                    .add_attribute("pools_used", pools_used.to_string())
+                    .add_attribute(
+                        "warmup_remaining_before",
+                        warmup_remaining_before.to_string(),
+                    )
+                    .add_attribute(
+                        "warmup_remaining_after",
+                        oracle.warmup_remaining.to_string(),
+                    )
+                    .add_attribute("force_accept", "true")
+                    .add_attribute("force_accept_reason", "post_reset_consecutive_failures_cap")
+                    .add_attribute(
                         "force_accept_threshold",
                         MAX_POST_RESET_CONSECUTIVE_FAILURES.to_string(),
-                    ),
-                    ("prior_candidate", candidate.to_string()),
-                    ("new_candidate", twap_price.to_string()),
-                    ("median_published", median.to_string()),
-                    ("drift_bps", drift_bps_u128.to_string()),
-                    ("max_bps", MAX_TWAP_DRIFT_BPS.to_string()),
-                ],
-            }));
+                    )
+                    .add_attribute("prior_candidate", candidate.to_string())
+                    .add_attribute("new_candidate", twap_price.to_string())
+                    .add_attribute("median_published", median.to_string())
+                    .add_attribute("drift_bps", drift_bps_u128.to_string())
+                    .add_attribute("max_bps", MAX_TWAP_DRIFT_BPS.to_string()),
+            ));
         }
         // c-fail-replace: discard prior candidate, hold the new one.
         oracle.bluechip_price_cache.twap_observations.pop();
