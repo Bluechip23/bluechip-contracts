@@ -26,7 +26,7 @@ use crate::state::{
     DistributionState, RecoveryType, COMMIT_LEDGER, CREATOR_EXCESS_POSITION,
     DEFAULT_ESTIMATED_GAS_PER_DISTRIBUTION, DEFAULT_MAX_GAS_PER_TX, DISTRIBUTION_STATE,
     EXPECTED_FACTORY, IS_THRESHOLD_HIT, LAST_THRESHOLD_ATTEMPT,
-    MAX_CONSECUTIVE_DISTRIBUTION_FAILURES, POOL_INFO, REENTRANCY_LOCK,
+    MAX_CONSECUTIVE_DISTRIBUTION_FAILURES, PENDING_EMERGENCY_WITHDRAW, POOL_INFO, REENTRANCY_LOCK,
     STUCK_DISTRIBUTION_RECOVERY_WINDOW_SECONDS, STUCK_THRESHOLD_RECOVERY_WINDOW_SECONDS,
     THRESHOLD_PROCESSING,
 };
@@ -82,32 +82,42 @@ pub fn execute_emergency_withdraw(
         return Err(ContractError::EmergencyWithdrawPreThreshold);
     }
 
+    // Phase 1 (no timelock armed yet) is a pure pause + arm — no
+    // commit-only bookkeeping should run yet. The original wrapper
+    // returned early here before sweeping `CREATOR_EXCESS_POSITION` /
+    // halting `DISTRIBUTION_STATE`; preserve that ordering so the
+    // Phase 1 transaction does not delete user-owned state during
+    // the timelock window.
+    let pending_armed = PENDING_EMERGENCY_WITHDRAW.may_load(deps.storage)?.is_some();
+
     // Phase 2 bookkeeping: capture creator excess + halt distribution
-    // state BEFORE handing off to the shared dispatcher. The dispatcher
-    // routes to Phase 1 (initiate) when no timelock is armed yet —
-    // every save below is a no-op in that case because Phase 1 doesn't
-    // read any of these structs. On Phase 2 (drain), CosmWasm tx
+    // state BEFORE handing off to the shared dispatcher. CosmWasm tx
     // atomicity rolls these saves back along with the rest of the tx
     // if anything inside the dispatcher errors, so half-drained state
     // is structurally unreachable.
     let mut deps = deps;
-    let excess = CREATOR_EXCESS_POSITION.may_load(deps.storage)?;
-    let (acc_0, acc_1) = excess
-        .as_ref()
-        .map(|e| (e.bluechip_amount, e.token_amount))
-        .unwrap_or((Uint128::zero(), Uint128::zero()));
-    if excess.is_some() {
-        CREATOR_EXCESS_POSITION.remove(deps.storage);
-    }
-
-    // The pool no longer holds a bounty reserve; distribution bounties
-    // are paid by the factory. Halt any in-flight distribution so
-    // future ContinueDistribution calls reject cleanly.
-    if let Ok(mut dist_state) = DISTRIBUTION_STATE.load(deps.storage) {
-        dist_state.is_distributing = false;
-        dist_state.distributions_remaining = 0;
-        DISTRIBUTION_STATE.save(deps.storage, &dist_state)?;
-    }
+    let (acc_0, acc_1) = if pending_armed {
+        let excess = CREATOR_EXCESS_POSITION.may_load(deps.storage)?;
+        let amounts = excess
+            .as_ref()
+            .map(|e| (e.bluechip_amount, e.token_amount))
+            .unwrap_or((Uint128::zero(), Uint128::zero()));
+        if excess.is_some() {
+            CREATOR_EXCESS_POSITION.remove(deps.storage);
+        }
+        // The pool no longer holds a bounty reserve; distribution
+        // bounties are paid by the factory. Halt any in-flight
+        // distribution so future ContinueDistribution calls reject
+        // cleanly.
+        if let Ok(mut dist_state) = DISTRIBUTION_STATE.load(deps.storage) {
+            dist_state.is_distributing = false;
+            dist_state.distributions_remaining = 0;
+            DISTRIBUTION_STATE.save(deps.storage, &dist_state)?;
+        }
+        amounts
+    } else {
+        (Uint128::zero(), Uint128::zero())
+    };
 
     execute_emergency_withdraw_dispatch(deps.branch(), env, info, acc_0, acc_1)
 }
