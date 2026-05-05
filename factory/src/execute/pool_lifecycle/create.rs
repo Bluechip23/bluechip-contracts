@@ -298,19 +298,19 @@ pub(crate) fn execute_create_creator_pool(
             mint: Some(MinterResponse {
                 minter: env.contract.address.to_string(),
                 // Mint cap pinned to the exact threshold-payout total
-                // (creator_reward 325e9 + bluechip_reward 25e9 +
-                // pool_seed 350e9 + commit_return 500e9 = 1_200e9).
-                // No protocol path ever needs to mint beyond this — the
-                // payout is fixed at threshold-cross and validated by
-                // `ThresholdPayoutAmounts::validate(1_200e9)` and
-                // `validate_pool_threshold_payments`. Tightening the
-                // cap from the prior 1_500e9 headroom removes a 300e9
-                // attack-surface buffer: if any future code path ever
-                // gained mint authority and tried to mint extra
-                // tokens, cw20-base would reject the mint and revert
-                // the entire tx (fail-closed) rather than silently
-                // letting up to 300e9 additional supply be created.
-                cap: Some(Uint128::new(1_200_000_000_000)),
+                // derived from `factory_cw20.threshold_payout_amounts`
+                // (default: creator 325e9 + bluechip 25e9 + pool_seed
+                // 350e9 + commit_return 500e9 = 1.2e12). No protocol
+                // path ever needs to mint beyond this — the payout is
+                // fixed at threshold-cross and validated by
+                // `ThresholdPayoutAmounts::validate` (propose-time)
+                // and `validate_pool_threshold_payments` (runtime).
+                // If any future code path ever gained mint authority
+                // and tried to mint extra tokens, cw20-base would
+                // reject the mint and revert the entire tx
+                // (fail-closed) rather than silently letting
+                // additional supply be created.
+                cap: Some(factory_cw20.threshold_payout_amounts.total_mint()?),
             }),
         })?,
         //no initial balance. waits until threshold is crossed to mint creator tokens.
@@ -332,9 +332,6 @@ pub(crate) fn execute_create_creator_pool(
             state: PoolCreationState {
                 pool_id,
                 creator: info.sender,
-                creator_token_address: None,
-                mint_new_position_nft_address: None,
-                pool_address: None,
                 creation_time: env.block.time,
                 status: CreationStatus::Started,
             },

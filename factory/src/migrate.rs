@@ -1,15 +1,11 @@
 #[cfg(not(feature = "library"))]
 use cosmwasm_std::entry_point;
-use cosmwasm_std::{DepsMut, Empty, Env, Response, StdError};
+use cosmwasm_std::{DepsMut, Empty, Env, Response};
 use cw2::{get_contract_version, set_contract_version};
 use semver::Version;
 
 use crate::error::ContractError;
-
-/// cw2 contract name persisted on every (re)instantiate and migrate.
-const CONTRACT_NAME: &str = "crates.io:bluechip-factory";
-/// cw2 contract version, sourced from Cargo.toml at compile time.
-const CONTRACT_VERSION: &str = env!("CARGO_PKG_VERSION");
+use crate::{CONTRACT_NAME, CONTRACT_VERSION};
 
 #[cfg_attr(not(feature = "library"), entry_point)]
 pub fn migrate(deps: DepsMut, _env: Env, _msg: Empty) -> Result<Response, ContractError> {
@@ -26,10 +22,10 @@ pub fn migrate(deps: DepsMut, _env: Env, _msg: Empty) -> Result<Response, Contra
     // Equal-version migrations are allowed for idempotent re-runs;
     // strictly-greater stored is rejected.
     if stored_semver > current {
-        return Err(ContractError::Std(StdError::generic_err(format!(
-            "Migration would downgrade factory from {} to {}; refusing.",
-            stored_semver, current
-        ))));
+        return Err(ContractError::DowngradeRefused {
+            stored: stored_semver.to_string(),
+            current: current.to_string(),
+        });
     }
 
     set_contract_version(deps.storage, CONTRACT_NAME, CONTRACT_VERSION)?;

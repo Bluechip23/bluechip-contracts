@@ -13,6 +13,21 @@ pub mod pyth_types;
 pub mod query;
 pub mod state;
 
+// ---------------------------------------------------------------------------
+// Re-exports: top-level facade for downstream crates so `factory::ExecuteMsg`
+// works without needing to learn the internal module layout.
+// ---------------------------------------------------------------------------
+pub use error::ContractError;
+pub use msg::ExecuteMsg;
+pub use query::QueryMsg;
+pub use state::FactoryInstantiate;
+
+/// cw2 contract name, written by both `instantiate` and `migrate`. Centralized
+/// so a future re-publish under a different crate name only requires one edit.
+pub const CONTRACT_NAME: &str = "crates.io:bluechip-factory";
+/// cw2 contract version, sourced from Cargo.toml at compile time.
+pub const CONTRACT_VERSION: &str = env!("CARGO_PKG_VERSION");
+
 #[cfg(test)]
 mod mock_querier;
 #[cfg(test)]

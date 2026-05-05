@@ -12,6 +12,7 @@ use crate::state::{
 // release builds while keeping the test path compiling unchanged.
 #[cfg(test)]
 use crate::state::POOLS_BY_CONTRACT_ADDRESS;
+use crate::execute::ensure_admin;
 use crate::{asset::TokenType, error::ContractError};
 use cosmwasm_schema::cw_serde;
 use cosmwasm_std::{
@@ -59,34 +60,50 @@ pub const ROTATION_INTERVAL: u64 = 3600;
 /// the sample set.
 pub const MAX_TWAP_DRIFT_BPS: u64 = 3000;
 
-// Aspirational floor: the number of threshold-crossed creator pools the
-// design intends to require before the TWAP is meaningfully diversified
-// across multiple pools (in addition to the anchor ATOM/bluechip pool).
+/// Basis-points scale for the drift ratio (10_000 = 100%).
+pub const BPS_SCALE: u128 = 10_000;
+
+/// Saturating drift-in-bps between two prices.
+///
+/// Returns `|a - b| * 10_000 / min(a, b)` clamped to `u128::MAX` on any
+/// overflow or division-by-zero. Used by the TWAP circuit-breaker
+/// branches; saturating semantics map "math overflowed" to "definitely
+/// tripped" so the breaker fires unconditionally rather than silently
+/// wrapping. Returns 0 if both inputs are zero (no drift to measure).
+pub fn drift_bps_saturating(a: Uint128, b: Uint128) -> u128 {
+    let (smaller, larger) = if a > b { (b, a) } else { (a, b) };
+    let diff = larger.saturating_sub(smaller);
+    match diff.checked_mul(Uint128::from(BPS_SCALE)) {
+        Ok(scaled) => scaled
+            .checked_div(smaller)
+            .map(|v| v.u128())
+            .unwrap_or(u128::MAX),
+        Err(_) => u128::MAX,
+    }
+}
+
+// Bootstrap pool-count policy — INTENTIONALLY NOT ENFORCED.
 //
-// IMPORTANT — NOT ENFORCED: this constant is referenced only by the
-// bootstrap-acceptance comment block in `get_bluechip_usd_price_with_meta`
-// (see lines ~1075-1100). The oracle does NOT currently refuse to serve
-// a price when fewer than this many creator pools are eligible. We
-// explicitly accept a single-pool-dominated price during the bootstrap
-// window because every commit needs an oracle price to compute its USD
-// value, but no creator pool can cross its threshold until commits
-// succeed — enforcing the floor would deadlock the protocol on day one.
+// We explicitly accept a single-pool-dominated price during the
+// bootstrap window because every commit needs an oracle price, but no
+// creator pool can cross its threshold until commits succeed —
+// enforcing a floor would deadlock the protocol on day one.
 //
 // Defense-in-depth that bounds the bootstrap manipulation risk:
-//   - `MIN_POOL_LIQUIDITY` (line 31) raises the cost of moving the anchor.
+//   - `MIN_POOL_LIQUIDITY` raises the cost of moving the anchor.
 //   - The anchor pool is curated and seeded by the deployment team.
 //   - The TWAP circuit breaker caps per-update drift to
 //     `MAX_TWAP_DRIFT_BPS` (30%) on every update *after* the first.
-//   - Downstream consumers (commit, swap) layer their own slippage and
-//     spread protections.
+//   - Downstream consumers (commit, swap) layer their own slippage
+//     and spread protections.
 //
-// The risk window is "first oracle update plus the few updates until
-// MIN_ELIGIBLE_POOLS_FOR_TWAP creator pools have crossed threshold." If
-// you ever do want this to be a hard floor, the place to enforce it is
-// in `calculate_weighted_price_with_atom` (return `InsufficientData` when
-// `successful_pools < MIN_ELIGIBLE_POOLS_FOR_TWAP`) plus a bootstrap-mode
-// switch on the price reader so the protocol can still launch.
-pub const MIN_ELIGIBLE_POOLS_FOR_TWAP: usize = 3;
+// If a future deployment ever wants a hard floor, enforce it in
+// `calculate_weighted_price_with_atom` (return `InsufficientData` when
+// the eligible-pool count is below the desired floor) plus a
+// bootstrap-mode switch on the price reader so the protocol can still
+// launch. A previous `pub const MIN_ELIGIBLE_POOLS_FOR_TWAP` was kept
+// at module scope as a bookmark, but the value was never read by code
+// — the comment above is the policy.
 pub const INTERNAL_ORACLE: Item<BlueChipPriceInternalOracle> = Item::new("internal_oracle");
 const PRICE_PRECISION: u128 = 1_000_000;
 
@@ -111,7 +128,7 @@ pub struct BlueChipPriceInternalOracle {
     /// because they don't advance the TWAP. While `> 0`, downstream
     /// conversions return `Err(InsufficientData)` for strict callers
     /// (commit path), but best-effort callers
-    /// (`bluechip_to_usd_best_effort`, `usd_to_bluechip_best_effort`)
+    /// (`usd_to_bluechip_best_effort`)
     /// fall back to `pre_reset_last_price`. `#[serde(default)]` keeps
     /// records written before this field existed deserializing as
     /// zero (no warm-up active).
@@ -278,21 +295,21 @@ pub fn select_random_pools_with_atom(
     num_pools: usize,
 ) -> StdResult<Vec<String>> {
     let factory_config = FACTORYINSTANTIATEINFO.load(deps.storage)?;
-    let atom_pool_contract_contract_address =
+    let atom_pool_addr =
         factory_config.atom_bluechip_anchor_pool_address.to_string();
 
     #[cfg(feature = "mock")]
     {
-        return Ok(vec![atom_pool_contract_contract_address]);
+        return Ok(vec![atom_pool_addr]);
     }
 
-    // Real Network Logic. Rebuild the eligible-pool snapshot at most once
-    // per ELIGIBLE_POOL_REFRESH_BLOCKS (≈5 days); between refreshes the
+    // Rebuild the eligible-pool snapshot at most once per
+    // ELIGIBLE_POOL_REFRESH_BLOCKS (≈5 days); between refreshes the
     // sampler reads from the snapshot instead of scanning POOLS_BY_ID.
     refresh_eligible_pool_snapshot_if_stale(
         &mut deps,
         &env,
-        &atom_pool_contract_contract_address,
+        &atom_pool_addr,
     )?;
     let eligible_pools = ELIGIBLE_POOL_SNAPSHOT
         .load(deps.storage)?
@@ -301,7 +318,7 @@ pub fn select_random_pools_with_atom(
 
     if eligible_pools.len() <= random_pools_needed {
         let mut all_pools = eligible_pools;
-        all_pools.push(atom_pool_contract_contract_address);
+        all_pools.push(atom_pool_addr);
         return Ok(all_pools);
     }
 
@@ -348,7 +365,7 @@ pub fn select_random_pools_with_atom(
 
     let mut selected = Vec::new();
     let mut used_indices = std::collections::HashSet::new();
-    selected.push(atom_pool_contract_contract_address);
+    selected.push(atom_pool_addr);
     for i in 0..random_pools_needed {
         let seed = u64::from_be_bytes([
             hash[i % 32],
@@ -381,9 +398,7 @@ pub fn initialize_internal_bluechip_oracle(
     let selected_pools =
         select_random_pools_with_atom(deps.branch(), env.clone(), ORACLE_POOL_COUNT)?;
     if selected_pools.is_empty() {
-        return Err(ContractError::Std(StdError::generic_err(
-            "Cannot initialize oracle: ATOM pool must exist",
-        )));
+        return Err(ContractError::MissingAtomPool {});
     }
 
     let factory_config = FACTORYINSTANTIATEINFO.load(deps.storage)?;
@@ -451,8 +466,12 @@ pub fn get_eligible_creator_pools(
     // PoolStateResponseForFactory query when they all pass. The older
     // implementation did two full range scans plus a HashSet build, which
     // dominated oracle-update gas at scale.
-    let mut eligible = Vec::new();
-    let mut indices = Vec::new();
+    // Building entries as a single struct per pool (rather than two
+    // parallel `Vec`s with a "couple by position" invariant) makes it
+    // structurally impossible for a future code path to push to one
+    // collection without the other. The `unzip` at the end produces the
+    // wire-format expected by `EligiblePoolSnapshot`.
+    let mut entries: Vec<EligiblePoolEntry> = Vec::new();
     for row in POOLS_BY_ID.range(deps.storage, None, None, Order::Ascending) {
         let (pool_id, pool_details) = row?;
 
@@ -488,11 +507,26 @@ pub fn get_eligible_creator_pools(
 
         let total_liquidity = pool_state.reserve0.saturating_add(pool_state.reserve1);
         if total_liquidity >= MIN_POOL_LIQUIDITY {
-            eligible.push(pool_details.creator_pool_addr.to_string());
-            indices.push(bluechip_idx);
+            entries.push(EligiblePoolEntry {
+                address: pool_details.creator_pool_addr.to_string(),
+                bluechip_index: bluechip_idx,
+            });
         }
     }
+    let (eligible, indices) = entries
+        .into_iter()
+        .map(|e| (e.address, e.bluechip_index))
+        .unzip();
     Ok((eligible, indices))
+}
+
+/// One entry in the eligible-pool snapshot, kept as an atomic
+/// (address, bluechip_index) pair so the by-position coupling in
+/// [`crate::state::EligiblePoolSnapshot`] cannot be violated by a
+/// caller that pushes to one half but not the other.
+struct EligiblePoolEntry {
+    address: String,
+    bluechip_index: u8,
 }
 
 // MOCK-ONLY: read the bluechip USD price directly from the configured mock
@@ -527,6 +561,35 @@ pub fn query_mock_bluechip_usd_price(deps: Deps) -> Result<Uint128, ContractErro
 }
 
 // Append the oracle-update keeper-bounty outcome attributes (and, on success,
+/// Convert a USD-denominated bounty (6-decimal microUSD) to bluechip
+/// using a single price ratio (`PRICE_PRECISION` units of bluechip per
+/// USD). Returns `BluechipPriceZero` (price == 0) — typed error so the
+/// mock and prod paths can't drift on generic_err strings.
+///
+/// Used by the mock oracle's USD→bluechip conversion, which sees the
+/// just-fetched mock price directly. The prod path goes through the
+/// richer `usd_to_bluechip` helper (TWAP + Pyth fallback); this helper
+/// is purposely simple — a single multiply-then-divide. Gated on the
+/// mock feature to keep the dead-code warning quiet in non-mock builds.
+#[cfg(feature = "mock")]
+fn compute_bounty_bluechip(bounty_usd: Uint128, price: Uint128) -> Result<Uint128, ContractError> {
+    if price.is_zero() {
+        return Err(ContractError::BluechipPriceZero);
+    }
+    bounty_usd
+        .checked_mul(Uint128::from(PRICE_PRECISION))
+        .map_err(|_| {
+            ContractError::Std(StdError::generic_err("bounty conversion overflow"))
+        })?
+        .checked_div(price)
+        .map_err(|_| {
+            // price was non-zero above; checked_div errors here would be
+            // an internal cosmwasm_std bug, but we propagate cleanly
+            // rather than panicking.
+            ContractError::Std(StdError::generic_err("bounty conversion div error"))
+        })
+}
+
 // the BankMsg transfer) to `response`. Three branches, deterministic attribute
 // shape. Shared between the mock and prod oracle paths so the attribute
 // schema can only drift in one place.
@@ -610,15 +673,7 @@ pub fn update_internal_oracle_price(
             // Convert USD -> bluechip using the price we just fetched from
             // the mock oracle (not via get_bluechip_usd_price, which in mock
             // builds returns the ATOM/USD shortcut used by other paths).
-            let bounty_bluechip = bounty_usd
-                .checked_mul(Uint128::from(PRICE_PRECISION))
-                .map_err(|_| {
-                    ContractError::Std(StdError::generic_err("bounty conversion overflow"))
-                })?
-                .checked_div(price)
-                .map_err(|_| {
-                    ContractError::Std(StdError::generic_err("bounty conversion div-by-zero"))
-                })?;
+            let bounty_bluechip = compute_bounty_bluechip(bounty_usd, price)?;
             let balance = deps
                 .querier
                 .query_balance(env.contract.address.as_str(), ORACLE_BOUNTY_DENOM)?;
@@ -749,279 +804,61 @@ pub fn update_internal_oracle_price(
     let prior = oracle.bluechip_price_cache.last_price;
     let pre_reset = oracle.pre_reset_last_price;
     let buffered_reset_path = !pre_reset.is_zero();
-    if !prior.is_zero() {
-        // Branch (a): steady-state drift check.
-        let (smaller, larger) = if twap_price > prior {
-            (prior, twap_price)
-        } else {
-            (twap_price, prior)
-        };
-        let diff = larger.checked_sub(smaller)?;
-        // Saturate any overflow in the bps ratio to "definitely tripped"
-        // — if `diff * 10_000` overflows u128, the drift is astronomically
-        // larger than MAX_TWAP_DRIFT_BPS and the breaker should fire
-        // unconditionally.
-        let drift_bps_u128 = match diff.checked_mul(Uint128::from(10_000u128)) {
-            Ok(scaled) => scaled
-                .checked_div(smaller)
-                .map(|v| v.u128())
-                .unwrap_or(u128::MAX),
-            Err(_) => u128::MAX,
-        };
-        if drift_bps_u128 > MAX_TWAP_DRIFT_BPS as u128 {
-            return Err(ContractError::TwapCircuitBreaker {
-                prior,
-                new: twap_price,
-                drift_bps: drift_bps_u128,
-                max_bps: MAX_TWAP_DRIFT_BPS,
-            });
-        }
-        oracle.bluechip_price_cache.last_price = twap_price;
-        oracle.bluechip_price_cache.last_update = current_time;
+
+    // Each breaker branch is factored into a helper that mutates `oracle`
+    // and returns a `BreakerOutcome`:
+    //   - `Published { ... }` means the helper committed a new
+    //     `last_price`; the caller runs the shared success tail
+    //     (cache pyth, decrement warmup, save oracle, pay bounty).
+    //   - `EarlyReturn(response)` means the helper persisted oracle
+    //     state and built a complete `Response`; the caller returns
+    //     it directly without touching warmup/bounty.
+    let outcome = if !prior.is_zero() {
+        breaker_branch_a(&mut oracle, twap_price, current_time)?
     } else if let Some(candidate) = oracle.pending_first_price {
-        // Branch (c): second post-reset observation. Drift-check against
-        // the buffered candidate. Reachable only if branch (b) fired
-        // earlier (i.e. `pre_reset > 0`); the candidate field is never
-        // populated by the bootstrap branch (d).
-        let (smaller, larger) = if twap_price > candidate {
-            (candidate, twap_price)
-        } else {
-            (twap_price, candidate)
-        };
-        let diff = larger.checked_sub(smaller)?;
-        let drift_bps_u128 = match diff.checked_mul(Uint128::from(10_000u128)) {
-            Ok(scaled) => scaled
-                .checked_div(smaller)
-                .map(|v| v.u128())
-                .unwrap_or(u128::MAX),
-            Err(_) => u128::MAX,
-        };
-
-        // Median of (candidate, twap_price). Used both by the drift-OK
-        // path (publish median) and the force-accept liveness path so
-        // we compute it once and branch on the drift result.
-        let median = candidate
-            .checked_add(twap_price)?
-            .checked_div(Uint128::from(2u128))
-            .map_err(|_| ContractError::Std(StdError::generic_err("median div-by-zero")))?;
-
-        if drift_bps_u128 > MAX_TWAP_DRIFT_BPS as u128 {
-            // Drift between candidate and second observation exceeds the
-            // breaker. Three sub-cases:
-            //
-            //   (c-fail-replace): consecutive_failures < cap. Discard
-            //       the prior candidate, treat the new observation as
-            //       the fresh candidate, increment the counter, return
-            //       early (don't decrement warmup_remaining).
-            //
-            //   (c-fail-force-accept): consecutive_failures hits the cap
-            //       (`MAX_POST_RESET_CONSECUTIVE_FAILURES`). Liveness
-            //       escape valve. Force-publish the median, log the
-            //       force-accept reason, reset both the candidate and
-            //       the counter. The warm-up counter still ticks normally
-            //       from this point — strict callers stay frozen for
-            //       the remainder of the warm-up window even though
-            //       last_price is now non-zero.
-            let next_failures = oracle
-                .post_reset_consecutive_failures
-                .saturating_add(1);
-            if next_failures >= MAX_POST_RESET_CONSECUTIVE_FAILURES {
-                // Force-accept path. Replace the just-pushed observation's
-                // price with the median so the observation series and
-                // last_price stay in lock-step (see the (c-success) note
-                // below for the rationale). Resume on branch (a) next round.
-                if let Some(last) = oracle.bluechip_price_cache.twap_observations.last_mut() {
-                    last.price = median;
-                }
-                oracle.bluechip_price_cache.last_price = median;
-                oracle.bluechip_price_cache.last_update = current_time;
-                oracle.pending_first_price = None;
-                oracle.post_reset_consecutive_failures = 0;
-                // Cache pyth + decrement warmup the same way the (a)/(c-ok)
-                // paths do; we fall through to that shared tail below.
-                if let Ok(pyth_price) = query_pyth_atom_usd_price(deps.as_ref(), &env) {
-                    oracle.bluechip_price_cache.cached_pyth_price = pyth_price;
-                    oracle.bluechip_price_cache.cached_pyth_timestamp = current_time;
-                }
-                let warmup_remaining_before = oracle.warmup_remaining;
-                oracle.warmup_remaining = oracle.warmup_remaining.saturating_sub(1);
-                INTERNAL_ORACLE.save(deps.storage, &oracle)?;
-                return Ok(Response::new()
-                    .add_attribute("action", "update_oracle")
-                    .add_attribute("twap_price", median.to_string())
-                    .add_attribute("pools_used", pools_to_use.len().to_string())
-                    .add_attribute(
-                        "warmup_remaining_before",
-                        warmup_remaining_before.to_string(),
-                    )
-                    .add_attribute(
-                        "warmup_remaining_after",
-                        oracle.warmup_remaining.to_string(),
-                    )
-                    .add_attribute("force_accept", "true")
-                    .add_attribute("force_accept_reason", "post_reset_consecutive_failures_cap")
-                    .add_attribute(
-                        "force_accept_threshold",
-                        MAX_POST_RESET_CONSECUTIVE_FAILURES.to_string(),
-                    )
-                    .add_attribute("prior_candidate", candidate.to_string())
-                    .add_attribute("new_candidate", twap_price.to_string())
-                    .add_attribute("median_published", median.to_string())
-                    .add_attribute("drift_bps", drift_bps_u128.to_string())
-                    .add_attribute("max_bps", MAX_TWAP_DRIFT_BPS.to_string()));
-            }
-            // Standard (c-fail-replace) path.
-            oracle.bluechip_price_cache.twap_observations.pop();
-            oracle.pending_first_price = Some(twap_price);
-            oracle.post_reset_consecutive_failures = next_failures;
-            INTERNAL_ORACLE.save(deps.storage, &oracle)?;
-            return Ok(Response::new()
-                .add_attribute("action", "update_oracle")
-                .add_attribute("price_published", "false")
-                .add_attribute("reason", "post_reset_candidate_replaced_drift_too_large")
-                .add_attribute("prior_candidate", candidate.to_string())
-                .add_attribute("new_candidate", twap_price.to_string())
-                .add_attribute("drift_bps", drift_bps_u128.to_string())
-                .add_attribute("max_bps", MAX_TWAP_DRIFT_BPS.to_string())
-                .add_attribute(
-                    "consecutive_failures",
-                    next_failures.to_string(),
-                )
-                .add_attribute(
-                    "force_accept_threshold",
-                    MAX_POST_RESET_CONSECUTIVE_FAILURES.to_string(),
-                ));
-        }
-        // (c-success): drift OK. Median of the two becomes the new
-        // `last_price`. Median (vs e.g. taking the second observation
-        // directly) means a single manipulated observation among the
-        // two has at most half the pull on the published price.
-        //
-        // Overwrite the just-pushed PriceObservation's price with the
-        // median so the twap_observations window and `last_price` stay
-        // in lock-step. Without this, the observation series would
-        // contain `twap_price` while `last_price` is `median`,
-        // diverging the cumulative-style TWAP feedback loop from what
-        // downstream consumers actually see. Uniswap V2/V3 oracles
-        // avoid this entirely by storing only cumulatives (no cached
-        // last_price). This pool keeps both, so we keep them in sync.
-        if let Some(last) = oracle.bluechip_price_cache.twap_observations.last_mut() {
-            last.price = median;
-        }
-        oracle.bluechip_price_cache.last_price = median;
-        oracle.bluechip_price_cache.last_update = current_time;
-        oracle.pending_first_price = None;
-        oracle.post_reset_consecutive_failures = 0;
+        breaker_branch_c(
+            deps.branch(),
+            &env,
+            &mut oracle,
+            twap_price,
+            candidate,
+            current_time,
+            pools_to_use.len(),
+        )?
     } else if buffered_reset_path {
-        // Branch (b): first post-reset observation, AND there is a prior
-        // trusted price (`pre_reset > 0`) we're protecting against
-        // manipulation of. Hold the TWAP as a candidate. Pop the
-        // just-pushed PriceObservation so the warm-up TWAP window
-        // doesn't accumulate buffered candidates as data points
-        // (otherwise the second-observation TWAP would be computed
-        // against a window that already includes the candidate).
-        oracle.bluechip_price_cache.twap_observations.pop();
-        oracle.pending_first_price = Some(twap_price);
-        INTERNAL_ORACLE.save(deps.storage, &oracle)?;
-        return Ok(Response::new()
-            .add_attribute("action", "update_oracle")
-            .add_attribute("price_published", "false")
-            .add_attribute("reason", "first_post_reset_observation_buffered")
-            .add_attribute("candidate_price", twap_price.to_string())
-            .add_attribute("warmup_remaining", oracle.warmup_remaining.to_string()));
+        breaker_branch_b(deps.branch(), &mut oracle, twap_price)?
     } else {
-        // Branch (d): bootstrap. No prior price (`prior == 0`), no
-        // pre-reset price to protect against (`pre_reset == 0`), no
-        // candidate buffered (`candidate == None`).
-        //
-        // HIGH-4 audit fix: do NOT publish directly. Buffer the TWAP
-        // to `PENDING_BOOTSTRAP_PRICE` and require an admin
-        // `ConfirmBootstrapPrice` call (after a 1h observation
-        // window) to publish it. Without this gate, a single-block
-        // manipulation of the freshly-seeded anchor's reserves could
-        // anchor the breaker for branch (a) to an attacker-chosen
-        // value, and the warm-up window alone wouldn't catch it
-        // because the pricing arithmetic is locked in once warm-up
-        // clears.
-        //
-        // Each successive (d) round overwrites the candidate `price`
-        // and increments `observation_count`. `proposed_at` is fixed
-        // at the FIRST proposal so the 1h observation window can't
-        // be reset by a fresh-looking but stale candidate.
-        //
-        // Pop the just-pushed observation: branch (b) does the same
-        // thing for symmetric reasons. Unconfirmed candidates must
-        // not accumulate in the TWAP window.
-        oracle.bluechip_price_cache.twap_observations.pop();
+        breaker_branch_d(deps.branch(), &env, &mut oracle, twap_price, atom_price)?
+    };
 
-        let pending = match crate::state::PENDING_BOOTSTRAP_PRICE.may_load(deps.storage)? {
-            Some(prev) => crate::state::PendingBootstrapPrice {
-                price: twap_price,
-                atom_pool_price: atom_price,
-                proposed_at: prev.proposed_at,
-                observation_count: prev.observation_count.saturating_add(1),
-            },
-            None => crate::state::PendingBootstrapPrice {
-                price: twap_price,
-                atom_pool_price: atom_price,
-                proposed_at: env.block.time,
-                observation_count: 1,
-            },
-        };
-        let earliest_confirm = pending
-            .proposed_at
-            .plus_seconds(crate::state::BOOTSTRAP_OBSERVATION_SECONDS);
+    let published = match outcome {
+        BreakerOutcome::EarlyReturn(response) => return Ok(response),
+        BreakerOutcome::Published(p) => p,
+    };
 
-        crate::state::PENDING_BOOTSTRAP_PRICE.save(deps.storage, &pending)?;
-        INTERNAL_ORACLE.save(deps.storage, &oracle)?;
-        return Ok(Response::new()
-            .add_attribute("action", "update_oracle")
-            .add_attribute("price_published", "false")
-            .add_attribute("reason", "bootstrap_awaiting_admin_confirmation")
-            .add_attribute("candidate_price", twap_price.to_string())
-            .add_attribute(
-                "observation_count",
-                pending.observation_count.to_string(),
-            )
-            .add_attribute(
-                "earliest_confirm_time",
-                earliest_confirm.seconds().to_string(),
-            )
-            .add_attribute(
-                "warmup_remaining",
-                oracle.warmup_remaining.to_string(),
-            ));
-    }
-
-    // Cache the Pyth ATOM/USD price alongside the TWAP update.
-    // Reached only on branches (a) and (c)-success — i.e. the rounds
-    // where we actually committed to a `last_price`.
+    // Shared success tail. Reached only by branches (a) and (c-success) —
+    // the regular price-publishing rounds. Caches the Pyth ATOM/USD price,
+    // decrements the warm-up counter, persists the oracle, and pays the
+    // keeper bounty. (c-fail-force-accept) commits a new `last_price` too
+    // but does its own pyth/warmup/save inline and returns EarlyReturn so
+    // it can skip the bounty — force-accept is a liveness escape valve,
+    // not a regular publishing event, mirroring the pre-refactor handler.
     if let Ok(pyth_price) = query_pyth_atom_usd_price(deps.as_ref(), &env) {
         oracle.bluechip_price_cache.cached_pyth_price = pyth_price;
         oracle.bluechip_price_cache.cached_pyth_timestamp = current_time;
     }
 
-    // Decrement the warm-up counter. Only price-publishing updates
-    // count — snapshot-only and post-reset-buffered rounds returned
-    // earlier and don't tick this down, otherwise an attacker could
-    // exhaust the warm-up by triggering empty rounds.
     let warmup_remaining_before = oracle.warmup_remaining;
     oracle.warmup_remaining = oracle.warmup_remaining.saturating_sub(1);
 
     INTERNAL_ORACLE.save(deps.storage, &oracle)?;
 
-    // Keeper bounty: pay the caller out of the factory's native balance.
-    // Stored in USD (6 decimals) and converted to bluechip at payout time
-    // using the just-updated oracle price, so keeper compensation stays
-    // roughly stable in USD as bluechip price fluctuates. Skip reasons
-    // emit attributes instead of erroring — a Pyth outage shouldn't also
-    // halt the keepers that fix it. UPDATE_INTERVAL above gates frequency.
     let bounty_usd = ORACLE_UPDATE_BOUNTY_USD
         .may_load(deps.storage)?
         .unwrap_or_default();
     let mut response = Response::new()
         .add_attribute("action", "update_oracle")
-        .add_attribute("twap_price", twap_price.to_string())
+        .add_attribute("twap_price", published.published_price.to_string())
         .add_attribute("pools_used", pools_to_use.len().to_string())
         .add_attribute(
             "warmup_remaining_before",
@@ -1031,11 +868,11 @@ pub fn update_internal_oracle_price(
             "warmup_remaining_after",
             oracle.warmup_remaining.to_string(),
         );
+    for (k, v) in published.extra_attrs {
+        response = response.add_attribute(k, v);
+    }
 
     if !bounty_usd.is_zero() {
-        // Convert USD -> bluechip via the just-updated TWAP. If the
-        // conversion errors (Pyth + cache both unavailable), skip the
-        // bounty rather than reverting the whole oracle update.
         match usd_to_bluechip(deps.as_ref(), bounty_usd, &env) {
             Ok(conv) => {
                 let balance = deps
@@ -1058,6 +895,250 @@ pub fn update_internal_oracle_price(
     }
 
     Ok(response)
+}
+
+// ---------------------------------------------------------------------------
+// Circuit-breaker branch helpers.
+//
+// The four breaker branches were previously inlined inside
+// `update_internal_oracle_price`, which made the function span ~500
+// lines and obscured the shared "publish + bounty" tail that branches
+// (a)/(c-success)/(c-force-accept) all funnel into. Each helper now
+// owns its branch's storage mutations and signals the caller via
+// `BreakerOutcome` whether to run the shared tail or return immediately.
+// ---------------------------------------------------------------------------
+
+/// Carries the data the shared success tail needs from a published
+/// branch: the price actually written to `last_price` (`twap_price`
+/// for branch (a), the candidate/twap median for c-success) plus
+/// per-branch attributes the tail appends after the standard set.
+/// `c-fail-force-accept` does NOT route through here — it builds its
+/// own response (no bounty) and returns `EarlyReturn`.
+struct BreakerPublished {
+    published_price: Uint128,
+    extra_attrs: Vec<(&'static str, String)>,
+}
+
+enum BreakerOutcome {
+    /// Branch committed a new `last_price`. Caller runs the shared tail.
+    Published(BreakerPublished),
+    /// Branch persisted oracle state and produced a complete `Response`.
+    /// Caller returns it directly.
+    EarlyReturn(Response),
+}
+
+/// Branch (a): steady-state drift check.
+fn breaker_branch_a(
+    oracle: &mut BlueChipPriceInternalOracle,
+    twap_price: Uint128,
+    current_time: u64,
+) -> Result<BreakerOutcome, ContractError> {
+    let prior = oracle.bluechip_price_cache.last_price;
+    let drift_bps_u128 = drift_bps_saturating(twap_price, prior);
+    if drift_bps_u128 > MAX_TWAP_DRIFT_BPS as u128 {
+        return Err(ContractError::TwapCircuitBreaker {
+            prior,
+            new: twap_price,
+            drift_bps: drift_bps_u128,
+            max_bps: MAX_TWAP_DRIFT_BPS,
+        });
+    }
+    oracle.bluechip_price_cache.last_price = twap_price;
+    oracle.bluechip_price_cache.last_update = current_time;
+    Ok(BreakerOutcome::Published(BreakerPublished {
+        published_price: twap_price,
+        extra_attrs: Vec::new(),
+    }))
+}
+
+/// Branch (b): first post-reset observation with a `pre_reset > 0`
+/// trusted price to protect against manipulation. Buffers the TWAP as
+/// a candidate; the next round drift-checks in branch (c).
+fn breaker_branch_b(
+    deps: DepsMut,
+    oracle: &mut BlueChipPriceInternalOracle,
+    twap_price: Uint128,
+) -> Result<BreakerOutcome, ContractError> {
+    // Pop the just-pushed observation so the warm-up TWAP window
+    // doesn't accumulate buffered candidates as data points.
+    oracle.bluechip_price_cache.twap_observations.pop();
+    oracle.pending_first_price = Some(twap_price);
+    INTERNAL_ORACLE.save(deps.storage, oracle)?;
+    Ok(BreakerOutcome::EarlyReturn(
+        Response::new()
+            .add_attribute("action", "update_oracle")
+            .add_attribute("price_published", "false")
+            .add_attribute("reason", "first_post_reset_observation_buffered")
+            .add_attribute("candidate_price", twap_price.to_string())
+            .add_attribute("warmup_remaining", oracle.warmup_remaining.to_string()),
+    ))
+}
+
+/// Branch (c): second post-reset observation. Drift-check against the
+/// buffered candidate. Three sub-cases:
+///   - drift OK → publish median (Published).
+///   - drift fail, failures < cap → discard candidate, replace,
+///     return early (EarlyReturn).
+///   - drift fail, failures hits cap → liveness force-accept the median.
+///     Returns `EarlyReturn` (with its own pyth caching + warmup
+///     decrement + save inlined) so this path bypasses the shared
+///     success tail's keeper-bounty payout — force-accept is a liveness
+///     escape, not a normal price-publishing event, and the original
+///     pre-refactor handler did not pay a bounty here.
+fn breaker_branch_c(
+    deps: DepsMut,
+    env: &Env,
+    oracle: &mut BlueChipPriceInternalOracle,
+    twap_price: Uint128,
+    candidate: Uint128,
+    current_time: u64,
+    pools_used: usize,
+) -> Result<BreakerOutcome, ContractError> {
+    let drift_bps_u128 = drift_bps_saturating(twap_price, candidate);
+
+    let median = candidate
+        .checked_add(twap_price)?
+        .checked_div(Uint128::from(2u128))
+        .map_err(|_| ContractError::Std(StdError::generic_err("median div-by-zero")))?;
+
+    if drift_bps_u128 > MAX_TWAP_DRIFT_BPS as u128 {
+        let next_failures = oracle.post_reset_consecutive_failures.saturating_add(1);
+        if next_failures >= MAX_POST_RESET_CONSECUTIVE_FAILURES {
+            // c-fail-force-accept: keep the just-pushed observation,
+            // overwrite its price with the median so the observation
+            // series and last_price stay in lock-step. Inline the
+            // pyth-cache + warmup-decrement + save here, then return
+            // EarlyReturn so the shared success tail (which would pay
+            // the keeper bounty) is bypassed — force-accept is a
+            // liveness escape valve, not a regular price-publishing
+            // round, and the original handler skipped the bounty here.
+            if let Some(last) = oracle.bluechip_price_cache.twap_observations.last_mut() {
+                last.price = median;
+            }
+            oracle.bluechip_price_cache.last_price = median;
+            oracle.bluechip_price_cache.last_update = current_time;
+            oracle.pending_first_price = None;
+            oracle.post_reset_consecutive_failures = 0;
+            if let Ok(pyth_price) = query_pyth_atom_usd_price(deps.as_ref(), env) {
+                oracle.bluechip_price_cache.cached_pyth_price = pyth_price;
+                oracle.bluechip_price_cache.cached_pyth_timestamp = current_time;
+            }
+            let warmup_remaining_before = oracle.warmup_remaining;
+            oracle.warmup_remaining = oracle.warmup_remaining.saturating_sub(1);
+            INTERNAL_ORACLE.save(deps.storage, oracle)?;
+            return Ok(BreakerOutcome::EarlyReturn(
+                Response::new()
+                    .add_attribute("action", "update_oracle")
+                    .add_attribute("twap_price", median.to_string())
+                    .add_attribute("pools_used", pools_used.to_string())
+                    .add_attribute(
+                        "warmup_remaining_before",
+                        warmup_remaining_before.to_string(),
+                    )
+                    .add_attribute(
+                        "warmup_remaining_after",
+                        oracle.warmup_remaining.to_string(),
+                    )
+                    .add_attribute("force_accept", "true")
+                    .add_attribute("force_accept_reason", "post_reset_consecutive_failures_cap")
+                    .add_attribute(
+                        "force_accept_threshold",
+                        MAX_POST_RESET_CONSECUTIVE_FAILURES.to_string(),
+                    )
+                    .add_attribute("prior_candidate", candidate.to_string())
+                    .add_attribute("new_candidate", twap_price.to_string())
+                    .add_attribute("median_published", median.to_string())
+                    .add_attribute("drift_bps", drift_bps_u128.to_string())
+                    .add_attribute("max_bps", MAX_TWAP_DRIFT_BPS.to_string()),
+            ));
+        }
+        // c-fail-replace: discard prior candidate, hold the new one.
+        oracle.bluechip_price_cache.twap_observations.pop();
+        oracle.pending_first_price = Some(twap_price);
+        oracle.post_reset_consecutive_failures = next_failures;
+        INTERNAL_ORACLE.save(deps.storage, oracle)?;
+        return Ok(BreakerOutcome::EarlyReturn(
+            Response::new()
+                .add_attribute("action", "update_oracle")
+                .add_attribute("price_published", "false")
+                .add_attribute("reason", "post_reset_candidate_replaced_drift_too_large")
+                .add_attribute("prior_candidate", candidate.to_string())
+                .add_attribute("new_candidate", twap_price.to_string())
+                .add_attribute("drift_bps", drift_bps_u128.to_string())
+                .add_attribute("max_bps", MAX_TWAP_DRIFT_BPS.to_string())
+                .add_attribute("consecutive_failures", next_failures.to_string())
+                .add_attribute(
+                    "force_accept_threshold",
+                    MAX_POST_RESET_CONSECUTIVE_FAILURES.to_string(),
+                ),
+        ));
+    }
+
+    // c-success: drift OK. Publish the median to keep a single
+    // manipulated observation among the two from pulling more than
+    // half the weight on `last_price`. Overwrite the just-pushed
+    // observation's price to keep the TWAP window and `last_price`
+    // in lock-step.
+    if let Some(last) = oracle.bluechip_price_cache.twap_observations.last_mut() {
+        last.price = median;
+    }
+    oracle.bluechip_price_cache.last_price = median;
+    oracle.bluechip_price_cache.last_update = current_time;
+    oracle.pending_first_price = None;
+    oracle.post_reset_consecutive_failures = 0;
+    Ok(BreakerOutcome::Published(BreakerPublished {
+        published_price: median,
+        extra_attrs: Vec::new(),
+    }))
+}
+
+/// Branch (d): bootstrap. No prior price, no pre-reset, no candidate.
+/// Buffer the TWAP into `PENDING_BOOTSTRAP_PRICE` and require an admin
+/// `ConfirmBootstrapPrice` to publish it (HIGH-4 audit fix).
+fn breaker_branch_d(
+    deps: DepsMut,
+    env: &Env,
+    oracle: &mut BlueChipPriceInternalOracle,
+    twap_price: Uint128,
+    atom_price: Uint128,
+) -> Result<BreakerOutcome, ContractError> {
+    // Pop the just-pushed observation: unconfirmed candidates must not
+    // accumulate in the TWAP window.
+    oracle.bluechip_price_cache.twap_observations.pop();
+
+    let pending = match crate::state::PENDING_BOOTSTRAP_PRICE.may_load(deps.storage)? {
+        Some(prev) => crate::state::PendingBootstrapPrice {
+            price: twap_price,
+            atom_pool_price: atom_price,
+            proposed_at: prev.proposed_at,
+            observation_count: prev.observation_count.saturating_add(1),
+        },
+        None => crate::state::PendingBootstrapPrice {
+            price: twap_price,
+            atom_pool_price: atom_price,
+            proposed_at: env.block.time,
+            observation_count: 1,
+        },
+    };
+    let earliest_confirm = pending
+        .proposed_at
+        .plus_seconds(crate::state::BOOTSTRAP_OBSERVATION_SECONDS);
+
+    crate::state::PENDING_BOOTSTRAP_PRICE.save(deps.storage, &pending)?;
+    INTERNAL_ORACLE.save(deps.storage, oracle)?;
+    Ok(BreakerOutcome::EarlyReturn(
+        Response::new()
+            .add_attribute("action", "update_oracle")
+            .add_attribute("price_published", "false")
+            .add_attribute("reason", "bootstrap_awaiting_admin_confirmation")
+            .add_attribute("candidate_price", twap_price.to_string())
+            .add_attribute("observation_count", pending.observation_count.to_string())
+            .add_attribute(
+                "earliest_confirm_time",
+                earliest_confirm.seconds().to_string(),
+            )
+            .add_attribute("warmup_remaining", oracle.warmup_remaining.to_string()),
+    ))
 }
 
 /// O(M) lookup of the bluechip-side index for `pool_address` in the
@@ -1814,20 +1895,6 @@ pub fn usd_to_bluechip_best_effort(
     convert_with_oracle(deps, env, usd_amount, false, true)
 }
 
-/// Best-effort bluechip→USD conversion. Mirror of
-/// `usd_to_bluechip_best_effort`; same warm-up fallback semantics.
-/// Currently unused but kept symmetrical for future best-effort
-/// call sites (e.g., observability queries that don't want to surface
-/// "Err(warm-up)" to dashboards).
-#[allow(dead_code)]
-pub fn bluechip_to_usd_best_effort(
-    deps: Deps,
-    bluechip_amount: Uint128,
-    env: &Env,
-) -> StdResult<ConversionResponse> {
-    convert_with_oracle(deps, env, bluechip_amount, true, true)
-}
-
 pub fn get_price_with_staleness_check(
     deps: Deps,
     env: Env,
@@ -1889,18 +1956,13 @@ pub fn execute_propose_force_rotate_pools(
     env: Env,
     info: MessageInfo,
 ) -> Result<Response, ContractError> {
-    let config = FACTORYINSTANTIATEINFO.load(deps.storage)?;
-    if info.sender != config.factory_admin_address {
-        return Err(ContractError::Unauthorized {});
-    }
+    ensure_admin(deps.as_ref(), &info)?;
 
     if crate::state::PENDING_ORACLE_ROTATION
         .may_load(deps.storage)?
         .is_some()
     {
-        return Err(ContractError::Std(StdError::generic_err(
-            "A force-rotate is already pending. Cancel it first.",
-        )));
+        return Err(ContractError::ForceRotateAlreadyPending);
     }
 
     let effective_after = env.block.time.plus_seconds(FORCE_ROTATE_TIMELOCK_SECONDS);
@@ -1915,18 +1977,13 @@ pub fn execute_cancel_force_rotate_pools(
     deps: DepsMut,
     info: MessageInfo,
 ) -> Result<Response, ContractError> {
-    let config = FACTORYINSTANTIATEINFO.load(deps.storage)?;
-    if info.sender != config.factory_admin_address {
-        return Err(ContractError::Unauthorized {});
-    }
+    ensure_admin(deps.as_ref(), &info)?;
 
     if crate::state::PENDING_ORACLE_ROTATION
         .may_load(deps.storage)?
         .is_none()
     {
-        return Err(ContractError::Std(StdError::generic_err(
-            "No pending force-rotate to cancel",
-        )));
+        return Err(ContractError::NoPendingForceRotate);
     }
 
     crate::state::PENDING_ORACLE_ROTATION.remove(deps.storage);
@@ -1939,19 +1996,12 @@ pub fn execute_force_rotate_pools(
     env: Env,
     info: MessageInfo,
 ) -> Result<Response, ContractError> {
-    let config = FACTORYINSTANTIATEINFO.load(deps.storage)?;
-    if info.sender != config.factory_admin_address {
-        return Err(ContractError::Unauthorized {});
-    }
+    ensure_admin(deps.as_ref(), &info)?;
 
     // Must have gone through the 48h propose/wait flow.
     let effective_after = crate::state::PENDING_ORACLE_ROTATION
         .may_load(deps.storage)?
-        .ok_or_else(|| {
-            ContractError::Std(StdError::generic_err(
-                "No pending force-rotate; call ProposeForceRotateOraclePools first",
-            ))
-        })?;
+        .ok_or(ContractError::NoPendingForceRotate)?;
 
     if env.block.time < effective_after {
         return Err(ContractError::TimelockNotExpired { effective_after });
@@ -2029,19 +2079,11 @@ pub fn execute_confirm_bootstrap_price(
     env: Env,
     info: MessageInfo,
 ) -> Result<Response, ContractError> {
-    let config = FACTORYINSTANTIATEINFO.load(deps.storage)?;
-    if info.sender != config.factory_admin_address {
-        return Err(ContractError::Unauthorized {});
-    }
+    ensure_admin(deps.as_ref(), &info)?;
 
     let pending = crate::state::PENDING_BOOTSTRAP_PRICE
         .may_load(deps.storage)?
-        .ok_or_else(|| {
-            ContractError::Std(StdError::generic_err(
-                "No pending bootstrap price to confirm. Wait for the next \
-                 successful UpdateOraclePrice in branch (d) to populate one.",
-            ))
-        })?;
+        .ok_or(ContractError::NoPendingBootstrapPriceToConfirm)?;
 
     let earliest_confirm = pending
         .proposed_at
@@ -2111,17 +2153,12 @@ pub fn execute_cancel_bootstrap_price(
     deps: DepsMut,
     info: MessageInfo,
 ) -> Result<Response, ContractError> {
-    let config = FACTORYINSTANTIATEINFO.load(deps.storage)?;
-    if info.sender != config.factory_admin_address {
-        return Err(ContractError::Unauthorized {});
-    }
+    ensure_admin(deps.as_ref(), &info)?;
     if crate::state::PENDING_BOOTSTRAP_PRICE
         .may_load(deps.storage)?
         .is_none()
     {
-        return Err(ContractError::Std(StdError::generic_err(
-            "No pending bootstrap price to cancel",
-        )));
+        return Err(ContractError::NoPendingBootstrapPriceToCancel);
     }
     crate::state::PENDING_BOOTSTRAP_PRICE.remove(deps.storage);
     Ok(Response::new().add_attribute("action", "cancel_bootstrap_price"))

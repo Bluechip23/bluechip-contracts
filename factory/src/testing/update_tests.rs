@@ -65,6 +65,7 @@ fn test_propose_and_execute_update_config() {
         bluechip_denom: "ubluechip".to_string(),
         atom_denom: "uatom".to_string(),
         standard_pool_creation_fee_usd: cosmwasm_std::Uint128::new(1_000_000),
+        threshold_payout_amounts: Default::default(),
     };
 
     let env = mock_env();
@@ -88,13 +89,8 @@ fn test_propose_and_execute_update_config() {
         propose_msg.clone(),
     )
     .unwrap_err();
-    assert_eq!(
-        err.to_string(),
-        format!(
-            "Generic error: Only the admin can execute this function. Admin: {}, Sender: unauthorized",
-            the_admin
-        )
-    );
+    let _ = the_admin; // ensure binding stays in scope across edits
+    assert_eq!(err.to_string(), "Unauthorized");
 
     let res = execute(deps.as_mut(), env.clone(), info.clone(), propose_msg).unwrap();
     assert_eq!(res.attributes[0], ("action", "propose_config_update"));
@@ -570,7 +566,7 @@ fn test_cancel_pool_upgrade() {
         ExecuteMsg::CancelPoolUpgrade {},
     )
     .unwrap_err();
-    assert!(err.to_string().contains("Only the admin"));
+    assert!(matches!(err, ContractError::Unauthorized {}));
 
     // Admin cancel should succeed
     let res = execute(
@@ -629,5 +625,6 @@ fn default_factory_instantiate_msg() -> FactoryInstantiate {
         bluechip_denom: "ubluechip".to_string(),
         atom_denom: "uatom".to_string(),
         standard_pool_creation_fee_usd: cosmwasm_std::Uint128::new(1_000_000),
+        threshold_payout_amounts: Default::default(),
     }
 }

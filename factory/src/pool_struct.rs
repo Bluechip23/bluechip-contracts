@@ -55,12 +55,35 @@ pub struct TempPoolCreation {
     pub nft_addr: Option<Addr>,
 }
 
+/// Per-pool initial mint splits awarded when a commit pool crosses its
+/// threshold. The four components MUST be non-zero and their sum is the
+/// `total_mint()` consumed by `mint_create_pool` as both the CW20 mint
+/// cap and the threshold-payout payload.
+///
+/// Stored on [`FactoryInstantiate`] so the splits can be tuned through
+/// the standard 48h `ProposeConfigUpdate` flow rather than requiring a
+/// contract migration. In practice these values are not expected to
+/// change post-launch, but routing them through factory config removes
+/// the prior two-source-of-truth footgun where the four amounts were
+/// hardcoded in `mint_create_pool` and then re-validated against a
+/// duplicate `1_200_000_000_000` literal.
 #[cw_serde]
 pub struct ThresholdPayoutAmounts {
     pub creator_reward_amount: Uint128,
     pub bluechip_reward_amount: Uint128,
     pub pool_seed_amount: Uint128,
     pub commit_return_amount: Uint128,
+}
+
+impl Default for ThresholdPayoutAmounts {
+    fn default() -> Self {
+        Self {
+            creator_reward_amount: Uint128::new(325_000_000_000),
+            bluechip_reward_amount: Uint128::new(25_000_000_000),
+            pool_seed_amount: Uint128::new(350_000_000_000),
+            commit_return_amount: Uint128::new(500_000_000_000),
+        }
+    }
 }
 
 #[cw_serde]
@@ -98,17 +121,33 @@ pub struct PoolDetails {
 }
 
 impl ThresholdPayoutAmounts {
-    pub fn validate(&self, total_mint: Uint128) -> StdResult<()> {
-        let sum = self.creator_reward_amount
-            + self.bluechip_reward_amount
-            + self.pool_seed_amount
-            + self.commit_return_amount;
+    /// Sum of the four payout components. Used as both the CW20 mint cap
+    /// (set when the creator token is instantiated) and the total minted
+    /// at threshold-cross time. Returns `OverflowError` via `StdError` if
+    /// any addition overflows `Uint128`.
+    pub fn total_mint(&self) -> StdResult<Uint128> {
+        self.creator_reward_amount
+            .checked_add(self.bluechip_reward_amount)
+            .and_then(|s| s.checked_add(self.pool_seed_amount))
+            .and_then(|s| s.checked_add(self.commit_return_amount))
+            .map_err(|e| StdError::generic_err(format!("threshold payout total overflow: {}", e)))
+    }
 
-        if sum != total_mint {
+    /// Validates that every component is non-zero and the sum does not
+    /// overflow. A zero component would silently zero out one side of
+    /// the threshold-payout (creator gets nothing, pool unfunded, etc.),
+    /// so the propose-time gate rejects it explicitly.
+    pub fn validate(&self) -> StdResult<()> {
+        if self.creator_reward_amount.is_zero()
+            || self.bluechip_reward_amount.is_zero()
+            || self.pool_seed_amount.is_zero()
+            || self.commit_return_amount.is_zero()
+        {
             return Err(StdError::generic_err(
-                "Payout amounts don't sum to total mint",
+                "ThresholdPayoutAmounts: every component must be non-zero",
             ));
         }
+        let _ = self.total_mint()?;
         Ok(())
     }
 }

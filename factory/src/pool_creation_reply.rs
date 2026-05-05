@@ -4,16 +4,24 @@ use crate::{
     execute::{encode_reply_id, FINALIZE_POOL, FINALIZE_STANDARD_POOL, MINT_CREATE_POOL},
     msg::CreatePoolReplyMsg,
     pool_create_cleanup::{extract_contract_address, give_pool_ownership_cw20_and_nft},
-    pool_struct::{CommitFeeInfo, PoolDetails, ThresholdPayoutAmounts},
+    pool_struct::{CommitFeeInfo, PoolDetails},
     state::{
         CreationStatus, FACTORYINSTANTIATEINFO, POOL_CREATION_CONTEXT, STANDARD_POOL_CREATION_CONTEXT,
     },
 };
 use cosmwasm_std::{
-    to_json_binary, CosmosMsg, DepsMut, Env, Reply, Response, StdError, StdResult, SubMsg, Uint128,
-    WasmMsg,
+    to_json_binary, CosmosMsg, DepsMut, Env, Reply, Response, StdError, StdResult, SubMsg, WasmMsg,
 };
 use pool_factory_interfaces::{cw721_msgs::Cw721InstantiateMsg, PoolKind, StandardPoolInstantiateMsg};
+
+/// CW721 NFT branding for liquidity-position NFTs minted on commit-pool
+/// creation. Hoisted to module scope so a deployment-specific re-skin
+/// (white-label, fork) is a single edit per constant. Pool-creation
+/// label format is `LP_NFT_LABEL_PREFIX{token_addr}` so the on-chain
+/// label always carries the deterministic creator-token suffix.
+const LP_NFT_NAME: &str = "AMM LP Positions";
+const LP_NFT_SYMBOL: &str = "AMM-LP";
+const LP_NFT_LABEL_PREFIX: &str = "AMM-LP-NFT-";
 
 // pool_creation_reply.rs
 //
@@ -32,11 +40,12 @@ pub fn set_tokens(
     msg: Reply,
     pool_id: u64,
 ) -> Result<Response, ContractError> {
+    let reply_id = msg.id;
     let result = msg.result.into_result().map_err(|e| {
-        ContractError::Std(StdError::generic_err(format!(
-            "set_tokens reply_on_success saw Err (should be impossible): {}",
-            e
-        )))
+        ContractError::ReplyOnSuccessSawError {
+            id: reply_id,
+            msg: format!("set_tokens: {}", e),
+        }
     })?;
 
     let mut ctx = POOL_CREATION_CONTEXT.load(deps.storage, pool_id)?;
@@ -50,8 +59,8 @@ pub fn set_tokens(
 
     let config = FACTORYINSTANTIATEINFO.load(deps.storage)?;
     let nft_instantiate_msg = to_json_binary(&Cw721InstantiateMsg {
-        name: "AMM LP Positions".to_string(),
-        symbol: "AMM-LP".to_string(),
+        name: LP_NFT_NAME.to_string(),
+        symbol: LP_NFT_SYMBOL.to_string(),
         minter: env.contract.address.to_string(),
     })?;
 
@@ -60,7 +69,7 @@ pub fn set_tokens(
         msg: nft_instantiate_msg,
         funds: vec![],
         admin: Some(env.contract.address.to_string()),
-        label: format!("AMM-LP-NFT-{}", token_address),
+        label: format!("{}{}", LP_NFT_LABEL_PREFIX, token_address),
     };
 
     let sub_msg = SubMsg::reply_on_success(nft_msg, encode_reply_id(pool_id, MINT_CREATE_POOL));
@@ -78,11 +87,12 @@ pub fn mint_create_pool(
     msg: Reply,
     pool_id: u64,
 ) -> Result<Response, ContractError> {
+    let reply_id = msg.id;
     let result = msg.result.into_result().map_err(|e| {
-        ContractError::Std(StdError::generic_err(format!(
-            "mint_create_pool reply_on_success saw Err (should be impossible): {}",
-            e
-        )))
+        ContractError::ReplyOnSuccessSawError {
+            id: reply_id,
+            msg: format!("mint_create_pool: {}", e),
+        }
     })?;
 
     let mut ctx = POOL_CREATION_CONTEXT.load(deps.storage, pool_id)?;
@@ -95,28 +105,29 @@ pub fn mint_create_pool(
     POOL_CREATION_CONTEXT.save(deps.storage, pool_id, &ctx)?;
 
     let factory_config = FACTORYINSTANTIATEINFO.load(deps.storage)?;
-    let token_address = ctx
-        .temp
-        .creator_token_addr
-        .clone()
-        .ok_or_else(|| ContractError::Std(StdError::generic_err("missing token address")))?;
+    let token_address = ctx.temp.creator_token_addr.clone().ok_or(
+        ContractError::ReplyMissingAddress {
+            step: "mint_create_pool",
+            kind: "token",
+        },
+    )?;
 
-    let threshold_payout = ThresholdPayoutAmounts {
-        creator_reward_amount: Uint128::new(325_000_000_000),
-        bluechip_reward_amount: Uint128::new(25_000_000_000),
-        pool_seed_amount: Uint128::new(350_000_000_000),
-        commit_return_amount: Uint128::new(500_000_000_000),
-    };
-
-    threshold_payout.validate(Uint128::new(1_200_000_000_000))?;
+    // Threshold-payout splits live on `FactoryInstantiate` so they
+    // ride the standard 48h propose/apply flow. `validate()` is also
+    // called at propose time; calling it here is belt-and-suspenders
+    // for old serialized records that bypassed the gate.
+    let threshold_payout = factory_config.threshold_payout_amounts.clone();
+    threshold_payout.validate()?;
 
     let threshold_binary = to_json_binary(&threshold_payout)?;
 
-    // Update asset infos with actual token address
+    // Update asset infos with actual token address. The sentinel is the
+    // string the factory's commit-pool create handler accepts in the
+    // `CreatorToken` slot at submit time (see `validate_pool_token_info`).
     let mut updated_asset_infos = ctx.temp.temp_pool_info.pool_token_info.clone();
     for asset_info in updated_asset_infos.iter_mut() {
         if let TokenType::CreatorToken { contract_addr } = asset_info {
-            if contract_addr.as_str() == "WILL_BE_CREATED_BY_FACTORY" {
+            if contract_addr.as_str() == crate::execute::pool_lifecycle::create::CREATOR_TOKEN_SENTINEL {
                 *contract_addr = token_address.clone();
             }
         }
@@ -162,26 +173,29 @@ pub fn finalize_pool(
     msg: Reply,
     pool_id: u64,
 ) -> Result<Response, ContractError> {
+    let reply_id = msg.id;
     let result = msg.result.into_result().map_err(|e| {
-        ContractError::Std(StdError::generic_err(format!(
-            "finalize_pool reply_on_success saw Err (should be impossible): {}",
-            e
-        )))
+        ContractError::ReplyOnSuccessSawError {
+            id: reply_id,
+            msg: format!("finalize_pool: {}", e),
+        }
     })?;
 
     let ctx = POOL_CREATION_CONTEXT.load(deps.storage, pool_id)?;
     let pool_address = extract_contract_address(&deps, &result)?;
 
-    let token_address = ctx
-        .temp
-        .creator_token_addr
-        .clone()
-        .ok_or_else(|| ContractError::Std(StdError::generic_err("missing token address")))?;
-    let nft_address = ctx
-        .temp
-        .nft_addr
-        .clone()
-        .ok_or_else(|| ContractError::Std(StdError::generic_err("missing nft address")))?;
+    let token_address = ctx.temp.creator_token_addr.clone().ok_or(
+        ContractError::ReplyMissingAddress {
+            step: "finalize_pool",
+            kind: "token",
+        },
+    )?;
+    let nft_address = ctx.temp.nft_addr.clone().ok_or(
+        ContractError::ReplyMissingAddress {
+            step: "finalize_pool",
+            kind: "nft",
+        },
+    )?;
 
     // Rebuild `pool_token_info` from the source of truth for the
     // creator-token address, which is `ctx.temp.creator_token_addr`
@@ -262,11 +276,12 @@ pub fn mint_standard_nft(
     msg: Reply,
     pool_id: u64,
 ) -> Result<Response, ContractError> {
+    let reply_id = msg.id;
     let result = msg.result.into_result().map_err(|e| {
-        ContractError::Std(StdError::generic_err(format!(
-            "mint_standard_nft reply_on_success saw Err (should be impossible): {}",
-            e
-        )))
+        ContractError::ReplyOnSuccessSawError {
+            id: reply_id,
+            msg: format!("mint_standard_nft: {}", e),
+        }
     })?;
 
     let mut ctx = STANDARD_POOL_CREATION_CONTEXT.load(deps.storage, pool_id)?;
@@ -322,19 +337,22 @@ pub fn finalize_standard_pool(
     msg: Reply,
     pool_id: u64,
 ) -> Result<Response, ContractError> {
+    let reply_id = msg.id;
     let result = msg.result.into_result().map_err(|e| {
-        ContractError::Std(StdError::generic_err(format!(
-            "finalize_standard_pool reply_on_success saw Err (should be impossible): {}",
-            e
-        )))
+        ContractError::ReplyOnSuccessSawError {
+            id: reply_id,
+            msg: format!("finalize_standard_pool: {}", e),
+        }
     })?;
 
     let ctx = STANDARD_POOL_CREATION_CONTEXT.load(deps.storage, pool_id)?;
     let pool_address = extract_contract_address(&deps, &result)?;
-    let nft_address = ctx
-        .nft_addr
-        .clone()
-        .ok_or_else(|| ContractError::Std(StdError::generic_err("missing nft address")))?;
+    let nft_address = ctx.nft_addr.clone().ok_or(
+        ContractError::ReplyMissingAddress {
+            step: "finalize_standard_pool",
+            kind: "nft",
+        },
+    )?;
 
     let pool_details = PoolDetails {
         pool_id,
