@@ -6,7 +6,7 @@ use crate::state::{
     POOL_COUNTER, POOL_CREATION_CONTEXT,
 };
 use cosmwasm_std::{
-    Addr, BankMsg, Binary, CosmosMsg, Decimal, Env, Event, OwnedDeps, Reply, SubMsgResponse,
+    Addr, BankMsg, Binary, Coin, CosmosMsg, Decimal, Env, Event, OwnedDeps, Reply, SubMsgResponse,
     SubMsgResult, Uint128,
 };
 
@@ -36,6 +36,18 @@ fn admin_addr() -> Addr {
 
 fn ubluechip_addr() -> Addr {
     MockApi::default().addr_make("ubluechip")
+}
+
+/// Funds covering the commit-pool creation fee in `info.funds`. Tests use
+/// the bootstrap fallback path (no oracle yet) where the required fee is
+/// `STANDARD_POOL_CREATION_FEE_FALLBACK_BLUECHIP = 100_000_000 ubluechip`,
+/// so paying that exact amount covers both the 100M-fallback case and
+/// the 1M-oracle-bootstrapped case (the handler refunds any surplus).
+pub(crate) fn creation_fee_funds() -> [Coin; 1] {
+    [Coin {
+        denom: "ubluechip".to_string(),
+        amount: Uint128::new(100_000_000),
+    }]
 }
 
 fn bluechip_wallet_addr() -> Addr {
@@ -419,7 +431,7 @@ fn create_pair() {
     ];
 
     let env = mock_env();
-    let info = message_info(&the_admin, &[]);
+    let info = message_info(&the_admin, &creation_fee_funds());
 
     let res = execute(
         deps.as_mut(),
@@ -498,12 +510,14 @@ fn test_create_pair_with_custom_params() {
     };
 
     let env = mock_env();
-    let info = message_info(&admin_addr(), &[]);
+    let info = message_info(&admin_addr(), &creation_fee_funds());
     let res = execute(deps.as_mut(), env, info, create_msg).unwrap();
 
+    // 1-3 messages: cw20 instantiate + optional fee BankMsg + optional
+    // surplus-refund BankMsg from the creation-fee gate.
     assert!(
-        !res.messages.is_empty() && res.messages.len() <= 2,
-        "Should have 1-2 messages (token instantiation + possibly mint), got {}",
+        !res.messages.is_empty() && res.messages.len() <= 3,
+        "Should have 1-3 messages (token instantiate + fee + optional surplus refund), got {}",
         res.messages.len()
     );
 }
@@ -615,7 +629,7 @@ fn test_multiple_pool_creation() {
 
         // Create pool
         let create_msg = create_pool_msg(&format!("Token{}", i));
-        let info = message_info(&admin_addr(), &[]);
+        let info = message_info(&admin_addr(), &creation_fee_funds());
         let res = execute(deps.as_mut(), iter_env, info, create_msg).unwrap();
 
         assert!(
@@ -715,16 +729,19 @@ fn test_complete_pool_creation_flow() {
         },
     };
 
-    let info = message_info(&admin_addr(), &[]);
+    let info = message_info(&admin_addr(), &creation_fee_funds());
     let res = execute(deps.as_mut(), env.clone(), info, create_msg).unwrap();
 
     assert!(
         !res.attributes.is_empty(),
         "Should have response attributes"
     );
+    // 2-3 messages: cw20 instantiate (always) + fee BankMsg to wallet
+    // (when required > 0) + optional surplus refund BankMsg when the
+    // caller overpays the oracle-derived USD fee.
     assert!(
-        !res.messages.is_empty() && res.messages.len() <= 2,
-        "Should have 1-2 messages total (token instantiation + possibly mint), got {}",
+        !res.messages.is_empty() && res.messages.len() <= 3,
+        "Should have 1-3 messages (token instantiate + fee + optional surplus refund), got {}",
         res.messages.len()
     );
 
@@ -2142,14 +2159,22 @@ fn test_bluechip_minting_on_threshold_crossing() {
         },
     };
 
-    let info = message_info(&admin_addr(), &[]);
+    let info = message_info(&admin_addr(), &creation_fee_funds());
     let res = execute(deps.as_mut(), env.clone(), info, create_msg).unwrap();
 
-    // Pool creation should NOT have a mint BankMsg anymore
-    let mint_msg = res
-        .messages
-        .iter()
-        .find(|m| matches!(m.msg, CosmosMsg::Bank(BankMsg::Send { .. })));
+    // Pool creation should NOT mint bluechip tokens. Fee BankMsgs (to the
+    // configured wallet, and a surplus refund to the caller) are unrelated
+    // to minting — filter them out before checking.
+    let factory_config = FACTORYINSTANTIATEINFO.load(&deps.storage).unwrap();
+    let fee_wallet = factory_config.bluechip_wallet_address.to_string();
+    let admin = admin_addr().to_string();
+    let mint_msg = res.messages.iter().find(|m| {
+        if let CosmosMsg::Bank(BankMsg::Send { to_address, .. }) = &m.msg {
+            to_address != &fee_wallet && to_address != &admin
+        } else {
+            false
+        }
+    });
 
     assert!(
         mint_msg.is_none(),
@@ -2250,15 +2275,29 @@ fn test_no_mint_when_amount_is_zero() {
         },
     };
 
-    let info = message_info(&admin_addr(), &[]);
+    let info = message_info(&admin_addr(), &creation_fee_funds());
     let res = execute(deps.as_mut(), env, info, create_msg).unwrap();
 
-    let has_bank_msg = res
-        .messages
-        .iter()
-        .any(|m| matches!(m.msg, CosmosMsg::Bank(BankMsg::Send { .. })));
+    // The post-audit code path always emits a fee BankMsg to the configured
+    // bluechip wallet (and an optional surplus refund to the sender) — those
+    // are the creation-fee gate, NOT a threshold mint. Filter by reading the
+    // wallet address from the stored config so the assertion still proves
+    // the original invariant: pool creation does not emit a mint BankMsg.
+    let factory_config = FACTORYINSTANTIATEINFO.load(&deps.storage).unwrap();
+    let fee_wallet = factory_config.bluechip_wallet_address.to_string();
+    let admin = admin_addr().to_string();
+    let has_mint_msg = res.messages.iter().any(|m| {
+        if let CosmosMsg::Bank(BankMsg::Send { to_address, .. }) = &m.msg {
+            to_address != &fee_wallet && to_address != &admin
+        } else {
+            false
+        }
+    });
 
-    assert!(!has_bank_msg, "Should not mint when amount would be zero");
+    assert!(
+        !has_mint_msg,
+        "Should not emit a non-fee BankMsg at create — minting moved to threshold crossing"
+    );
 }
 
 // Helper function for creating a test pool message
