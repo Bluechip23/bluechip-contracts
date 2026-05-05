@@ -362,3 +362,47 @@ pub fn execute_update_config_from_factory(
         .add_attribute("block_height", env.block.height.to_string())
         .add_attribute("block_time", env.block.time.seconds().to_string()))
 }
+
+/// Two-phase emergency-withdraw dispatcher shared by `creator-pool` and
+/// `standard-pool`. Picks Phase 1 (initiate) or Phase 2 (core drain)
+/// based on whether `PENDING_EMERGENCY_WITHDRAW` is already set, and
+/// builds the canonical `action="emergency_withdraw"` response on the
+/// drain side. Each pool wasm wraps this helper to layer in any
+/// pool-kind-specific bookkeeping (creator-pool sweeps
+/// `CREATOR_EXCESS_POSITION` and halts `DISTRIBUTION_STATE` between
+/// the dispatch and the drain; standard-pool just calls through with
+/// zero `accumulation_drain_*`).
+///
+/// `accumulation_drain_0` / `_1` are the additional reserve-0 / reserve-1
+/// amounts the caller's pool-kind-specific bookkeeping wants folded
+/// into the drain transfer messages (creator-pool passes its excess
+/// position; standard-pool passes zero). They are forwarded to the
+/// core drain so the pool-core audit record captures the grand total.
+pub fn execute_emergency_withdraw_dispatch(
+    deps: DepsMut,
+    env: Env,
+    info: MessageInfo,
+    accumulation_drain_0: Uint128,
+    accumulation_drain_1: Uint128,
+) -> Result<Response, ContractError> {
+    if PENDING_EMERGENCY_WITHDRAW.may_load(deps.storage)?.is_none() {
+        return execute_emergency_withdraw_initiate(deps, env, info);
+    }
+    let drain = execute_emergency_withdraw_core_drain(
+        deps,
+        env.clone(),
+        info,
+        accumulation_drain_0,
+        accumulation_drain_1,
+    )?;
+    Ok(Response::new()
+        .add_messages(drain.messages)
+        .add_attribute("action", "emergency_withdraw")
+        .add_attribute("recipient", drain.recipient)
+        .add_attribute("amount0", drain.total_0)
+        .add_attribute("amount1", drain.total_1)
+        .add_attribute("total_liquidity", drain.total_liquidity_at_withdrawal)
+        .add_attribute("pool_contract", env.contract.address.to_string())
+        .add_attribute("block_height", env.block.height.to_string())
+        .add_attribute("block_time", env.block.time.seconds().to_string()))
+}

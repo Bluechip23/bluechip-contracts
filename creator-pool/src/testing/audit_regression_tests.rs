@@ -1266,7 +1266,8 @@ fn test_m3_migrate_rejects_downgrade() {
 
     // Force a "stored" semver that exceeds anything realistic the
     // current binary could be.
-    cw2::set_contract_version(&mut deps.storage, "bluechip-contracts-pool", "9.9.9").unwrap();
+    cw2::set_contract_version(&mut deps.storage, "bluechip-contracts-creator-pool", "9.9.9")
+        .unwrap();
 
     let res = migrate(
         deps.as_mut(),

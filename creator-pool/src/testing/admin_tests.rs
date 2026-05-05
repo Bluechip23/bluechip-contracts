@@ -409,8 +409,12 @@ fn instantiate_rejects_empty_bluechip_denom() {
     let info = message_info(&Addr::unchecked("factory_addr"), &[]);
     let err = instantiate(deps.as_mut(), mock_env(), info, msg).unwrap_err();
     let s = format!("{:?}", err);
+    // The empty-denom guard now lives in `TokenType::check` and emits
+    // the kind-agnostic "Native denom must be non-empty" message
+    // (the standard-pool's Native side isn't always bluechip, so the
+    // shared trait method drops the "Bluechip" prefix).
     assert!(
-        s.contains("Bluechip denom must be non-empty"),
+        s.contains("Native denom must be non-empty"),
         "expected empty-denom rejection, got: {:?}",
         err
     );

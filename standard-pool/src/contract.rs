@@ -11,29 +11,28 @@
 use crate::error::ContractError;
 use crate::msg::{ExecuteMsg, MigrateMsg};
 use cosmwasm_std::{
-    entry_point, Addr, Decimal, DepsMut, Env, MessageInfo, Response, StdError, StdResult, Storage,
-    Uint128,
+    entry_point, Addr, Decimal, DepsMut, Env, MessageInfo, Response, StdError, Storage, Uint128,
 };
 use cw2::set_contract_version;
 use pool_core::admin::{
-    ensure_not_drained, execute_cancel_emergency_withdraw, execute_emergency_withdraw_core_drain,
-    execute_emergency_withdraw_initiate, execute_pause, execute_unpause,
-    execute_update_config_from_factory,
+    ensure_not_drained, execute_cancel_emergency_withdraw, execute_emergency_withdraw_dispatch,
+    execute_pause, execute_unpause, execute_update_config_from_factory,
 };
 use pool_core::asset::{PoolPairType, TokenInfoPoolExt, TokenType};
 use pool_core::balance_verify::handle_deposit_verify_reply;
+use pool_core::generic::unknown_reply_id_msg;
 use pool_core::liquidity::{
     execute_add_to_position_with_verify, execute_collect_fees,
     execute_deposit_liquidity_with_verify, execute_remove_all_liquidity,
     execute_remove_partial_liquidity, execute_remove_partial_liquidity_by_percent,
 };
-use pool_core::state::DEPOSIT_VERIFY_REPLY_ID;
 use pool_core::msg::CommitFeeInfo;
 use pool_core::state::{
     ExpectedFactory, OracleInfo, PoolAnalytics, PoolDetails, PoolFeeState, PoolInfo, PoolSpecs,
-    PoolState, Position, COMMITFEEINFO, EXPECTED_FACTORY, IS_THRESHOLD_HIT, LIQUIDITY_POSITIONS,
-    NEXT_POSITION_ID, ORACLE_INFO, OWNER_POSITIONS, PENDING_EMERGENCY_WITHDRAW, POOL_ANALYTICS,
-    POOL_FEE_STATE, POOL_INFO, POOL_SPECS, POOL_STATE,
+    PoolState, Position, COMMITFEEINFO, DEFAULT_LP_FEE, DEFAULT_SWAP_RATE_LIMIT_SECS,
+    DEPOSIT_VERIFY_REPLY_ID, EXPECTED_FACTORY, IS_THRESHOLD_HIT, LIQUIDITY_POSITIONS, MAX_LP_FEE,
+    MIN_LP_FEE, NEXT_POSITION_ID, ORACLE_INFO, OWNER_POSITIONS, POOL_ANALYTICS, POOL_FEE_STATE,
+    POOL_INFO, POOL_KIND_STANDARD, POOL_SPECS, POOL_STATE,
 };
 use pool_core::swap::{execute_swap_cw20, simple_swap};
 use pool_factory_interfaces::StandardPoolInstantiateMsg;
@@ -62,23 +61,16 @@ pub fn instantiate(
         return Err(ContractError::Unauthorized {});
     }
 
-    // Pair validation — each side must be a valid TokenType and the two
-    // sides must differ. Defense-in-depth: the factory already validates
-    // this, but rejecting again keeps the pool self-defending against a
-    // buggy factory migration.
+    // Pair validation — each side must be a valid TokenType (the
+    // empty-denom guard for `Native` and the `addr_validate` for
+    // `CreatorToken` both live inside `TokenType::check` now) and the
+    // two sides must differ. Defense-in-depth: the factory already
+    // validates this, but rejecting again keeps the pool
+    // self-defending against a buggy factory migration.
     msg.pool_token_info[0].check(deps.api)?;
     msg.pool_token_info[1].check(deps.api)?;
     if msg.pool_token_info[0] == msg.pool_token_info[1] {
         return Err(ContractError::DoublingAssets {});
-    }
-    for t in msg.pool_token_info.iter() {
-        if let TokenType::Native { denom } = t {
-            if denom.trim().is_empty() {
-                return Err(ContractError::Std(StdError::generic_err(
-                    "Standard pool: Native denom must be non-empty",
-                )));
-            }
-        }
     }
 
     // `PoolInfo.token_address` is a legacy commit-pool field — its
@@ -124,67 +116,16 @@ pub fn instantiate(
         position_nft_address: msg.position_nft_address.clone(),
     };
 
-    // Placeholder position at id "0" so iteration/pagination over
-    // LIQUIDITY_POSITIONS behaves the same as creator-pool. The first
-    // real LP position lands at id "1" because NEXT_POSITION_ID
-    // increments before use in `execute_deposit_liquidity`.
-    let liquidity_position = Position {
-        liquidity: Uint128::zero(),
-        owner: env.contract.address.clone(),
-        fee_growth_inside_0_last: Decimal::zero(),
-        fee_growth_inside_1_last: Decimal::zero(),
-        created_at: env.block.time.seconds(),
-        last_fee_collection: env.block.time.seconds(),
-        fee_size_multiplier: Decimal::one(),
-        unclaimed_fees_0: Uint128::zero(),
-        unclaimed_fees_1: Uint128::zero(),
-        // Sentinel position at id "0" — no actual liquidity, no lock.
-        locked_liquidity: Uint128::zero(),
-    };
+    let liquidity_position = build_sentinel_position(&env);
 
     let pool_specs = PoolSpecs {
-        lp_fee: Decimal::permille(3), // 0.3% LP fee
-        min_commit_interval: 13,      // seconds; used by swap rate limit
+        lp_fee: DEFAULT_LP_FEE,
+        min_commit_interval: DEFAULT_SWAP_RATE_LIMIT_SECS,
     };
 
-    // Zero-valued fee placeholder. Two reasons we save it:
-    //   - emergency_withdraw_core_drain reads `bluechip_wallet_address`
-    //     as the drain recipient. It MUST be a wallet (not the factory
-    //     contract) — the factory has no withdrawal path, so funds sent
-    //     there are permanently locked.
-    //   - query_fee_info dereferences COMMITFEEINFO unconditionally.
-    // The fee rates are zero on a standard pool, so the creator wallet
-    // is never paid out in normal flow; we still store the factory's
-    // configured bluechip wallet there as a safe placeholder.
-    let fee_info = CommitFeeInfo {
-        bluechip_wallet_address: msg.bluechip_wallet_address.clone(),
-        creator_wallet_address: msg.bluechip_wallet_address.clone(),
-        commit_fee_bluechip: Decimal::zero(),
-        commit_fee_creator: Decimal::zero(),
-    };
-
-    // nft_ownership_accepted starts false; shared execute_deposit_liquidity
-    // sends the Cw721 AcceptOwnership message on the first deposit and
-    // flips this flag. No reply handler needed on standard-pool.
-    let pool_state = PoolState {
-        pool_contract_address: env.contract.address.clone(),
-        total_liquidity: Uint128::zero(),
-        block_time_last: env.block.time.seconds(),
-        reserve0: Uint128::zero(),
-        reserve1: Uint128::zero(),
-        price0_cumulative_last: Uint128::zero(),
-        price1_cumulative_last: Uint128::zero(),
-        nft_ownership_accepted: false,
-    };
-
-    let pool_fee_state = PoolFeeState {
-        fee_growth_global_0: Decimal::zero(),
-        fee_growth_global_1: Decimal::zero(),
-        total_fees_collected_0: Uint128::zero(),
-        total_fees_collected_1: Uint128::zero(),
-        fee_reserve_0: Uint128::zero(),
-        fee_reserve_1: Uint128::zero(),
-    };
+    let fee_info = build_zero_fee_info(&msg.bluechip_wallet_address);
+    let pool_state = build_initial_pool_state(&env);
+    let pool_fee_state = build_zero_pool_fee_state();
 
     let oracle_info = OracleInfo {
         oracle_addr: msg.used_factory_addr.clone(),
@@ -207,8 +148,81 @@ pub fn instantiate(
 
     Ok(Response::new()
         .add_attribute("action", "instantiate")
-        .add_attribute("pool_kind", "standard")
+        .add_attribute("pool_kind", POOL_KIND_STANDARD)
         .add_attribute("pool", env.contract.address.to_string()))
+}
+
+// ---------------------------------------------------------------------------
+// Instantiate-only state builders. Extracted from the entry point so
+// the dispatcher reads as a sequence of named saves; each builder owns
+// the zero-init for one struct.
+// ---------------------------------------------------------------------------
+
+/// Sentinel position at id "0" — no actual liquidity, no lock. Saved
+/// so iteration / pagination over `LIQUIDITY_POSITIONS` behaves the
+/// same as creator-pool. The first real LP position lands at id "1"
+/// because `NEXT_POSITION_ID` increments before use.
+fn build_sentinel_position(env: &Env) -> Position {
+    Position {
+        liquidity: Uint128::zero(),
+        owner: env.contract.address.clone(),
+        fee_growth_inside_0_last: Decimal::zero(),
+        fee_growth_inside_1_last: Decimal::zero(),
+        created_at: env.block.time.seconds(),
+        last_fee_collection: env.block.time.seconds(),
+        fee_size_multiplier: Decimal::one(),
+        unclaimed_fees_0: Uint128::zero(),
+        unclaimed_fees_1: Uint128::zero(),
+        locked_liquidity: Uint128::zero(),
+    }
+}
+
+/// Zero-valued fee placeholder. Two reasons we save it:
+///   - `emergency_withdraw_core_drain` reads `bluechip_wallet_address`
+///     as the drain recipient. It MUST be a wallet (not the factory
+///     contract) — the factory has no withdrawal path, so funds sent
+///     there are permanently locked.
+///   - `query_fee_info` dereferences `COMMITFEEINFO` unconditionally.
+/// The fee rates are zero on a standard pool, so the creator wallet
+/// is never paid out in normal flow; we still store the factory's
+/// configured bluechip wallet there as a safe placeholder.
+fn build_zero_fee_info(bluechip_wallet: &Addr) -> CommitFeeInfo {
+    CommitFeeInfo {
+        bluechip_wallet_address: bluechip_wallet.clone(),
+        creator_wallet_address: bluechip_wallet.clone(),
+        commit_fee_bluechip: Decimal::zero(),
+        commit_fee_creator: Decimal::zero(),
+    }
+}
+
+/// `nft_ownership_accepted` starts false; the standard-pool
+/// `AcceptNftOwnership` execute message (dispatched by the factory's
+/// finalize chain) flips it true and dispatches the matching CW721
+/// `AcceptOwnership` message back.
+fn build_initial_pool_state(env: &Env) -> PoolState {
+    PoolState {
+        pool_contract_address: env.contract.address.clone(),
+        total_liquidity: Uint128::zero(),
+        block_time_last: env.block.time.seconds(),
+        reserve0: Uint128::zero(),
+        reserve1: Uint128::zero(),
+        price0_cumulative_last: Uint128::zero(),
+        price1_cumulative_last: Uint128::zero(),
+        nft_ownership_accepted: false,
+    }
+}
+
+/// Zero-init `PoolFeeState`. All four globals are `Decimal::zero()` and
+/// all four accumulators are `Uint128::zero()`.
+fn build_zero_pool_fee_state() -> PoolFeeState {
+    PoolFeeState {
+        fee_growth_global_0: Decimal::zero(),
+        fee_growth_global_1: Decimal::zero(),
+        total_fees_collected_0: Uint128::zero(),
+        total_fees_collected_1: Uint128::zero(),
+        fee_reserve_0: Uint128::zero(),
+        fee_reserve_1: Uint128::zero(),
+    }
 }
 
 // ---------------------------------------------------------------------------
@@ -488,35 +502,16 @@ fn execute_accept_nft_ownership(
         .add_attribute("nft", pool_info.position_nft_address.to_string()))
 }
 
-/// Standard-pool emergency withdraw: no commit-only bookkeeping. Dispatches
-/// directly to the pool-core Phase 1 / Phase 2 handlers with zero
-/// accumulation_drain amounts (no CREATOR_EXCESS_POSITION to sweep, no
-/// DISTRIBUTION_STATE to halt).
+/// Standard-pool emergency withdraw: no commit-only bookkeeping.
+/// Routes directly through the shared pool-core two-phase dispatcher
+/// with zero `accumulation_drain` amounts (no `CREATOR_EXCESS_POSITION`
+/// to sweep, no `DISTRIBUTION_STATE` to halt).
 fn execute_emergency_withdraw(
     deps: DepsMut,
     env: Env,
     info: MessageInfo,
 ) -> Result<Response, ContractError> {
-    if PENDING_EMERGENCY_WITHDRAW.may_load(deps.storage)?.is_none() {
-        return execute_emergency_withdraw_initiate(deps, env, info);
-    }
-    let drain = execute_emergency_withdraw_core_drain(
-        deps,
-        env.clone(),
-        info,
-        Uint128::zero(),
-        Uint128::zero(),
-    )?;
-    Ok(Response::new()
-        .add_messages(drain.messages)
-        .add_attribute("action", "emergency_withdraw")
-        .add_attribute("recipient", drain.recipient)
-        .add_attribute("amount0", drain.total_0)
-        .add_attribute("amount1", drain.total_1)
-        .add_attribute("total_liquidity", drain.total_liquidity_at_withdrawal)
-        .add_attribute("pool_contract", env.contract.address.to_string())
-        .add_attribute("block_height", env.block.height.to_string())
-        .add_attribute("block_time", env.block.time.seconds().to_string()))
+    execute_emergency_withdraw_dispatch(deps, env, info, Uint128::zero(), Uint128::zero())
 }
 
 // ---------------------------------------------------------------------------
@@ -538,13 +533,22 @@ fn execute_emergency_withdraw(
 /// upstream `pool-core` upgrade that introduced a new reply path
 /// without wiring it here.
 #[cfg_attr(not(feature = "library"), entry_point)]
-pub fn reply(deps: DepsMut, env: Env, msg: cosmwasm_std::Reply) -> StdResult<Response> {
+pub fn reply(
+    deps: DepsMut,
+    env: Env,
+    msg: cosmwasm_std::Reply,
+) -> Result<Response, ContractError> {
     match msg.id {
-        DEPOSIT_VERIFY_REPLY_ID => handle_deposit_verify_reply(deps, env, msg)
-            .map_err(|e| StdError::generic_err(e.to_string())),
-        other => Err(StdError::generic_err(format!(
-            "standard-pool reply: unknown reply id {}",
-            other
+        // The verify handler returns `ContractError`; previously it was
+        // `.to_string()`'d into a `StdError::generic_err`, erasing the
+        // structured variant on the wire (operators monitoring for the
+        // `BalanceMismatch` case — the exact one most worth alerting on
+        // for fee-on-transfer / rebasing CW20 mismatches — could no
+        // longer match it). With reply now returning the typed
+        // `ContractError`, the variant is preserved end-to-end.
+        DEPOSIT_VERIFY_REPLY_ID => handle_deposit_verify_reply(deps, env, msg),
+        other => Err(ContractError::Std(StdError::generic_err(
+            unknown_reply_id_msg(POOL_KIND_STANDARD, other),
         ))),
     }
 }
@@ -554,45 +558,43 @@ pub fn reply(deps: DepsMut, env: Env, msg: cosmwasm_std::Reply) -> StdResult<Res
 // ---------------------------------------------------------------------------
 
 #[entry_point]
-pub fn migrate(deps: DepsMut, _env: Env, msg: MigrateMsg) -> StdResult<Response> {
+pub fn migrate(deps: DepsMut, _env: Env, msg: MigrateMsg) -> Result<Response, ContractError> {
     // Reject downgrades. Mirrors the creator-pool migrate guard —
     // see that handler for the rationale. Tolerates a missing cw2 entry
     // (legacy pre-cw2 / test fixtures) by skipping the check; production
     // pools always set cw2 at instantiate time.
     if let Ok(stored_version) = cw2::get_contract_version(deps.storage) {
-        let stored_semver: semver::Version = stored_version.version.parse().map_err(|e| {
-            StdError::generic_err(format!(
-                "stored contract version {} is not valid semver: {}",
-                stored_version.version, e
-            ))
-        })?;
-        let current_semver: semver::Version = CONTRACT_VERSION.parse().map_err(|e| {
-            StdError::generic_err(format!(
-                "current contract version {} is not valid semver: {}",
-                CONTRACT_VERSION, e
-            ))
-        })?;
+        let stored_semver: semver::Version = stored_version
+            .version
+            .parse()
+            .map_err(|e: semver::Error| ContractError::StoredVersionInvalid {
+                version: stored_version.version.clone(),
+                msg: e.to_string(),
+            })?;
+        let current_semver: semver::Version = CONTRACT_VERSION
+            .parse()
+            .map_err(|e: semver::Error| ContractError::CurrentVersionInvalid {
+                version: CONTRACT_VERSION.to_string(),
+                msg: e.to_string(),
+            })?;
         if stored_semver > current_semver {
-            return Err(StdError::generic_err(format!(
-                "Migration would downgrade contract from {} to {}; refusing.",
-                stored_semver, current_semver
-            )));
+            return Err(ContractError::DowngradeRefused {
+                stored: stored_semver.to_string(),
+                current: current_semver.to_string(),
+            });
         }
     }
 
     match msg {
         MigrateMsg::UpdateFees { new_fees } => {
-            let max_lp_fee = Decimal::percent(10);
-            if new_fees > max_lp_fee {
-                return Err(StdError::generic_err("lp_fee must not exceed 10% (0.1)"));
+            if new_fees > MAX_LP_FEE || new_fees < MIN_LP_FEE {
+                return Err(ContractError::LpFeeOutOfRange {
+                    got: new_fees,
+                    min: MIN_LP_FEE,
+                    max: MAX_LP_FEE,
+                });
             }
-            let min_lp_fee = Decimal::permille(1); // 0.1%
-            if new_fees < min_lp_fee {
-                return Err(StdError::generic_err(
-                    "lp_fee must be at least 0.1% (0.001)",
-                ));
-            }
-            POOL_SPECS.update(deps.storage, |mut specs| -> StdResult<_> {
+            POOL_SPECS.update(deps.storage, |mut specs| -> Result<_, ContractError> {
                 specs.lp_fee = new_fees;
                 Ok(specs)
             })?;

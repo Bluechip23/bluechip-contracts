@@ -113,9 +113,36 @@ impl TokenType {
         }
     }
 
+    /// Validate the per-side shape of a `pool_token_info` entry.
+    ///
+    /// - `Native { denom }`: rejects empty / whitespace-only denoms. The
+    ///   bank module on-chain would reject the same shape later, but
+    ///   doing the check here surfaces operator typos at the contract
+    ///   boundary rather than 48h later when an apply lands a malformed
+    ///   denom and every subsequent BankMsg reverts inside the bank
+    ///   module with an error nobody is watching for. (Cosmos-SDK's
+    ///   stricter `^[a-zA-Z][a-zA-Z0-9/:._-]{2,127}$` regex is enforced
+    ///   by the factory's `validate_pool_token_info` for commit pools;
+    ///   here we only check the lowest bar so this trait method stays
+    ///   meaningful for both standard- and creator-pool entry points.)
+    /// - `CreatorToken { contract_addr }`: rejects malformed bech32 via
+    ///   `api.addr_validate`.
+    ///
+    /// Centralized here so every caller (creator-pool and standard-pool
+    /// `instantiate`) gets the same guard set without an asymmetric
+    /// inline empty-denom check at one call site only.
     pub fn check(&self, api: &dyn Api) -> StdResult<()> {
-        if let TokenType::CreatorToken { contract_addr } = self {
-            api.addr_validate(contract_addr.as_str())?;
+        match self {
+            TokenType::Native { denom } => {
+                if denom.trim().is_empty() {
+                    return Err(cosmwasm_std::StdError::generic_err(
+                        "Native denom must be non-empty",
+                    ));
+                }
+            }
+            TokenType::CreatorToken { contract_addr } => {
+                api.addr_validate(contract_addr.as_str())?;
+            }
         }
         Ok(())
     }

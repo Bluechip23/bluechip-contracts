@@ -20,8 +20,8 @@ use crate::liquidity_helpers::{execute_claim_creator_excess, execute_claim_creat
 use crate::msg::{ExecuteMsg, MigrateMsg, PoolInstantiateMsg};
 use crate::query::query_check_commit;
 use crate::state::{
-    CommitLimitInfo, DEFAULT_LP_FEE_PERMILLE, DEFAULT_MIN_COMMIT_INTERVAL_SECONDS,
-    ExpectedFactory, MAX_LP_FEE_PERCENT, MIN_LP_FEE_PERMILLE, OracleInfo, PoolAnalytics,
+    CommitLimitInfo, DEFAULT_LP_FEE, DEFAULT_SWAP_RATE_LIMIT_SECS, ExpectedFactory, MAX_LP_FEE,
+    MIN_LP_FEE, OracleInfo, PoolAnalytics,
     PoolDetails, PoolFeeState, PoolInfo, PoolSpecs, PoolState, Position, ThresholdPayoutAmounts,
     COMMITFEEINFO, COMMIT_LIMIT_INFO, EXPECTED_FACTORY, IS_THRESHOLD_HIT, LIQUIDITY_POSITIONS,
     NATIVE_RAISED_FROM_COMMIT, NEXT_POSITION_ID, ORACLE_INFO, OWNER_POSITIONS, PENDING_FACTORY_NOTIFY,
@@ -37,7 +37,13 @@ use cosmwasm_std::{
 };
 use cw2::set_contract_version;
 
-const CONTRACT_NAME: &str = "bluechip-contracts-pool";
+/// cw2 contract name. Includes the `creator` discriminator so a
+/// migration tool inspecting cw2 names can distinguish a creator-pool
+/// from a `standard-pool` (`bluechip-contracts-standard-pool`).
+/// Pre-rename pools migrating up will fail any cw2-name check; that's
+/// the desired behaviour — name drift across pool kinds is exactly
+/// the foot-gun this rename closes.
+const CONTRACT_NAME: &str = "bluechip-contracts-creator-pool";
 const CONTRACT_VERSION: &str = env!("CARGO_PKG_VERSION");
 
 // ---------------------------------------------------------------------------
@@ -144,8 +150,8 @@ pub fn instantiate(
     };
 
     let pool_specs = PoolSpecs {
-        lp_fee: Decimal::permille(DEFAULT_LP_FEE_PERMILLE),
-        min_commit_interval: DEFAULT_MIN_COMMIT_INTERVAL_SECONDS,
+        lp_fee: DEFAULT_LP_FEE,
+        min_commit_interval: DEFAULT_SWAP_RATE_LIMIT_SECS,
     };
 
     let commit_config = CommitLimitInfo {
@@ -199,7 +205,7 @@ pub fn instantiate(
 
     Ok(Response::new()
         .add_attribute("action", "instantiate")
-        .add_attribute("pool_kind", "commit")
+        .add_attribute("pool_kind", crate::state::POOL_KIND_COMMIT)
         .add_attribute("pool", env.contract.address.to_string()))
 }
 
@@ -616,10 +622,12 @@ pub fn reply(deps: DepsMut, env: Env, msg: Reply) -> StdResult<Response> {
                     .add_attribute("block_time", env.block.time.seconds().to_string()))
             }
         },
-        other => Err(StdError::generic_err(format!(
-            "creator-pool reply: unknown reply id {}",
-            other
-        ))),
+        other => Err(StdError::generic_err(
+            pool_core::generic::unknown_reply_id_msg(
+                pool_core::state::POOL_KIND_COMMIT,
+                other,
+            ),
+        )),
     }
 }
 
@@ -672,13 +680,11 @@ pub fn migrate(deps: DepsMut, _env: Env, msg: MigrateMsg) -> Result<Response, Co
 
     match msg {
         MigrateMsg::UpdateFees { new_fees } => {
-            let max_lp_fee = Decimal::percent(MAX_LP_FEE_PERCENT);
-            let min_lp_fee = Decimal::permille(MIN_LP_FEE_PERMILLE);
-            if new_fees > max_lp_fee || new_fees < min_lp_fee {
+            if new_fees > MAX_LP_FEE || new_fees < MIN_LP_FEE {
                 return Err(ContractError::LpFeeOutOfRange {
                     got: new_fees,
-                    min: min_lp_fee,
-                    max: max_lp_fee,
+                    min: MIN_LP_FEE,
+                    max: MAX_LP_FEE,
                 });
             }
             POOL_SPECS.update(deps.storage, |mut specs| -> StdResult<_> {

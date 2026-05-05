@@ -17,8 +17,8 @@
 
 pub use pool_core::admin::{
     ensure_not_drained, execute_cancel_emergency_withdraw,
-    execute_emergency_withdraw_core_drain, execute_emergency_withdraw_initiate, execute_pause,
-    execute_unpause, execute_update_config_from_factory, CoreDrainResult,
+    execute_emergency_withdraw_dispatch, execute_pause, execute_unpause,
+    execute_update_config_from_factory, CoreDrainResult,
 };
 
 use crate::error::ContractError;
@@ -26,7 +26,7 @@ use crate::state::{
     DistributionState, RecoveryType, COMMIT_LEDGER, CREATOR_EXCESS_POSITION,
     DEFAULT_ESTIMATED_GAS_PER_DISTRIBUTION, DEFAULT_MAX_GAS_PER_TX, DISTRIBUTION_STATE,
     EXPECTED_FACTORY, IS_THRESHOLD_HIT, LAST_THRESHOLD_ATTEMPT,
-    MAX_CONSECUTIVE_DISTRIBUTION_FAILURES, PENDING_EMERGENCY_WITHDRAW, POOL_INFO, REENTRANCY_LOCK,
+    MAX_CONSECUTIVE_DISTRIBUTION_FAILURES, POOL_INFO, REENTRANCY_LOCK,
     STUCK_DISTRIBUTION_RECOVERY_WINDOW_SECONDS, STUCK_THRESHOLD_RECOVERY_WINDOW_SECONDS,
     THRESHOLD_PROCESSING,
 };
@@ -82,20 +82,15 @@ pub fn execute_emergency_withdraw(
         return Err(ContractError::EmergencyWithdrawPreThreshold);
     }
 
-    // Phase 1: initiate
-    if PENDING_EMERGENCY_WITHDRAW.may_load(deps.storage)?.is_none() {
-        return execute_emergency_withdraw_initiate(deps, env, info);
-    }
-
-    // Phase 2: layer commit-only bookkeeping around the core drain.
-    //
-    // Capture CREATOR_EXCESS_POSITION amounts up front, remove the
-    // storage item, and halt DISTRIBUTION_STATE — all before handing
-    // control to the core drain. CosmWasm tx semantics are atomic:
-    // if core_drain errors, every storage write above reverts with it,
-    // so there's no half-drained state to worry about.
+    // Phase 2 bookkeeping: capture creator excess + halt distribution
+    // state BEFORE handing off to the shared dispatcher. The dispatcher
+    // routes to Phase 1 (initiate) when no timelock is armed yet —
+    // every save below is a no-op in that case because Phase 1 doesn't
+    // read any of these structs. On Phase 2 (drain), CosmWasm tx
+    // atomicity rolls these saves back along with the rest of the tx
+    // if anything inside the dispatcher errors, so half-drained state
+    // is structurally unreachable.
     let mut deps = deps;
-
     let excess = CREATOR_EXCESS_POSITION.may_load(deps.storage)?;
     let (acc_0, acc_1) = excess
         .as_ref()
@@ -114,24 +109,7 @@ pub fn execute_emergency_withdraw(
         DISTRIBUTION_STATE.save(deps.storage, &dist_state)?;
     }
 
-    let drain = execute_emergency_withdraw_core_drain(
-        deps.branch(),
-        env.clone(),
-        info.clone(),
-        acc_0,
-        acc_1,
-    )?;
-
-    Ok(Response::new()
-        .add_messages(drain.messages)
-        .add_attribute("action", "emergency_withdraw")
-        .add_attribute("recipient", drain.recipient)
-        .add_attribute("amount0", drain.total_0)
-        .add_attribute("amount1", drain.total_1)
-        .add_attribute("total_liquidity", drain.total_liquidity_at_withdrawal)
-        .add_attribute("pool_contract", env.contract.address.to_string())
-        .add_attribute("block_height", env.block.height.to_string())
-        .add_attribute("block_time", env.block.time.seconds().to_string()))
+    execute_emergency_withdraw_dispatch(deps.branch(), env, info, acc_0, acc_1)
 }
 
 // ---------------------------------------------------------------------------
