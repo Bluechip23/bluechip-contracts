@@ -206,7 +206,7 @@ pub fn instantiate(
     Ok(Response::new()
         .add_attribute("action", "instantiate")
         .add_attribute("pool_kind", crate::state::POOL_KIND_COMMIT)
-        .add_attribute("pool", env.contract.address.to_string()))
+        .add_attribute("pool_contract", env.contract.address.to_string()))
 }
 
 
@@ -692,6 +692,9 @@ pub fn migrate(deps: DepsMut, _env: Env, msg: MigrateMsg) -> Result<Response, Co
                 Ok(specs)
             })?;
         }
+        // No per-variant work — falls through to the unconditional
+        // `set_contract_version` below so the cw2 stored version
+        // always lands at the new release on a successful migrate.
         MigrateMsg::UpdateVersion {} => {}
     }
 

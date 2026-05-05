@@ -109,5 +109,5 @@ pub fn handle_deposit_verify_reply(
 
     Ok(Response::new()
         .add_attribute("action", "deposit_balance_verified")
-        .add_attribute("pool", ctx.pool_addr.to_string()))
+        .add_attribute("pool_contract", ctx.pool_addr.to_string()))
 }
