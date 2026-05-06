@@ -1916,6 +1916,7 @@ fn test_get_bluechip_usd_price_with_pyth() {
             twap_observations: vec![],
             cached_pyth_price: Uint128::new(10_000_000),
             cached_pyth_timestamp: 1000,
+            cached_pyth_conf: 0,
         },
         update_interval: 300,
         rotation_interval: 3600,
@@ -1986,6 +1987,7 @@ fn test_bluechip_usd_price_with_different_atom_prices() {
             twap_observations: vec![],
             cached_pyth_price: Uint128::new(10_000_000),
             cached_pyth_timestamp: 1000,
+            cached_pyth_conf: 0,
         },
         update_interval: 300,
         rotation_interval: 3600,
@@ -2070,6 +2072,7 @@ fn test_conversion_functions_with_pyth() {
             twap_observations: vec![],
             cached_pyth_price: Uint128::new(10_000_000),
             cached_pyth_timestamp: 1000,
+            cached_pyth_conf: 0,
         },
         update_interval: 300,
         rotation_interval: 3600,
@@ -3547,6 +3550,15 @@ fn setup_oracle_with_cached_pyth(
     oracle.bluechip_price_cache.last_update = env.block.time.seconds();
     oracle.bluechip_price_cache.cached_pyth_price = cached_pyth_price;
     oracle.bluechip_price_cache.cached_pyth_timestamp = cached_ts;
+    // Audit fix H7.1: the cache-fallback path re-validates the cached
+    // price against its sampling-time confidence interval. Tests that
+    // exercise the cache fallback need to seed a non-zero conf inside
+    // the bps gate so the re-check passes; the value here corresponds
+    // to ~50 bps of `cached_pyth_price` (well inside the 200 bps
+    // default), letting these tests model a healthy Pyth sample rather
+    // than the pre-upgrade "conf unknown" record.
+    oracle.bluechip_price_cache.cached_pyth_conf =
+        ((cached_pyth_price.u128() / 200) as u64).max(1);
     // Tests bypass UpdateOraclePrice and seed last_price directly — clear
     // the warm-up gate so downstream price-serving paths don't refuse.
     oracle.warmup_remaining = 0;

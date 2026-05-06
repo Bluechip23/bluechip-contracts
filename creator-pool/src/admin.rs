@@ -241,6 +241,13 @@ fn recover_distribution(
                     consecutive_failures: 0,
                     started_at: env.block.time,
                     last_updated: env.block.time,
+                    // Preserve the running mint total across the restart so
+                    // the final-batch dust settlement still mints exactly
+                    // `total_to_distribute - distributed_so_far` to the
+                    // creator. Resetting to zero here would double-count
+                    // the partial mints from the pre-recovery batches and
+                    // mint a residual that includes already-paid rewards.
+                    distributed_so_far: dist_state.distributed_so_far,
                 };
                 DISTRIBUTION_STATE.save(storage, &restarted)?;
             }

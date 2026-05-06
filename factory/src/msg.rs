@@ -104,6 +104,22 @@ pub enum ExecuteMsg {
     SetDistributionBounty {
         new_bounty: Uint128,
     },
+    // Admin tightens or relaxes the Pyth ATOM/USD confidence-interval
+    // gate. `bps` is bounded to
+    // `[PYTH_CONF_THRESHOLD_BPS_MIN, PYTH_CONF_THRESHOLD_BPS_MAX]`
+    // (50–500 bps inclusive). The same value is applied immediately
+    // to (a) the live Pyth read and (b) the cache-fallback re-read,
+    // so tightening the gate forces stale-cached prices whose
+    // sampling-time conf no longer satisfies the new gate to be
+    // refused on the very next conversion. Effect is immediate
+    // rather than timelocked: tightening is always conservative
+    // (it can only make the protocol more cautious about Pyth
+    // confidence) so the standard 48h window would only delay the
+    // safer state. Loosening is bounded by the hardcoded ceiling so
+    // even a compromised admin cannot disable the gate.
+    SetPythConfThresholdBps {
+        bps: u16,
+    },
     // Pool-only. Forwarded by a pool's ContinueDistribution handler to
     // pay the keeper bounty out of the factory's reserve. The factory
     // verifies info.sender is a registered pool.

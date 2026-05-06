@@ -141,6 +141,7 @@ pub fn query_distribution_state(
         consecutive_failures: state.consecutive_failures,
         total_to_distribute: state.total_to_distribute,
         total_committed_usd: state.total_committed_usd,
+        distributed_so_far: state.distributed_so_far,
     }))
 }
 

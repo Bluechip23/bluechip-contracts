@@ -238,6 +238,16 @@ pub struct PriceCache {
     pub cached_pyth_price: Uint128,
     #[serde(default)]
     pub cached_pyth_timestamp: u64,
+    /// Pyth confidence interval (in price units, normalized to 6
+    /// decimals like `cached_pyth_price`) captured at the same moment
+    /// the cached price was sampled. Re-validated on the cache-fallback
+    /// path so a wide-band publish-at-the-edge can't be used to serve
+    /// every commit through a Pyth outage. `#[serde(default)]` lets
+    /// pre-upgrade records deserialize as zero, which the fallback
+    /// path treats as "conf unknown" and refuses to serve from cache
+    /// (fail-closed).
+    #[serde(default)]
+    pub cached_pyth_conf: u64,
 }
 #[cw_serde]
 pub struct PriceObservation {
@@ -339,6 +349,7 @@ pub fn select_random_pools_with_atom(
                     twap_observations: vec![],
                     cached_pyth_price: Uint128::zero(),
                     cached_pyth_timestamp: 0,
+                    cached_pyth_conf: 0,
                 },
                 update_interval: UPDATE_INTERVAL,
                 warmup_remaining: 0,
@@ -414,6 +425,7 @@ pub fn initialize_internal_bluechip_oracle(
             twap_observations: vec![],
             cached_pyth_price: Uint128::zero(),
             cached_pyth_timestamp: 0,
+            cached_pyth_conf: 0,
         },
         update_interval: UPDATE_INTERVAL,
         // Initial bootstrap warm-up. Treated identically to an anchor
@@ -843,9 +855,12 @@ pub fn update_internal_oracle_price(
     // but does its own pyth/warmup/save inline and returns EarlyReturn so
     // it can skip the bounty — force-accept is a liveness escape valve,
     // not a regular publishing event, mirroring the pre-refactor handler.
-    if let Ok(pyth_price) = query_pyth_atom_usd_price(deps.as_ref(), &env) {
+    if let Ok((pyth_price, pyth_conf)) =
+        query_pyth_atom_usd_price_with_conf(deps.as_ref(), &env)
+    {
         oracle.bluechip_price_cache.cached_pyth_price = pyth_price;
         oracle.bluechip_price_cache.cached_pyth_timestamp = current_time;
+        oracle.bluechip_price_cache.cached_pyth_conf = pyth_conf;
     }
 
     let warmup_remaining_before = oracle.warmup_remaining;
@@ -1019,9 +1034,12 @@ fn breaker_branch_c(
             oracle.bluechip_price_cache.last_update = current_time;
             oracle.pending_first_price = None;
             oracle.post_reset_consecutive_failures = 0;
-            if let Ok(pyth_price) = query_pyth_atom_usd_price(deps.as_ref(), env) {
+            if let Ok((pyth_price, pyth_conf)) =
+                query_pyth_atom_usd_price_with_conf(deps.as_ref(), env)
+            {
                 oracle.bluechip_price_cache.cached_pyth_price = pyth_price;
                 oracle.bluechip_price_cache.cached_pyth_timestamp = current_time;
+                oracle.bluechip_price_cache.cached_pyth_conf = pyth_conf;
             }
             let warmup_remaining_before = oracle.warmup_remaining;
             oracle.warmup_remaining = oracle.warmup_remaining.saturating_sub(1);
@@ -1426,7 +1444,23 @@ pub fn calculate_twap(observations: &[PriceObservation]) -> Result<Uint128, Cont
 
     Ok(weighted_average)
 }
+/// Thin compatibility wrapper. Existing callers that don't need the
+/// confidence interval keep their `Uint128` return shape; the live
+/// conf check + caching is fully delegated to
+/// `query_pyth_atom_usd_price_with_conf`.
 pub fn query_pyth_atom_usd_price(deps: Deps, env: &Env) -> StdResult<Uint128> {
+    query_pyth_atom_usd_price_with_conf(deps, env).map(|(price, _)| price)
+}
+
+/// Same as `query_pyth_atom_usd_price` but also returns the normalized
+/// (6-decimal) confidence interval. Callers that persist the price into
+/// `PriceCache` use this so the cached `(price, conf)` pair can be
+/// re-validated on the cache-fallback path with the same bps gate as
+/// the live read.
+pub fn query_pyth_atom_usd_price_with_conf(
+    deps: Deps,
+    env: &Env,
+) -> StdResult<(Uint128, u64)> {
     #[cfg(not(test))]
     {
         let factory = FACTORYINSTANTIATEINFO.load(deps.storage)?;
@@ -1527,9 +1561,13 @@ pub fn query_pyth_atom_usd_price(deps: Deps, env: &Env) -> StdResult<Uint128> {
             return Err(StdError::generic_err("Invalid negative or zero price"));
         }
 
-        // Reject prices with wide confidence intervals (> 5% of price).
-        // During low oracle participation or extreme volatility, Pyth may
-        // report prices with very wide bands that are unreliable.
+        // Reject prices with wide confidence intervals. Threshold is
+        // bps of price loaded from `PYTH_CONF_THRESHOLD_BPS` — admin
+        // tunable, bounded to a strict range so neither the admin nor a
+        // missing storage slot can effectively disable the check.
+        // Default is 200 bps (2%), tightened from the prior hardcoded
+        // 500 bps (5%) since the previous band let a feed dispersing
+        // 4.99% range still serve commits.
         //
         // Use try_into() rather than `as u64` so a future edit that drops
         // or reorders the negative-price check above produces an explicit
@@ -1538,11 +1576,17 @@ pub fn query_pyth_atom_usd_price(deps: Deps, env: &Env) -> StdResult<Uint128> {
         let price_u64: u64 = price_data.price.try_into().map_err(|_| {
             StdError::generic_err("Price overflow when computing conf threshold")
         })?;
-        let conf_threshold = price_u64 / 20; // 5%
+        let conf_bps = crate::state::load_pyth_conf_threshold_bps(deps.storage);
+        // `price_u64 * conf_bps` cannot overflow at any plausible Pyth
+        // ATOM/USD reading: ATOM/USD ≈ 1e7 (6-decimal expo) and bps cap
+        // is < 1e4, comfortably under u64::MAX.
+        let conf_threshold = price_u64
+            .saturating_mul(conf_bps as u64)
+            .saturating_div(10_000);
         if price_data.conf > conf_threshold {
             return Err(StdError::generic_err(format!(
-                "Pyth confidence interval too wide: conf={} exceeds 5% of price={}",
-                price_data.conf, price_data.price
+                "Pyth confidence interval too wide: conf={} exceeds {} bps of price={}",
+                price_data.conf, conf_bps, price_data.price
             )));
         }
 
@@ -1563,20 +1607,36 @@ pub fn query_pyth_atom_usd_price(deps: Deps, env: &Env) -> StdResult<Uint128> {
             )));
         }
 
-        // Normalize to 6 decimals (system standard)
-        let normalized_price = match expo.cmp(&-6) {
-            std::cmp::Ordering::Equal => Uint128::from(price_u128),
+        // Normalize price + conf to 6 decimals (system standard). Both
+        // share the same exponent on a Pyth feed, so the same scaling
+        // applies. The normalized conf is what gets written into the
+        // cache so the cache-fallback re-check is bps-comparable
+        // against the cached price without re-reading the exponent.
+        let raw_conf_u128: u128 = price_data.conf as u128;
+        let (normalized_price, normalized_conf_u128) = match expo.cmp(&-6) {
+            std::cmp::Ordering::Equal => (Uint128::from(price_u128), raw_conf_u128),
             std::cmp::Ordering::Less => {
                 let divisor = 10u128.pow((expo.abs() - 6) as u32);
-                Uint128::from(price_u128 / divisor)
+                (
+                    Uint128::from(price_u128 / divisor),
+                    raw_conf_u128 / divisor,
+                )
             }
             std::cmp::Ordering::Greater => {
                 let multiplier = 10u128.pow((6 - expo.abs()) as u32);
-                Uint128::from(price_u128 * multiplier)
+                (
+                    Uint128::from(price_u128 * multiplier),
+                    raw_conf_u128.saturating_mul(multiplier),
+                )
             }
         };
+        // Saturate the (already-normalized) conf to u64. The conf was
+        // validated above to be ≤ `conf_bps/10000 * price_u64`, which fits
+        // in u64; the saturation here is purely defensive against any
+        // future change that would relax that gate.
+        let normalized_conf_u64 = normalized_conf_u128.min(u64::MAX as u128) as u64;
 
-        Ok(normalized_price)
+        Ok((normalized_price, normalized_conf_u64))
     }
     #[cfg(test)]
     {
@@ -1592,7 +1652,10 @@ pub fn query_pyth_atom_usd_price(deps: Deps, env: &Env) -> StdResult<Uint128> {
         let mock_price = MOCK_PYTH_PRICE
             .may_load(deps.storage)?
             .unwrap_or(Uint128::new(10_000_000)); // Default $10
-        Ok(mock_price)
+        // Mock conf = 0 so cache-fallback re-validation always passes
+        // in tests; production-only behaviour is exercised in the
+        // `not(test)` branch above.
+        Ok((mock_price, 0u64))
     }
 }
 
@@ -1665,6 +1728,19 @@ fn get_bluechip_usd_price_with_meta(
                             "best-effort warm-up: Pyth stale and no cached pyth price",
                         ));
                     }
+                    // Re-validate the cached price against its sampled
+                    // confidence interval before serving. The conf was
+                    // captured at sampling time, so a price that was
+                    // borderline-acceptable at sample time is rejected
+                    // here as soon as the bps gate tightens — and a
+                    // pre-upgrade record with `cached_pyth_conf == 0`
+                    // is treated as "conf unknown" and refused
+                    // (fail-closed).
+                    crate::state::ensure_cached_pyth_conf_acceptable(
+                        deps.storage,
+                        cache.cached_pyth_price,
+                        cache.cached_pyth_conf,
+                    )?;
                     cache.cached_pyth_price
                 }
             };
@@ -1727,6 +1803,19 @@ fn get_bluechip_usd_price_with_meta(
                     "Pyth price stale and no valid cached price available",
                 ));
             }
+            // Re-validate the cached price's confidence interval. A
+            // sample taken near the bps gate may no longer be
+            // acceptable if the gate has been tightened since; refuse
+            // to serve in that case rather than bridging a stale Pyth
+            // outage with an ill-conditioned price. Pre-upgrade
+            // records (`cached_pyth_conf == 0`) are refused
+            // unconditionally — the absence of a sampled conf means
+            // we can't authenticate the cached price.
+            crate::state::ensure_cached_pyth_conf_acceptable(
+                deps.storage,
+                cache.cached_pyth_price,
+                cache.cached_pyth_conf,
+            )?;
             cache.cached_pyth_price
         }
     };
@@ -2117,10 +2206,16 @@ pub fn execute_confirm_bootstrap_price(
             price: pending.price,
             atom_pool_price: pending.atom_pool_price,
         });
-    // Cache the Pyth price too, mirroring the steady-state success tail.
-    if let Ok(pyth_price) = query_pyth_atom_usd_price(deps.as_ref(), &env) {
+    // Cache the Pyth price + conf, mirroring the steady-state success
+    // tail. Both fields are persisted together so the cache-fallback
+    // re-check (in `get_bluechip_usd_price_with_meta`) can validate
+    // the cached price against its sampling-time confidence interval.
+    if let Ok((pyth_price, pyth_conf)) =
+        query_pyth_atom_usd_price_with_conf(deps.as_ref(), &env)
+    {
         oracle.bluechip_price_cache.cached_pyth_price = pyth_price;
         oracle.bluechip_price_cache.cached_pyth_timestamp = current_time;
+        oracle.bluechip_price_cache.cached_pyth_conf = pyth_conf;
     }
     let warmup_remaining_before = oracle.warmup_remaining;
     oracle.warmup_remaining = oracle.warmup_remaining.saturating_sub(1);

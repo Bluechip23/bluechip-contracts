@@ -176,6 +176,18 @@ pub struct DistributionState {
     pub started_at: Timestamp,
     /// Block time of the most recent successful batch (used by stall detection).
     pub last_updated: Timestamp,
+    /// Running sum of creator-token rewards already minted across all
+    /// processed batches. On the final batch we compare this against
+    /// `total_to_distribute`; the difference is the per-user
+    /// floor-division dust, which is then minted to the creator wallet
+    /// in a single deterministic settlement so no minted-supply slot
+    /// is left uncirculated. `#[serde(default)]` keeps records written
+    /// before this field existed deserializing as zero, which is the
+    /// correct value for an in-progress legacy distribution (no
+    /// retroactive settlement; new distributions started post-upgrade
+    /// settle deterministically).
+    #[serde(default)]
+    pub distributed_so_far: Uint128,
 }
 
 #[cw_serde]

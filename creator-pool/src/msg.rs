@@ -230,6 +230,11 @@ pub struct DistributionStateResponse {
     pub consecutive_failures: u32,
     pub total_to_distribute: Uint128,
     pub total_committed_usd: Uint128,
+    /// Running sum of creator-token rewards already minted across
+    /// processed batches. Lets dashboards compute the residual dust
+    /// (`total_to_distribute - distributed_so_far`) that will be
+    /// settled to the creator wallet on the final batch.
+    pub distributed_so_far: Uint128,
 }
 
 #[cw_serde]

@@ -65,6 +65,79 @@ pub const POOLS_BY_CONTRACT_ADDRESS: Map<Addr, PoolStateResponseForFactory> =
 // last N seconds" window to a fraction of a volatility half-life.
 pub const MAX_PRICE_AGE_SECONDS_BEFORE_STALE: u64 = 90;
 
+/// Confidence-interval gate on Pyth ATOM/USD reads, expressed as basis
+/// points of price. Admin-tunable via `SetPythConfThresholdBps`,
+/// bounded to `[PYTH_CONF_THRESHOLD_BPS_MIN, PYTH_CONF_THRESHOLD_BPS_MAX]`
+/// so neither a missing storage slot nor an admin mistake can disable
+/// the gate or set it impossibly tight.
+///
+/// The same value is enforced on (a) the live Pyth read inside
+/// `query_pyth_atom_usd_price_with_conf` and (b) the cache-fallback
+/// re-read inside `get_bluechip_usd_price_with_meta` — so tightening
+/// the bps immediately rejects any stale-cached price whose
+/// sampling-time conf no longer satisfies the new gate.
+pub const PYTH_CONF_THRESHOLD_BPS: Item<u16> = Item::new("pyth_conf_threshold_bps");
+
+/// Default conf gate (bps). Tightened from the previous hardcoded
+/// 500 bps (5%) audit fix. 200 bps = 2% is well inside what a healthy
+/// Pyth ATOM/USD feed reports during steady state.
+pub const PYTH_CONF_THRESHOLD_BPS_DEFAULT: u16 = 200;
+
+/// Strict floor — rejecting < 50 bps would make the protocol
+/// effectively unable to use the oracle through any market wobble.
+pub const PYTH_CONF_THRESHOLD_BPS_MIN: u16 = 50;
+
+/// Hard ceiling — never let an admin loosen past the original 5%
+/// gate, even via direct storage write.
+pub const PYTH_CONF_THRESHOLD_BPS_MAX: u16 = 500;
+
+/// Read the configured conf gate, falling back to
+/// `PYTH_CONF_THRESHOLD_BPS_DEFAULT` when the slot is unset (fresh
+/// deployments, pre-upgrade chains migrating in).
+pub fn load_pyth_conf_threshold_bps(storage: &dyn cosmwasm_std::Storage) -> u16 {
+    PYTH_CONF_THRESHOLD_BPS
+        .may_load(storage)
+        .ok()
+        .flatten()
+        .unwrap_or(PYTH_CONF_THRESHOLD_BPS_DEFAULT)
+}
+
+/// Validates a cached `(price, conf)` pair against the currently
+/// configured bps gate.
+///
+/// Fail-closed semantics — when `cached_conf == 0` we treat the
+/// sample as "conf unknown" (almost certainly a record persisted
+/// before this field existed) and refuse to serve. Real Pyth
+/// publishes essentially never produce conf == 0; treating zero as
+/// the "unknown" sentinel lets pre-upgrade caches fall through to
+/// the no-cache error path rather than silently passing the gate.
+pub fn ensure_cached_pyth_conf_acceptable(
+    storage: &dyn cosmwasm_std::Storage,
+    cached_price: cosmwasm_std::Uint128,
+    cached_conf: u64,
+) -> cosmwasm_std::StdResult<()> {
+    if cached_conf == 0 {
+        return Err(cosmwasm_std::StdError::generic_err(
+            "Cached Pyth price has no recorded confidence interval (pre-upgrade record); \
+             refusing to serve from cache. The next successful UpdateOraclePrice will \
+             persist a conf-validated cache and unblock the fallback path.",
+        ));
+    }
+    let bps = load_pyth_conf_threshold_bps(storage);
+    let price_u64: u64 = cached_price.u128().min(u64::MAX as u128) as u64;
+    let threshold = price_u64
+        .saturating_mul(bps as u64)
+        .saturating_div(10_000);
+    if cached_conf > threshold {
+        return Err(cosmwasm_std::StdError::generic_err(format!(
+            "Cached Pyth confidence interval too wide for current gate: \
+             cached_conf={} exceeds {} bps of cached_price={}",
+            cached_conf, bps, cached_price
+        )));
+    }
+    Ok(())
+}
+
 // Standard timelock applied to admin-initiated mutations of factory state
 // (config, pool config, pool upgrades, force-rotate). 48h gives the
 // community a full two days to observe a pending change and respond.

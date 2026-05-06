@@ -218,6 +218,7 @@ pub fn trigger_threshold_payout(
             consecutive_failures: 0,
             started_at: env.block.time,
             last_updated: env.block.time,
+            distributed_so_far: cosmwasm_std::Uint128::zero(),
         };
         DISTRIBUTION_STATE.save(storage, &dist_state)?;
     }

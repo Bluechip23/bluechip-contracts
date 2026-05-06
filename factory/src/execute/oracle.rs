@@ -83,6 +83,40 @@ pub fn execute_set_oracle_update_bounty(
     )
 }
 
+/// Admin-only. Sets the Pyth ATOM/USD confidence-interval gate
+/// (in basis points of price). Bounded to
+/// `[PYTH_CONF_THRESHOLD_BPS_MIN, PYTH_CONF_THRESHOLD_BPS_MAX]` so neither
+/// the admin nor a missing storage slot can disable the gate; the same
+/// value is read by both the live Pyth check and the cache-fallback
+/// re-check. Effect is immediate (no timelock) — tightening the gate is
+/// always conservative, and the hardcoded ceiling caps how far an admin
+/// can loosen it.
+pub fn execute_set_pyth_conf_threshold_bps(
+    deps: DepsMut,
+    info: MessageInfo,
+    bps: u16,
+) -> Result<Response, ContractError> {
+    ensure_admin(deps.as_ref(), &info)?;
+    if bps < crate::state::PYTH_CONF_THRESHOLD_BPS_MIN
+        || bps > crate::state::PYTH_CONF_THRESHOLD_BPS_MAX
+    {
+        return Err(ContractError::Std(cosmwasm_std::StdError::generic_err(
+            format!(
+                "pyth_conf_threshold_bps={} out of allowed range [{}, {}]",
+                bps,
+                crate::state::PYTH_CONF_THRESHOLD_BPS_MIN,
+                crate::state::PYTH_CONF_THRESHOLD_BPS_MAX,
+            ),
+        )));
+    }
+    let prior = crate::state::load_pyth_conf_threshold_bps(deps.storage);
+    crate::state::PYTH_CONF_THRESHOLD_BPS.save(deps.storage, &bps)?;
+    Ok(Response::new()
+        .add_attribute("action", "set_pyth_conf_threshold_bps")
+        .add_attribute("prior_bps", prior.to_string())
+        .add_attribute("new_bps", bps.to_string()))
+}
+
 /// Admin-only. Sets the per-batch USD bounty (6 decimals, e.g. 50_000 = $0.05)
 /// paid to keepers calling pool.ContinueDistribution. Capped by
 /// MAX_DISTRIBUTION_BOUNTY_USD ($0.10). Converted to bluechip at payout time.

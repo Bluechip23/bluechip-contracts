@@ -387,6 +387,7 @@ fn test_distribution_bounty_does_not_touch_pool_funds() {
         consecutive_failures: 0,
         started_at: Timestamp::from_seconds(1_600_000_000),
         last_updated: Timestamp::from_seconds(1_600_000_000),
+        distributed_so_far: Uint128::zero(),
     };
     DISTRIBUTION_STATE
         .save(&mut deps.storage, &dist_state)
@@ -476,6 +477,7 @@ fn test_continue_distribution_skips_bounty_on_empty_batch() {
         consecutive_failures: 0,
         started_at: Timestamp::from_seconds(1_600_000_000),
         last_updated: Timestamp::from_seconds(1_600_000_000),
+        distributed_so_far: Uint128::zero(),
     };
     DISTRIBUTION_STATE
         .save(&mut deps.storage, &dist_state)
@@ -564,6 +566,7 @@ fn test_continue_distribution_completes_in_one_tx_when_final() {
         consecutive_failures: 0,
         started_at: Timestamp::from_seconds(1_600_000_000),
         last_updated: Timestamp::from_seconds(1_600_000_000),
+        distributed_so_far: Uint128::zero(),
     };
     DISTRIBUTION_STATE
         .save(&mut deps.storage, &dist_state)
@@ -886,6 +889,7 @@ fn test_distribution_bounty_does_not_distort_fee_growth() {
         consecutive_failures: 0,
         started_at: Timestamp::from_seconds(1_600_000_000),
         last_updated: Timestamp::from_seconds(1_600_000_000),
+        distributed_so_far: Uint128::zero(),
     };
     DISTRIBUTION_STATE
         .save(&mut deps.storage, &dist_state)
@@ -933,6 +937,7 @@ fn test_emergency_withdraw_clears_distribution() {
         consecutive_failures: 0,
         started_at: Timestamp::from_seconds(1_600_000_000),
         last_updated: Timestamp::from_seconds(1_600_000_000),
+        distributed_so_far: Uint128::zero(),
     };
     DISTRIBUTION_STATE
         .save(&mut deps.storage, &dist_state)
@@ -1328,6 +1333,7 @@ fn test_m5_continue_distribution_rate_limit_per_address() {
         consecutive_failures: 0,
         started_at: Timestamp::from_seconds(1_600_000_000),
         last_updated: Timestamp::from_seconds(1_600_000_000),
+        distributed_so_far: Uint128::zero(),
     };
     DISTRIBUTION_STATE.save(&mut deps.storage, &dist_state).unwrap();
 
@@ -1383,6 +1389,7 @@ fn test_m5_continue_distribution_rate_limit_per_address() {
         consecutive_failures: 0,
         started_at: Timestamp::from_seconds(1_600_000_000),
         last_updated: Timestamp::from_seconds(1_600_000_000),
+        distributed_so_far: Uint128::zero(),
     };
     DISTRIBUTION_STATE.save(&mut deps.storage, &dist_state).unwrap();
 
