@@ -33,7 +33,7 @@ Bluechip is a DeFi protocol that enables content creators to launch their own to
 
 ## Architecture
 
-The protocol is organized as four contracts and two shared library packages:
+The protocol is organized as four core production contracts (factory, creator-pool, standard-pool, expand-economy), one auxiliary contract (router for multi-hop swaps), one test-only contract (mockoracle), and three shared library packages (pool-core, pool-factory-interfaces, easy-addr). The diagram below covers the four production contracts:
 
 ```
 ┌─────────────────────────────────────────────────────────────┐
@@ -102,26 +102,16 @@ Both pool kinds share the same liquidity/swap/position logic via `pool-core`, th
 
 ### Creating a Creator Pool
 
-Creators can launch their own token pool by calling the factory contract. This is the original commit-phase flow.
+Creators launch their own token pool by calling the factory's `Create`. Only the pair shape and the new CW20 metadata are caller-supplied; every other knob (commit threshold, fee splits, threshold payout, lock caps, oracle config) is read from factory config at the time of the call. The CW20 contract address is filled in by the factory during the reply chain.
 
 ```json
 {
   "create": {
-    "pair_msg": {
-      "asset_infos": [
-        { "native_token": { "denom": "bluechip" } },
-        { "token": { "contract_addr": "CREATED_BY_FACTORY" } }
-      ],
-      "token_code_id": 1,
-      "factory_addr": "factory_contract_address",
-      "fee_info": {
-        "bluechip_address": "protocol_wallet",
-        "creator_address": "creator_wallet",
-        "bluechip_fee": "0.01",
-        "creator_fee": "0.05"
-      },
-      "commit_limit_usd": "25000000000",
-      "oracle_addr": "pyth_oracle_address"
+    "pool_msg": {
+      "pool_token_info": [
+        { "bluechip": { "denom": "ubluechip" } },
+        { "creator_token": { "contract_addr": "WILL_BE_CREATED_BY_FACTORY" } }
+      ]
     },
     "token_info": {
       "name": "Creator Token Name",
@@ -135,7 +125,7 @@ Creators can launch their own token pool by calling the factory contract. This i
 Each creator pool receives:
 - A unique CW20 token for the creator (mint cap: 1,500,000)
 - A CW721 NFT contract for liquidity positions
-- Configurable fee structure (default: 1% protocol + 5% creator)
+- Factory-configured fee structure (default: 1% protocol + 5% creator)
 - Bluechip tokens minted via the Expand Economy contract on threshold-crossing (up to 500 per pool, decreasing over time)
 
 A per-address rate limit (1 hour) on `Create` calls keeps an attacker from cheaply inflating the commit-pool ordinal that drives the expand-economy decay schedule.
@@ -147,9 +137,9 @@ Anyone can create a plain xyk pool around two pre-existing assets via `CreateSta
 ```json
 {
   "create_standard_pool": {
-    "asset_infos": [
-      { "native_token": { "denom": "ubluechip" } },
-      { "token": { "contract_addr": "cosmos1..." } }
+    "pool_token_info": [
+      { "bluechip": { "denom": "ubluechip" } },
+      { "creator_token": { "contract_addr": "cosmos1..." } }
     ],
     "label": "ubluechip-MYTOKEN-xyk"
   }
@@ -285,10 +275,12 @@ The first depositor on an empty pool has `MINIMUM_LIQUIDITY = 1000` LP units loc
 
 ```json
 {
-  "add_liquidity": {
+  "deposit_liquidity": {
     "amount0": "1000000",
     "amount1": "1000000",
-    "min_liquidity": "900000"
+    "min_amount0": "990000",
+    "min_amount1": "990000",
+    "transaction_deadline": null
   }
 }
 ```
@@ -333,14 +325,18 @@ Small positions are subject to a fee-size multiplier; the clipped portion is rou
 
 ```json
 {
-  "remove_liquidity": {
+  "remove_partial_liquidity": {
     "position_id": "123",
-    "liquidity_amount": "500000"
+    "liquidity_to_remove": "500000",
+    "min_amount0": null,
+    "min_amount1": null,
+    "max_ratio_deviation_bps": 100,
+    "transaction_deadline": null
   }
 }
 ```
 
-Partial removal keeps the NFT; full removal burns it. Pulling reserves below `MINIMUM_LIQUIDITY` auto-pauses the pool (separate auto-pause flag); the pause clears automatically as soon as a deposit restores reserves above the floor.
+`RemovePartialLiquidityByPercent { percentage }` and `RemoveAllLiquidity {}` are convenience variants over the same handler. Partial removal keeps the NFT; full removal burns it. Pulling reserves below `MINIMUM_LIQUIDITY` auto-pauses the pool (separate auto-pause flag); the pause clears automatically as soon as a deposit restores reserves above the floor.
 
 ---
 
@@ -401,67 +397,50 @@ Bluechip uses an internal oracle to price the native bluechip token in USD.
 
 ## Query Endpoints
 
-### Pool State
+### Pool State (LP-side)
 
 ```json
 {
-  "get_pool_state": {}
+  "pool_state": {}
 }
 ```
 
-**Returns:**
-```json
-{
-  "reserve0": "1000000000",
-  "reserve1": "5000000000",
-  "total_liquidity": "2000000000",
-  "is_threshold_hit": true
-}
-```
-
-Standard pools return `is_threshold_hit: true` from instantiate (no commit phase).
+**Returns** `PoolStateResponse`: `nft_ownership_accepted`, `reserve0`, `reserve1`, `total_liquidity`, `block_time_last`. The factory-facing `get_pool_state {}` returns a different (richer) shape, `PoolStateResponseForFactory`; LP / SDK consumers should use `pool_state {}`.
 
 ### Commit Status
 
 ```json
 {
-  "get_commit_status": {}
+  "is_fully_commited": {}
 }
 ```
 
-**Returns:**
-```json
-{
-  "total_usd_raised": "25000000000",
-  "threshold": "25000000000",
-  "is_active": true
-}
-```
-
-(Creator-pool only — standard pools surface `FullyCommitted` with zeros.)
+**Returns** the on-chain `CommitStatus` enum: either the bare string `"fully_committed"` or `{ "in_progress": { "raised": "...", "target": "25000000000" } }`. Standard pools always return `"fully_committed"` (no commit phase).
 
 ### Position Info
 
 ```json
 {
-  "get_position": {
-    "position_id": "123"
-  }
+  "position": { "position_id": "123" }
 }
 ```
+
+`positions { start_after, limit }` and `positions_by_owner { owner, start_after, limit }` page through the same shape.
 
 ### Simulate Swap
 
 ```json
 {
-  "simulate_swap": {
+  "simulation": {
     "offer_asset": {
-      "native_token": { "denom": "bluechip" }
-    },
-    "offer_amount": "1000000"
+      "info": { "bluechip": { "denom": "ubluechip" } },
+      "amount": "1000000"
+    }
   }
 }
 ```
+
+`reverse_simulation { ask_asset }` solves for the offer amount that produces a given output.
 
 ### Pool Analytics
 
@@ -537,11 +516,11 @@ The standard-pool reply handler will reject the transaction if the CW20 has a tr
 
 ```json
 {
-  "get_commit_info": {
-    "address": "bluechip1..."
-  }
+  "committing_info": { "wallet": "bluechip1..." }
 }
 ```
+
+`last_commited { wallet }` (note the on-chain typo) returns the wallet's most recent commit timestamp and per-commit USD / bluechip amounts; useful for enforcing the 13-second per-wallet rate limit client-side before broadcasting. `pool_commits { pool_contract_address, min_payment_usd, after_timestamp, start_after, limit }` pages the full committer ledger for a pool — the response carries `committers` and a `page_count` (size of THIS page after filtering, not the pre-filter total).
 
 ---
 
@@ -936,12 +915,19 @@ bluechip-contracts/
 ├── creator-pool/                     # Creator pool (commit + AMM)
 ├── standard-pool/                    # Plain xyk pool
 ├── expand-economy/                   # Bluechip mint reservoir
+├── mockoracle/                       # Test-only Pyth-shaped oracle
+├── router/                           # Multi-hop swap router
 ├── packages/
 │   ├── pool-core/                    # Shared AMM library
-│   └── pool-factory-interfaces/      # Shared wire-format types
+│   ├── pool-factory-interfaces/      # Shared wire-format types
+│   └── easy-addr/                    # Test-only deterministic-addr helper
+├── fuzz/                             # cargo-fuzz pure-math targets (excluded from default workspace)
+├── fuzz-stateful/                    # proptest stateful harness (workspace member)
 ├── keepers/                          # Off-chain bots (oracle / distribution)
 └── frontend/                         # Reference UI
 ```
+
+See `FUZZING.md` for the fuzz harness layout and `FUZZ_REVIEW.md` for the latest coverage audit.
 
 ### Deployment Order
 
@@ -955,16 +941,15 @@ bluechip-contracts/
 8. Wait for the oracle warm-up gate to clear (6 successful TWAP rounds)
 9. Creators can now create commit pools; anyone can create additional standard pools
 
-### Mainnet Deployment
+### Local / Mock-Oracle Deployment
 
-To deploy to Bluechip Mainnet:
+The repo ships `deploy_full_stack_mock_oracle.sh`, which uploads every wasm in this workspace plus the bundled `cw20_base.wasm` / `cw721_base.wasm` and the mock oracle, instantiates them in the correct order, and bootstraps the ATOM/bluechip anchor pool. Edit the configurable section at the top of the script (chain, gas prices, wallet keys) before running:
 
-1. Configure your wallet (ensure you have `bluechipd` CLI tool)
-2. Run the deployment script:
-   ```bash
-   ./deploy_mainnet.sh
-   ```
-3. Update specific configurations in `deploy_mainnet.sh` (Oracle address, Price Feed ID, expand-economy denom) if necessary.
+```bash
+./deploy_full_stack_mock_oracle.sh
+```
+
+Mainnet deployment runs the same sequence but against a real Pyth oracle address — there is no checked-in `deploy_mainnet.sh`; clone the mock-oracle script, swap the oracle/feed IDs, and remove the mock-oracle upload step.
 
 ---
 
