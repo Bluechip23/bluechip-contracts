@@ -10,7 +10,7 @@ interface CommitTrackerProps {
 }
 
 interface CommitData {
-    last_commited: string;
+    last_committed: string;
     total_paid_usd: string;
     total_paid_bluechip: string;
 }
@@ -48,14 +48,14 @@ const CommitTracker: React.FC<CommitTrackerProps> = ({ client, address, contract
                 }
             });
 
-            if (response && response.commiters) {
-                const sortedCommits = [...response.commiters].sort((a, b) => {
-                    return parseInt(a.last_commited) - parseInt(b.last_commited);
+            if (response && response.committers) {
+                const sortedCommits = [...response.committers].sort((a, b) => {
+                    return parseInt(a.last_committed) - parseInt(b.last_committed);
                 });
 
                 let cumulative = 0;
                 let bluechipTotal = 0;
-                const data = sortedCommits.map((commit, index) => {
+                const data = sortedCommits.map((commit) => {
                     const value = parseInt(commit.total_paid_usd);
                     const bluechipValue = parseInt(commit.total_paid_bluechip);
                     cumulative += value;
@@ -65,7 +65,7 @@ const CommitTracker: React.FC<CommitTrackerProps> = ({ client, address, contract
                         name: ``,
                         value: value,
                         total: cumulative,
-                        timestamp: new Date(parseInt(commit.last_commited) / 1000000).toLocaleString()
+                        timestamp: new Date(parseInt(commit.last_committed) / 1000000).toLocaleString()
                     };
                 });
 

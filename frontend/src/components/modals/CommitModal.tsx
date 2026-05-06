@@ -14,7 +14,7 @@ import {
 } from '@mui/material';
 import ContentCopyIcon from '@mui/icons-material/ContentCopy';
 import CloseIcon from '@mui/icons-material/Close';
-import { TokenModalProps, toMicroUnits, DEFAULT_CHAIN_CONFIG } from '../../types/FrontendTypes';
+import { TokenModalProps, toMicroUnits, DEFAULT_CHAIN_CONFIG, getBluechipDenom } from '../../types/FrontendTypes';
 
 const CommitModal: React.FC<TokenModalProps> = ({
     open,
@@ -50,6 +50,13 @@ const CommitModal: React.FC<TokenModalProps> = ({
             }
 
             const amountInMicroUnits = toMicroUnits(amount, DEFAULT_CHAIN_CONFIG.coinDecimals);
+
+            // Pool denom is configurable per-pool; read it from the pool's pair
+            // query rather than assuming DEFAULT_CHAIN_CONFIG.nativeDenom.
+            const pairInfo = await client.queryContractSmart(token.poolAddress, { pair: {} });
+            const bluechipDenom =
+                getBluechipDenom(pairInfo.asset_infos) ?? DEFAULT_CHAIN_CONFIG.nativeDenom;
+
             const thresholdStatus = await client.queryContractSmart(token.poolAddress, {
                 is_fully_commited: {}
             });
@@ -60,7 +67,7 @@ const CommitModal: React.FC<TokenModalProps> = ({
 
             const commitMsg = {
                 asset: {
-                    info: { bluechip: { denom: DEFAULT_CHAIN_CONFIG.nativeDenom } },
+                    info: { bluechip: { denom: bluechipDenom } },
                     amount: amountInMicroUnits
                 },
                 transaction_deadline: deadlineInNs,
@@ -70,7 +77,7 @@ const CommitModal: React.FC<TokenModalProps> = ({
             };
 
             const msg = { commit: commitMsg };
-            const funds = [{ denom: DEFAULT_CHAIN_CONFIG.nativeDenom, amount: amountInMicroUnits }];
+            const funds = [{ denom: bluechipDenom, amount: amountInMicroUnits }];
 
             const result = await client.execute(
                 address,

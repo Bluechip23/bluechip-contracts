@@ -15,7 +15,7 @@ import {
 import ContentCopyIcon from '@mui/icons-material/ContentCopy';
 import CloseIcon from '@mui/icons-material/Close';
 import { coins } from '@cosmjs/stargate';
-import { DEFAULT_CHAIN_CONFIG, TokenModalProps, toMicroUnits } from '../../types/FrontendTypes';
+import { DEFAULT_CHAIN_CONFIG, TokenModalProps, toMicroUnits, getBluechipDenom } from '../../types/FrontendTypes';
 
 const BuyModal: React.FC<TokenModalProps> = ({
     open,
@@ -52,6 +52,11 @@ const BuyModal: React.FC<TokenModalProps> = ({
 
             const amountInMicroUnits = toMicroUnits(amount, DEFAULT_CHAIN_CONFIG.coinDecimals);
 
+            // Pool denom is configurable per-pool; read it from the pair query.
+            const pairInfo = await client.queryContractSmart(token.poolAddress, { pair: {} });
+            const bluechipDenom =
+                getBluechipDenom(pairInfo.asset_infos) ?? DEFAULT_CHAIN_CONFIG.nativeDenom;
+
             const deadlineInNs = deadline && parseFloat(deadline) > 0
                 ? (Date.now() + parseFloat(deadline) * 60 * 1000) * 1_000_000
                 : null;
@@ -59,7 +64,7 @@ const BuyModal: React.FC<TokenModalProps> = ({
             const msg = {
                 simple_swap: {
                     offer_asset: {
-                        info: { bluechip: { denom: DEFAULT_CHAIN_CONFIG.nativeDenom } },
+                        info: { bluechip: { denom: bluechipDenom } },
                         amount: amountInMicroUnits
                     },
                     belief_price: null,
@@ -69,7 +74,7 @@ const BuyModal: React.FC<TokenModalProps> = ({
                 }
             };
 
-            const funds = coins(amountInMicroUnits, DEFAULT_CHAIN_CONFIG.nativeDenom);
+            const funds = coins(amountInMicroUnits, bluechipDenom);
 
             const result = await client.execute(
                 address,
