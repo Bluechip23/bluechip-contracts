@@ -1311,13 +1311,19 @@ pub fn calculate_weighted_price_with_atom(
                         cumulative_for_price.saturating_sub(prev.price0_cumulative);
 
                     if time_delta > 0 && !cumulative_delta.is_zero() {
-                        // TWAP = cumulative_delta / time_delta
-                        // Scale to PRICE_PRECISION for consistency.
+                        // TWAP = cumulative_delta / time_delta.
+                        //
+                        // The accumulator on the pool side is already
+                        // pre-scaled by `PRICE_ACCUMULATOR_SCALE` (==
+                        // `PRICE_PRECISION`) inside
+                        // `pool_core::swap::update_price_accumulator`, so
+                        // the result of this division is already in the
+                        // 6-decimal `bluechip-per-other` representation
+                        // the rest of the oracle expects. The previous
+                        // post-divide `* PRICE_PRECISION` step would have
+                        // applied scaling twice and is intentionally
+                        // omitted here.
                         cumulative_delta
-                            .checked_mul(Uint128::from(PRICE_PRECISION))
-                            .map_err(|_| {
-                                ContractError::Std(StdError::generic_err("TWAP scale overflow"))
-                            })?
                             .checked_div(Uint128::from(time_delta))
                             .map_err(|_| {
                                 ContractError::Std(StdError::generic_err("TWAP division error"))

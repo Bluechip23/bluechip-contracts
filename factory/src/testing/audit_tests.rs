@@ -2027,8 +2027,12 @@ mod anchor_bluechip_index_cache_tests {
         state.reserve0 = Uint128::new(100_000_000_000);
         state.reserve1 = Uint128::new(50_000_000_000);
         state.block_time_last = 100;
-        state.price0_cumulative_last = Uint128::new(500);
-        state.price1_cumulative_last = Uint128::new(2_000);
+        // The pool-side accumulator is pre-scaled by
+        // `pool_core::swap::PRICE_ACCUMULATOR_SCALE` (== 1e6), so the
+        // cumulative values stored on a real pool are raw_ratio·time·1e6.
+        // 500 raw × 1e6 = 5e8; 2000 raw × 1e6 = 2e9.
+        state.price0_cumulative_last = Uint128::new(500_000_000);
+        state.price1_cumulative_last = Uint128::new(2_000_000_000);
         POOLS_BY_CONTRACT_ADDRESS
             .save(&mut deps.storage, atom_addr.clone(), &state)
             .unwrap();
@@ -2041,7 +2045,7 @@ mod anchor_bluechip_index_cache_tests {
         let pools = vec![atom_addr.to_string()];
 
         // Invocation A: anchor_bluechip_index = 0. cumulative_for_price
-        // reads price1_cumulative_last (2000) → TWAP = 2000*1e6/100 = 20_000_000.
+        // reads price1_cumulative_last (2e9) → TWAP = 2e9 / 100 = 20_000_000.
         let (_, atom_price_a, _) =
             calculate_weighted_price_with_atom(deps.as_ref(), &pools, &prev_snapshots, 0)
                 .expect("call A must succeed");
@@ -2049,7 +2053,7 @@ mod anchor_bluechip_index_cache_tests {
             atom_price_a.expect("anchor TWAP under index=0 must be Some");
 
         // Invocation B: anchor_bluechip_index = 1. cumulative_for_price
-        // reads price0_cumulative_last (500) → TWAP = 500*1e6/100 = 5_000_000.
+        // reads price0_cumulative_last (5e8) → TWAP = 5e8 / 100 = 5_000_000.
         let (_, atom_price_b, _) =
             calculate_weighted_price_with_atom(deps.as_ref(), &pools, &prev_snapshots, 1)
                 .expect("call B must succeed");

@@ -628,7 +628,7 @@ pub fn reply(
 /// so the cw2 stored version always lands at the new release on a
 /// successful migrate regardless of which variant was sent.
 #[entry_point]
-pub fn migrate(deps: DepsMut, _env: Env, msg: MigrateMsg) -> Result<Response, ContractError> {
+pub fn migrate(deps: DepsMut, env: Env, msg: MigrateMsg) -> Result<Response, ContractError> {
     // Reject downgrades. Mirrors the creator-pool migrate guard —
     // see that handler for the rationale. Tolerates a missing cw2 entry
     // (legacy pre-cw2 / test fixtures) by skipping the check; production
@@ -673,6 +673,23 @@ pub fn migrate(deps: DepsMut, _env: Env, msg: MigrateMsg) -> Result<Response, Co
         // `set_contract_version` below so the cw2 stored version
         // always lands at the new release on a successful migrate.
         MigrateMsg::UpdateVersion {} => {}
+    }
+
+    // Reset the price accumulator on every migrate so a unit-scale change
+    // in `pool_core::swap::update_price_accumulator` (e.g. the
+    // `PRICE_ACCUMULATOR_SCALE` introduction) does not produce a one-shot
+    // garbage TWAP from a `cumulative_delta` that crosses the upgrade
+    // boundary with mixed-units endpoints. The factory's oracle observes
+    // a zero `cumulative_delta` for the round straddling the migrate
+    // (`saturating_sub(scaled_new, unscaled_old) == 0` once new > old, but
+    // for the first post-migrate read both ends will be small) and
+    // `continue`s, then steady-state TWAP resumes from the next round.
+    // Cheap and idempotent — costs at most one TWAP round per upgrade.
+    if let Ok(mut state) = POOL_STATE.load(deps.storage) {
+        state.price0_cumulative_last = cosmwasm_std::Uint128::zero();
+        state.price1_cumulative_last = cosmwasm_std::Uint128::zero();
+        state.block_time_last = env.block.time.seconds();
+        POOL_STATE.save(deps.storage, &state)?;
     }
 
     set_contract_version(deps.storage, CONTRACT_NAME, CONTRACT_VERSION)?;
