@@ -456,75 +456,137 @@ pub fn initialize_internal_bluechip_oracle(
 /// `i` has bluechip on reserve-side `bluechip_indices[i]` (0 or 1).
 /// Hoisting this into the snapshot is what makes oracle updates O(1) per
 /// sampled pool instead of O(N).
+///
+/// Two parallel inputs feed the result (M-3 audit fix):
+///
+///   1. **Admin-curated allowlist** (`ORACLE_ELIGIBLE_POOLS`). Any pool
+///      kind. Bluechip-side index pre-resolved at allowlist-add time so
+///      no per-call scan is needed. Required for the early-stage
+///      roadmap where bluechip/IBC standard pools are the only
+///      externally-priced sources.
+///
+///   2. **Threshold-crossed commit pools** — included ONLY when
+///      `COMMIT_POOLS_AUTO_ELIGIBLE` is true. Default false on fresh
+///      deployments; set true by migrate to preserve legacy behaviour
+///      for existing deployments. When false, commit pools enter the
+///      oracle only via the allowlist (manual override during stages
+///      3–4 of the roadmap).
+///
+/// Both sources independently apply:
+///   - skip-anchor (the anchor is added separately by
+///     `select_random_pools_with_atom`),
+///   - bluechip-side resolution (skip pools without one),
+///   - cross-contract `MIN_POOL_LIQUIDITY` check (skip drained pools).
+///
+/// Dedup by pool address: a pool that's both allowlisted AND
+/// threshold-crossed-commit shows up once. Allowlist takes precedence
+/// for the bluechip-index value (it was admin-blessed at add time).
 pub fn get_eligible_creator_pools(
     deps: Deps,
     atom_pool_contract_address: &str,
 ) -> StdResult<(Vec<String>, Vec<u8>)> {
-    // Return every pool eligible for oracle sampling. A pool is eligible iff:
-    //   1. It is a commit pool (NOT a standard pool — standard pools can
-    //      hold arbitrary pairs including non-bluechip ones and their price
-    //      isn't meaningful for bluechip/USD derivation).
-    //   2. It contains a bluechip token (so we can price it against ATOM).
-    //   3. It has crossed its commit threshold (POOL_THRESHOLD_MINTED == true).
-    //   4. Its current reserves sum to >= MIN_POOL_LIQUIDITY.
-    //
-    // The threshold-crossed gate is the important one: pool creation is
-    // permissionless, so without this check a spammer could bloat the oracle
-    // sample set with pre-threshold pools. The MIN_POOL_LIQUIDITY check is
-    // defense-in-depth for pools that crossed threshold but later drained.
-    //
-    // Single pass over POOLS_BY_ID: for each candidate we check the cheap
-    // in-storage gates first and only incur the cross-contract
-    // PoolStateResponseForFactory query when they all pass. The older
-    // implementation did two full range scans plus a HashSet build, which
-    // dominated oracle-update gas at scale.
-    // Building entries as a single struct per pool (rather than two
-    // parallel `Vec`s with a "couple by position" invariant) makes it
-    // structurally impossible for a future code path to push to one
-    // collection without the other. The `unzip` at the end produces the
-    // wire-format expected by `EligiblePoolSnapshot`.
+    use std::collections::HashSet;
     let mut entries: Vec<EligiblePoolEntry> = Vec::new();
-    for row in POOLS_BY_ID.range(deps.storage, None, None, Order::Ascending) {
-        let (pool_id, pool_details) = row?;
+    let mut seen: HashSet<String> = HashSet::new();
 
-        if pool_details.creator_pool_addr.as_str() == atom_pool_contract_address {
+    // ---- Source 1: admin allowlist (any pool kind) ----
+    for entry in crate::state::ORACLE_ELIGIBLE_POOLS.range(
+        deps.storage,
+        None,
+        None,
+        Order::Ascending,
+    ) {
+        let (pool_addr, allowlist_entry) = entry?;
+        let pool_addr_str = pool_addr.to_string();
+        if pool_addr_str == atom_pool_contract_address {
             continue;
         }
-        // Standard pools are never eligible for TWAP sampling — see gate (1) above.
-        if pool_details.pool_kind == PoolKind::Standard {
-            continue;
-        }
-        // Resolve bluechip side once at snapshot capture time. Commit pools
-        // are validated at instantiate to contain exactly one Bluechip and
-        // one CreatorToken, so this find always succeeds for eligible pools.
-        let bluechip_idx = match pool_details
-            .pool_token_info
-            .iter()
-            .position(|t| matches!(t, TokenType::Native { .. }))
+
+        // Cross-contract liquidity gate. The allowlist is curated by admin
+        // at propose/apply time, but a pool that crossed `MIN_POOL_LIQUIDITY`
+        // at allowlist-add time can drain afterwards — drop those without
+        // an admin RemoveOracleEligiblePool, so the snapshot stays honest
+        // until the next admin action.
+        let pool_state: PoolStateResponseForFactory = match deps
+            .querier
+            .query_wasm_smart(pool_addr_str.clone(), &PoolQueryMsg::GetPoolState {})
         {
-            Some(i) => i as u8,
-            None => continue, // No bluechip side — gate (2) fails.
+            Ok(s) => s,
+            Err(_) => continue,
         };
-        if !POOL_THRESHOLD_MINTED
-            .may_load(deps.storage, pool_id)?
-            .unwrap_or(false)
-        {
+        let total_liquidity = pool_state.reserve0.saturating_add(pool_state.reserve1);
+        if total_liquidity < MIN_POOL_LIQUIDITY {
             continue;
         }
 
-        let pool_state: PoolStateResponseForFactory = deps.querier.query_wasm_smart(
-            pool_details.creator_pool_addr.to_string(),
-            &PoolQueryMsg::GetPoolState {},
-        )?;
+        seen.insert(pool_addr_str.clone());
+        entries.push(EligiblePoolEntry {
+            address: pool_addr_str,
+            bluechip_index: allowlist_entry.bluechip_index,
+        });
+    }
 
-        let total_liquidity = pool_state.reserve0.saturating_add(pool_state.reserve1);
-        if total_liquidity >= MIN_POOL_LIQUIDITY {
+    // ---- Source 2: threshold-crossed commit pools (gated by global flag) ----
+    let auto_commit = crate::state::load_commit_pools_auto_eligible(deps.storage);
+    if auto_commit {
+        for row in POOLS_BY_ID.range(deps.storage, None, None, Order::Ascending) {
+            let (pool_id, pool_details) = row?;
+
+            let pool_addr_str = pool_details.creator_pool_addr.to_string();
+            if pool_addr_str == atom_pool_contract_address {
+                continue;
+            }
+            if seen.contains(&pool_addr_str) {
+                continue;
+            }
+            // Auto-eligible source covers commit pools only — standard
+            // pools enter the oracle through the curated allowlist
+            // (no programmatic gate exists for "is this standard pool's
+            // non-bluechip side externally priced?").
+            if pool_details.pool_kind == PoolKind::Standard {
+                continue;
+            }
+            // Bluechip-side resolution. Commit pools are validated at
+            // instantiate to contain exactly one Bluechip and one
+            // CreatorToken, so this `find` always succeeds for eligible
+            // pools.
+            let bluechip_idx = match pool_details
+                .pool_token_info
+                .iter()
+                .position(|t| matches!(t, TokenType::Native { .. }))
+            {
+                Some(i) => i as u8,
+                None => continue,
+            };
+            // Threshold-cross gate. Without it, a creator could spam
+            // pre-threshold pools and bloat the oracle sample set.
+            if !POOL_THRESHOLD_MINTED
+                .may_load(deps.storage, pool_id)?
+                .unwrap_or(false)
+            {
+                continue;
+            }
+
+            let pool_state: PoolStateResponseForFactory = match deps
+                .querier
+                .query_wasm_smart(pool_addr_str.clone(), &PoolQueryMsg::GetPoolState {})
+            {
+                Ok(s) => s,
+                Err(_) => continue,
+            };
+            let total_liquidity = pool_state.reserve0.saturating_add(pool_state.reserve1);
+            if total_liquidity < MIN_POOL_LIQUIDITY {
+                continue;
+            }
+
+            seen.insert(pool_addr_str.clone());
             entries.push(EligiblePoolEntry {
-                address: pool_details.creator_pool_addr.to_string(),
+                address: pool_addr_str,
                 bluechip_index: bluechip_idx,
             });
         }
     }
+
     let (eligible, indices) = entries
         .into_iter()
         .map(|e| (e.address, e.bluechip_index))

@@ -8,15 +8,19 @@
 //! egg at deploy time).
 
 use cosmwasm_std::{
-    Addr, Attribute, BankMsg, Coin, CosmosMsg, DepsMut, Env, MessageInfo, Response, StdError,
+    Addr, Attribute, BankMsg, Coin, CosmosMsg, Deps, DepsMut, Env, MessageInfo, Response, StdError,
     StdResult, Storage, Uint128,
 };
 use cw_storage_plus::Item;
 
 use crate::error::ContractError;
 use crate::state::{
-    DISTRIBUTION_BOUNTY_USD, FACTORYINSTANTIATEINFO, MAX_DISTRIBUTION_BOUNTY_USD,
-    MAX_ORACLE_UPDATE_BOUNTY_USD, ORACLE_BOUNTY_DENOM, ORACLE_UPDATE_BOUNTY_USD,
+    AllowlistedOraclePool, PendingCommitPoolsAutoEligible, PendingOracleEligiblePoolAdd,
+    ADMIN_TIMELOCK_SECONDS, COMMIT_POOLS_AUTO_ELIGIBLE, DISTRIBUTION_BOUNTY_USD,
+    FACTORYINSTANTIATEINFO, LAST_ORACLE_REFRESH_BLOCK, MAX_DISTRIBUTION_BOUNTY_USD,
+    MAX_ORACLE_UPDATE_BOUNTY_USD, ORACLE_BOUNTY_DENOM, ORACLE_ELIGIBLE_POOLS,
+    ORACLE_REFRESH_RATE_LIMIT_BLOCKS, ORACLE_UPDATE_BOUNTY_USD,
+    PENDING_COMMIT_POOLS_AUTO_ELIGIBLE, PENDING_ORACLE_ELIGIBLE_POOL_ADD,
     POOLS_BY_CONTRACT_ADDRESS, POOLS_BY_ID,
 };
 
@@ -462,4 +466,308 @@ pub(crate) fn refresh_internal_oracle_for_anchor_change(
         crate::internal_bluechip_price_oracle::ANCHOR_CHANGE_WARMUP_OBSERVATIONS;
     crate::internal_bluechip_price_oracle::INTERNAL_ORACLE.save(deps.storage, &oracle)?;
     Ok(new_pools.len())
+}
+
+// ===========================================================================
+// Oracle eligibility curation (M-3 audit fix).
+//
+// Two parallel inputs feed the snapshot rebuild:
+//   - `ORACLE_ELIGIBLE_POOLS` — admin-curated allowlist (any pool kind).
+//     Add: 48h timelock. Remove: immediate.
+//   - `COMMIT_POOLS_AUTO_ELIGIBLE` — global flag; when true, threshold-
+//     crossed `PoolKind::Commit` pools also flow in. Flip: 48h timelock.
+//
+// All admin handlers reuse `ADMIN_TIMELOCK_SECONDS` (48h) so the
+// observability window matches the rest of the factory's mutation paths.
+// ===========================================================================
+
+/// Resolve the bluechip-side index (0 or 1) for a pool currently in
+/// `POOLS_BY_ID`. Returns the pool's `PoolDetails` alongside the index for
+/// callers (allowlist propose / apply) that need both. Errors with
+/// `OracleEligiblePoolNotInRegistry` for unknown addresses and
+/// `OracleEligiblePoolMissingBluechipSide` for pools whose `pool_token_info`
+/// doesn't contain a `Native` entry matching the configured bluechip denom.
+fn resolve_pool_for_allowlist(
+    deps: Deps,
+    pool_addr: &Addr,
+) -> Result<(crate::pool_struct::PoolDetails, u8), ContractError> {
+    let factory_config = FACTORYINSTANTIATEINFO.load(deps.storage)?;
+    let bluechip_denom = factory_config.bluechip_denom.as_str();
+    let pool_details = lookup_pool_by_addr(deps, pool_addr)?.ok_or_else(|| {
+        ContractError::OracleEligiblePoolNotInRegistry {
+            pool_addr: pool_addr.to_string(),
+        }
+    })?;
+    let bluechip_index = pool_details
+        .pool_token_info
+        .iter()
+        .position(|t| matches!(t, crate::asset::TokenType::Native { denom } if denom == bluechip_denom))
+        .ok_or_else(|| ContractError::OracleEligiblePoolMissingBluechipSide {
+            pool_addr: pool_addr.to_string(),
+        })? as u8;
+    Ok((pool_details, bluechip_index))
+}
+
+/// Admin-only. Stage a pool address for inclusion in the oracle allowlist.
+/// Validates pool existence + bluechip-side resolution at propose time so
+/// the timelock isn't burned on a pool that can't possibly be eligible;
+/// the same validation runs again at apply time as defense in depth.
+pub fn execute_propose_add_oracle_eligible_pool(
+    deps: DepsMut,
+    env: Env,
+    info: MessageInfo,
+    pool_addr: String,
+) -> Result<Response, ContractError> {
+    ensure_admin(deps.as_ref(), &info)?;
+    let pool_addr = deps.api.addr_validate(&pool_addr)?;
+
+    if ORACLE_ELIGIBLE_POOLS.has(deps.storage, pool_addr.clone()) {
+        return Err(ContractError::OracleEligiblePoolAlreadyAdded {
+            pool_addr: pool_addr.to_string(),
+        });
+    }
+    if PENDING_ORACLE_ELIGIBLE_POOL_ADD.has(deps.storage, pool_addr.clone()) {
+        return Err(ContractError::OracleEligiblePoolAddAlreadyPending {
+            pool_addr: pool_addr.to_string(),
+        });
+    }
+
+    let (_pool_details, bluechip_index) =
+        resolve_pool_for_allowlist(deps.as_ref(), &pool_addr)?;
+
+    PENDING_ORACLE_ELIGIBLE_POOL_ADD.save(
+        deps.storage,
+        pool_addr.clone(),
+        &PendingOracleEligiblePoolAdd {
+            proposed_at: env.block.time,
+            bluechip_index,
+        },
+    )?;
+
+    let effective_after = env.block.time.plus_seconds(ADMIN_TIMELOCK_SECONDS);
+    Ok(Response::new()
+        .add_attribute("action", "propose_add_oracle_eligible_pool")
+        .add_attribute("pool_addr", pool_addr.to_string())
+        .add_attribute("bluechip_index", bluechip_index.to_string())
+        .add_attribute("effective_after", effective_after.to_string()))
+}
+
+/// Admin-only. Apply a previously-proposed allowlist add. Re-resolves the
+/// pool's bluechip-side index against current registry state — if the pool
+/// somehow lost its bluechip side between propose and apply (which
+/// shouldn't be possible, but isn't disprovable in storage), the apply
+/// fails closed rather than landing a malformed entry.
+pub fn execute_apply_add_oracle_eligible_pool(
+    deps: DepsMut,
+    env: Env,
+    info: MessageInfo,
+    pool_addr: String,
+) -> Result<Response, ContractError> {
+    ensure_admin(deps.as_ref(), &info)?;
+    let pool_addr = deps.api.addr_validate(&pool_addr)?;
+
+    let pending = PENDING_ORACLE_ELIGIBLE_POOL_ADD
+        .may_load(deps.storage, pool_addr.clone())?
+        .ok_or_else(|| ContractError::NoPendingOracleEligiblePoolAdd {
+            pool_addr: pool_addr.to_string(),
+        })?;
+
+    let effective_after = pending
+        .proposed_at
+        .plus_seconds(ADMIN_TIMELOCK_SECONDS);
+    if env.block.time < effective_after {
+        return Err(ContractError::TimelockNotExpired { effective_after });
+    }
+
+    // Re-validate. The propose-time `bluechip_index` was captured against the
+    // pool's token info at that moment; we re-resolve to catch the unlikely
+    // case of a registry mutation between propose and apply, and to keep the
+    // post-apply allowlist entry's `bluechip_index` aligned with present
+    // reality.
+    let (_pool_details, bluechip_index) =
+        resolve_pool_for_allowlist(deps.as_ref(), &pool_addr)?;
+
+    ORACLE_ELIGIBLE_POOLS.save(
+        deps.storage,
+        pool_addr.clone(),
+        &AllowlistedOraclePool {
+            bluechip_index,
+            added_at: env.block.time,
+        },
+    )?;
+    PENDING_ORACLE_ELIGIBLE_POOL_ADD.remove(deps.storage, pool_addr.clone());
+
+    Ok(Response::new()
+        .add_attribute("action", "apply_add_oracle_eligible_pool")
+        .add_attribute("pool_addr", pool_addr.to_string())
+        .add_attribute("bluechip_index", bluechip_index.to_string()))
+}
+
+/// Admin-only. Discard a pending allowlist add before the timelock has
+/// expired. Errors if there is no matching pending entry.
+pub fn execute_cancel_add_oracle_eligible_pool(
+    deps: DepsMut,
+    info: MessageInfo,
+    pool_addr: String,
+) -> Result<Response, ContractError> {
+    ensure_admin(deps.as_ref(), &info)?;
+    let pool_addr = deps.api.addr_validate(&pool_addr)?;
+
+    if !PENDING_ORACLE_ELIGIBLE_POOL_ADD.has(deps.storage, pool_addr.clone()) {
+        return Err(ContractError::NoPendingOracleEligiblePoolAdd {
+            pool_addr: pool_addr.to_string(),
+        });
+    }
+    PENDING_ORACLE_ELIGIBLE_POOL_ADD.remove(deps.storage, pool_addr.clone());
+
+    Ok(Response::new()
+        .add_attribute("action", "cancel_add_oracle_eligible_pool")
+        .add_attribute("pool_addr", pool_addr.to_string()))
+}
+
+/// Admin-only. Drop a pool from the oracle allowlist. Effect is immediate
+/// (no timelock) — removing a contributor is always safe relative to oracle
+/// integrity, and the breaker / next-snapshot-refresh handle the
+/// recomputation cleanly.
+pub fn execute_remove_oracle_eligible_pool(
+    deps: DepsMut,
+    info: MessageInfo,
+    pool_addr: String,
+) -> Result<Response, ContractError> {
+    ensure_admin(deps.as_ref(), &info)?;
+    let pool_addr = deps.api.addr_validate(&pool_addr)?;
+
+    if !ORACLE_ELIGIBLE_POOLS.has(deps.storage, pool_addr.clone()) {
+        return Err(ContractError::OracleEligiblePoolNotAllowlisted {
+            pool_addr: pool_addr.to_string(),
+        });
+    }
+    ORACLE_ELIGIBLE_POOLS.remove(deps.storage, pool_addr.clone());
+
+    Ok(Response::new()
+        .add_attribute("action", "remove_oracle_eligible_pool")
+        .add_attribute("pool_addr", pool_addr.to_string()))
+}
+
+/// Admin-only. Stage a flip of `COMMIT_POOLS_AUTO_ELIGIBLE`. Both
+/// directions (ON→OFF and OFF→ON) go through the same 48h timelock so
+/// creator-pool operators losing oracle weight have the same
+/// observability window as new operators gaining it.
+pub fn execute_propose_set_commit_pools_auto_eligible(
+    deps: DepsMut,
+    env: Env,
+    info: MessageInfo,
+    enabled: bool,
+) -> Result<Response, ContractError> {
+    ensure_admin(deps.as_ref(), &info)?;
+
+    if PENDING_COMMIT_POOLS_AUTO_ELIGIBLE.may_load(deps.storage)?.is_some() {
+        return Err(ContractError::CommitPoolsAutoEligibleAlreadyPending);
+    }
+
+    let current = crate::state::load_commit_pools_auto_eligible(deps.storage);
+    if current == enabled {
+        return Err(ContractError::CommitPoolsAutoEligibleNoChange { value: enabled });
+    }
+
+    PENDING_COMMIT_POOLS_AUTO_ELIGIBLE.save(
+        deps.storage,
+        &PendingCommitPoolsAutoEligible {
+            new_value: enabled,
+            proposed_at: env.block.time,
+        },
+    )?;
+
+    let effective_after = env.block.time.plus_seconds(ADMIN_TIMELOCK_SECONDS);
+    Ok(Response::new()
+        .add_attribute("action", "propose_set_commit_pools_auto_eligible")
+        .add_attribute("new_value", enabled.to_string())
+        .add_attribute("effective_after", effective_after.to_string()))
+}
+
+/// Admin-only. Apply a previously-proposed flag flip after the timelock.
+pub fn execute_apply_set_commit_pools_auto_eligible(
+    deps: DepsMut,
+    env: Env,
+    info: MessageInfo,
+) -> Result<Response, ContractError> {
+    ensure_admin(deps.as_ref(), &info)?;
+
+    let pending = PENDING_COMMIT_POOLS_AUTO_ELIGIBLE
+        .may_load(deps.storage)?
+        .ok_or(ContractError::NoPendingCommitPoolsAutoEligible)?;
+
+    let effective_after = pending
+        .proposed_at
+        .plus_seconds(ADMIN_TIMELOCK_SECONDS);
+    if env.block.time < effective_after {
+        return Err(ContractError::TimelockNotExpired { effective_after });
+    }
+
+    COMMIT_POOLS_AUTO_ELIGIBLE.save(deps.storage, &pending.new_value)?;
+    PENDING_COMMIT_POOLS_AUTO_ELIGIBLE.remove(deps.storage);
+
+    Ok(Response::new()
+        .add_attribute("action", "apply_set_commit_pools_auto_eligible")
+        .add_attribute("new_value", pending.new_value.to_string()))
+}
+
+/// Admin-only. Discard a pending flag flip before the timelock has expired.
+pub fn execute_cancel_set_commit_pools_auto_eligible(
+    deps: DepsMut,
+    info: MessageInfo,
+) -> Result<Response, ContractError> {
+    ensure_admin(deps.as_ref(), &info)?;
+
+    if PENDING_COMMIT_POOLS_AUTO_ELIGIBLE.may_load(deps.storage)?.is_none() {
+        return Err(ContractError::NoPendingCommitPoolsAutoEligible);
+    }
+    PENDING_COMMIT_POOLS_AUTO_ELIGIBLE.remove(deps.storage);
+
+    Ok(Response::new().add_attribute("action", "cancel_set_commit_pools_auto_eligible"))
+}
+
+/// Permissionless. Force a rebuild of `ELIGIBLE_POOL_SNAPSHOT` from the
+/// current allowlist + auto-flag inputs. Rate-limited via
+/// `ORACLE_REFRESH_RATE_LIMIT_BLOCKS` so it can't be spammed; never
+/// changes which pools are eligible (that's controlled by the admin
+/// inputs above), only when the snapshot reflects them.
+pub fn execute_refresh_oracle_pool_snapshot(
+    mut deps: DepsMut,
+    env: Env,
+) -> Result<Response, ContractError> {
+    let current_block = env.block.height;
+    if let Some(last) = LAST_ORACLE_REFRESH_BLOCK.may_load(deps.storage)? {
+        let next_allowed = last.saturating_add(ORACLE_REFRESH_RATE_LIMIT_BLOCKS);
+        if current_block < next_allowed {
+            return Err(ContractError::OracleRefreshRateLimited {
+                next_block: next_allowed,
+            });
+        }
+    }
+
+    let factory_config = FACTORYINSTANTIATEINFO.load(deps.storage)?;
+    let atom_pool_addr = factory_config
+        .atom_bluechip_anchor_pool_address
+        .to_string();
+    let (pool_addresses, bluechip_indices) =
+        crate::internal_bluechip_price_oracle::get_eligible_creator_pools(
+            deps.as_ref(),
+            &atom_pool_addr,
+        )?;
+    crate::state::ELIGIBLE_POOL_SNAPSHOT.save(
+        deps.storage,
+        &crate::state::EligiblePoolSnapshot {
+            pool_addresses: pool_addresses.clone(),
+            bluechip_indices,
+            captured_at_block: current_block,
+        },
+    )?;
+    LAST_ORACLE_REFRESH_BLOCK.save(deps.storage, &current_block)?;
+
+    let _ = &mut deps; // borrow already moved into get_eligible_creator_pools via as_ref
+    Ok(Response::new()
+        .add_attribute("action", "refresh_oracle_pool_snapshot")
+        .add_attribute("eligible_count", pool_addresses.len().to_string())
+        .add_attribute("captured_at_block", current_block.to_string()))
 }

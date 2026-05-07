@@ -134,6 +134,18 @@ pub fn setup_atom_pool(deps: &mut OwnedDeps<MockStorage, MockApi, WasmMockQuerie
     POOLS_BY_CONTRACT_ADDRESS
         .save(deps.as_mut().storage, atom_pool_addr, &atom_pool_state)
         .unwrap();
+
+    // Mirror the migrate-time default for `COMMIT_POOLS_AUTO_ELIGIBLE`
+    // (M-3 audit fix). Tests written before this flag existed assume
+    // "every threshold-crossed commit pool is automatically eligible";
+    // setting the flag true here preserves that assumption without
+    // every test having to call the timelocked propose/apply flow.
+    // Tests that explicitly want to exercise the OFF behaviour (or
+    // the allowlist-only path) overwrite the flag after this helper
+    // returns.
+    crate::state::COMMIT_POOLS_AUTO_ELIGIBLE
+        .save(deps.as_mut().storage, &true)
+        .unwrap();
 }
 
 /// Advance the anchor pool's block_time_last + price1_cumulative_last so
