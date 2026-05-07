@@ -34,6 +34,15 @@ pub struct WasmMockQuerier {
     // When set, responds to mock-oracle GetPrice { price_id: "BLUECHIP_USD" }
     // with this price. Used by the #[cfg(feature = "mock")] oracle-update tests.
     pub mock_bluechip_usd_price: Option<cosmwasm_std::Uint128>,
+    // Per-pool overrides for `PoolQueryMsg::GetPoolState`. Keyed by
+    // contract address; when present, the override is returned verbatim.
+    // Falls back to the default 50B/10B reserves below if no override is
+    // registered for the queried address. Used by integration tests that
+    // need different reserves on different pools (M-3 dedup, M-4
+    // liquidity floor) — without this, every cross-contract pool query
+    // returns the same numbers regardless of which pool was asked.
+    pub pool_state_overrides:
+        std::collections::HashMap<String, PoolStateResponseForFactory>,
 }
 
 impl Querier for WasmMockQuerier {
@@ -65,16 +74,28 @@ impl WasmMockQuerier {
                 if let Ok(pool_msg) = from_json::<PoolQueryMsg>(&msg) {
                     match pool_msg {
                         PoolQueryMsg::GetPoolState {} => {
-                            let pool_state = PoolStateResponseForFactory {
-                                pool_contract_address: Addr::unchecked(contract_addr.clone()),
-                                nft_ownership_accepted: true,
-                                reserve0: cosmwasm_std::Uint128::new(50_000_000_000),
-                                reserve1: cosmwasm_std::Uint128::new(10_000_000_000),
-                                total_liquidity: cosmwasm_std::Uint128::new(10_000_000),
-                                block_time_last: 0,
-                                price0_cumulative_last: cosmwasm_std::Uint128::zero(),
-                                price1_cumulative_last: cosmwasm_std::Uint128::zero(),
-                                assets: vec![],
+                            // Per-pool override takes precedence — tests
+                            // that need distinct reserves per pool register
+                            // them via `pool_state_overrides`. Fall back to
+                            // the default 50B/10B numbers (which most
+                            // existing tests rely on) when no override is
+                            // registered for this address.
+                            let pool_state = if let Some(override_state) =
+                                self.pool_state_overrides.get(contract_addr.as_str())
+                            {
+                                override_state.clone()
+                            } else {
+                                PoolStateResponseForFactory {
+                                    pool_contract_address: Addr::unchecked(contract_addr.clone()),
+                                    nft_ownership_accepted: true,
+                                    reserve0: cosmwasm_std::Uint128::new(50_000_000_000),
+                                    reserve1: cosmwasm_std::Uint128::new(10_000_000_000),
+                                    total_liquidity: cosmwasm_std::Uint128::new(10_000_000),
+                                    block_time_last: 0,
+                                    price0_cumulative_last: cosmwasm_std::Uint128::zero(),
+                                    price1_cumulative_last: cosmwasm_std::Uint128::zero(),
+                                    assets: vec![],
+                                }
                             };
                             return SystemResult::Ok(to_json_binary(&pool_state).into());
                         }
@@ -135,6 +156,17 @@ impl WasmMockQuerier {
             paused_pools: std::collections::HashSet::new(),
             query_error_pools: std::collections::HashSet::new(),
             mock_bluechip_usd_price: None,
+            pool_state_overrides: std::collections::HashMap::new(),
         }
+    }
+
+    /// Register an explicit `PoolStateResponseForFactory` for a given
+    /// contract address. Subsequent `GetPoolState` queries against that
+    /// address will return the override verbatim, bypassing the default
+    /// 50B/10B response. Used by integration tests that need to model
+    /// drained / lopsided / healthy pools side-by-side.
+    pub fn set_pool_state(&mut self, addr: &str, state: PoolStateResponseForFactory) {
+        self.pool_state_overrides
+            .insert(addr.to_string(), state);
     }
 }
