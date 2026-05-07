@@ -41,8 +41,13 @@ pub use config::{
 // reached via the `config::validate_factory_config(...)` path in
 // `instantiate` so the gate is visible at the call site.
 pub use oracle::{
-    execute_pay_distribution_bounty, execute_set_anchor_pool, execute_set_distribution_bounty,
-    execute_set_oracle_update_bounty, execute_set_pyth_conf_threshold_bps,
+    execute_apply_add_oracle_eligible_pool, execute_apply_set_commit_pools_auto_eligible,
+    execute_cancel_add_oracle_eligible_pool, execute_cancel_set_commit_pools_auto_eligible,
+    execute_pay_distribution_bounty, execute_propose_add_oracle_eligible_pool,
+    execute_propose_set_commit_pools_auto_eligible, execute_refresh_oracle_pool_snapshot,
+    execute_remove_oracle_eligible_pool, execute_set_anchor_pool,
+    execute_set_distribution_bounty, execute_set_oracle_update_bounty,
+    execute_set_pyth_conf_threshold_bps,
 };
 pub use pool_lifecycle::admin::{
     execute_cancel_emergency_withdraw_pool, execute_emergency_withdraw_pool,
@@ -214,6 +219,30 @@ pub fn execute(
         ExecuteMsg::CancelBootstrapPrice {} => execute_cancel_bootstrap_price(deps, info),
         ExecuteMsg::PruneRateLimits { batch_size } => {
             execute_prune_rate_limits(deps, env, batch_size)
+        }
+        ExecuteMsg::ProposeAddOracleEligiblePool { pool_addr } => {
+            execute_propose_add_oracle_eligible_pool(deps, env, info, pool_addr)
+        }
+        ExecuteMsg::ApplyAddOracleEligiblePool { pool_addr } => {
+            execute_apply_add_oracle_eligible_pool(deps, env, info, pool_addr)
+        }
+        ExecuteMsg::CancelAddOracleEligiblePool { pool_addr } => {
+            execute_cancel_add_oracle_eligible_pool(deps, info, pool_addr)
+        }
+        ExecuteMsg::RemoveOracleEligiblePool { pool_addr } => {
+            execute_remove_oracle_eligible_pool(deps, info, pool_addr)
+        }
+        ExecuteMsg::ProposeSetCommitPoolsAutoEligible { enabled } => {
+            execute_propose_set_commit_pools_auto_eligible(deps, env, info, enabled)
+        }
+        ExecuteMsg::ApplySetCommitPoolsAutoEligible {} => {
+            execute_apply_set_commit_pools_auto_eligible(deps, env, info)
+        }
+        ExecuteMsg::CancelSetCommitPoolsAutoEligible {} => {
+            execute_cancel_set_commit_pools_auto_eligible(deps, info)
+        }
+        ExecuteMsg::RefreshOraclePoolSnapshot {} => {
+            execute_refresh_oracle_pool_snapshot(deps, env)
         }
     }
 }

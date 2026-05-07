@@ -2027,8 +2027,12 @@ mod anchor_bluechip_index_cache_tests {
         state.reserve0 = Uint128::new(100_000_000_000);
         state.reserve1 = Uint128::new(50_000_000_000);
         state.block_time_last = 100;
-        state.price0_cumulative_last = Uint128::new(500);
-        state.price1_cumulative_last = Uint128::new(2_000);
+        // The pool-side accumulator is pre-scaled by
+        // `pool_core::swap::PRICE_ACCUMULATOR_SCALE` (== 1e6), so the
+        // cumulative values stored on a real pool are raw_ratio·time·1e6.
+        // 500 raw × 1e6 = 5e8; 2000 raw × 1e6 = 2e9.
+        state.price0_cumulative_last = Uint128::new(500_000_000);
+        state.price1_cumulative_last = Uint128::new(2_000_000_000);
         POOLS_BY_CONTRACT_ADDRESS
             .save(&mut deps.storage, atom_addr.clone(), &state)
             .unwrap();
@@ -2041,7 +2045,7 @@ mod anchor_bluechip_index_cache_tests {
         let pools = vec![atom_addr.to_string()];
 
         // Invocation A: anchor_bluechip_index = 0. cumulative_for_price
-        // reads price1_cumulative_last (2000) → TWAP = 2000*1e6/100 = 20_000_000.
+        // reads price1_cumulative_last (2e9) → TWAP = 2e9 / 100 = 20_000_000.
         let (_, atom_price_a, _) =
             calculate_weighted_price_with_atom(deps.as_ref(), &pools, &prev_snapshots, 0)
                 .expect("call A must succeed");
@@ -2049,7 +2053,7 @@ mod anchor_bluechip_index_cache_tests {
             atom_price_a.expect("anchor TWAP under index=0 must be Some");
 
         // Invocation B: anchor_bluechip_index = 1. cumulative_for_price
-        // reads price0_cumulative_last (500) → TWAP = 500*1e6/100 = 5_000_000.
+        // reads price0_cumulative_last (5e8) → TWAP = 5e8 / 100 = 5_000_000.
         let (_, atom_price_b, _) =
             calculate_weighted_price_with_atom(deps.as_ref(), &pools, &prev_snapshots, 1)
                 .expect("call B must succeed");
@@ -2664,6 +2668,574 @@ mod anchor_validation_failure_tests {
             "expected one-shot guard error, got: {}",
             err
         );
+    }
+}
+
+// ===========================================================================
+// M-3: oracle eligibility curation
+//
+// Allowlist (any pool kind) + global commit-pool auto-include flag, both
+// behind a 48h timelock for adds / flips. Removes are immediate.
+// Permissionless `RefreshOraclePoolSnapshot` is rate-limited.
+// ===========================================================================
+mod oracle_eligibility_tests {
+    use super::*;
+    use crate::execute::instantiate;
+    use crate::internal_bluechip_price_oracle::get_eligible_creator_pools;
+    use crate::state::{
+        load_commit_pools_auto_eligible, ADMIN_TIMELOCK_SECONDS, COMMIT_POOLS_AUTO_ELIGIBLE,
+        ORACLE_ELIGIBLE_POOLS, ORACLE_REFRESH_RATE_LIMIT_BLOCKS,
+        PENDING_COMMIT_POOLS_AUTO_ELIGIBLE, PENDING_ORACLE_ELIGIBLE_POOL_ADD,
+    };
+
+    /// Stand up a factory + register a single commit pool that has crossed
+    /// threshold and meets the liquidity floor. Returns the pool's
+    /// contract address. Caller chooses the auto-eligible flag value.
+    fn setup_factory_with_commit_pool(
+        deps: &mut OwnedDeps<MockStorage, MockApi, WasmMockQuerier>,
+        auto_eligible: bool,
+    ) -> Addr {
+        setup_atom_pool(deps);
+        let env = mock_env();
+        instantiate(
+            deps.as_mut(),
+            env,
+            message_info(&admin_addr(), &[]),
+            default_factory_config(),
+        )
+        .unwrap();
+        // setup_atom_pool sets the flag to true; respect the caller's
+        // choice instead.
+        COMMIT_POOLS_AUTO_ELIGIBLE
+            .save(deps.as_mut().storage, &auto_eligible)
+            .unwrap();
+
+        let pool_addr = make_addr("creator_pool_1");
+        let pool_details = PoolDetails {
+            pool_id: 1,
+            pool_token_info: [
+                TokenType::Native {
+                    denom: "ubluechip".to_string(),
+                },
+                TokenType::CreatorToken {
+                    contract_addr: Addr::unchecked("creator_token_1"),
+                },
+            ],
+            creator_pool_addr: pool_addr.clone(),
+            pool_kind: pool_factory_interfaces::PoolKind::Commit,
+            commit_pool_ordinal: 0,
+        };
+        POOLS_BY_ID.save(deps.as_mut().storage, 1, &pool_details).unwrap();
+        POOLS_BY_CONTRACT_ADDRESS
+            .save(
+                deps.as_mut().storage,
+                pool_addr.clone(),
+                &PoolStateResponseForFactory {
+                    pool_contract_address: pool_addr.clone(),
+                    nft_ownership_accepted: true,
+                    reserve0: Uint128::new(50_000_000_000),
+                    reserve1: Uint128::new(50_000_000_000),
+                    total_liquidity: Uint128::new(100_000_000_000),
+                    block_time_last: 100,
+                    price0_cumulative_last: Uint128::zero(),
+                    price1_cumulative_last: Uint128::zero(),
+                    assets: vec![],
+                },
+            )
+            .unwrap();
+        POOL_THRESHOLD_MINTED
+            .save(deps.as_mut().storage, 1, &true)
+            .unwrap();
+        pool_addr
+    }
+
+    /// Register a standard pool whose canonical bluechip side is at index 0.
+    fn register_standard_pool(
+        deps: &mut OwnedDeps<MockStorage, MockApi, WasmMockQuerier>,
+        pool_id: u64,
+        addr: &Addr,
+    ) {
+        let pool_details = PoolDetails {
+            pool_id,
+            pool_token_info: [
+                TokenType::Native {
+                    denom: "ubluechip".to_string(),
+                },
+                TokenType::Native {
+                    denom: "uusdc".to_string(),
+                },
+            ],
+            creator_pool_addr: addr.clone(),
+            pool_kind: pool_factory_interfaces::PoolKind::Standard,
+            commit_pool_ordinal: 0,
+        };
+        POOLS_BY_ID
+            .save(deps.as_mut().storage, pool_id, &pool_details)
+            .unwrap();
+        POOLS_BY_CONTRACT_ADDRESS
+            .save(
+                deps.as_mut().storage,
+                addr.clone(),
+                &PoolStateResponseForFactory {
+                    pool_contract_address: addr.clone(),
+                    nft_ownership_accepted: true,
+                    reserve0: Uint128::new(50_000_000_000),
+                    reserve1: Uint128::new(50_000_000_000),
+                    total_liquidity: Uint128::new(100_000_000_000),
+                    block_time_last: 100,
+                    price0_cumulative_last: Uint128::zero(),
+                    price1_cumulative_last: Uint128::zero(),
+                    assets: vec![],
+                },
+            )
+            .unwrap();
+    }
+
+    /// Auto-flag OFF: a threshold-crossed commit pool that's NOT in the
+    /// allowlist must NOT be eligible. This is the stage 1–3 default.
+    #[test]
+    fn auto_off_threshold_crossed_commit_pool_not_eligible() {
+        let mut deps = mock_deps_with_querier(&[]);
+        let _pool = setup_factory_with_commit_pool(&mut deps, false);
+
+        let (eligible, _) = get_eligible_creator_pools(
+            deps.as_ref(),
+            atom_bluechip_pool_addr().as_str(),
+        )
+        .unwrap();
+        assert!(
+            eligible.is_empty(),
+            "auto-flag OFF + empty allowlist => no eligible pools (got {:?})",
+            eligible
+        );
+    }
+
+    /// Auto-flag ON: a threshold-crossed commit pool flows in
+    /// automatically without an allowlist entry. Mirrors the legacy
+    /// behaviour we preserve via the migrate handler.
+    #[test]
+    fn auto_on_threshold_crossed_commit_pool_eligible() {
+        let mut deps = mock_deps_with_querier(&[]);
+        let pool = setup_factory_with_commit_pool(&mut deps, true);
+
+        let (eligible, _) = get_eligible_creator_pools(
+            deps.as_ref(),
+            atom_bluechip_pool_addr().as_str(),
+        )
+        .unwrap();
+        assert_eq!(eligible, vec![pool.to_string()]);
+    }
+
+    /// Allowlist propose -> wait -> apply must respect the 48h timelock.
+    /// Apply before the timelock fails; cancel removes the pending entry.
+    #[test]
+    fn allowlist_propose_apply_timelock() {
+        let mut deps = mock_deps_with_querier(&[]);
+        setup_factory_with_commit_pool(&mut deps, false);
+        let std_pool = make_addr("std_pool_usdc");
+        register_standard_pool(&mut deps, 2, &std_pool);
+
+        // Propose.
+        let mut env = mock_env();
+        execute(
+            deps.as_mut(),
+            env.clone(),
+            message_info(&admin_addr(), &[]),
+            ExecuteMsg::ProposeAddOracleEligiblePool {
+                pool_addr: std_pool.to_string(),
+            },
+        )
+        .unwrap();
+        assert!(
+            PENDING_ORACLE_ELIGIBLE_POOL_ADD.has(&deps.storage, std_pool.clone()),
+            "pending entry must exist after propose"
+        );
+
+        // Apply BEFORE timelock => TimelockNotExpired.
+        let too_early = execute(
+            deps.as_mut(),
+            env.clone(),
+            message_info(&admin_addr(), &[]),
+            ExecuteMsg::ApplyAddOracleEligiblePool {
+                pool_addr: std_pool.to_string(),
+            },
+        )
+        .unwrap_err();
+        assert!(
+            matches!(too_early, ContractError::TimelockNotExpired { .. }),
+            "expected TimelockNotExpired, got {:?}",
+            too_early
+        );
+
+        // Apply AFTER timelock => allowlisted, pending cleared.
+        env.block.time = env.block.time.plus_seconds(ADMIN_TIMELOCK_SECONDS + 1);
+        execute(
+            deps.as_mut(),
+            env,
+            message_info(&admin_addr(), &[]),
+            ExecuteMsg::ApplyAddOracleEligiblePool {
+                pool_addr: std_pool.to_string(),
+            },
+        )
+        .unwrap();
+        assert!(ORACLE_ELIGIBLE_POOLS.has(&deps.storage, std_pool.clone()));
+        assert!(
+            !PENDING_ORACLE_ELIGIBLE_POOL_ADD.has(&deps.storage, std_pool),
+            "pending must be cleared after apply"
+        );
+    }
+
+    /// Cancel during the timelock window drops the pending entry without
+    /// landing it.
+    #[test]
+    fn allowlist_cancel_drops_pending() {
+        let mut deps = mock_deps_with_querier(&[]);
+        setup_factory_with_commit_pool(&mut deps, false);
+        let std_pool = make_addr("std_pool_usdc");
+        register_standard_pool(&mut deps, 2, &std_pool);
+
+        execute(
+            deps.as_mut(),
+            mock_env(),
+            message_info(&admin_addr(), &[]),
+            ExecuteMsg::ProposeAddOracleEligiblePool {
+                pool_addr: std_pool.to_string(),
+            },
+        )
+        .unwrap();
+        execute(
+            deps.as_mut(),
+            mock_env(),
+            message_info(&admin_addr(), &[]),
+            ExecuteMsg::CancelAddOracleEligiblePool {
+                pool_addr: std_pool.to_string(),
+            },
+        )
+        .unwrap();
+        assert!(!PENDING_ORACLE_ELIGIBLE_POOL_ADD.has(&deps.storage, std_pool.clone()));
+        assert!(!ORACLE_ELIGIBLE_POOLS.has(&deps.storage, std_pool));
+    }
+
+    /// Remove is immediate (no timelock) — drops the pool from the
+    /// allowlist on the same tx.
+    #[test]
+    fn allowlist_remove_is_immediate() {
+        let mut deps = mock_deps_with_querier(&[]);
+        setup_factory_with_commit_pool(&mut deps, false);
+        let std_pool = make_addr("std_pool_usdc");
+        register_standard_pool(&mut deps, 2, &std_pool);
+
+        // Propose + apply.
+        let mut env = mock_env();
+        execute(
+            deps.as_mut(),
+            env.clone(),
+            message_info(&admin_addr(), &[]),
+            ExecuteMsg::ProposeAddOracleEligiblePool {
+                pool_addr: std_pool.to_string(),
+            },
+        )
+        .unwrap();
+        env.block.time = env.block.time.plus_seconds(ADMIN_TIMELOCK_SECONDS + 1);
+        execute(
+            deps.as_mut(),
+            env.clone(),
+            message_info(&admin_addr(), &[]),
+            ExecuteMsg::ApplyAddOracleEligiblePool {
+                pool_addr: std_pool.to_string(),
+            },
+        )
+        .unwrap();
+        assert!(ORACLE_ELIGIBLE_POOLS.has(&deps.storage, std_pool.clone()));
+
+        // Remove — same tx, no timelock.
+        execute(
+            deps.as_mut(),
+            env,
+            message_info(&admin_addr(), &[]),
+            ExecuteMsg::RemoveOracleEligiblePool {
+                pool_addr: std_pool.to_string(),
+            },
+        )
+        .unwrap();
+        assert!(!ORACLE_ELIGIBLE_POOLS.has(&deps.storage, std_pool));
+    }
+
+    /// Allowlisted standard pool is eligible even when the auto-flag is OFF.
+    #[test]
+    fn allowlisted_standard_pool_eligible_with_auto_off() {
+        let mut deps = mock_deps_with_querier(&[]);
+        setup_factory_with_commit_pool(&mut deps, false);
+        let std_pool = make_addr("std_pool_usdc");
+        register_standard_pool(&mut deps, 2, &std_pool);
+
+        // Propose + apply (timelock).
+        let mut env = mock_env();
+        execute(
+            deps.as_mut(),
+            env.clone(),
+            message_info(&admin_addr(), &[]),
+            ExecuteMsg::ProposeAddOracleEligiblePool {
+                pool_addr: std_pool.to_string(),
+            },
+        )
+        .unwrap();
+        env.block.time = env.block.time.plus_seconds(ADMIN_TIMELOCK_SECONDS + 1);
+        execute(
+            deps.as_mut(),
+            env,
+            message_info(&admin_addr(), &[]),
+            ExecuteMsg::ApplyAddOracleEligiblePool {
+                pool_addr: std_pool.to_string(),
+            },
+        )
+        .unwrap();
+
+        // Eligibility resolved: only the allowlisted standard pool, no
+        // commit pools (auto-flag OFF, the threshold-crossed creator
+        // pool from setup is NOT in the allowlist).
+        let (eligible, indices) = get_eligible_creator_pools(
+            deps.as_ref(),
+            atom_bluechip_pool_addr().as_str(),
+        )
+        .unwrap();
+        assert_eq!(eligible, vec![std_pool.to_string()]);
+        // bluechip is at index 0 in the standard pool we registered.
+        assert_eq!(indices, vec![0u8]);
+    }
+
+    /// A pool that's both allowlisted AND threshold-crossed (auto-flag ON)
+    /// appears exactly once in the eligible set, with the allowlist's
+    /// recorded bluechip_index taking precedence.
+    #[test]
+    fn dedup_when_pool_is_both_allowlisted_and_auto_eligible() {
+        let mut deps = mock_deps_with_querier(&[]);
+        let commit_pool = setup_factory_with_commit_pool(&mut deps, true);
+
+        // Add the SAME commit pool to the allowlist via the timelock flow.
+        let mut env = mock_env();
+        execute(
+            deps.as_mut(),
+            env.clone(),
+            message_info(&admin_addr(), &[]),
+            ExecuteMsg::ProposeAddOracleEligiblePool {
+                pool_addr: commit_pool.to_string(),
+            },
+        )
+        .unwrap();
+        env.block.time = env.block.time.plus_seconds(ADMIN_TIMELOCK_SECONDS + 1);
+        execute(
+            deps.as_mut(),
+            env,
+            message_info(&admin_addr(), &[]),
+            ExecuteMsg::ApplyAddOracleEligiblePool {
+                pool_addr: commit_pool.to_string(),
+            },
+        )
+        .unwrap();
+
+        // Both inputs reference the same pool — dedup ensures one entry.
+        let (eligible, _) = get_eligible_creator_pools(
+            deps.as_ref(),
+            atom_bluechip_pool_addr().as_str(),
+        )
+        .unwrap();
+        assert_eq!(eligible.len(), 1);
+        assert_eq!(eligible[0], commit_pool.to_string());
+    }
+
+    /// Flag flip goes through the same 48h timelock; apply before the
+    /// timelock fails; cancel discards the pending change.
+    #[test]
+    fn flag_flip_timelock() {
+        let mut deps = mock_deps_with_querier(&[]);
+        setup_factory_with_commit_pool(&mut deps, false);
+
+        // Propose ON.
+        let mut env = mock_env();
+        execute(
+            deps.as_mut(),
+            env.clone(),
+            message_info(&admin_addr(), &[]),
+            ExecuteMsg::ProposeSetCommitPoolsAutoEligible { enabled: true },
+        )
+        .unwrap();
+        assert_eq!(load_commit_pools_auto_eligible(&deps.storage), false);
+
+        // Apply too early.
+        let early = execute(
+            deps.as_mut(),
+            env.clone(),
+            message_info(&admin_addr(), &[]),
+            ExecuteMsg::ApplySetCommitPoolsAutoEligible {},
+        )
+        .unwrap_err();
+        assert!(matches!(early, ContractError::TimelockNotExpired { .. }));
+
+        // Apply after timelock.
+        env.block.time = env.block.time.plus_seconds(ADMIN_TIMELOCK_SECONDS + 1);
+        execute(
+            deps.as_mut(),
+            env,
+            message_info(&admin_addr(), &[]),
+            ExecuteMsg::ApplySetCommitPoolsAutoEligible {},
+        )
+        .unwrap();
+        assert_eq!(load_commit_pools_auto_eligible(&deps.storage), true);
+        assert!(PENDING_COMMIT_POOLS_AUTO_ELIGIBLE
+            .may_load(&deps.storage)
+            .unwrap()
+            .is_none());
+    }
+
+    /// Cancel a pending flag flip drops the pending without changing the
+    /// effective value.
+    #[test]
+    fn flag_flip_cancel() {
+        let mut deps = mock_deps_with_querier(&[]);
+        setup_factory_with_commit_pool(&mut deps, true);
+
+        execute(
+            deps.as_mut(),
+            mock_env(),
+            message_info(&admin_addr(), &[]),
+            ExecuteMsg::ProposeSetCommitPoolsAutoEligible { enabled: false },
+        )
+        .unwrap();
+        execute(
+            deps.as_mut(),
+            mock_env(),
+            message_info(&admin_addr(), &[]),
+            ExecuteMsg::CancelSetCommitPoolsAutoEligible {},
+        )
+        .unwrap();
+        assert_eq!(load_commit_pools_auto_eligible(&deps.storage), true);
+    }
+
+    /// Proposing a flag flip when the flag is already at the proposed
+    /// value is a no-op error (don't waste the 48h window on nothing).
+    #[test]
+    fn flag_flip_no_change_rejected() {
+        let mut deps = mock_deps_with_querier(&[]);
+        setup_factory_with_commit_pool(&mut deps, true);
+
+        let err = execute(
+            deps.as_mut(),
+            mock_env(),
+            message_info(&admin_addr(), &[]),
+            ExecuteMsg::ProposeSetCommitPoolsAutoEligible { enabled: true },
+        )
+        .unwrap_err();
+        assert!(matches!(
+            err,
+            ContractError::CommitPoolsAutoEligibleNoChange { value: true }
+        ));
+    }
+
+    /// Permissionless refresh: first call lands; second within the rate
+    /// limit fails; third after the rate limit elapses lands again.
+    #[test]
+    fn refresh_rate_limited() {
+        let mut deps = mock_deps_with_querier(&[]);
+        setup_factory_with_commit_pool(&mut deps, true);
+
+        let mut env = mock_env();
+        // First refresh — no prior, lands.
+        execute(
+            deps.as_mut(),
+            env.clone(),
+            message_info(&make_addr("randomkeeper"), &[]),
+            ExecuteMsg::RefreshOraclePoolSnapshot {},
+        )
+        .unwrap();
+
+        // Second refresh in the same block — rate-limited.
+        let err = execute(
+            deps.as_mut(),
+            env.clone(),
+            message_info(&make_addr("randomkeeper"), &[]),
+            ExecuteMsg::RefreshOraclePoolSnapshot {},
+        )
+        .unwrap_err();
+        assert!(matches!(
+            err,
+            ContractError::OracleRefreshRateLimited { .. }
+        ));
+
+        // Advance past the rate limit.
+        env.block.height = env.block.height + ORACLE_REFRESH_RATE_LIMIT_BLOCKS + 1;
+        execute(
+            deps.as_mut(),
+            env,
+            message_info(&make_addr("randomkeeper"), &[]),
+            ExecuteMsg::RefreshOraclePoolSnapshot {},
+        )
+        .unwrap();
+    }
+
+    /// Non-admin cannot propose, apply, or remove allowlist entries; nor
+    /// can they propose / apply / cancel flag flips.
+    #[test]
+    fn non_admin_rejected_on_admin_actions() {
+        let mut deps = mock_deps_with_querier(&[]);
+        setup_factory_with_commit_pool(&mut deps, false);
+        let std_pool = make_addr("std_pool_usdc");
+        register_standard_pool(&mut deps, 2, &std_pool);
+        let attacker = make_addr("attacker");
+
+        for msg in [
+            ExecuteMsg::ProposeAddOracleEligiblePool {
+                pool_addr: std_pool.to_string(),
+            },
+            ExecuteMsg::ApplyAddOracleEligiblePool {
+                pool_addr: std_pool.to_string(),
+            },
+            ExecuteMsg::CancelAddOracleEligiblePool {
+                pool_addr: std_pool.to_string(),
+            },
+            ExecuteMsg::RemoveOracleEligiblePool {
+                pool_addr: std_pool.to_string(),
+            },
+            ExecuteMsg::ProposeSetCommitPoolsAutoEligible { enabled: true },
+            ExecuteMsg::ApplySetCommitPoolsAutoEligible {},
+            ExecuteMsg::CancelSetCommitPoolsAutoEligible {},
+        ] {
+            let err = execute(
+                deps.as_mut(),
+                mock_env(),
+                message_info(&attacker, &[]),
+                msg,
+            )
+            .unwrap_err();
+            assert!(
+                matches!(err, ContractError::Unauthorized {}),
+                "expected Unauthorized, got {:?}",
+                err
+            );
+        }
+    }
+
+    /// Adding a pool whose address is unknown to the factory registry
+    /// fails at propose time (don't burn the timelock on a non-existent
+    /// pool).
+    #[test]
+    fn propose_unknown_pool_rejected() {
+        let mut deps = mock_deps_with_querier(&[]);
+        setup_factory_with_commit_pool(&mut deps, false);
+
+        let err = execute(
+            deps.as_mut(),
+            mock_env(),
+            message_info(&admin_addr(), &[]),
+            ExecuteMsg::ProposeAddOracleEligiblePool {
+                pool_addr: make_addr("ghost_pool").to_string(),
+            },
+        )
+        .unwrap_err();
+        assert!(matches!(
+            err,
+            ContractError::OracleEligiblePoolNotInRegistry { .. }
+        ));
     }
 }
 

@@ -91,24 +91,59 @@ pub fn compute_swap(
     ))
 }
 
+/// Fixed-point scale applied to every cumulative-price increment.
+///
+/// Without scaling, `reserve_other / reserve_self` is integer-truncated to zero
+/// whenever `reserve_other < reserve_self / time_elapsed`. For asymmetric pools
+/// that produces a permanently-zero cumulative on one side and a useless TWAP
+/// downstream. Multiplying the numerator by `1_000_000` before the divide
+/// preserves 6 decimal places of precision in the accumulator — the same
+/// scale the factory's internal oracle treats prices in
+/// (`PRICE_PRECISION = 1_000_000`), so consumers no longer need to re-multiply
+/// when computing per-pool TWAPs.
+///
+/// Mirrors `factory::internal_bluechip_price_oracle::PRICE_PRECISION` and
+/// `creator-pool::swap_helper::ORACLE_PRICE_PRECISION`. Any change here MUST
+/// be propagated to those three constants AND to a coordinated migration that
+/// resets `price{0,1}_cumulative_last` on every deployed pool.
+pub const PRICE_ACCUMULATOR_SCALE: u128 = 1_000_000;
+
 pub fn update_price_accumulator(
     pool_state: &mut PoolState,
     current_time: u64,
 ) -> Result<(), ContractError> {
     let time_elapsed = current_time.saturating_sub(pool_state.block_time_last);
     if time_elapsed > 0 && !pool_state.reserve0.is_zero() && !pool_state.reserve1.is_zero() {
-        let price0_increment = pool_state
-            .reserve1
-            .checked_mul(Uint128::from(time_elapsed))
+        // Lift to Uint256 for the (reserve · scale · time) multiplications so
+        // we don't have to reason about whether `reserve · 1e6` fits in u128.
+        // The final increment narrows back to Uint128 — at any plausible
+        // reserve / time-elapsed combination the per-step increment is well
+        // below u128::MAX, and the saturating_add on the accumulator catches
+        // the (astronomically unlikely) long-tail case.
+        let scale = Uint256::from(PRICE_ACCUMULATOR_SCALE);
+        let elapsed = Uint256::from(time_elapsed as u128);
+        let r0 = Uint256::from(pool_state.reserve0);
+        let r1 = Uint256::from(pool_state.reserve1);
+        let price0_increment_u256 = r1
+            .checked_mul(scale)
             .map_err(ContractError::from)?
-            .checked_div(pool_state.reserve0)
-            .map_err(|_| ContractError::DivideByZero)?;
-        let price1_increment = pool_state
-            .reserve0
-            .checked_mul(Uint128::from(time_elapsed))
+            .checked_mul(elapsed)
             .map_err(ContractError::from)?
-            .checked_div(pool_state.reserve1)
+            .checked_div(r0)
             .map_err(|_| ContractError::DivideByZero)?;
+        let price1_increment_u256 = r0
+            .checked_mul(scale)
+            .map_err(ContractError::from)?
+            .checked_mul(elapsed)
+            .map_err(ContractError::from)?
+            .checked_div(r1)
+            .map_err(|_| ContractError::DivideByZero)?;
+        let price0_increment: Uint128 = price0_increment_u256
+            .try_into()
+            .unwrap_or(Uint128::MAX);
+        let price1_increment: Uint128 = price1_increment_u256
+            .try_into()
+            .unwrap_or(Uint128::MAX);
         pool_state.price0_cumulative_last = pool_state
             .price0_cumulative_last
             .saturating_add(price0_increment);

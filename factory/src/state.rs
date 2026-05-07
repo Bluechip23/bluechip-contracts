@@ -482,6 +482,114 @@ pub const ELIGIBLE_POOL_SNAPSHOT: Item<EligiblePoolSnapshot> =
 /// rebuilds it. 72_000 blocks at 6s per block ≈ 5 days.
 pub const ELIGIBLE_POOL_REFRESH_BLOCKS: u64 = 72_000;
 
+// ---------------------------------------------------------------------------
+// Oracle-eligible pool curation (audit M-3)
+// ---------------------------------------------------------------------------
+//
+// Two parallel inputs feed `get_eligible_creator_pools`:
+//
+//   1. `ORACLE_ELIGIBLE_POOLS` — admin-curated allowlist. Any pool kind
+//      (Standard or Commit). Required for the early-stage roadmap where
+//      bluechip/IBC standard pools are the only externally-priced sources.
+//      Add: 48h timelock via `PENDING_ORACLE_ELIGIBLE_POOL_ADD`. Remove:
+//      immediate (always safe to drop a contributor).
+//
+//   2. `COMMIT_POOLS_AUTO_ELIGIBLE` — global flag. When true, every
+//      threshold-crossed `PoolKind::Commit` pool also flows in
+//      automatically (legacy behaviour, programmatic gate). Default
+//      false on fresh deployments; the migrate handler sets it true
+//      to preserve current-behaviour for existing chains. Flip:
+//      48h timelock via `PENDING_COMMIT_POOLS_AUTO_ELIGIBLE`.
+//
+// Snapshot rebuild reads both, dedupes, runs the cross-contract
+// liquidity / bluechip-side check, and writes `ELIGIBLE_POOL_SNAPSHOT`.
+// The refresh job NEVER writes to either input — only admin actions
+// (gated by the timelocks above) can change which pools the oracle
+// samples.
+
+/// One entry in the admin-curated oracle allowlist.
+///
+/// `bluechip_index` is resolved at apply-time (post-timelock) so the
+/// per-sample lookup at oracle-update time is O(1) instead of an O(N)
+/// re-scan of `POOLS_BY_ID`. The same index is mirrored into
+/// `ELIGIBLE_POOL_SNAPSHOT.bluechip_indices` on every refresh.
+///
+/// `added_at` is for observability only — operators can audit the age
+/// of every allowlist entry without scanning logs.
+#[cw_serde]
+pub struct AllowlistedOraclePool {
+    pub bluechip_index: u8,
+    pub added_at: Timestamp,
+}
+
+pub const ORACLE_ELIGIBLE_POOLS: Map<Addr, AllowlistedOraclePool> =
+    Map::new("oracle_eligible_pools");
+
+/// Pending allowlist additions awaiting timelock expiry. Keyed by the
+/// proposed pool's contract address so the admin can have multiple
+/// distinct adds in flight at once. Each entry stores the proposal
+/// timestamp; `effective_after` = `proposed_at + ADMIN_TIMELOCK_SECONDS`.
+/// `apply` reverts if `block.time < effective_after`. `cancel` removes
+/// the entry without applying.
+#[cw_serde]
+pub struct PendingOracleEligiblePoolAdd {
+    pub proposed_at: Timestamp,
+    /// Pre-resolved bluechip-side index, captured at propose time so the
+    /// apply path doesn't have to re-scan `POOLS_BY_ID`. Re-validated
+    /// against the current pool token info on apply (defense in depth
+    /// against pool-token-info mutations between propose and apply,
+    /// which shouldn't happen but isn't disprovable in storage).
+    pub bluechip_index: u8,
+}
+
+pub const PENDING_ORACLE_ELIGIBLE_POOL_ADD: Map<Addr, PendingOracleEligiblePoolAdd> =
+    Map::new("pending_oracle_eligible_add");
+
+/// Global flag controlling whether threshold-crossed `PoolKind::Commit`
+/// pools flow into the oracle snapshot automatically (in addition to
+/// the curated allowlist).
+///
+/// Default behaviour:
+///   - Fresh instantiate: flag missing → treated as `false`. Admin
+///     must explicitly opt in to auto-include commit pools (matches
+///     stages 1–3 of the roadmap where curation is manual).
+///   - Migrate from pre-flag versions: handler explicitly sets `true`
+///     to preserve the legacy "commits auto-eligible on threshold
+///     cross" behaviour for existing deployments.
+///
+/// Flipping the flag goes through the standard 48h timelock (both
+/// directions — turning OFF deserves observability so creators
+/// can react before their pools stop contributing).
+pub const COMMIT_POOLS_AUTO_ELIGIBLE: Item<bool> =
+    Item::new("commit_pools_auto_eligible");
+
+pub fn load_commit_pools_auto_eligible(storage: &dyn Storage) -> bool {
+    COMMIT_POOLS_AUTO_ELIGIBLE
+        .may_load(storage)
+        .ok()
+        .flatten()
+        .unwrap_or(false)
+}
+
+#[cw_serde]
+pub struct PendingCommitPoolsAutoEligible {
+    pub new_value: bool,
+    pub proposed_at: Timestamp,
+}
+
+pub const PENDING_COMMIT_POOLS_AUTO_ELIGIBLE: Item<PendingCommitPoolsAutoEligible> =
+    Item::new("pending_commit_auto_eligible");
+
+/// Rate limit on the permissionless `RefreshOraclePoolSnapshot`.
+/// Mirrors the cadence of `ELIGIBLE_POOL_REFRESH_BLOCKS / 10` so the
+/// permissionless path is meaningfully more responsive than the lazy
+/// in-line refresh inside `select_random_pools_with_atom`, but can't
+/// be spammed to burn keeper / public gas. ≈12h between forced
+/// refreshes at 6s blocks.
+pub const ORACLE_REFRESH_RATE_LIMIT_BLOCKS: u64 = 7_200;
+pub const LAST_ORACLE_REFRESH_BLOCK: Item<u64> = Item::new("last_oracle_refresh_block");
+
+
 #[cw_serde]
 pub enum CreationStatus {
     Started,

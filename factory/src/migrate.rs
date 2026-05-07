@@ -28,6 +28,23 @@ pub fn migrate(deps: DepsMut, _env: Env, _msg: Empty) -> Result<Response, Contra
         });
     }
 
+    // M-3 migration shim. Existing deployments ran with "every threshold-
+    // crossed commit pool is automatically oracle-eligible" baked into the
+    // code path. The new build moves that behaviour behind the
+    // `COMMIT_POOLS_AUTO_ELIGIBLE` flag (default false on fresh
+    // instantiates so admins must opt in for stage 1–3 of the roadmap).
+    // Set it true here on migrate so existing chains keep their current
+    // oracle composition; admin can flip it off via the timelocked
+    // `ProposeSetCommitPoolsAutoEligible` flow at the appropriate stage.
+    // Idempotent (saving `true` twice is a no-op), so re-running the
+    // migrate is safe.
+    if crate::state::COMMIT_POOLS_AUTO_ELIGIBLE
+        .may_load(deps.storage)?
+        .is_none()
+    {
+        crate::state::COMMIT_POOLS_AUTO_ELIGIBLE.save(deps.storage, &true)?;
+    }
+
     set_contract_version(deps.storage, CONTRACT_NAME, CONTRACT_VERSION)?;
 
     Ok(Response::new()

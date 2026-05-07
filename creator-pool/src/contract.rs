@@ -637,7 +637,7 @@ pub fn reply(deps: DepsMut, env: Env, msg: Reply) -> StdResult<Response> {
 // ---------------------------------------------------------------------------
 
 #[entry_point]
-pub fn migrate(deps: DepsMut, _env: Env, msg: MigrateMsg) -> Result<Response, ContractError> {
+pub fn migrate(deps: DepsMut, env: Env, msg: MigrateMsg) -> Result<Response, ContractError> {
     // Reject downgrades. The chain has already replaced the wasm
     // bytecode by the time this handler runs, so this is the last
     // chance to abort a downgrade — a hard `Err` here causes the chain
@@ -696,6 +696,19 @@ pub fn migrate(deps: DepsMut, _env: Env, msg: MigrateMsg) -> Result<Response, Co
         // `set_contract_version` below so the cw2 stored version
         // always lands at the new release on a successful migrate.
         MigrateMsg::UpdateVersion {} => {}
+    }
+
+    // Reset the price accumulator on every migrate. Mirrors the equivalent
+    // block in `standard-pool::contract::migrate`; the rationale (clean
+    // unit-scale boundary across a `PRICE_ACCUMULATOR_SCALE` change in
+    // `pool_core::swap::update_price_accumulator`) lives there. Costs at
+    // most one factory oracle TWAP round per upgrade, which the breaker /
+    // snapshot machinery handles cleanly.
+    if let Ok(mut state) = POOL_STATE.load(deps.storage) {
+        state.price0_cumulative_last = cosmwasm_std::Uint128::zero();
+        state.price1_cumulative_last = cosmwasm_std::Uint128::zero();
+        state.block_time_last = env.block.time.seconds();
+        POOL_STATE.save(deps.storage, &state)?;
     }
 
     set_contract_version(deps.storage, CONTRACT_NAME, CONTRACT_VERSION)?;
