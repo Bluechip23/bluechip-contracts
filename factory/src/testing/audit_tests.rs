@@ -2755,6 +2755,24 @@ mod oracle_eligibility_tests {
         pool_id: u64,
         addr: &Addr,
     ) {
+        register_standard_pool_with_reserves(
+            deps,
+            pool_id,
+            addr,
+            50_000_000_000,
+            50_000_000_000,
+        );
+    }
+
+    /// Same as `register_standard_pool` but with explicit reserves so M-4
+    /// liquidity-floor tests can dial in pool-state edges.
+    pub(super) fn register_standard_pool_with_reserves(
+        deps: &mut OwnedDeps<MockStorage, MockApi, WasmMockQuerier>,
+        pool_id: u64,
+        addr: &Addr,
+        reserve0: u128,
+        reserve1: u128,
+    ) {
         let pool_details = PoolDetails {
             pool_id,
             pool_token_info: [
@@ -2779,9 +2797,9 @@ mod oracle_eligibility_tests {
                 &PoolStateResponseForFactory {
                     pool_contract_address: addr.clone(),
                     nft_ownership_accepted: true,
-                    reserve0: Uint128::new(50_000_000_000),
-                    reserve1: Uint128::new(50_000_000_000),
-                    total_liquidity: Uint128::new(100_000_000_000),
+                    reserve0: Uint128::new(reserve0),
+                    reserve1: Uint128::new(reserve1),
+                    total_liquidity: Uint128::new(reserve0 + reserve1),
                     block_time_last: 100,
                     price0_cumulative_last: Uint128::zero(),
                     price1_cumulative_last: Uint128::zero(),
@@ -3236,6 +3254,615 @@ mod oracle_eligibility_tests {
             err,
             ContractError::OracleEligiblePoolNotInRegistry { .. }
         ));
+    }
+}
+
+// ===========================================================================
+// M-4: USD-denominated liquidity floor + per-side floor
+//
+// Replaces the legacy `reserve0 + reserve1 >= MIN_POOL_LIQUIDITY` check
+// (which conflated units across asymmetric pairs) with a single
+// `pool_meets_liquidity_floor` helper:
+//
+//   - When the oracle cache has a non-zero `last_price`, the helper
+//     converts MIN_POOL_LIQUIDITY_USD ($5,000 default) to bluechip via
+//     the cache and requires bluechip-side >= floor / 2.
+//   - When the cache is zero (bootstrap, breaker tripped, post-warmup),
+//     it falls back to MIN_POOL_LIQUIDITY_FALLBACK_BLUECHIP_PER_SIDE
+//     (5_000 BC) so the gate stays meaningful before the oracle has
+//     produced a usable USD price.
+// ===========================================================================
+mod liquidity_floor_tests {
+    use super::*;
+    use crate::internal_bluechip_price_oracle::{
+        pool_meets_liquidity_floor, INTERNAL_ORACLE,
+        MIN_POOL_LIQUIDITY_FALLBACK_BLUECHIP_PER_SIDE, MIN_POOL_LIQUIDITY_USD,
+    };
+
+    /// Build a `PoolStateResponseForFactory` with explicit reserves.
+    fn pool_with_reserves(
+        addr: &Addr,
+        reserve0: u128,
+        reserve1: u128,
+    ) -> PoolStateResponseForFactory {
+        PoolStateResponseForFactory {
+            pool_contract_address: addr.clone(),
+            nft_ownership_accepted: true,
+            reserve0: Uint128::new(reserve0),
+            reserve1: Uint128::new(reserve1),
+            total_liquidity: Uint128::new(reserve0 + reserve1),
+            block_time_last: 100,
+            price0_cumulative_last: Uint128::zero(),
+            price1_cumulative_last: Uint128::zero(),
+            assets: vec![],
+        }
+    }
+
+    /// Set `INTERNAL_ORACLE.bluechip_price_cache.last_price` to the given
+    /// USD-per-bluechip value (6-decimal scale: 1_000_000 = $1.00).
+    fn seed_oracle_price(
+        deps: &mut OwnedDeps<MockStorage, MockApi, WasmMockQuerier>,
+        price_micro_usd: u128,
+    ) {
+        // Lazy-load the existing oracle (initialized by `instantiate`),
+        // mutate just the price field, save back.
+        let mut oracle = INTERNAL_ORACLE
+            .load(deps.as_mut().storage)
+            .expect("oracle must be initialized before seeding price");
+        oracle.bluechip_price_cache.last_price = Uint128::new(price_micro_usd);
+        INTERNAL_ORACLE
+            .save(deps.as_mut().storage, &oracle)
+            .unwrap();
+    }
+
+    /// Standard "factory + atom pool ready, oracle initialized" scaffold.
+    fn setup_factory_and_init_oracle(
+        deps: &mut OwnedDeps<MockStorage, MockApi, WasmMockQuerier>,
+    ) {
+        setup_atom_pool(deps);
+        instantiate(
+            deps.as_mut(),
+            mock_env(),
+            message_info(&admin_addr(), &[]),
+            default_factory_config(),
+        )
+        .unwrap();
+    }
+
+    /// Fallback path: oracle has no price (last_price == 0). Helper must
+    /// require bluechip-side >= MIN_POOL_LIQUIDITY_FALLBACK_BLUECHIP_PER_SIDE.
+    #[test]
+    fn fallback_passes_when_bluechip_side_meets_legacy_floor() {
+        let mut deps = mock_deps_with_querier(&[]);
+        setup_factory_and_init_oracle(&mut deps);
+        seed_oracle_price(&mut deps, 0);
+        let pool = make_addr("balanced_pool");
+        let state = pool_with_reserves(
+            &pool,
+            MIN_POOL_LIQUIDITY_FALLBACK_BLUECHIP_PER_SIDE.u128(),
+            MIN_POOL_LIQUIDITY_FALLBACK_BLUECHIP_PER_SIDE.u128(),
+        );
+        let ok = pool_meets_liquidity_floor(&deps.storage, &state, 0).unwrap();
+        assert!(ok, "balanced pool at the fallback floor must pass");
+    }
+
+    /// Fallback path: bluechip-side strictly below the legacy floor fails.
+    #[test]
+    fn fallback_fails_when_bluechip_side_below_legacy_floor() {
+        let mut deps = mock_deps_with_querier(&[]);
+        setup_factory_and_init_oracle(&mut deps);
+        seed_oracle_price(&mut deps, 0);
+        let pool = make_addr("thin_pool");
+        let bluechip_side = MIN_POOL_LIQUIDITY_FALLBACK_BLUECHIP_PER_SIDE.u128() - 1;
+        let state = pool_with_reserves(&pool, bluechip_side, bluechip_side);
+        let ok = pool_meets_liquidity_floor(&deps.storage, &state, 0).unwrap();
+        assert!(!ok, "bluechip-side one below the floor must fail");
+    }
+
+    /// Fallback path: lopsided pool whose SUMMED reserves clear the legacy
+    /// MIN_POOL_LIQUIDITY (10 BC) but whose BLUECHIP SIDE is far below
+    /// must fail. This is the exact pre-M-4 false-pass case.
+    #[test]
+    fn fallback_rejects_lopsided_pool_that_old_check_passed() {
+        let mut deps = mock_deps_with_querier(&[]);
+        setup_factory_and_init_oracle(&mut deps);
+        seed_oracle_price(&mut deps, 0);
+        let pool = make_addr("lopsided_pool");
+        // bluechip side: 100 ubluechip (essentially zero). Other side:
+        // 100 BC (big). Legacy check (sum >= 10 BC) would have PASSED.
+        // New check on bluechip-side must FAIL.
+        let state = pool_with_reserves(&pool, 100, 100_000_000_000);
+        let ok = pool_meets_liquidity_floor(&deps.storage, &state, 0).unwrap();
+        assert!(
+            !ok,
+            "lopsided pool with bluechip-side dust must fail the M-4 floor"
+        );
+    }
+
+    /// USD path: oracle has price = $1.00 / bluechip. $5_000 floor /
+    /// $1.00 / 2 sides = 2_500 BC = 2_500_000_000 ubluechip per side.
+    /// Pool exactly at the floor passes.
+    #[test]
+    fn usd_path_passes_at_computed_floor() {
+        let mut deps = mock_deps_with_querier(&[]);
+        setup_factory_and_init_oracle(&mut deps);
+        // last_price units: USD-6dp per bluechip-1.0
+        // 1_000_000 = $1.00 per bluechip.
+        seed_oracle_price(&mut deps, 1_000_000);
+        let pool = make_addr("usd_floor_exact");
+        // floor_per_side = MIN_POOL_LIQUIDITY_USD * 1_000_000 / last_price / 2
+        //                = 5_000_000_000 * 1_000_000 / 1_000_000 / 2
+        //                = 2_500_000_000 ubluechip
+        let floor_per_side = MIN_POOL_LIQUIDITY_USD.u128() / 2;
+        let state = pool_with_reserves(&pool, floor_per_side, floor_per_side);
+        let ok = pool_meets_liquidity_floor(&deps.storage, &state, 0).unwrap();
+        assert!(ok, "exactly at the computed USD floor must pass");
+    }
+
+    /// USD path: doubling the bluechip price halves the bluechip-side
+    /// floor (same USD value at higher price = less bluechip).
+    #[test]
+    fn usd_path_floor_inverse_to_price() {
+        let mut deps = mock_deps_with_querier(&[]);
+        setup_factory_and_init_oracle(&mut deps);
+        // $2.00 / bluechip → floor_per_side = 5_000_000_000 / 2 / 2 = 1_250 BC
+        seed_oracle_price(&mut deps, 2_000_000);
+        let pool = make_addr("usd_floor_halved");
+        let floor_per_side = MIN_POOL_LIQUIDITY_USD.u128() / 2 / 2;
+        let state = pool_with_reserves(&pool, floor_per_side, floor_per_side);
+        assert!(pool_meets_liquidity_floor(&deps.storage, &state, 0).unwrap());
+
+        // One ubluechip below must fail.
+        let just_under = pool_with_reserves(&pool, floor_per_side - 1, floor_per_side - 1);
+        assert!(!pool_meets_liquidity_floor(&deps.storage, &just_under, 0).unwrap());
+    }
+
+    /// USD path: bluechip-side index correctly selects the right reserve.
+    /// Pool lays out [creator_token, bluechip] (index 1 is bluechip).
+    /// reserve0 has dust, reserve1 has plenty — must pass when index=1.
+    #[test]
+    fn bluechip_index_one_picks_reserve1() {
+        let mut deps = mock_deps_with_querier(&[]);
+        setup_factory_and_init_oracle(&mut deps);
+        seed_oracle_price(&mut deps, 1_000_000);
+        let pool = make_addr("idx1_pool");
+        let floor_per_side = MIN_POOL_LIQUIDITY_USD.u128() / 2;
+        // Lopsided in absolute units, but bluechip is on side 1.
+        let state = pool_with_reserves(&pool, 100, floor_per_side);
+        assert!(
+            pool_meets_liquidity_floor(&deps.storage, &state, 1).unwrap(),
+            "bluechip_index=1 must read reserve1, not reserve0"
+        );
+        // Same pool with bluechip_index=0 must FAIL (reserve0 = 100).
+        assert!(
+            !pool_meets_liquidity_floor(&deps.storage, &state, 0).unwrap(),
+            "bluechip_index=0 must read reserve0 (100 ubluechip, far below floor)"
+        );
+    }
+
+    /// Pre-instantiate: oracle hasn't been initialized yet. Helper must
+    /// fall back rather than panic. Mirrors the bootstrap order
+    /// (instantiate -> initialize_internal_bluechip_oracle ->
+    /// select_random_pools_with_atom -> get_eligible_creator_pools).
+    #[test]
+    fn missing_oracle_falls_back_without_panic() {
+        let deps = mock_deps_with_querier(&[]);
+        // No setup_factory_and_init_oracle — INTERNAL_ORACLE intentionally absent.
+        let pool = make_addr("preinit");
+        let state = pool_with_reserves(
+            &pool,
+            MIN_POOL_LIQUIDITY_FALLBACK_BLUECHIP_PER_SIDE.u128(),
+            MIN_POOL_LIQUIDITY_FALLBACK_BLUECHIP_PER_SIDE.u128(),
+        );
+        let ok = pool_meets_liquidity_floor(&deps.storage, &state, 0).unwrap();
+        assert!(ok);
+    }
+
+    // Note on integration coverage: the per-pool integration path is
+    // covered indirectly by `oracle_eligibility_tests` (allowlist
+    // add/remove/dedup). The mock querier in this crate returns the same
+    // reserves for every contract address, so it can't distinguish
+    // drained / lopsided pools at the cross-contract query layer; the
+    // helper-level tests above pin the actual gate semantics directly,
+    // which is the only thing M-4 changes.
+}
+
+// ===========================================================================
+// Pre-testnet oracle coverage backfill.
+//
+// Targets the highest-priority gaps identified in the coverage audit
+// (drift_bps saturating math, bootstrap exact-boundary timestamp,
+// best-effort warmup fallback combinations, zero-amount conversions).
+// These cover paths whose breakage would either silently corrupt the
+// oracle (drift saturation) or surface only on real anchor rotations
+// (warmup fallback) — exactly the kinds of bugs that get caught late
+// or never on testnet without explicit unit coverage.
+// ===========================================================================
+mod oracle_coverage_backfill {
+    use super::*;
+    use crate::internal_bluechip_price_oracle::{
+        drift_bps_saturating, usd_to_bluechip, usd_to_bluechip_best_effort,
+        ANCHOR_CHANGE_WARMUP_OBSERVATIONS, INTERNAL_ORACLE,
+    };
+
+    fn setup_factory_and_init_oracle(
+        deps: &mut OwnedDeps<MockStorage, MockApi, WasmMockQuerier>,
+    ) {
+        setup_atom_pool(deps);
+        instantiate(
+            deps.as_mut(),
+            mock_env(),
+            message_info(&admin_addr(), &[]),
+            default_factory_config(),
+        )
+        .unwrap();
+    }
+
+    /// Mutate `INTERNAL_ORACLE` with a closure. Loads, applies, saves.
+    fn mutate_oracle(
+        deps: &mut OwnedDeps<MockStorage, MockApi, WasmMockQuerier>,
+        f: impl FnOnce(&mut crate::internal_bluechip_price_oracle::BlueChipPriceInternalOracle),
+    ) {
+        let mut oracle = INTERNAL_ORACLE.load(deps.as_mut().storage).unwrap();
+        f(&mut oracle);
+        INTERNAL_ORACLE.save(deps.as_mut().storage, &oracle).unwrap();
+    }
+
+    // -----------------------------------------------------------------------
+    // drift_bps_saturating: pure-function unit tests (audit P2).
+    //
+    // The breaker's correctness pivots on this helper. Saturating
+    // arithmetic is invisible at integration-test scale because real
+    // prices never reach the regime where wrap or overflow matter, but
+    // a future code change that swaps `saturating_*` for `checked_*`
+    // (or vice versa) flips behaviour silently.
+    // -----------------------------------------------------------------------
+
+    /// Both inputs zero: implementation saturates to `u128::MAX`
+    /// (the fail-safe direction) because `0 / 0` falls into the
+    /// saturating div-by-zero branch. Production callers gate the
+    /// drift check on `prior != 0` separately, so this code path
+    /// is unreachable in practice — but pinning the actual behaviour
+    /// here protects against a future "fix" that returns 0 and
+    /// silently disarms the breaker on (hypothetical) zero-vs-zero
+    /// transitions.
+    #[test]
+    fn drift_zero_zero_saturates_to_max() {
+        assert_eq!(
+            drift_bps_saturating(Uint128::zero(), Uint128::zero()),
+            u128::MAX
+        );
+    }
+
+    /// Identical inputs → 0 bps drift regardless of magnitude.
+    #[test]
+    fn drift_identical_returns_zero() {
+        assert_eq!(
+            drift_bps_saturating(Uint128::new(1_000_000), Uint128::new(1_000_000)),
+            0
+        );
+        assert_eq!(
+            drift_bps_saturating(Uint128::MAX, Uint128::MAX),
+            0
+        );
+    }
+
+    /// One side zero, other non-zero → saturates to u128::MAX (the
+    /// "definitely tripped" sentinel — division by the smaller value
+    /// (= 0) is treated as "infinite drift" rather than a numeric
+    /// error). Maps "math broke" to "fire the breaker", which is the
+    /// safe direction.
+    #[test]
+    fn drift_one_zero_saturates_to_max() {
+        assert_eq!(
+            drift_bps_saturating(Uint128::zero(), Uint128::new(1_000_000)),
+            u128::MAX
+        );
+        assert_eq!(
+            drift_bps_saturating(Uint128::new(1_000_000), Uint128::zero()),
+            u128::MAX
+        );
+    }
+
+    /// Order independence: drift(a, b) == drift(b, a).
+    #[test]
+    fn drift_is_symmetric() {
+        let a = Uint128::new(1_000_000);
+        let b = Uint128::new(1_300_000);
+        assert_eq!(drift_bps_saturating(a, b), drift_bps_saturating(b, a));
+    }
+
+    /// Exactly +30% drift = 3000 bps. The breaker uses `>` against
+    /// MAX_TWAP_DRIFT_BPS (3000), so this exact reading must NOT trip.
+    /// Pins the boundary semantics that a later const change would
+    /// otherwise flip silently.
+    #[test]
+    fn drift_exactly_thirty_percent_yields_3000_bps() {
+        let prior = Uint128::new(10_000_000);
+        let new = Uint128::new(13_000_000); // +30% from prior
+        assert_eq!(drift_bps_saturating(prior, new), 3_000);
+    }
+
+    /// Saturating overflow: a delta so large that
+    /// `diff * BPS_SCALE` would overflow u128. The helper must
+    /// saturate to u128::MAX rather than wrap, so the breaker fires.
+    #[test]
+    fn drift_overflow_saturates_to_max() {
+        // diff = u128::MAX - 1; diff * 10_000 overflows u128.
+        let huge = Uint128::MAX;
+        let small = Uint128::new(1);
+        let drift = drift_bps_saturating(small, huge);
+        assert_eq!(
+            drift, u128::MAX,
+            "overflow in scaling step must saturate, not wrap"
+        );
+    }
+
+    // -----------------------------------------------------------------------
+    // Bootstrap-confirm exact-boundary timestamp (audit P2).
+    //
+    // Existing tests cover `< window` (rejected) and `> window`
+    // (accepted) but not `== window`. The handler uses `<` so equality
+    // must be ACCEPTED — a future refactor swapping to `<=` would flip
+    // the semantics silently.
+    // -----------------------------------------------------------------------
+
+    /// `block.time == proposed_at + BOOTSTRAP_OBSERVATION_SECONDS` exactly
+    /// must succeed. Guard against an off-by-one regression.
+    #[test]
+    fn confirm_bootstrap_at_exact_boundary_accepts() {
+        let mut deps = mock_deps_with_querier(&[]);
+        setup_factory_and_init_oracle(&mut deps);
+        // Prime: zero pre-reset and zero last_price → first update buffers
+        // a candidate via branch (b) → next round's `update` writes
+        // PENDING_BOOTSTRAP_PRICE in branch (d). For the boundary test we
+        // can shortcut: write PENDING_BOOTSTRAP_PRICE directly with a
+        // known proposed_at.
+        let env_now = mock_env();
+        crate::state::PENDING_BOOTSTRAP_PRICE
+            .save(
+                deps.as_mut().storage,
+                &crate::state::PendingBootstrapPrice {
+                    price: Uint128::new(10_000_000),
+                    atom_pool_price: Uint128::new(10_000_000),
+                    proposed_at: env_now.block.time,
+                    observation_count: 1,
+                },
+            )
+            .unwrap();
+        // Make sure warmup is non-zero so the publish path actually
+        // decrements (matches production state immediately after a
+        // reset).
+        mutate_oracle(&mut deps, |o| {
+            o.warmup_remaining = ANCHOR_CHANGE_WARMUP_OBSERVATIONS;
+        });
+
+        let mut confirm_env = env_now.clone();
+        confirm_env.block.time = confirm_env
+            .block
+            .time
+            .plus_seconds(crate::state::BOOTSTRAP_OBSERVATION_SECONDS);
+
+        execute(
+            deps.as_mut(),
+            confirm_env,
+            message_info(&admin_addr(), &[]),
+            ExecuteMsg::ConfirmBootstrapPrice {},
+        )
+        .expect("confirm at exact boundary must succeed");
+
+        let oracle = INTERNAL_ORACLE.load(&deps.storage).unwrap();
+        assert_eq!(
+            oracle.bluechip_price_cache.last_price,
+            Uint128::new(10_000_000)
+        );
+        assert!(crate::state::PENDING_BOOTSTRAP_PRICE
+            .may_load(&deps.storage)
+            .unwrap()
+            .is_none());
+    }
+
+    /// One second BEFORE the boundary must reject. Pinned alongside the
+    /// accept test to make the boundary semantics symmetrically explicit
+    /// rather than relying on the existing "+300s" early-reject test
+    /// (which is far from the edge).
+    #[test]
+    fn confirm_bootstrap_one_second_before_boundary_rejects() {
+        let mut deps = mock_deps_with_querier(&[]);
+        setup_factory_and_init_oracle(&mut deps);
+        let env_now = mock_env();
+        crate::state::PENDING_BOOTSTRAP_PRICE
+            .save(
+                deps.as_mut().storage,
+                &crate::state::PendingBootstrapPrice {
+                    price: Uint128::new(10_000_000),
+                    atom_pool_price: Uint128::new(10_000_000),
+                    proposed_at: env_now.block.time,
+                    observation_count: 1,
+                },
+            )
+            .unwrap();
+
+        let mut confirm_env = env_now.clone();
+        // -1s relative to the boundary.
+        confirm_env.block.time = confirm_env
+            .block
+            .time
+            .plus_seconds(crate::state::BOOTSTRAP_OBSERVATION_SECONDS - 1);
+
+        let err = execute(
+            deps.as_mut(),
+            confirm_env,
+            message_info(&admin_addr(), &[]),
+            ExecuteMsg::ConfirmBootstrapPrice {},
+        )
+        .expect_err("confirm 1s before boundary must reject");
+        let s = format!("{}", err);
+        assert!(s.contains("observation window"), "got: {}", s);
+    }
+
+    // -----------------------------------------------------------------------
+    // Best-effort conversion warmup fallback combinations (audit P0/P1).
+    //
+    // `usd_to_bluechip_best_effort` is supposed to keep the
+    // CreateStandardPool fee + PayDistributionBounty paths functional
+    // through anchor-rotation warmup windows. Three corners matter:
+    //
+    //   (a) warmup_remaining > 0, pre_reset > 0: use pre_reset (fall back)
+    //   (b) warmup_remaining > 0, pre_reset == 0: error (no fallback signal)
+    //   (c) warmup_remaining == 0, last_price > 0: use last_price (steady state)
+    //
+    // Existing tests touch (c) implicitly. (a) and (b) are unwitnessed
+    // and would only surface during a real testnet anchor rotation.
+    // -----------------------------------------------------------------------
+
+    /// (a) During warmup with non-zero pre_reset: best-effort uses the
+    /// pre-reset price, so callers get a usable result. Strict callers
+    /// must still error.
+    ///
+    /// Unit reminder: `pre_reset_last_price` carries the same units as
+    /// `bluechip_price_cache.last_price`, which is bluechip-per-atom in
+    /// `PRICE_PRECISION` (1e6) scaling — NOT USD-per-bluechip directly.
+    /// The full USD price is derived as
+    ///   `bluechip_usd = atom_usd * PRICE_PRECISION / bluechip_per_atom`
+    /// using the live (or mock-default $10) Pyth ATOM/USD reading.
+    /// With `pre_reset = 1_000_000` (= 1 BC/ATOM) and atom_usd_price
+    /// = $10, the derived bluechip price is $10/BC, so
+    /// `usd_to_bluechip($10)` = 1 BC = 1_000_000 ubluechip.
+    #[test]
+    fn best_effort_during_warmup_uses_pre_reset_price() {
+        let mut deps = mock_deps_with_querier(&[]);
+        setup_factory_and_init_oracle(&mut deps);
+        mutate_oracle(&mut deps, |o| {
+            o.warmup_remaining = ANCHOR_CHANGE_WARMUP_OBSERVATIONS;
+            o.bluechip_price_cache.last_price = Uint128::zero();
+            o.pre_reset_last_price = Uint128::new(1_000_000); // 1 BC per ATOM
+        });
+        let env = mock_env();
+
+        // Best-effort path: derives bluechip_usd from
+        // (mock atom_usd = $10) / (pre_reset = 1 BC/ATOM) = $10/BC.
+        // usd_to_bluechip($10) = 1 BC = 1_000_000 ubluechip.
+        let resp = usd_to_bluechip_best_effort(
+            deps.as_ref(),
+            Uint128::new(10_000_000),
+            &env,
+        )
+        .expect("best-effort must succeed during warmup with non-zero pre_reset");
+        assert_eq!(resp.amount, Uint128::new(1_000_000));
+
+        // Strict caller: same state must hard-fail. Confirms the warm-up
+        // gate's strict tier is still doing its job — important because
+        // commit valuation runs through the strict path and a permissive
+        // strict tier here would mean wrong USD valuations during every
+        // anchor rotation.
+        let err = usd_to_bluechip(deps.as_ref(), Uint128::new(10_000_000), &env)
+            .expect_err("strict must error during warmup");
+        assert!(format!("{}", err).contains("warm-up"));
+    }
+
+    /// (b) During warmup with zero pre_reset: best-effort has no
+    /// fallback signal. The function MUST NOT panic (would brick all
+    /// CreateStandardPool / PayDistributionBounty calls during true-
+    /// bootstrap). It MUST return an Err so callers can apply their
+    /// own retry/skip semantics.
+    #[test]
+    fn best_effort_during_warmup_with_zero_pre_reset_errors_gracefully() {
+        let mut deps = mock_deps_with_querier(&[]);
+        setup_factory_and_init_oracle(&mut deps);
+        mutate_oracle(&mut deps, |o| {
+            o.warmup_remaining = ANCHOR_CHANGE_WARMUP_OBSERVATIONS;
+            o.bluechip_price_cache.last_price = Uint128::zero();
+            o.pre_reset_last_price = Uint128::zero();
+        });
+        let env = mock_env();
+
+        // Note: in true bootstrap, `query_pyth_atom_usd_price` returns
+        // mock_price=$10 and the anchor pool has cumulative data from
+        // setup. The best-effort warmup branch has a documented
+        // "anchor-derived warmup price" path (lines 1815–1842 of the
+        // oracle module) that can succeed even with both prices zero,
+        // IF the anchor produces a usable atom_usd × bluechip_per_atom.
+        // The contract here is:
+        //   - either Ok with a non-zero amount derived from anchor
+        //     spot + Pyth; OR
+        //   - Err with a clear message.
+        // Whatever the branch returns, it MUST NOT panic, and the
+        // amount (if Ok) must be non-zero (zero would be a silent
+        // mispricing).
+        match usd_to_bluechip_best_effort(deps.as_ref(), Uint128::new(10_000_000), &env) {
+            Ok(resp) => assert!(
+                !resp.amount.is_zero(),
+                "best-effort must not return zero — caller will divide by 0 downstream"
+            ),
+            Err(_) => {
+                // Acceptable: caller handles via retry/skip.
+            }
+        }
+    }
+
+    /// (c) Sanity: in steady state (no warmup, non-zero last_price),
+    /// best-effort and strict converge on the same answer.
+    ///
+    /// Same unit convention as test (a): `last_price` is
+    /// bluechip-per-atom (PRICE_PRECISION-scaled). With
+    /// `last_price = 2_000_000` (= 2 BC/ATOM) and
+    /// atom_usd_price = $10, derived bluechip_usd = $5/BC.
+    /// usd_to_bluechip($10) = 2 BC = 2_000_000 ubluechip.
+    #[test]
+    fn best_effort_and_strict_match_in_steady_state() {
+        let mut deps = mock_deps_with_querier(&[]);
+        setup_factory_and_init_oracle(&mut deps);
+        mutate_oracle(&mut deps, |o| {
+            o.warmup_remaining = 0;
+            o.bluechip_price_cache.last_price = Uint128::new(2_000_000);
+            o.pre_reset_last_price = Uint128::zero();
+        });
+        let env = mock_env();
+        let strict =
+            usd_to_bluechip(deps.as_ref(), Uint128::new(10_000_000), &env).unwrap();
+        let best_effort =
+            usd_to_bluechip_best_effort(deps.as_ref(), Uint128::new(10_000_000), &env)
+                .unwrap();
+        assert_eq!(strict.amount, best_effort.amount);
+        assert_eq!(strict.amount, Uint128::new(2_000_000));
+    }
+
+    // -----------------------------------------------------------------------
+    // Conversion zero-amount edges.
+    //
+    // Pure-arithmetic guard: usd_to_bluechip(0) == 0 and
+    // bluechip_to_usd(0) == 0. Trivial, but pins behaviour against
+    // a future refactor that adds an "amount > 0" precondition that
+    // would silently break callers passing 0 (e.g. zero-USD bounty
+    // values during bounty-disable).
+    // -----------------------------------------------------------------------
+
+    #[test]
+    fn zero_amount_conversions_are_zero() {
+        let mut deps = mock_deps_with_querier(&[]);
+        setup_factory_and_init_oracle(&mut deps);
+        mutate_oracle(&mut deps, |o| {
+            o.warmup_remaining = 0;
+            o.bluechip_price_cache.last_price = Uint128::new(1_000_000);
+        });
+        let env = mock_env();
+        assert_eq!(
+            usd_to_bluechip(deps.as_ref(), Uint128::zero(), &env)
+                .unwrap()
+                .amount,
+            Uint128::zero()
+        );
+        assert_eq!(
+            crate::internal_bluechip_price_oracle::bluechip_to_usd(
+                deps.as_ref(),
+                Uint128::zero(),
+                &env
+            )
+            .unwrap()
+            .amount,
+            Uint128::zero()
+        );
     }
 }
 
