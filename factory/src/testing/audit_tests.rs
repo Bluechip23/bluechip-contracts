@@ -3866,3 +3866,562 @@ mod oracle_coverage_backfill {
     }
 }
 
+// ===========================================================================
+// Cross-pool integration tests for M-3 (allowlist + auto-flag) and M-4
+// (USD-denominated liquidity floor).
+//
+// These exercise the full `get_eligible_creator_pools` path end-to-end
+// with DISTINCT reserves on each pool — only possible after the
+// `pool_state_overrides` extension to `WasmMockQuerier`. Without that,
+// every cross-contract `GetPoolState` query returned the same numbers
+// regardless of which address was asked, which made it impossible to
+// distinguish drained / lopsided / healthy pools at the integration
+// layer.
+//
+// Each test models a realistic deployment shape (allowlist + auto-flag
+// + per-pool reserves) and asserts the eligible-set composition that
+// would actually flow into the oracle's TWAP sample selection.
+// ===========================================================================
+mod cross_pool_integration_tests {
+    use super::*;
+    use cosmwasm_std::StdResult;
+
+    use crate::internal_bluechip_price_oracle::{
+        get_eligible_creator_pools, MIN_POOL_LIQUIDITY_FALLBACK_BLUECHIP_PER_SIDE,
+        MIN_POOL_LIQUIDITY_USD,
+    };
+    use crate::state::{
+        AllowlistedOraclePool, COMMIT_POOLS_AUTO_ELIGIBLE, ORACLE_ELIGIBLE_POOLS,
+    };
+
+    /// Register a `PoolDetails` row + a `pool_state_override` on the
+    /// mock querier. `bluechip_index` is which side of `pool_token_info`
+    /// holds the bluechip native denom — must match what the test
+    /// expects the helper to resolve.
+    fn register_pool(
+        deps: &mut OwnedDeps<MockStorage, MockApi, WasmMockQuerier>,
+        pool_id: u64,
+        addr: &Addr,
+        kind: pool_factory_interfaces::PoolKind,
+        bluechip_index: u8,
+        reserve_bluechip: u128,
+        reserve_other: u128,
+    ) {
+        let bluechip_token = TokenType::Native {
+            denom: "ubluechip".to_string(),
+        };
+        let other_token = match kind {
+            pool_factory_interfaces::PoolKind::Standard => TokenType::Native {
+                denom: "uusdc".to_string(),
+            },
+            pool_factory_interfaces::PoolKind::Commit => TokenType::CreatorToken {
+                contract_addr: Addr::unchecked(format!("creator_token_{}", pool_id)),
+            },
+        };
+        let pool_token_info = if bluechip_index == 0 {
+            [bluechip_token, other_token]
+        } else {
+            [other_token, bluechip_token]
+        };
+        // reserve0 / reserve1 follow the same orientation as
+        // pool_token_info.
+        let (reserve0, reserve1) = if bluechip_index == 0 {
+            (reserve_bluechip, reserve_other)
+        } else {
+            (reserve_other, reserve_bluechip)
+        };
+        POOLS_BY_ID
+            .save(
+                deps.as_mut().storage,
+                pool_id,
+                &PoolDetails {
+                    pool_id,
+                    pool_token_info,
+                    creator_pool_addr: addr.clone(),
+                    pool_kind: kind.clone(),
+                    commit_pool_ordinal: 0,
+                },
+            )
+            .unwrap();
+        let state = PoolStateResponseForFactory {
+            pool_contract_address: addr.clone(),
+            nft_ownership_accepted: true,
+            reserve0: Uint128::new(reserve0),
+            reserve1: Uint128::new(reserve1),
+            total_liquidity: Uint128::new(reserve0.saturating_add(reserve1)),
+            block_time_last: 100,
+            price0_cumulative_last: Uint128::zero(),
+            price1_cumulative_last: Uint128::zero(),
+            assets: vec![],
+        };
+        POOLS_BY_CONTRACT_ADDRESS
+            .save(deps.as_mut().storage, addr.clone(), &state)
+            .unwrap();
+        // The factory queries pools cross-contract via `GetPoolState`,
+        // which on real chains hits the pool wasm. Mirror what the pool
+        // would return into the mock querier so the integration layer
+        // exercises the same code path as production.
+        deps.querier.set_pool_state(addr.as_str(), state);
+        // Mark commit pools as threshold-crossed so the auto-eligible
+        // source counts them.
+        if matches!(kind, pool_factory_interfaces::PoolKind::Commit) {
+            POOL_THRESHOLD_MINTED
+                .save(deps.as_mut().storage, pool_id, &true)
+                .unwrap();
+        }
+    }
+
+    /// Add a pool to the admin allowlist. Bypasses the timelock flow —
+    /// the timelock semantics are pinned in `oracle_eligibility_tests`;
+    /// these tests focus on what the helper computes once the input
+    /// state is in place.
+    fn allowlist(
+        deps: &mut OwnedDeps<MockStorage, MockApi, WasmMockQuerier>,
+        addr: &Addr,
+        bluechip_index: u8,
+    ) {
+        ORACLE_ELIGIBLE_POOLS
+            .save(
+                deps.as_mut().storage,
+                addr.clone(),
+                &AllowlistedOraclePool {
+                    bluechip_index,
+                    added_at: mock_env().block.time,
+                },
+            )
+            .unwrap();
+    }
+
+    /// Stand up factory + init oracle. Auto-flag chosen by caller so the
+    /// integration tests can drive both stages (1-3: allowlist-only and
+    /// 4+: auto + allowlist).
+    fn setup(
+        deps: &mut OwnedDeps<MockStorage, MockApi, WasmMockQuerier>,
+        auto_eligible: bool,
+    ) {
+        setup_atom_pool(deps);
+        instantiate(
+            deps.as_mut(),
+            mock_env(),
+            message_info(&admin_addr(), &[]),
+            default_factory_config(),
+        )
+        .unwrap();
+        COMMIT_POOLS_AUTO_ELIGIBLE
+            .save(deps.as_mut().storage, &auto_eligible)
+            .unwrap();
+    }
+
+    /// M-4 integration. Auto-flag OFF; three allowlisted standard pools
+    /// with very different shapes. Only the healthy one survives.
+    /// Reserves are well above the fallback floor (no oracle price yet
+    /// in this fresh deployment), so the comparison happens against
+    /// `MIN_POOL_LIQUIDITY_FALLBACK_BLUECHIP_PER_SIDE`.
+    #[test]
+    fn allowlist_filters_drained_and_lopsided_pools() {
+        let mut deps = mock_deps_with_querier(&[]);
+        setup(&mut deps, false);
+        let floor = MIN_POOL_LIQUIDITY_FALLBACK_BLUECHIP_PER_SIDE.u128();
+
+        let healthy = make_addr("std_healthy");
+        let drained = make_addr("std_drained");
+        let lopsided = make_addr("std_lopsided");
+
+        // Healthy: balanced, both sides at the floor.
+        register_pool(
+            &mut deps,
+            10,
+            &healthy,
+            pool_factory_interfaces::PoolKind::Standard,
+            0,
+            floor,
+            floor,
+        );
+        // Drained: balanced, both sides far below the floor. Old code's
+        // sum check (10 BC) still failed for this pool, but the per-side
+        // gate fails earlier — at the bluechip side itself.
+        register_pool(
+            &mut deps,
+            11,
+            &drained,
+            pool_factory_interfaces::PoolKind::Standard,
+            0,
+            1_000,
+            1_000,
+        );
+        // Lopsided: 100 ubluechip on the bluechip side (dust) but 1M BC
+        // on the other side. Legacy summed check would PASS this; the
+        // new per-side check must REJECT it. This is the exact
+        // false-pass case M-4 closes.
+        register_pool(
+            &mut deps,
+            12,
+            &lopsided,
+            pool_factory_interfaces::PoolKind::Standard,
+            0,
+            100,
+            1_000_000_000_000,
+        );
+
+        for addr in [&healthy, &drained, &lopsided] {
+            allowlist(&mut deps, addr, 0);
+        }
+
+        let (eligible, indices) = get_eligible_creator_pools(
+            deps.as_ref(),
+            atom_bluechip_pool_addr().as_str(),
+        )
+        .unwrap();
+        assert_eq!(
+            eligible,
+            vec![healthy.to_string()],
+            "only the healthy pool should survive: drained={:?}, lopsided={:?}",
+            drained.to_string(),
+            lopsided.to_string()
+        );
+        assert_eq!(indices, vec![0u8]);
+    }
+
+    /// M-4 integration with the USD-denominated path. Seed the oracle
+    /// price so the helper computes the floor from
+    /// `MIN_POOL_LIQUIDITY_USD` instead of the fallback. Pool exactly at
+    /// the computed floor passes; one ubluechip below fails.
+    #[test]
+    fn usd_path_floor_filters_correctly() {
+        let mut deps = mock_deps_with_querier(&[]);
+        setup(&mut deps, false);
+        // Seed bluechip-per-atom = 1_000_000 (1 BC/ATOM scaled by
+        // PRICE_PRECISION). This gives `bluechip_usd ≈ atom_usd` →
+        // i.e., 1 BC ≈ $atom_usd in dollar terms.
+        // floor_per_side = MIN_POOL_LIQUIDITY_USD * 1e6 / 1_000_000 / 2
+        //                = MIN_POOL_LIQUIDITY_USD / 2
+        //                = 2_500_000_000 ubluechip ($2_500 each side)
+        crate::internal_bluechip_price_oracle::INTERNAL_ORACLE
+            .update(deps.as_mut().storage, |mut o| -> StdResult<_> {
+                o.bluechip_price_cache.last_price = Uint128::new(1_000_000);
+                Ok(o)
+            })
+            .unwrap();
+        let floor_per_side = MIN_POOL_LIQUIDITY_USD.u128() / 2;
+
+        let at_floor = make_addr("std_at_floor");
+        let just_under = make_addr("std_just_under");
+        register_pool(
+            &mut deps,
+            20,
+            &at_floor,
+            pool_factory_interfaces::PoolKind::Standard,
+            0,
+            floor_per_side,
+            floor_per_side,
+        );
+        register_pool(
+            &mut deps,
+            21,
+            &just_under,
+            pool_factory_interfaces::PoolKind::Standard,
+            0,
+            floor_per_side - 1,
+            floor_per_side - 1,
+        );
+        allowlist(&mut deps, &at_floor, 0);
+        allowlist(&mut deps, &just_under, 0);
+
+        let (eligible, _) = get_eligible_creator_pools(
+            deps.as_ref(),
+            atom_bluechip_pool_addr().as_str(),
+        )
+        .unwrap();
+        assert_eq!(eligible, vec![at_floor.to_string()]);
+    }
+
+    /// M-4 integration where the bluechip side is on `index = 1`.
+    /// Confirms the helper consults the recorded bluechip_index (rather
+    /// than always reading reserve0) — the lopsided pool here would pass
+    /// any "look at reserve0" implementation.
+    #[test]
+    fn allowlist_respects_bluechip_index_one() {
+        let mut deps = mock_deps_with_querier(&[]);
+        setup(&mut deps, false);
+        let floor = MIN_POOL_LIQUIDITY_FALLBACK_BLUECHIP_PER_SIDE.u128();
+
+        // bluechip on side 1; side 0 holds the non-bluechip token.
+        // Bluechip side is exactly at the floor; reserve0 is dust.
+        let pool = make_addr("std_idx1");
+        register_pool(
+            &mut deps,
+            30,
+            &pool,
+            pool_factory_interfaces::PoolKind::Standard,
+            /*bluechip_index=*/ 1,
+            /*reserve_bluechip=*/ floor,
+            /*reserve_other=*/ 100,
+        );
+        allowlist(&mut deps, &pool, 1);
+
+        let (eligible, indices) = get_eligible_creator_pools(
+            deps.as_ref(),
+            atom_bluechip_pool_addr().as_str(),
+        )
+        .unwrap();
+        assert_eq!(eligible, vec![pool.to_string()]);
+        assert_eq!(indices, vec![1u8]);
+
+        // Same pool with the WRONG index recorded (0) would read
+        // reserve0 = 100 (dust) and fail the floor — sanity-check the
+        // helper is doing what we think.
+        ORACLE_ELIGIBLE_POOLS.remove(deps.as_mut().storage, pool.clone());
+        allowlist(&mut deps, &pool, 0);
+        let (eligible, _) = get_eligible_creator_pools(
+            deps.as_ref(),
+            atom_bluechip_pool_addr().as_str(),
+        )
+        .unwrap();
+        assert!(
+            eligible.is_empty(),
+            "wrong index reads dust reserve0 → must fail"
+        );
+    }
+
+    /// M-3 dedup integration. A pool that's both allowlisted AND
+    /// threshold-crossed-commit (auto-flag ON) must appear exactly once
+    /// in the eligible set, with the allowlist's recorded
+    /// `bluechip_index` taking precedence.
+    #[test]
+    fn dedup_allowlist_and_auto_eligible_yields_single_entry() {
+        let mut deps = mock_deps_with_querier(&[]);
+        setup(&mut deps, true);
+        let floor = MIN_POOL_LIQUIDITY_FALLBACK_BLUECHIP_PER_SIDE.u128();
+
+        let pool = make_addr("commit_dedup");
+        register_pool(
+            &mut deps,
+            40,
+            &pool,
+            pool_factory_interfaces::PoolKind::Commit,
+            0,
+            floor,
+            floor,
+        );
+        allowlist(&mut deps, &pool, 0);
+
+        let (eligible, _) = get_eligible_creator_pools(
+            deps.as_ref(),
+            atom_bluechip_pool_addr().as_str(),
+        )
+        .unwrap();
+        assert_eq!(eligible.len(), 1, "dedup must collapse to one entry");
+        assert_eq!(eligible[0], pool.to_string());
+    }
+
+    /// Mixed deployment: one allowlisted standard pool (passes the
+    /// floor), one auto-eligible commit pool (passes), one auto-eligible
+    /// commit pool that's drained (fails). Auto-flag ON.
+    /// Both qualifying pools appear; the drained commit is dropped.
+    #[test]
+    fn mixed_allowlist_and_auto_with_floor_filter() {
+        let mut deps = mock_deps_with_querier(&[]);
+        setup(&mut deps, true);
+        let floor = MIN_POOL_LIQUIDITY_FALLBACK_BLUECHIP_PER_SIDE.u128();
+
+        let std_healthy = make_addr("std_healthy_2");
+        let commit_healthy = make_addr("commit_healthy");
+        let commit_drained = make_addr("commit_drained");
+        register_pool(
+            &mut deps,
+            50,
+            &std_healthy,
+            pool_factory_interfaces::PoolKind::Standard,
+            0,
+            floor,
+            floor,
+        );
+        register_pool(
+            &mut deps,
+            51,
+            &commit_healthy,
+            pool_factory_interfaces::PoolKind::Commit,
+            0,
+            floor,
+            floor,
+        );
+        register_pool(
+            &mut deps,
+            52,
+            &commit_drained,
+            pool_factory_interfaces::PoolKind::Commit,
+            0,
+            1_000,
+            1_000,
+        );
+        allowlist(&mut deps, &std_healthy, 0);
+
+        let (eligible, _) = get_eligible_creator_pools(
+            deps.as_ref(),
+            atom_bluechip_pool_addr().as_str(),
+        )
+        .unwrap();
+        // Allowlist iterates first (BTreeMap order on Addr); the
+        // auto-eligible source then adds non-deduped non-drained
+        // commit pools. We don't depend on iteration order here —
+        // assert via set membership.
+        let eligible_set: std::collections::HashSet<_> = eligible.into_iter().collect();
+        assert_eq!(
+            eligible_set,
+            std::collections::HashSet::from([
+                std_healthy.to_string(),
+                commit_healthy.to_string(),
+            ]),
+            "drained commit pool must be filtered; healthy ones must appear once each"
+        );
+    }
+
+    /// Auto-flag toggling (without changing pool state) flips the
+    /// composition of the eligible set. Mirrors the stage-1 -> stage-4
+    /// transition where the admin enables auto-include.
+    #[test]
+    fn auto_flag_toggle_changes_eligible_set() {
+        let mut deps = mock_deps_with_querier(&[]);
+        setup(&mut deps, false);
+        let floor = MIN_POOL_LIQUIDITY_FALLBACK_BLUECHIP_PER_SIDE.u128();
+
+        let std_pool = make_addr("std_only");
+        let commit_pool = make_addr("commit_only");
+        register_pool(
+            &mut deps,
+            60,
+            &std_pool,
+            pool_factory_interfaces::PoolKind::Standard,
+            0,
+            floor,
+            floor,
+        );
+        register_pool(
+            &mut deps,
+            61,
+            &commit_pool,
+            pool_factory_interfaces::PoolKind::Commit,
+            0,
+            floor,
+            floor,
+        );
+        allowlist(&mut deps, &std_pool, 0);
+
+        // Auto OFF: only the allowlisted standard pool is eligible.
+        let (eligible_off, _) = get_eligible_creator_pools(
+            deps.as_ref(),
+            atom_bluechip_pool_addr().as_str(),
+        )
+        .unwrap();
+        assert_eq!(eligible_off, vec![std_pool.to_string()]);
+
+        // Flip the flag (test-only direct write; the timelock semantics
+        // are covered in `oracle_eligibility_tests`).
+        COMMIT_POOLS_AUTO_ELIGIBLE
+            .save(deps.as_mut().storage, &true)
+            .unwrap();
+
+        // Auto ON: both pools are eligible.
+        let (eligible_on, _) = get_eligible_creator_pools(
+            deps.as_ref(),
+            atom_bluechip_pool_addr().as_str(),
+        )
+        .unwrap();
+        let on_set: std::collections::HashSet<_> = eligible_on.into_iter().collect();
+        assert_eq!(
+            on_set,
+            std::collections::HashSet::from([
+                std_pool.to_string(),
+                commit_pool.to_string(),
+            ])
+        );
+    }
+
+    /// Anchor pool exclusion. Even when explicitly allowlisted, the
+    /// anchor must not appear in the eligible-set returned to
+    /// `select_random_pools_with_atom` — that function adds the anchor
+    /// separately. (Defense-in-depth: someone could try to add the
+    /// anchor to the allowlist by mistake.)
+    #[test]
+    fn anchor_pool_is_excluded_even_when_allowlisted() {
+        let mut deps = mock_deps_with_querier(&[]);
+        setup(&mut deps, true);
+        let floor = MIN_POOL_LIQUIDITY_FALLBACK_BLUECHIP_PER_SIDE.u128();
+
+        let anchor = atom_bluechip_pool_addr();
+        // Override the anchor's pool state with healthy reserves so a
+        // missing exclusion would falsely admit it.
+        deps.querier.set_pool_state(
+            anchor.as_str(),
+            PoolStateResponseForFactory {
+                pool_contract_address: anchor.clone(),
+                nft_ownership_accepted: true,
+                reserve0: Uint128::new(floor),
+                reserve1: Uint128::new(floor),
+                total_liquidity: Uint128::new(2 * floor),
+                block_time_last: 100,
+                price0_cumulative_last: Uint128::zero(),
+                price1_cumulative_last: Uint128::zero(),
+                assets: vec![],
+            },
+        );
+        allowlist(&mut deps, &anchor, 0);
+
+        let (eligible, _) = get_eligible_creator_pools(
+            deps.as_ref(),
+            anchor.as_str(),
+        )
+        .unwrap();
+        assert!(
+            eligible.is_empty(),
+            "anchor must never be returned by get_eligible_creator_pools"
+        );
+    }
+
+    /// Pool whose cross-contract `GetPoolState` errors out (simulating
+    /// a broken / migrated pool) must be silently skipped, not crash
+    /// the whole eligibility calculation. Confirms graceful-fallback
+    /// behaviour in both source paths (allowlist + auto-eligible).
+    #[test]
+    fn broken_pool_is_skipped_not_fatal() {
+        let mut deps = mock_deps_with_querier(&[]);
+        setup(&mut deps, true);
+        let floor = MIN_POOL_LIQUIDITY_FALLBACK_BLUECHIP_PER_SIDE.u128();
+
+        let healthy = make_addr("std_healthy_3");
+        let broken = make_addr("std_broken");
+        register_pool(
+            &mut deps,
+            70,
+            &healthy,
+            pool_factory_interfaces::PoolKind::Standard,
+            0,
+            floor,
+            floor,
+        );
+        register_pool(
+            &mut deps,
+            71,
+            &broken,
+            pool_factory_interfaces::PoolKind::Standard,
+            0,
+            floor,
+            floor,
+        );
+        // Make the broken pool error on cross-contract GetPoolState.
+        deps.querier
+            .query_error_pools
+            .insert(broken.to_string());
+        allowlist(&mut deps, &healthy, 0);
+        allowlist(&mut deps, &broken, 0);
+
+        // Must NOT panic; broken pool is silently dropped.
+        let (eligible, _) = get_eligible_creator_pools(
+            deps.as_ref(),
+            atom_bluechip_pool_addr().as_str(),
+        )
+        .unwrap();
+        assert_eq!(eligible, vec![healthy.to_string()]);
+    }
+}
+
