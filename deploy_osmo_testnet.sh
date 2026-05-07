@@ -14,8 +14,27 @@
 #   - Anchor standard pool creation + SetAnchorPool one-shot bootstrap
 #   - VAA pusher loop (factory will register stale-Pyth errors until
 #     the pusher is running, which is fine for step 1)
+#   - Oracle-eligibility setup (audit M-3): ProposeAddOracleEligiblePool
+#     for the curated allowlist and/or ProposeSetCommitPoolsAutoEligible
+#     to flip the auto-flag. These both 48h-timelock so slice 2 starts
+#     them as soon as the anchor exists.
 #   - Commit pool creation / threshold crossing
 #   - Any test scenarios (TWAP, rotation, staleness, swing)
+#
+# Audit notes the script honors implicitly (no operator action needed
+# in this slice, but slice 2+ is shaped around them):
+#   - M-3: COMMIT_POOLS_AUTO_ELIGIBLE defaults to FALSE on fresh
+#     instantiates. The factory we instantiate here will sample only
+#     the anchor pool until either a 48h timelocked flag flip lands
+#     OR specific pools are added to ORACLE_ELIGIBLE_POOLS via the
+#     allowlist propose/apply pair.
+#   - M-4: oracle-eligible pools must meet a per-SIDE liquidity floor
+#     ($5_000 USD via the live oracle, or 5_000 BC fallback when
+#     oracle data is unavailable). osmo_testnet.env defines
+#     ANCHOR_POOL_SEED_BLUECHIP_PER_SIDE as the seed amount for
+#     anchor + any additional rotation-eligible standard pools.
+#   - Pyth conf gate (200 bps default) is now admin-tunable via
+#     SetPythConfThresholdBps. Not exercised in slice 1.
 #
 # Prerequisites:
 #   1. osmosisd installed and on PATH
@@ -242,9 +261,9 @@ FACTORY_INIT="$(jq -nc \
         standard_pool_creation_fee_usd:      $std_fee
     }')"
 
-# --admin: factory keeps an admin so we can migrate later (e.g. to
-# pull in the ForceRefreshEligibleSnapshot addition before commit-pool
-# rotation tests). Once we're on the test-final wasm we can clear it.
+# --admin: factory keeps an admin so we can migrate later if a future
+# audit lands a wasm change between now and the rotation tests. Once
+# we're on the test-final wasm we can clear it.
 FACTORY_RESULT="$(submit_tx wasm instantiate "$FACTORY_CODE_ID" "$FACTORY_INIT" \
     --label "bluechip_factory" --admin "$ADDR")"
 FACTORY_ADDR="$(extract_attr "$FACTORY_RESULT" instantiate _contract_address)"
@@ -276,6 +295,24 @@ echo "bluechip denom:  $BLUECHIP_DENOM"
 echo ""
 echo "state written:   $SCRIPT_DIR/$STATE_FILE"
 echo ""
-echo "NEXT: anchor standard pool creation + SetAnchorPool one-shot."
-echo "      The factory's USD↔bluechip oracle path will fail until"
-echo "      the anchor pool exists AND a Pyth update has landed."
+echo "NEXT STEPS (in subsequent slices):"
+echo "  1. Anchor pool: factory.CreateStandardPool with"
+echo "     [Native(uosmo), Native(\$BLUECHIP_DENOM)]; seed each side"
+echo "     with at least \$ANCHOR_POOL_SEED_BLUECHIP_PER_SIDE micro-units"
+echo "     to clear the M-4 per-side liquidity floor."
+echo "  2. SetAnchorPool one-shot to point the factory at the new pool."
+echo "  3. Start pyth_vaa_pusher.sh in another terminal so the oracle"
+echo "     has fresh OSMO/USD data within the 90s staleness window."
+echo "  4. Kick off the 48h timelocks immediately so they're done by"
+echo "     the time the rotation tests need them:"
+echo "       - ProposeSetCommitPoolsAutoEligible{enabled:true}"
+echo "       - ProposeAddOracleEligiblePool{...} for any standard"
+echo "         pools you want sampled directly"
+echo "  5. While waiting on the timelocks, run bootstrap (1h"
+echo "     observation → ConfirmBootstrapPrice) + TWAP advancement +"
+echo "     staleness tests, all of which only need the anchor."
+echo "  6. After 48h: ApplySetCommitPoolsAutoEligible /"
+echo "     ApplyAddOracleEligiblePool, then RefreshOraclePoolSnapshot,"
+echo "     then commit-pool creation + threshold crossing."
+echo "  7. Last: swing test on a thinly-funded commit pool (NOT the"
+echo "     anchor) per the design discussion."
