@@ -2285,3 +2285,1287 @@ mod distribution_liveness_tests {
     #[allow(dead_code)]
     fn _ts_marker(_t: Timestamp) {}
 }
+
+// ---------------------------------------------------------------------------
+// H1 audit fix: creator-pool deposit balance verification
+// ---------------------------------------------------------------------------
+//
+// The creator-pool dispatcher used to call the no-verify deposit /
+// add-to-position variants on the assumption that the pool's CW20 was
+// always a vanilla cw20-base freshly minted by the factory — true
+// today, but a single careless future `update_pool_token_address` or
+// factory upgrade permitting third-party CW20s would let the pool
+// credit user-claimed amounts to reserves while the actual on-chain
+// CW20 balance lagged (fee-on-transfer, rebasing, malicious receiver).
+//
+// The fix flips the dispatcher to the `_with_verify` variants and
+// wires `DEPOSIT_VERIFY_REPLY_ID` into the contract's `reply()`
+// dispatcher so the post-balance delta is checked before the
+// transaction commits.
+//
+// Tests in this module confirm that production deposits routed through
+// `ExecuteMsg::DepositLiquidity` / `ExecuteMsg::AddToPosition` now:
+//   - emit a final SubMsg tagged `reply_on_success` with the verify
+//     reply id (the anchor the reply handler hooks onto), and
+//   - persist `DEPOSIT_VERIFY_CTX` carrying the pre-balance snapshot
+//     and credited delta for the reply to consume.
+mod deposit_verify_tests {
+    use super::*;
+    use crate::contract::reply;
+    use crate::testing::liquidity_tests::setup_pool_post_threshold;
+    use cosmwasm_std::{
+        to_json_binary, Binary, Coin, ContractResult, Reply, ReplyOn, SubMsgResponse,
+        SubMsgResult, SystemResult, WasmQuery,
+    };
+    use cw20::BalanceResponse as Cw20BalanceResponse;
+    use pool_core::state::{
+        DepositVerifyContext, DEPOSIT_VERIFY_CTX, DEPOSIT_VERIFY_REPLY_ID,
+    };
+
+    /// Install a CW20 balance querier that returns a fixed balance for
+    /// any cw20 query and an `OwnerOf` querier for the NFT contract so
+    /// the deposit / add-to-position handlers can look up position
+    /// ownership during dispatch. The CW20 balance is parametric so
+    /// callers can simulate matching deltas (success path) or
+    /// mismatched deltas (fee-on-transfer / rebasing rejection path)
+    /// against a known pre-balance.
+    fn install_balance_querier(
+        deps: &mut OwnedDeps<MockStorage, MockApi, MockQuerier>,
+        cw20_balance: Uint128,
+        nft_owner: &str,
+    ) {
+        let owner = nft_owner.to_string();
+        deps.querier.update_wasm(move |query| match query {
+            WasmQuery::Smart { contract_addr, msg } => {
+                if contract_addr == "nft_contract" {
+                    if let Ok(pool_factory_interfaces::cw721_msgs::Cw721QueryMsg::OwnerOf {
+                        ..
+                    }) = cosmwasm_std::from_json(msg)
+                    {
+                        let resp =
+                            pool_factory_interfaces::cw721_msgs::OwnerOfResponse {
+                                owner: owner.clone(),
+                                approvals: vec![],
+                            };
+                        return SystemResult::Ok(ContractResult::Ok(
+                            to_json_binary(&resp).unwrap(),
+                        ));
+                    }
+                }
+                if let Ok(cw20::Cw20QueryMsg::Balance { .. }) =
+                    cosmwasm_std::from_json(msg)
+                {
+                    let resp = Cw20BalanceResponse {
+                        balance: cw20_balance,
+                    };
+                    return SystemResult::Ok(ContractResult::Ok(
+                        to_json_binary(&resp).unwrap(),
+                    ));
+                }
+                SystemResult::Err(cosmwasm_std::SystemError::InvalidRequest {
+                    error: format!("unexpected wasm query to {}", contract_addr),
+                    request: msg.clone(),
+                })
+            }
+            _ => SystemResult::Err(cosmwasm_std::SystemError::UnsupportedRequest {
+                kind: "non-Smart wasm query".to_string(),
+            }),
+        });
+    }
+
+    /// `ExecuteMsg::DepositLiquidity` (creator-pool dispatch path)
+    /// must emit a final SubMsg tagged `reply_on_success` carrying
+    /// `DEPOSIT_VERIFY_REPLY_ID`. This is the dispatch-anchor — without
+    /// it the reply handler never fires and the verify invariant is
+    /// vacuous.
+    #[test]
+    fn deposit_liquidity_through_dispatcher_emits_verify_reply_anchor() {
+        let mut deps = mock_dependencies();
+        setup_pool_post_threshold(&mut deps);
+        // Pre-balance is read by `prepare_deposit` — install ANY value;
+        // the test only asserts the SubMsg shape, not the reply outcome.
+        install_balance_querier(&mut deps, Uint128::zero(), "liquidity_provider");
+
+        let user = Addr::unchecked("liquidity_provider");
+        let bluechip_amount = Uint128::new(1_000_000_000);
+        let token_amount = Uint128::new(14_893_617_021);
+        let info = message_info(
+            &user,
+            &[Coin {
+                denom: "ubluechip".to_string(),
+                amount: bluechip_amount,
+            }],
+        );
+
+        let res = execute(
+            deps.as_mut(),
+            mock_env(),
+            info,
+            ExecuteMsg::DepositLiquidity {
+                amount0: bluechip_amount,
+                amount1: token_amount,
+                min_amount0: None,
+                min_amount1: None,
+                transaction_deadline: None,
+            },
+        )
+        .expect("dispatch must succeed");
+
+        // The LAST outgoing SubMsg must carry the verify reply id and
+        // be wired as `reply_on_success`. Production code uses the
+        // last-message anchor so the reply runs strictly after every
+        // bank/cw20 transfer the deposit emitted.
+        let last = res
+            .messages
+            .last()
+            .expect("response must contain at least one SubMsg");
+        assert_eq!(
+            last.id, DEPOSIT_VERIFY_REPLY_ID,
+            "last SubMsg must carry DEPOSIT_VERIFY_REPLY_ID — got id {} \
+             (creator-pool dispatcher must route DepositLiquidity through \
+             execute_deposit_liquidity_with_verify, not the unverified variant)",
+            last.id
+        );
+        assert!(
+            matches!(last.reply_on, ReplyOn::Success),
+            "DEPOSIT_VERIFY_REPLY_ID must be wired reply_on_success — got {:?}; \
+             reply_always or reply_on_error would let a deposit subroutine \
+             error short-circuit the verification entirely.",
+            last.reply_on
+        );
+
+        // DEPOSIT_VERIFY_CTX is the transient handoff to the reply
+        // handler; it carries the pre-balance snapshot and credited
+        // delta. Must be present after a verify-path deposit.
+        let ctx = DEPOSIT_VERIFY_CTX
+            .may_load(&deps.storage)
+            .unwrap()
+            .expect("DEPOSIT_VERIFY_CTX must be saved by the verify-path deposit");
+        assert!(
+            ctx.cw20_side1_addr.is_some(),
+            "creator-pool's pair has the CW20 on side 1; verify ctx must record it"
+        );
+        // The credited delta on side 1 should equal the user-supplied
+        // CW20 amount (subject to the deposit prep math; for a first
+        // deposit shape the credit is the user-supplied amount minus
+        // any internal adjustment — we assert non-zero rather than an
+        // exact value because the deposit math is exercised separately
+        // in liquidity_tests).
+        assert!(
+            !ctx.expected_delta1.is_zero(),
+            "expected non-zero credited delta on the CW20 side"
+        );
+    }
+
+    /// `ExecuteMsg::AddToPosition` must also route through the verify
+    /// path. Without this assertion, a future refactor that flips just
+    /// one of the two dispatcher arms back to the unverified variant
+    /// would silently regress the H1 invariant on add-to-position.
+    #[test]
+    fn add_to_position_through_dispatcher_emits_verify_reply_anchor() {
+        let mut deps = mock_dependencies();
+        setup_pool_post_threshold(&mut deps);
+        install_balance_querier(&mut deps, Uint128::zero(), "liquidity_provider");
+
+        let user = Addr::unchecked("liquidity_provider");
+        // First seed a position. We go through the dispatcher so the
+        // verify path produces a position id "2" (id 1 belongs to the
+        // initial setup). The setup_pool_post_threshold helper does
+        // not pre-create LIQUIDITY_POSITIONS; the deposit handler
+        // mints id 2 because NEXT_POSITION_ID starts at 1 and is
+        // bumped post-deposit.
+        let mut env = mock_env();
+        let info = message_info(
+            &user,
+            &[Coin {
+                denom: "ubluechip".to_string(),
+                amount: Uint128::new(1_000_000_000),
+            }],
+        );
+        execute(
+            deps.as_mut(),
+            env.clone(),
+            info,
+            ExecuteMsg::DepositLiquidity {
+                amount0: Uint128::new(1_000_000_000),
+                amount1: Uint128::new(14_893_617_021),
+                min_amount0: None,
+                min_amount1: None,
+                transaction_deadline: None,
+            },
+        )
+        .expect("first deposit must succeed");
+
+        // DEPOSIT_VERIFY_CTX is one-shot — the next deposit-class call
+        // saves a fresh one. Remove the prior context so the next save
+        // doesn't see a stale snapshot. (Production: the reply handler
+        // removes it before the next handler call ever fires.)
+        DEPOSIT_VERIFY_CTX.remove(&mut deps.storage);
+
+        // Advance past `min_commit_interval` (60s in setup_pool_storage)
+        // so the second deposit-class call from the same user isn't
+        // rate-limited as a "too frequent commit" — that gate is
+        // orthogonal to the verify-path assertion this test exists for.
+        env.block.time = env.block.time.plus_seconds(120);
+
+        let info = message_info(
+            &user,
+            &[Coin {
+                denom: "ubluechip".to_string(),
+                amount: Uint128::new(500_000_000),
+            }],
+        );
+        let res = execute(
+            deps.as_mut(),
+            env,
+            info,
+            ExecuteMsg::AddToPosition {
+                position_id: "2".to_string(),
+                amount0: Uint128::new(500_000_000),
+                amount1: Uint128::new(7_446_808_510),
+                min_amount0: None,
+                min_amount1: None,
+                transaction_deadline: None,
+            },
+        )
+        .expect("AddToPosition dispatch must succeed");
+
+        let last = res
+            .messages
+            .last()
+            .expect("response must carry SubMsgs");
+        assert_eq!(
+            last.id, DEPOSIT_VERIFY_REPLY_ID,
+            "AddToPosition must also route through the verify path; got id {}",
+            last.id
+        );
+        assert!(matches!(last.reply_on, ReplyOn::Success));
+
+        let ctx = DEPOSIT_VERIFY_CTX
+            .may_load(&deps.storage)
+            .unwrap()
+            .expect("AddToPosition with verify must save DEPOSIT_VERIFY_CTX");
+        assert!(ctx.cw20_side1_addr.is_some());
+        assert!(!ctx.expected_delta1.is_zero());
+    }
+
+    /// Reply id `DEPOSIT_VERIFY_REPLY_ID` must route to
+    /// `handle_deposit_verify_reply` in creator-pool's `reply()`
+    /// dispatcher. Without this dispatch arm, the post-balance check
+    /// never runs even though the deposit handler dispatches the
+    /// SubMsg. Test: synthesize a Reply with the verify id, install
+    /// a balance querier whose post value matches the expected delta
+    /// for the saved context, and assert success path attributes
+    /// land (proves we hit the verify handler, not the catch-all
+    /// unknown-id error).
+    #[test]
+    fn reply_dispatcher_routes_deposit_verify_id_to_handler() {
+        let mut deps = mock_dependencies();
+        setup_pool_post_threshold(&mut deps);
+
+        // Synthetic CTX: pre-balance 1_000, expected delta 250 → post
+        // must be 1_250 for the verify handler's strict equality
+        // check to pass.
+        let pool_addr = Addr::unchecked("pool_contract");
+        let cw20 = Addr::unchecked("token_contract");
+        DEPOSIT_VERIFY_CTX
+            .save(
+                &mut deps.storage,
+                &DepositVerifyContext {
+                    pool_addr: pool_addr.clone(),
+                    cw20_side0_addr: None,
+                    cw20_side1_addr: Some(cw20.clone()),
+                    pre_balance0: Uint128::zero(),
+                    pre_balance1: Uint128::new(1_000),
+                    expected_delta0: Uint128::zero(),
+                    expected_delta1: Uint128::new(250),
+                },
+            )
+            .unwrap();
+        install_balance_querier(&mut deps, Uint128::new(1_250), "anyone");
+
+        #[allow(deprecated)]
+        let ok_response = SubMsgResponse {
+            events: vec![],
+            data: None,
+            msg_responses: vec![],
+        };
+        let r = Reply {
+            id: DEPOSIT_VERIFY_REPLY_ID,
+            payload: Binary::default(),
+            gas_used: 0,
+            result: SubMsgResult::Ok(ok_response),
+        };
+        let res = reply(deps.as_mut(), mock_env(), r)
+            .expect("verify reply must succeed when post == pre + expected");
+
+        assert!(
+            res.attributes
+                .iter()
+                .any(|a| a.key == "action" && a.value == "deposit_balance_verified"),
+            "must hit handle_deposit_verify_reply (success path emits this attribute); \
+             got attrs: {:?}",
+            res.attributes
+        );
+        assert!(
+            DEPOSIT_VERIFY_CTX
+                .may_load(&deps.storage)
+                .unwrap()
+                .is_none(),
+            "verify handler must clear DEPOSIT_VERIFY_CTX on success"
+        );
+    }
+
+    /// Reply dispatcher rejects on a fee-on-transfer / rebasing-down
+    /// shortfall: post-balance < pre + expected, so delta != expected
+    /// and the verify handler returns Err. Creator-pool's `reply`
+    /// returns `StdResult<Response>`, so the typed `ContractError`
+    /// from the verify handler is mapped into `StdError::generic_err`
+    /// — assert the error string contains the canonical "balance
+    /// delta does not match" phrase that off-chain monitoring keys on.
+    #[test]
+    fn reply_dispatcher_rejects_balance_shortfall() {
+        let mut deps = mock_dependencies();
+        setup_pool_post_threshold(&mut deps);
+
+        let pool_addr = Addr::unchecked("pool_contract");
+        let cw20 = Addr::unchecked("token_contract");
+        DEPOSIT_VERIFY_CTX
+            .save(
+                &mut deps.storage,
+                &DepositVerifyContext {
+                    pool_addr,
+                    cw20_side0_addr: None,
+                    cw20_side1_addr: Some(cw20.clone()),
+                    pre_balance0: Uint128::zero(),
+                    pre_balance1: Uint128::new(1_000),
+                    expected_delta0: Uint128::zero(),
+                    expected_delta1: Uint128::new(250),
+                },
+            )
+            .unwrap();
+        // Post = 1_240 — short by 10 base units (simulates a 4% FoT
+        // tax on the credited 250).
+        install_balance_querier(&mut deps, Uint128::new(1_240), "anyone");
+
+        #[allow(deprecated)]
+        let ok_response = SubMsgResponse {
+            events: vec![],
+            data: None,
+            msg_responses: vec![],
+        };
+        let r = Reply {
+            id: DEPOSIT_VERIFY_REPLY_ID,
+            payload: Binary::default(),
+            gas_used: 0,
+            result: SubMsgResult::Ok(ok_response),
+        };
+        let err = reply(deps.as_mut(), mock_env(), r)
+            .expect_err("shortfall must propagate as Err to revert the parent tx");
+        let msg = err.to_string();
+        assert!(
+            msg.contains("balance delta") && msg.contains("does not match"),
+            "shortfall error must carry the canonical phrase off-chain monitoring \
+             keys on; got: {}",
+            msg
+        );
+    }
+
+    /// Reply dispatcher also rejects an inflation overage (post >
+    /// pre + expected). Without this, an attacker controlling a CW20
+    /// that mints to the pool mid-deposit could grow the pool's
+    /// reserve without paying for it (the strict-equality check
+    /// blocks both shortfall and overage).
+    #[test]
+    fn reply_dispatcher_rejects_inflation_overage() {
+        let mut deps = mock_dependencies();
+        setup_pool_post_threshold(&mut deps);
+
+        let pool_addr = Addr::unchecked("pool_contract");
+        let cw20 = Addr::unchecked("token_contract");
+        DEPOSIT_VERIFY_CTX
+            .save(
+                &mut deps.storage,
+                &DepositVerifyContext {
+                    pool_addr,
+                    cw20_side0_addr: None,
+                    cw20_side1_addr: Some(cw20.clone()),
+                    pre_balance0: Uint128::zero(),
+                    pre_balance1: Uint128::new(1_000),
+                    expected_delta0: Uint128::zero(),
+                    expected_delta1: Uint128::new(250),
+                },
+            )
+            .unwrap();
+        // Post = 1_500 — overage of 250 (simulates a CW20 that
+        // double-mints during transfer or a rebase-up event landing
+        // mid-deposit).
+        install_balance_querier(&mut deps, Uint128::new(1_500), "anyone");
+
+        #[allow(deprecated)]
+        let ok_response = SubMsgResponse {
+            events: vec![],
+            data: None,
+            msg_responses: vec![],
+        };
+        let r = Reply {
+            id: DEPOSIT_VERIFY_REPLY_ID,
+            payload: Binary::default(),
+            gas_used: 0,
+            result: SubMsgResult::Ok(ok_response),
+        };
+        let err = reply(deps.as_mut(), mock_env(), r)
+            .expect_err("overage must propagate as Err");
+        assert!(
+            err.to_string().contains("does not match"),
+            "overage rejection must surface; got: {}",
+            err
+        );
+    }
+}
+
+// ---------------------------------------------------------------------------
+// H-NFT-1 audit fix: empty-position persistence on full removal
+// ---------------------------------------------------------------------------
+//
+// Pre-fix, `RemoveAllLiquidity` on a non-first-depositor position
+// (`locked_liquidity == 0`) deleted the LIQUIDITY_POSITIONS storage row
+// while leaving the user's CW721 NFT in place — no BurnNft was ever
+// dispatched. The NFT became a "tombstone": tradeable on secondary
+// markets but functionally inert, since every pool-side handler
+// (AddToPosition, CollectFees, RemoveLiquidity) loaded LIQUIDITY_POSITIONS
+// and errored with "not found".
+//
+// Option A fix: keep the row alive at `liquidity == 0`. The NFT
+// remains rehydrate-able — a future `AddToPosition` against the same
+// token id grows the position from zero. Mirrors Uniswap V3's
+// empty-position model.
+//
+// Tests in this module confirm:
+//   - The row persists with `liquidity == 0` after full removal.
+//   - OWNER_POSITIONS index entry persists so frontends can still list
+//     the empty NFT under "your positions."
+//   - AddToPosition successfully rehydrates the empty position.
+//   - CollectFees on an empty position is a clean no-op (no double-debit).
+//   - First-depositor positions still drop to `locked_liquidity` rather
+//     than zero (the locked-floor invariant is preserved).
+mod empty_position_persistence_tests {
+    use super::*;
+    use crate::testing::liquidity_tests::{create_test_position, setup_pool_post_threshold};
+    use cosmwasm_std::{
+        to_json_binary, ContractResult, SystemResult, WasmQuery,
+    };
+    use pool_core::liquidity::{
+        execute_collect_fees, execute_remove_all_liquidity,
+    };
+    use pool_core::state::{LIQUIDITY_POSITIONS, OWNER_POSITIONS, POOL_STATE};
+
+    /// Install a CW721 OwnerOf querier that returns the given owner for
+    /// any token id. Also answers CW20 Balance queries with a fixed
+    /// balance so the verify-path deposit can run its pre/post snapshot
+    /// without erroring out on an unstubbed balance read.
+    fn install_owner_querier(
+        deps: &mut OwnedDeps<MockStorage, MockApi, MockQuerier>,
+        owner: &str,
+    ) {
+        let owner_str = owner.to_string();
+        deps.querier.update_wasm(move |query| match query {
+            WasmQuery::Smart { contract_addr, msg } => {
+                if contract_addr == "nft_contract" {
+                    if let Ok(pool_factory_interfaces::cw721_msgs::Cw721QueryMsg::OwnerOf {
+                        ..
+                    }) = cosmwasm_std::from_json(msg)
+                    {
+                        let resp =
+                            pool_factory_interfaces::cw721_msgs::OwnerOfResponse {
+                                owner: owner_str.clone(),
+                                approvals: vec![],
+                            };
+                        return SystemResult::Ok(ContractResult::Ok(
+                            to_json_binary(&resp).unwrap(),
+                        ));
+                    }
+                }
+                if let Ok(cw20::Cw20QueryMsg::Balance { .. }) =
+                    cosmwasm_std::from_json(msg)
+                {
+                    // Fixed pool CW20 balance for the verify-path
+                    // pre/post snapshot. The actual value doesn't
+                    // matter for these tests — only that the query
+                    // resolves so the deposit handler reaches the
+                    // SubMsg-emit step.
+                    let resp = cw20::BalanceResponse {
+                        balance: Uint128::zero(),
+                    };
+                    return SystemResult::Ok(ContractResult::Ok(
+                        to_json_binary(&resp).unwrap(),
+                    ));
+                }
+                SystemResult::Err(cosmwasm_std::SystemError::InvalidRequest {
+                    error: format!("unexpected wasm query to {}", contract_addr),
+                    request: msg.clone(),
+                })
+            }
+            _ => SystemResult::Err(cosmwasm_std::SystemError::UnsupportedRequest {
+                kind: "non-Smart wasm query".to_string(),
+            }),
+        });
+    }
+
+    /// Full-removal path keeps LIQUIDITY_POSITIONS row alive at zero
+    /// liquidity for non-first-depositor positions. Pre-fix the row
+    /// was deleted; this assertion is the regression fence.
+    #[test]
+    fn full_removal_keeps_position_row_alive_at_zero() {
+        let mut deps = mock_dependencies();
+        setup_pool_post_threshold(&mut deps);
+        create_test_position(&mut deps, 5, "lp_holder", Uint128::new(10_000_000));
+        // create_test_position only seeds LIQUIDITY_POSITIONS; production
+        // deposits seed OWNER_POSITIONS too. Seed it here so the post-
+        // removal assertion has something to inspect.
+        OWNER_POSITIONS
+            .save(
+                &mut deps.storage,
+                (&Addr::unchecked("lp_holder"), "5"),
+                &true,
+            )
+            .unwrap();
+        install_owner_querier(&mut deps, "lp_holder");
+
+        let info = message_info(&Addr::unchecked("lp_holder"), &[]);
+        execute_remove_all_liquidity(
+            deps.as_mut(),
+            mock_env(),
+            info,
+            "5".to_string(),
+            None,
+            None,
+            None,
+            None,
+        )
+        .expect("full removal must succeed");
+
+        // The row must still be present — no tombstone NFT pointing at
+        // a deleted storage entry.
+        let pos = LIQUIDITY_POSITIONS
+            .load(&deps.storage, "5")
+            .expect("LIQUIDITY_POSITIONS row must persist after full removal");
+        assert_eq!(
+            pos.liquidity,
+            Uint128::zero(),
+            "non-first-depositor full exit must drop liquidity to zero"
+        );
+        assert_eq!(
+            pos.locked_liquidity,
+            Uint128::zero(),
+            "no locked floor on non-first-depositor positions"
+        );
+        assert_eq!(pos.unclaimed_fees_0, Uint128::zero());
+        assert_eq!(pos.unclaimed_fees_1, Uint128::zero());
+
+        // OWNER_POSITIONS index entry must also persist so the user's
+        // empty NFT still shows up in their position list.
+        assert!(
+            OWNER_POSITIONS
+                .may_load(&deps.storage, (&Addr::unchecked("lp_holder"), "5"))
+                .unwrap()
+                .is_some(),
+            "OWNER_POSITIONS entry must persist for the empty NFT"
+        );
+    }
+
+    /// First-depositor full removal still drops to the locked floor
+    /// (MINIMUM_LIQUIDITY), not to zero. This is the
+    /// `locked_liquidity > 0` branch that was already correct pre-fix
+    /// — guard that the new code didn't accidentally collapse both
+    /// branches and break the first-depositor's perpetual fee right.
+    #[test]
+    fn first_depositor_full_removal_drops_to_locked_floor_not_zero() {
+        use pool_core::state::MINIMUM_LIQUIDITY;
+        let mut deps = mock_dependencies();
+        setup_pool_post_threshold(&mut deps);
+        // Manually seed a first-depositor-style position: locked_liquidity
+        // > 0 indicates the perma-locked slice was honored on initial
+        // deposit.
+        let position = pool_core::state::Position {
+            liquidity: Uint128::new(50_000_000),
+            owner: Addr::unchecked("first_depositor"),
+            fee_growth_inside_0_last: cosmwasm_std::Decimal::zero(),
+            fee_growth_inside_1_last: cosmwasm_std::Decimal::zero(),
+            created_at: 1_600_000_000,
+            last_fee_collection: 1_600_000_000,
+            fee_size_multiplier: cosmwasm_std::Decimal::one(),
+            unclaimed_fees_0: Uint128::zero(),
+            unclaimed_fees_1: Uint128::zero(),
+            locked_liquidity: MINIMUM_LIQUIDITY,
+        };
+        LIQUIDITY_POSITIONS
+            .save(&mut deps.storage, "1", &position)
+            .unwrap();
+        OWNER_POSITIONS
+            .save(
+                &mut deps.storage,
+                (&Addr::unchecked("first_depositor"), "1"),
+                &true,
+            )
+            .unwrap();
+        install_owner_querier(&mut deps, "first_depositor");
+
+        let info = message_info(&Addr::unchecked("first_depositor"), &[]);
+        execute_remove_all_liquidity(
+            deps.as_mut(),
+            mock_env(),
+            info,
+            "1".to_string(),
+            None,
+            None,
+            None,
+            None,
+        )
+        .expect("first-depositor full removal must succeed");
+
+        let pos = LIQUIDITY_POSITIONS.load(&deps.storage, "1").unwrap();
+        assert_eq!(
+            pos.liquidity, MINIMUM_LIQUIDITY,
+            "first-depositor exit must keep liquidity at locked floor"
+        );
+        assert_eq!(
+            pos.locked_liquidity, MINIMUM_LIQUIDITY,
+            "locked_liquidity itself must not change"
+        );
+    }
+
+    /// AddToPosition rehydrates an emptied position. Pre-fix this would
+    /// fail with `LIQUIDITY_POSITIONS::not_found` because the storage row
+    /// had been deleted on full removal; post-fix the row is alive at
+    /// zero liquidity and AddToPosition grows it from there.
+    #[test]
+    fn add_to_position_rehydrates_emptied_position() {
+        let mut deps = mock_dependencies();
+        setup_pool_post_threshold(&mut deps);
+        create_test_position(&mut deps, 7, "rehydrator", Uint128::new(5_000_000));
+        install_owner_querier(&mut deps, "rehydrator");
+
+        // Step 1: drain the position to zero.
+        let user = Addr::unchecked("rehydrator");
+        execute_remove_all_liquidity(
+            deps.as_mut(),
+            mock_env(),
+            message_info(&user, &[]),
+            "7".to_string(),
+            None,
+            None,
+            None,
+            None,
+        )
+        .expect("removal must succeed");
+        // Confirm the row is at zero (not deleted).
+        let pos = LIQUIDITY_POSITIONS.load(&deps.storage, "7").unwrap();
+        assert_eq!(pos.liquidity, Uint128::zero());
+
+        // Step 2: re-deposit into the same position via AddToPosition.
+        // We advance time past `min_commit_interval` to avoid the
+        // per-user commit gate (orthogonal to the rehydration we're
+        // testing).
+        let mut env = mock_env();
+        env.block.time = env.block.time.plus_seconds(120);
+        let info = message_info(
+            &user,
+            &[cosmwasm_std::Coin {
+                denom: "ubluechip".to_string(),
+                amount: Uint128::new(1_000_000_000),
+            }],
+        );
+        let res = execute(
+            deps.as_mut(),
+            env,
+            info,
+            ExecuteMsg::AddToPosition {
+                position_id: "7".to_string(),
+                amount0: Uint128::new(1_000_000_000),
+                amount1: Uint128::new(14_893_617_021),
+                min_amount0: None,
+                min_amount1: None,
+                transaction_deadline: None,
+            },
+        )
+        .expect("re-deposit into emptied position must succeed");
+
+        // Pool state advanced — total_liquidity grew, position now has
+        // non-zero liquidity. The exact value depends on prep math; the
+        // load-bearing assertion is "the rehydration is possible at all,"
+        // which it now is.
+        assert!(!res.messages.is_empty());
+        let pos = LIQUIDITY_POSITIONS.load(&deps.storage, "7").unwrap();
+        assert!(
+            !pos.liquidity.is_zero(),
+            "AddToPosition into a zero-liquidity row must produce non-zero liquidity, \
+             got: {}",
+            pos.liquidity
+        );
+
+        // Pool's total_liquidity must have grown to reflect the
+        // re-deposit (sanity check that the position's growth was
+        // booked into the pool, not just the position).
+        let pool_state = POOL_STATE.load(&deps.storage).unwrap();
+        // setup_pool_post_threshold seeds total_liquidity = 91_104_335_791
+        // so any growth above that confirms the rehydration was credited.
+        assert!(
+            pool_state.total_liquidity > Uint128::new(91_104_335_791),
+            "total_liquidity must have grown from re-deposit"
+        );
+    }
+
+    /// CollectFees on an empty position is a clean no-op: zero fees
+    /// transferred, no underflow on `fee_reserve`, position row stays
+    /// at zero. This is the second canary against a future change that
+    /// might assume `position.liquidity > 0` when calling collect.
+    #[test]
+    fn collect_fees_on_empty_position_is_noop() {
+        let mut deps = mock_dependencies();
+        setup_pool_post_threshold(&mut deps);
+        create_test_position(&mut deps, 9, "no_fees_yet", Uint128::new(5_000_000));
+        install_owner_querier(&mut deps, "no_fees_yet");
+
+        // Drain to zero first.
+        let user = Addr::unchecked("no_fees_yet");
+        execute_remove_all_liquidity(
+            deps.as_mut(),
+            mock_env(),
+            message_info(&user, &[]),
+            "9".to_string(),
+            None,
+            None,
+            None,
+            None,
+        )
+        .unwrap();
+
+        // Now CollectFees on the empty position: should succeed with
+        // zero fees transferred. The fee-transfer messages should be
+        // absent or zero-valued; what we assert here is just "no error."
+        let res = execute_collect_fees(
+            deps.as_mut(),
+            mock_env(),
+            message_info(&user, &[]),
+            "9".to_string(),
+        )
+        .expect("collect_fees on empty position must succeed");
+
+        // Position row still alive, still at zero liquidity.
+        let pos = LIQUIDITY_POSITIONS.load(&deps.storage, "9").unwrap();
+        assert_eq!(pos.liquidity, Uint128::zero());
+        // unclaimed_fees stays zero — no fees accrued, no fees swept.
+        assert_eq!(pos.unclaimed_fees_0, Uint128::zero());
+        assert_eq!(pos.unclaimed_fees_1, Uint128::zero());
+        // Response carries the action attribute regardless of fee
+        // amount — confirms we hit the success path.
+        assert!(res
+            .attributes
+            .iter()
+            .any(|a| a.key == "action" && a.value == "collect_fees"));
+    }
+}
+
+// ---------------------------------------------------------------------------
+// H-NFT-4 audit fix: per-position emergency-claim escrow
+// ---------------------------------------------------------------------------
+//
+// Pre-fix, Phase-2 emergency-drain swept ALL pool funds (including
+// LP-owned reserves and pending fees) to `bluechip_wallet_address`.
+// Active LPs could exit during the 24h window, but set-and-forget
+// LPs lost everything. Post-fix, LP funds escrow in
+// `EMERGENCY_DRAIN_SNAPSHOT` for 1 year, claimable per-position via
+// `ClaimEmergencyShare`. After dormancy, the unclaimed residual
+// sweeps to the bluechip wallet via `SweepUnclaimedEmergencyShares`.
+mod emergency_claim_escrow_tests {
+    use super::*;
+    use crate::testing::liquidity_tests::{create_test_position, setup_pool_post_threshold};
+    use cosmwasm_std::{
+        to_json_binary, ContractResult, SystemResult, WasmQuery,
+    };
+    use pool_core::state::{
+        EmergencyDrainSnapshot, EMERGENCY_CLAIM_DORMANCY_SECONDS, EMERGENCY_DRAINED,
+        EMERGENCY_DRAIN_SNAPSHOT, LIQUIDITY_POSITIONS, POOL_FEE_STATE, POOL_INFO, POOL_STATE,
+    };
+
+    /// Install a CW721 OwnerOf querier returning the given owner for
+    /// any token id. Local helper; mirrors the pattern used in
+    /// other H-NFT tests.
+    fn install_owner_querier(
+        deps: &mut OwnedDeps<MockStorage, MockApi, MockQuerier>,
+        owner: &str,
+    ) {
+        let owner_str = owner.to_string();
+        deps.querier.update_wasm(move |query| match query {
+            WasmQuery::Smart { contract_addr, msg } => {
+                if contract_addr == "nft_contract" {
+                    let resp = pool_factory_interfaces::cw721_msgs::OwnerOfResponse {
+                        owner: owner_str.clone(),
+                        approvals: vec![],
+                    };
+                    return SystemResult::Ok(ContractResult::Ok(
+                        to_json_binary(&resp).unwrap(),
+                    ));
+                }
+                SystemResult::Err(cosmwasm_std::SystemError::InvalidRequest {
+                    error: format!("unexpected wasm query to {}", contract_addr),
+                    request: msg.clone(),
+                })
+            }
+            _ => SystemResult::Err(cosmwasm_std::SystemError::UnsupportedRequest {
+                kind: "non-Smart wasm query".to_string(),
+            }),
+        });
+    }
+
+    /// Seed the pool's storage to a "post Phase-2 drain" shape
+    /// directly: install EMERGENCY_DRAINED + EMERGENCY_DRAIN_SNAPSHOT
+    /// with the requested totals + dormancy. Bypasses the actual
+    /// Phase-1/Phase-2 flow so each test focuses on the claim/sweep
+    /// behavior in isolation.
+    fn seed_post_drain_state(
+        deps: &mut OwnedDeps<MockStorage, MockApi, MockQuerier>,
+        env: &cosmwasm_std::Env,
+        reserve0: Uint128,
+        reserve1: Uint128,
+        fee_reserve_0: Uint128,
+        fee_reserve_1: Uint128,
+        total_liquidity: Uint128,
+    ) {
+        EMERGENCY_DRAINED.save(&mut deps.storage, &true).unwrap();
+        let drained_at = env.block.time;
+        let dormancy_expires_at =
+            drained_at.plus_seconds(EMERGENCY_CLAIM_DORMANCY_SECONDS);
+        EMERGENCY_DRAIN_SNAPSHOT
+            .save(
+                &mut deps.storage,
+                &EmergencyDrainSnapshot {
+                    drained_at,
+                    dormancy_expires_at,
+                    reserve0_at_drain: reserve0,
+                    reserve1_at_drain: reserve1,
+                    fee_reserve_0_at_drain: fee_reserve_0,
+                    fee_reserve_1_at_drain: fee_reserve_1,
+                    total_liquidity_at_drain: total_liquidity,
+                    total_claimed_0: Uint128::zero(),
+                    total_claimed_1: Uint128::zero(),
+                    residual_swept: false,
+                },
+            )
+            .unwrap();
+        // Phase-2's accounting wipe is reproduced here so other paths
+        // that load POOL_STATE see the canonical post-drain shape.
+        let mut ps = POOL_STATE.load(&deps.storage).unwrap();
+        ps.reserve0 = Uint128::zero();
+        ps.reserve1 = Uint128::zero();
+        ps.total_liquidity = Uint128::zero();
+        POOL_STATE.save(&mut deps.storage, &ps).unwrap();
+        let mut fs = POOL_FEE_STATE.load(&deps.storage).unwrap();
+        fs.fee_reserve_0 = Uint128::zero();
+        fs.fee_reserve_1 = Uint128::zero();
+        POOL_FEE_STATE.save(&mut deps.storage, &fs).unwrap();
+    }
+
+    /// ClaimEmergencyShare without a drained pool returns the dedicated
+    /// `NoEmergencyDrainSnapshot` error so callers don't mistake "pool
+    /// is fine" for "your claim was processed."
+    #[test]
+    fn claim_emergency_share_without_drain_rejects() {
+        let mut deps = mock_dependencies();
+        setup_pool_post_threshold(&mut deps);
+        create_test_position(&mut deps, 1, "alice", Uint128::new(10_000_000));
+        install_owner_querier(&mut deps, "alice");
+
+        let info = message_info(&Addr::unchecked("alice"), &[]);
+        let err = execute(
+            deps.as_mut(),
+            mock_env(),
+            info,
+            ExecuteMsg::ClaimEmergencyShare {
+                position_id: "1".to_string(),
+            },
+        )
+        .unwrap_err();
+        assert!(matches!(err, ContractError::NoEmergencyDrainSnapshot));
+    }
+
+    /// Single-position pro-rata math: solo LP should claim 100% of
+    /// `(reserve_*_at_drain + fee_reserve_*_at_drain)`. Validates the
+    /// denominator-numerator wiring at the simplest case.
+    #[test]
+    fn claim_emergency_share_solo_lp_gets_full_pot() {
+        let mut deps = mock_dependencies();
+        setup_pool_post_threshold(&mut deps);
+        let alice_liq = Uint128::new(10_000_000);
+        create_test_position(&mut deps, 1, "alice", alice_liq);
+        install_owner_querier(&mut deps, "alice");
+        let env = mock_env();
+        seed_post_drain_state(
+            &mut deps,
+            &env,
+            Uint128::new(800_000_000),     // reserve0
+            Uint128::new(1_200_000_000),   // reserve1
+            Uint128::new(50_000_000),      // fee_reserve_0
+            Uint128::new(75_000_000),      // fee_reserve_1
+            alice_liq,                      // sole LP
+        );
+
+        let info = message_info(&Addr::unchecked("alice"), &[]);
+        let res = execute(
+            deps.as_mut(),
+            env,
+            info,
+            ExecuteMsg::ClaimEmergencyShare {
+                position_id: "1".to_string(),
+            },
+        )
+        .expect("solo claim must succeed");
+
+        // Solo LP gets the full LP-side pot.
+        let expected_total_0 = Uint128::new(800_000_000 + 50_000_000);
+        let expected_total_1 = Uint128::new(1_200_000_000 + 75_000_000);
+
+        let total_0_attr = res
+            .attributes
+            .iter()
+            .find(|a| a.key == "total_0")
+            .unwrap();
+        let total_1_attr = res
+            .attributes
+            .iter()
+            .find(|a| a.key == "total_1")
+            .unwrap();
+        assert_eq!(total_0_attr.value, expected_total_0.to_string());
+        assert_eq!(total_1_attr.value, expected_total_1.to_string());
+
+        // Position is marked spent — second claim must reject.
+        let pos = LIQUIDITY_POSITIONS.load(&deps.storage, "1").unwrap();
+        assert_eq!(pos.liquidity, Uint128::zero());
+
+        let err = execute(
+            deps.as_mut(),
+            mock_env(),
+            message_info(&Addr::unchecked("alice"), &[]),
+            ExecuteMsg::ClaimEmergencyShare {
+                position_id: "1".to_string(),
+            },
+        )
+        .unwrap_err();
+        assert!(matches!(
+            err,
+            ContractError::NoClaimableEmergencyShare { .. }
+        ));
+
+        // Snapshot's running tally bumped by the claim.
+        let snap = EMERGENCY_DRAIN_SNAPSHOT.load(&deps.storage).unwrap();
+        assert_eq!(snap.total_claimed_0, expected_total_0);
+        assert_eq!(snap.total_claimed_1, expected_total_1);
+    }
+
+    /// Two-LP pro-rata: 30/70 split. Each gets 30% / 70% of the
+    /// LP-side pot. Verifies the multiply_ratio math matches the
+    /// expected proportional split on uneven liquidity weights.
+    #[test]
+    fn claim_emergency_share_two_lps_split_pro_rata() {
+        let mut deps = mock_dependencies();
+        setup_pool_post_threshold(&mut deps);
+        // Alice 30%, Bob 70%.
+        let alice_liq = Uint128::new(3_000);
+        let bob_liq = Uint128::new(7_000);
+        let total_liq = alice_liq.checked_add(bob_liq).unwrap();
+        create_test_position(&mut deps, 1, "alice", alice_liq);
+        create_test_position(&mut deps, 2, "bob", bob_liq);
+
+        let env = mock_env();
+        seed_post_drain_state(
+            &mut deps,
+            &env,
+            Uint128::new(1_000_000),
+            Uint128::new(2_000_000),
+            Uint128::zero(), // simplify: no pending fees
+            Uint128::zero(),
+            total_liq,
+        );
+
+        // Alice claims first.
+        install_owner_querier(&mut deps, "alice");
+        let res_a = execute(
+            deps.as_mut(),
+            env.clone(),
+            message_info(&Addr::unchecked("alice"), &[]),
+            ExecuteMsg::ClaimEmergencyShare {
+                position_id: "1".to_string(),
+            },
+        )
+        .unwrap();
+        let alice_total_0: u128 = res_a
+            .attributes
+            .iter()
+            .find(|a| a.key == "total_0")
+            .unwrap()
+            .value
+            .parse()
+            .unwrap();
+        let alice_total_1: u128 = res_a
+            .attributes
+            .iter()
+            .find(|a| a.key == "total_1")
+            .unwrap()
+            .value
+            .parse()
+            .unwrap();
+        // 30% of 1_000_000 = 300_000; 30% of 2_000_000 = 600_000.
+        assert_eq!(alice_total_0, 300_000);
+        assert_eq!(alice_total_1, 600_000);
+
+        // Bob claims second.
+        install_owner_querier(&mut deps, "bob");
+        let res_b = execute(
+            deps.as_mut(),
+            env,
+            message_info(&Addr::unchecked("bob"), &[]),
+            ExecuteMsg::ClaimEmergencyShare {
+                position_id: "2".to_string(),
+            },
+        )
+        .unwrap();
+        let bob_total_0: u128 = res_b
+            .attributes
+            .iter()
+            .find(|a| a.key == "total_0")
+            .unwrap()
+            .value
+            .parse()
+            .unwrap();
+        let bob_total_1: u128 = res_b
+            .attributes
+            .iter()
+            .find(|a| a.key == "total_1")
+            .unwrap()
+            .value
+            .parse()
+            .unwrap();
+        // 70% shares.
+        assert_eq!(bob_total_0, 700_000);
+        assert_eq!(bob_total_1, 1_400_000);
+
+        // Snapshot's running tally equals exactly the LP-side pot —
+        // no dust on round splits.
+        let snap = EMERGENCY_DRAIN_SNAPSHOT.load(&deps.storage).unwrap();
+        assert_eq!(snap.total_claimed_0, Uint128::new(1_000_000));
+        assert_eq!(snap.total_claimed_1, Uint128::new(2_000_000));
+    }
+
+    /// CW721 ownership gate: a non-owner cannot claim against another
+    /// position. Mirrors the auth model used by every other LP-state
+    /// mutation; sync_position_on_transfer would update `position.owner`
+    /// if the NFT changed hands, but verify_position_ownership runs
+    /// first and rejects mismatched senders before sync runs.
+    #[test]
+    fn claim_emergency_share_rejects_non_owner() {
+        let mut deps = mock_dependencies();
+        setup_pool_post_threshold(&mut deps);
+        create_test_position(&mut deps, 1, "alice", Uint128::new(1_000));
+        // CW721 says "alice" owns position 1.
+        install_owner_querier(&mut deps, "alice");
+        let env = mock_env();
+        seed_post_drain_state(
+            &mut deps,
+            &env,
+            Uint128::new(100),
+            Uint128::new(200),
+            Uint128::zero(),
+            Uint128::zero(),
+            Uint128::new(1_000),
+        );
+
+        // Bob attempts to claim Alice's position.
+        let err = execute(
+            deps.as_mut(),
+            env,
+            message_info(&Addr::unchecked("bob"), &[]),
+            ExecuteMsg::ClaimEmergencyShare {
+                position_id: "1".to_string(),
+            },
+        )
+        .unwrap_err();
+        assert!(matches!(err, ContractError::Unauthorized {}));
+    }
+
+    /// Sweep-unclaimed: pre-dormancy attempt must reject with the
+    /// dedicated dormancy-not-elapsed error so the admin's intent
+    /// can't bypass the year-long claim window.
+    #[test]
+    fn sweep_before_dormancy_rejects() {
+        let mut deps = mock_dependencies();
+        setup_pool_post_threshold(&mut deps);
+        // Seed factory_addr in POOL_INFO so the auth check finds it.
+        let pi = POOL_INFO.load(&deps.storage).unwrap();
+        let factory = pi.factory_addr.clone();
+        let env = mock_env();
+        seed_post_drain_state(
+            &mut deps,
+            &env,
+            Uint128::new(1_000_000),
+            Uint128::new(1_000_000),
+            Uint128::zero(),
+            Uint128::zero(),
+            Uint128::new(1_000),
+        );
+
+        // Just shy of the dormancy.
+        let mut early_env = env.clone();
+        early_env.block.time = early_env
+            .block
+            .time
+            .plus_seconds(EMERGENCY_CLAIM_DORMANCY_SECONDS - 1);
+
+        let err = execute(
+            deps.as_mut(),
+            early_env,
+            message_info(&factory, &[]),
+            ExecuteMsg::SweepUnclaimedEmergencyShares {},
+        )
+        .unwrap_err();
+        match err {
+            ContractError::EmergencyClaimDormancyNotElapsed { .. } => {}
+            other => panic!("expected EmergencyClaimDormancyNotElapsed, got: {:?}", other),
+        }
+    }
+
+    /// Sweep-unclaimed by non-factory must reject with Unauthorized,
+    /// even after the dormancy elapsed.
+    #[test]
+    fn sweep_unauthorized_rejects() {
+        let mut deps = mock_dependencies();
+        setup_pool_post_threshold(&mut deps);
+        let env = mock_env();
+        seed_post_drain_state(
+            &mut deps,
+            &env,
+            Uint128::new(1),
+            Uint128::new(1),
+            Uint128::zero(),
+            Uint128::zero(),
+            Uint128::new(1),
+        );
+
+        let mut late_env = env;
+        late_env.block.time = late_env
+            .block
+            .time
+            .plus_seconds(EMERGENCY_CLAIM_DORMANCY_SECONDS + 1);
+
+        let err = execute(
+            deps.as_mut(),
+            late_env,
+            message_info(&Addr::unchecked("not_factory"), &[]),
+            ExecuteMsg::SweepUnclaimedEmergencyShares {},
+        )
+        .unwrap_err();
+        assert!(matches!(err, ContractError::Unauthorized {}));
+    }
+
+    /// Sweep-unclaimed happy path: after the 1-year dormancy, factory
+    /// admin can sweep the residual to the bluechip wallet. Residual
+    /// = drainable - already_claimed. Tests with a partial pre-claim
+    /// to confirm the residual subtracts correctly.
+    #[test]
+    fn sweep_after_dormancy_transfers_residual_to_bluechip_wallet() {
+        let mut deps = mock_dependencies();
+        setup_pool_post_threshold(&mut deps);
+        let pi = POOL_INFO.load(&deps.storage).unwrap();
+        let factory = pi.factory_addr.clone();
+
+        let alice_liq = Uint128::new(3_000);
+        let bob_liq = Uint128::new(7_000);
+        let total_liq = alice_liq.checked_add(bob_liq).unwrap();
+        create_test_position(&mut deps, 1, "alice", alice_liq);
+        create_test_position(&mut deps, 2, "bob", bob_liq);
+
+        let env = mock_env();
+        seed_post_drain_state(
+            &mut deps,
+            &env,
+            Uint128::new(1_000_000),
+            Uint128::new(2_000_000),
+            Uint128::zero(),
+            Uint128::zero(),
+            total_liq,
+        );
+
+        // Alice claims 30%; Bob never claims. Bob's 70% becomes the
+        // residual after the dormancy elapses.
+        install_owner_querier(&mut deps, "alice");
+        execute(
+            deps.as_mut(),
+            env.clone(),
+            message_info(&Addr::unchecked("alice"), &[]),
+            ExecuteMsg::ClaimEmergencyShare {
+                position_id: "1".to_string(),
+            },
+        )
+        .unwrap();
+
+        let mut late_env = env;
+        late_env.block.time = late_env
+            .block
+            .time
+            .plus_seconds(EMERGENCY_CLAIM_DORMANCY_SECONDS + 1);
+
+        let res = execute(
+            deps.as_mut(),
+            late_env,
+            message_info(&factory, &[]),
+            ExecuteMsg::SweepUnclaimedEmergencyShares {},
+        )
+        .expect("sweep after dormancy must succeed");
+
+        // Residual = total - claimed = (1_000_000 - 300_000) = 700_000
+        // on side 0; (2_000_000 - 600_000) = 1_400_000 on side 1.
+        let res_0_attr = res
+            .attributes
+            .iter()
+            .find(|a| a.key == "residual_0")
+            .unwrap();
+        let res_1_attr = res
+            .attributes
+            .iter()
+            .find(|a| a.key == "residual_1")
+            .unwrap();
+        assert_eq!(res_0_attr.value, "700000");
+        assert_eq!(res_1_attr.value, "1400000");
+
+        // residual_swept latch flipped — second sweep is a no-op
+        // error to prevent double-sweeping a since-bumped tally.
+        let snap = EMERGENCY_DRAIN_SNAPSHOT.load(&deps.storage).unwrap();
+        assert!(snap.residual_swept);
+
+        let err = execute(
+            deps.as_mut(),
+            mock_env().tap(|e| {
+                e.block.time = e
+                    .block
+                    .time
+                    .plus_seconds(EMERGENCY_CLAIM_DORMANCY_SECONDS + 100)
+            }),
+            message_info(&factory, &[]),
+            ExecuteMsg::SweepUnclaimedEmergencyShares {},
+        )
+        .unwrap_err();
+        assert!(matches!(err, ContractError::NoUnclaimedEmergencyResidual));
+    }
+
+    /// `tap` helper to mutate an Env in a single expression. Local
+    /// because we don't want to pull a tap crate just for tests.
+    trait TapEnv {
+        fn tap<F: FnOnce(&mut Self)>(self, f: F) -> Self;
+    }
+    impl TapEnv for cosmwasm_std::Env {
+        fn tap<F: FnOnce(&mut Self)>(mut self, f: F) -> Self {
+            f(&mut self);
+            self
+        }
+    }
+}

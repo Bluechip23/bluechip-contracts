@@ -128,6 +128,30 @@ pub enum ContractError {
         max: Decimal,
     },
 
+    #[error("No emergency-drain snapshot found — pool has not been drained yet")]
+    NoEmergencyDrainSnapshot,
+
+    #[error(
+        "No claimable emergency share for position {position_id} (already claimed, exited \
+         pre-drain, or position has zero liquidity)"
+    )]
+    NoClaimableEmergencyShare { position_id: String },
+
+    #[error(
+        "Emergency-claim dormancy not yet elapsed: drained at {drained_at}s, dormancy \
+         expires at {dormancy_expires_at}s, current time {now}s. Treasury sweep is \
+         only permitted after the dormancy window so passive LPs have a full year to \
+         claim their share."
+    )]
+    EmergencyClaimDormancyNotElapsed {
+        drained_at: u64,
+        dormancy_expires_at: u64,
+        now: u64,
+    },
+
+    #[error("No unclaimed emergency-drain residual to sweep")]
+    NoUnclaimedEmergencyResidual,
+
     #[error("Distribution timeout - requires manual recovery")]
     DistributionTimeout,
 

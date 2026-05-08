@@ -52,7 +52,7 @@ pub use oracle::{
 pub use pool_lifecycle::admin::{
     execute_cancel_emergency_withdraw_pool, execute_emergency_withdraw_pool,
     execute_notify_threshold_crossed, execute_pause_pool, execute_recover_pool_stuck_states,
-    execute_unpause_pool,
+    execute_sweep_unclaimed_emergency_shares_pool, execute_unpause_pool,
 };
 pub use upgrades::{
     execute_apply_pool_upgrade, execute_cancel_pool_upgrade, execute_continue_pool_upgrade,
@@ -201,6 +201,9 @@ pub fn execute(
         }
         ExecuteMsg::CancelEmergencyWithdrawPool { pool_id } => {
             execute_cancel_emergency_withdraw_pool(deps, info, pool_id)
+        }
+        ExecuteMsg::SweepUnclaimedEmergencyPool { pool_id } => {
+            execute_sweep_unclaimed_emergency_shares_pool(deps, info, pool_id)
         }
         ExecuteMsg::RecoverPoolStuckStates {
             pool_id,

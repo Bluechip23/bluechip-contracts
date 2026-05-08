@@ -17,7 +17,8 @@
 
 pub use pool_core::admin::{
     ensure_not_drained, execute_cancel_emergency_withdraw,
-    execute_emergency_withdraw_dispatch, execute_pause, execute_unpause,
+    execute_claim_emergency_share, execute_emergency_withdraw_dispatch, execute_pause,
+    execute_sweep_unclaimed_emergency_shares, execute_unpause,
     execute_update_config_from_factory, CoreDrainResult,
 };
 

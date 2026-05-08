@@ -16,8 +16,10 @@ use cosmwasm_std::{
 };
 use cw2::set_contract_version;
 use pool_core::admin::{
-    ensure_not_drained, execute_cancel_emergency_withdraw, execute_emergency_withdraw_dispatch,
-    execute_pause, execute_unpause, execute_update_config_from_factory,
+    ensure_not_drained, execute_cancel_emergency_withdraw, execute_claim_emergency_share,
+    execute_emergency_withdraw_dispatch, execute_pause,
+    execute_sweep_unclaimed_emergency_shares, execute_unpause,
+    execute_update_config_from_factory,
 };
 use pool_core::asset::{PoolPairType, TokenInfoPoolExt, TokenType};
 use pool_core::balance_verify::handle_deposit_verify_reply;
@@ -493,6 +495,16 @@ pub fn execute(
                 min_amount1,
                 max_ratio_deviation_bps,
             )
+        }
+        // H-NFT-4 audit fix: per-position post-emergency-drain claim
+        // escrow. CW721-ownership gated; available immediately after
+        // Phase-2 drain through the 1-year dormancy window.
+        ExecuteMsg::ClaimEmergencyShare { position_id } => {
+            execute_claim_emergency_share(deps, env, info, position_id)
+        }
+        // H-NFT-4 audit fix: factory-only post-1y-dormancy sweep.
+        ExecuteMsg::SweepUnclaimedEmergencyShares {} => {
+            execute_sweep_unclaimed_emergency_shares(deps, env, info)
         }
     }
 }

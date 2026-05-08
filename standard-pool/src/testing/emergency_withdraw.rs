@@ -100,7 +100,15 @@ fn phase2_before_timelock_rejects() {
 }
 
 #[test]
-fn phase2_drains_reserves_and_emits_transfers() {
+fn phase2_escrows_lp_funds_and_records_snapshot() {
+    // H-NFT-4 audit fix: Phase 2 no longer sweeps LP-owned reserves +
+    // pending fees to the bluechip wallet. They're escrowed in
+    // EMERGENCY_DRAIN_SNAPSHOT for per-position claims via
+    // ClaimEmergencyShare. Only non-LP buckets (CREATOR_FEE_POT +
+    // caller-supplied accumulation_drain — both zero on standard
+    // pools) sweep to the wallet at drain time.
+    use pool_core::state::EMERGENCY_DRAIN_SNAPSHOT;
+
     let (mut deps, addrs) = instantiate_default_pool();
     seed(&mut deps, &addrs.pool_owner);
 
@@ -118,6 +126,7 @@ fn phase2_drains_reserves_and_emits_transfers() {
     env.block.time = env.block.time.plus_seconds(25 * 3600);
 
     let state_before = POOL_STATE.load(&deps.storage).unwrap();
+    let fees_before = POOL_FEE_STATE.load(&deps.storage).unwrap();
     let res = execute(
         deps.as_mut(),
         env,
@@ -126,22 +135,38 @@ fn phase2_drains_reserves_and_emits_transfers() {
     )
     .unwrap();
 
-    // Drain recipient = COMMITFEEINFO.bluechip_wallet_address,
-    // which instantiate sourced from the factory's configured wallet
-    // (NOT the factory address itself).
-    assert!(res
-        .attributes
-        .iter()
-        .any(|a| a.key == "recipient" && a.value == addrs.bluechip_wallet.to_string()));
-    assert!(
-        !res.attributes
-            .iter()
-            .any(|a| a.key == "recipient" && a.value == addrs.factory.to_string()),
-        "drain recipient must NOT be the factory contract — funds sent to the \
-         factory have no withdrawal path and would be permanently locked"
+    // Audit record reports ONLY the swept (non-LP) totals. Standard
+    // pools have CREATOR_FEE_POT empty AND accumulation_drain == 0, so
+    // both totals are zero — the wallet receives nothing at drain time.
+    let audit = EMERGENCY_WITHDRAWAL.load(&deps.storage).unwrap();
+    assert_eq!(audit.amount0, Uint128::zero());
+    assert_eq!(audit.amount1, Uint128::zero());
+    assert_eq!(
+        audit.recipient, addrs.bluechip_wallet,
+        "wallet field still pinned to the configured bluechip wallet — \
+         late dormancy sweep dispatches there"
     );
 
-    // Post-drain state: reserves zeroed, drain flag flipped.
+    // EMERGENCY_DRAIN_SNAPSHOT captured the LP-owned funds at drain
+    // time. These are what positions claim against via
+    // ClaimEmergencyShare, NOT what was swept.
+    let snap = EMERGENCY_DRAIN_SNAPSHOT.load(&deps.storage).unwrap();
+    assert_eq!(snap.reserve0_at_drain, state_before.reserve0);
+    assert_eq!(snap.reserve1_at_drain, state_before.reserve1);
+    assert_eq!(snap.fee_reserve_0_at_drain, fees_before.fee_reserve_0);
+    assert_eq!(snap.fee_reserve_1_at_drain, fees_before.fee_reserve_1);
+    assert_eq!(
+        snap.total_liquidity_at_drain,
+        state_before.total_liquidity,
+        "snapshot must record total_liquidity for pro-rata claim math"
+    );
+    assert_eq!(snap.total_claimed_0, Uint128::zero());
+    assert_eq!(snap.total_claimed_1, Uint128::zero());
+    assert!(!snap.residual_swept);
+
+    // Post-drain pool state: reserves and fee_reserves zeroed (so
+    // other path loads see consistent state), drain flag flipped,
+    // total_liquidity wiped.
     let state_after = POOL_STATE.load(&deps.storage).unwrap();
     assert_eq!(state_after.reserve0, Uint128::zero());
     assert_eq!(state_after.reserve1, Uint128::zero());
@@ -151,34 +176,24 @@ fn phase2_drains_reserves_and_emits_transfers() {
     assert_eq!(fees_after.fee_reserve_1, Uint128::zero());
     assert!(EMERGENCY_DRAINED.load(&deps.storage).unwrap());
 
-    // Audit record captured the pre-drain reserves as the grand total.
-    // Standard pools pass accumulation_drain=0 so total_0/1 == reserves +
-    // fee_reserves + CREATOR_FEE_POT (which is zero here).
-    let audit = EMERGENCY_WITHDRAWAL.load(&deps.storage).unwrap();
-    assert_eq!(audit.amount0, state_before.reserve0);
-    assert_eq!(audit.amount1, state_before.reserve1);
-    assert_eq!(audit.recipient, addrs.bluechip_wallet);
+    // No transfer messages emitted: sweep totals are both zero on
+    // standard pools (no CREATOR_FEE_POT, no accumulation_drain). LP
+    // funds stay in the pool's bank balance until claimed.
+    assert_eq!(
+        res.messages.len(),
+        0,
+        "no transfers at drain time when sweep totals are zero — funds \
+         are escrowed for per-position claims"
+    );
 
-    // Response carries the two transfer messages, both addressed to the
-    // configured bluechip wallet (NOT the factory).
-    let bank_sent = res.messages.iter().any(|sub| match &sub.msg {
-        CosmosMsg::Bank(cosmwasm_std::BankMsg::Send { to_address, .. }) => {
-            to_address == addrs.bluechip_wallet.as_str()
-        }
-        _ => false,
-    });
-    let cw20_sent = res.messages.iter().any(|sub| match &sub.msg {
-        CosmosMsg::Wasm(WasmMsg::Execute { contract_addr, msg, .. }) => {
-            contract_addr == addrs.creator_token.as_str()
-                && String::from_utf8_lossy(msg.as_slice()).contains("transfer")
-                && String::from_utf8_lossy(msg.as_slice())
-                    .contains(addrs.bluechip_wallet.as_str())
-        }
-        _ => false,
-    });
-    assert!(
-        bank_sent && cw20_sent,
-        "drain must emit both transfers to bluechip_wallet"
+    // Recipient regression fence (from the pre-fix test): if
+    // SOMETHING WERE swept, it must go to the configured bluechip
+    // wallet, NEVER to the factory contract. The audit record's
+    // recipient field is the canonical source of truth here.
+    assert_ne!(
+        audit.recipient, addrs.factory,
+        "recipient must NOT be the factory — funds sent there have no \
+         withdrawal path"
     );
 }
 
