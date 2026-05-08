@@ -3066,3 +3066,506 @@ mod empty_position_persistence_tests {
             .any(|a| a.key == "action" && a.value == "collect_fees"));
     }
 }
+
+// ---------------------------------------------------------------------------
+// H-NFT-4 audit fix: per-position emergency-claim escrow
+// ---------------------------------------------------------------------------
+//
+// Pre-fix, Phase-2 emergency-drain swept ALL pool funds (including
+// LP-owned reserves and pending fees) to `bluechip_wallet_address`.
+// Active LPs could exit during the 24h window, but set-and-forget
+// LPs lost everything. Post-fix, LP funds escrow in
+// `EMERGENCY_DRAIN_SNAPSHOT` for 1 year, claimable per-position via
+// `ClaimEmergencyShare`. After dormancy, the unclaimed residual
+// sweeps to the bluechip wallet via `SweepUnclaimedEmergencyShares`.
+mod emergency_claim_escrow_tests {
+    use super::*;
+    use crate::testing::liquidity_tests::{create_test_position, setup_pool_post_threshold};
+    use cosmwasm_std::{
+        to_json_binary, ContractResult, SystemResult, WasmQuery,
+    };
+    use pool_core::state::{
+        EmergencyDrainSnapshot, EMERGENCY_CLAIM_DORMANCY_SECONDS, EMERGENCY_DRAINED,
+        EMERGENCY_DRAIN_SNAPSHOT, LIQUIDITY_POSITIONS, POOL_FEE_STATE, POOL_INFO, POOL_STATE,
+    };
+
+    /// Install a CW721 OwnerOf querier returning the given owner for
+    /// any token id. Local helper; mirrors the pattern used in
+    /// other H-NFT tests.
+    fn install_owner_querier(
+        deps: &mut OwnedDeps<MockStorage, MockApi, MockQuerier>,
+        owner: &str,
+    ) {
+        let owner_str = owner.to_string();
+        deps.querier.update_wasm(move |query| match query {
+            WasmQuery::Smart { contract_addr, msg } => {
+                if contract_addr == "nft_contract" {
+                    let resp = pool_factory_interfaces::cw721_msgs::OwnerOfResponse {
+                        owner: owner_str.clone(),
+                        approvals: vec![],
+                    };
+                    return SystemResult::Ok(ContractResult::Ok(
+                        to_json_binary(&resp).unwrap(),
+                    ));
+                }
+                SystemResult::Err(cosmwasm_std::SystemError::InvalidRequest {
+                    error: format!("unexpected wasm query to {}", contract_addr),
+                    request: msg.clone(),
+                })
+            }
+            _ => SystemResult::Err(cosmwasm_std::SystemError::UnsupportedRequest {
+                kind: "non-Smart wasm query".to_string(),
+            }),
+        });
+    }
+
+    /// Seed the pool's storage to a "post Phase-2 drain" shape
+    /// directly: install EMERGENCY_DRAINED + EMERGENCY_DRAIN_SNAPSHOT
+    /// with the requested totals + dormancy. Bypasses the actual
+    /// Phase-1/Phase-2 flow so each test focuses on the claim/sweep
+    /// behavior in isolation.
+    fn seed_post_drain_state(
+        deps: &mut OwnedDeps<MockStorage, MockApi, MockQuerier>,
+        env: &cosmwasm_std::Env,
+        reserve0: Uint128,
+        reserve1: Uint128,
+        fee_reserve_0: Uint128,
+        fee_reserve_1: Uint128,
+        total_liquidity: Uint128,
+    ) {
+        EMERGENCY_DRAINED.save(&mut deps.storage, &true).unwrap();
+        let drained_at = env.block.time;
+        let dormancy_expires_at =
+            drained_at.plus_seconds(EMERGENCY_CLAIM_DORMANCY_SECONDS);
+        EMERGENCY_DRAIN_SNAPSHOT
+            .save(
+                &mut deps.storage,
+                &EmergencyDrainSnapshot {
+                    drained_at,
+                    dormancy_expires_at,
+                    reserve0_at_drain: reserve0,
+                    reserve1_at_drain: reserve1,
+                    fee_reserve_0_at_drain: fee_reserve_0,
+                    fee_reserve_1_at_drain: fee_reserve_1,
+                    total_liquidity_at_drain: total_liquidity,
+                    total_claimed_0: Uint128::zero(),
+                    total_claimed_1: Uint128::zero(),
+                    residual_swept: false,
+                },
+            )
+            .unwrap();
+        // Phase-2's accounting wipe is reproduced here so other paths
+        // that load POOL_STATE see the canonical post-drain shape.
+        let mut ps = POOL_STATE.load(&deps.storage).unwrap();
+        ps.reserve0 = Uint128::zero();
+        ps.reserve1 = Uint128::zero();
+        ps.total_liquidity = Uint128::zero();
+        POOL_STATE.save(&mut deps.storage, &ps).unwrap();
+        let mut fs = POOL_FEE_STATE.load(&deps.storage).unwrap();
+        fs.fee_reserve_0 = Uint128::zero();
+        fs.fee_reserve_1 = Uint128::zero();
+        POOL_FEE_STATE.save(&mut deps.storage, &fs).unwrap();
+    }
+
+    /// ClaimEmergencyShare without a drained pool returns the dedicated
+    /// `NoEmergencyDrainSnapshot` error so callers don't mistake "pool
+    /// is fine" for "your claim was processed."
+    #[test]
+    fn claim_emergency_share_without_drain_rejects() {
+        let mut deps = mock_dependencies();
+        setup_pool_post_threshold(&mut deps);
+        create_test_position(&mut deps, 1, "alice", Uint128::new(10_000_000));
+        install_owner_querier(&mut deps, "alice");
+
+        let info = message_info(&Addr::unchecked("alice"), &[]);
+        let err = execute(
+            deps.as_mut(),
+            mock_env(),
+            info,
+            ExecuteMsg::ClaimEmergencyShare {
+                position_id: "1".to_string(),
+            },
+        )
+        .unwrap_err();
+        assert!(matches!(err, ContractError::NoEmergencyDrainSnapshot));
+    }
+
+    /// Single-position pro-rata math: solo LP should claim 100% of
+    /// `(reserve_*_at_drain + fee_reserve_*_at_drain)`. Validates the
+    /// denominator-numerator wiring at the simplest case.
+    #[test]
+    fn claim_emergency_share_solo_lp_gets_full_pot() {
+        let mut deps = mock_dependencies();
+        setup_pool_post_threshold(&mut deps);
+        let alice_liq = Uint128::new(10_000_000);
+        create_test_position(&mut deps, 1, "alice", alice_liq);
+        install_owner_querier(&mut deps, "alice");
+        let env = mock_env();
+        seed_post_drain_state(
+            &mut deps,
+            &env,
+            Uint128::new(800_000_000),     // reserve0
+            Uint128::new(1_200_000_000),   // reserve1
+            Uint128::new(50_000_000),      // fee_reserve_0
+            Uint128::new(75_000_000),      // fee_reserve_1
+            alice_liq,                      // sole LP
+        );
+
+        let info = message_info(&Addr::unchecked("alice"), &[]);
+        let res = execute(
+            deps.as_mut(),
+            env,
+            info,
+            ExecuteMsg::ClaimEmergencyShare {
+                position_id: "1".to_string(),
+            },
+        )
+        .expect("solo claim must succeed");
+
+        // Solo LP gets the full LP-side pot.
+        let expected_total_0 = Uint128::new(800_000_000 + 50_000_000);
+        let expected_total_1 = Uint128::new(1_200_000_000 + 75_000_000);
+
+        let total_0_attr = res
+            .attributes
+            .iter()
+            .find(|a| a.key == "total_0")
+            .unwrap();
+        let total_1_attr = res
+            .attributes
+            .iter()
+            .find(|a| a.key == "total_1")
+            .unwrap();
+        assert_eq!(total_0_attr.value, expected_total_0.to_string());
+        assert_eq!(total_1_attr.value, expected_total_1.to_string());
+
+        // Position is marked spent — second claim must reject.
+        let pos = LIQUIDITY_POSITIONS.load(&deps.storage, "1").unwrap();
+        assert_eq!(pos.liquidity, Uint128::zero());
+
+        let err = execute(
+            deps.as_mut(),
+            mock_env(),
+            message_info(&Addr::unchecked("alice"), &[]),
+            ExecuteMsg::ClaimEmergencyShare {
+                position_id: "1".to_string(),
+            },
+        )
+        .unwrap_err();
+        assert!(matches!(
+            err,
+            ContractError::NoClaimableEmergencyShare { .. }
+        ));
+
+        // Snapshot's running tally bumped by the claim.
+        let snap = EMERGENCY_DRAIN_SNAPSHOT.load(&deps.storage).unwrap();
+        assert_eq!(snap.total_claimed_0, expected_total_0);
+        assert_eq!(snap.total_claimed_1, expected_total_1);
+    }
+
+    /// Two-LP pro-rata: 30/70 split. Each gets 30% / 70% of the
+    /// LP-side pot. Verifies the multiply_ratio math matches the
+    /// expected proportional split on uneven liquidity weights.
+    #[test]
+    fn claim_emergency_share_two_lps_split_pro_rata() {
+        let mut deps = mock_dependencies();
+        setup_pool_post_threshold(&mut deps);
+        // Alice 30%, Bob 70%.
+        let alice_liq = Uint128::new(3_000);
+        let bob_liq = Uint128::new(7_000);
+        let total_liq = alice_liq.checked_add(bob_liq).unwrap();
+        create_test_position(&mut deps, 1, "alice", alice_liq);
+        create_test_position(&mut deps, 2, "bob", bob_liq);
+
+        let env = mock_env();
+        seed_post_drain_state(
+            &mut deps,
+            &env,
+            Uint128::new(1_000_000),
+            Uint128::new(2_000_000),
+            Uint128::zero(), // simplify: no pending fees
+            Uint128::zero(),
+            total_liq,
+        );
+
+        // Alice claims first.
+        install_owner_querier(&mut deps, "alice");
+        let res_a = execute(
+            deps.as_mut(),
+            env.clone(),
+            message_info(&Addr::unchecked("alice"), &[]),
+            ExecuteMsg::ClaimEmergencyShare {
+                position_id: "1".to_string(),
+            },
+        )
+        .unwrap();
+        let alice_total_0: u128 = res_a
+            .attributes
+            .iter()
+            .find(|a| a.key == "total_0")
+            .unwrap()
+            .value
+            .parse()
+            .unwrap();
+        let alice_total_1: u128 = res_a
+            .attributes
+            .iter()
+            .find(|a| a.key == "total_1")
+            .unwrap()
+            .value
+            .parse()
+            .unwrap();
+        // 30% of 1_000_000 = 300_000; 30% of 2_000_000 = 600_000.
+        assert_eq!(alice_total_0, 300_000);
+        assert_eq!(alice_total_1, 600_000);
+
+        // Bob claims second.
+        install_owner_querier(&mut deps, "bob");
+        let res_b = execute(
+            deps.as_mut(),
+            env,
+            message_info(&Addr::unchecked("bob"), &[]),
+            ExecuteMsg::ClaimEmergencyShare {
+                position_id: "2".to_string(),
+            },
+        )
+        .unwrap();
+        let bob_total_0: u128 = res_b
+            .attributes
+            .iter()
+            .find(|a| a.key == "total_0")
+            .unwrap()
+            .value
+            .parse()
+            .unwrap();
+        let bob_total_1: u128 = res_b
+            .attributes
+            .iter()
+            .find(|a| a.key == "total_1")
+            .unwrap()
+            .value
+            .parse()
+            .unwrap();
+        // 70% shares.
+        assert_eq!(bob_total_0, 700_000);
+        assert_eq!(bob_total_1, 1_400_000);
+
+        // Snapshot's running tally equals exactly the LP-side pot —
+        // no dust on round splits.
+        let snap = EMERGENCY_DRAIN_SNAPSHOT.load(&deps.storage).unwrap();
+        assert_eq!(snap.total_claimed_0, Uint128::new(1_000_000));
+        assert_eq!(snap.total_claimed_1, Uint128::new(2_000_000));
+    }
+
+    /// CW721 ownership gate: a non-owner cannot claim against another
+    /// position. Mirrors the auth model used by every other LP-state
+    /// mutation; sync_position_on_transfer would update `position.owner`
+    /// if the NFT changed hands, but verify_position_ownership runs
+    /// first and rejects mismatched senders before sync runs.
+    #[test]
+    fn claim_emergency_share_rejects_non_owner() {
+        let mut deps = mock_dependencies();
+        setup_pool_post_threshold(&mut deps);
+        create_test_position(&mut deps, 1, "alice", Uint128::new(1_000));
+        // CW721 says "alice" owns position 1.
+        install_owner_querier(&mut deps, "alice");
+        let env = mock_env();
+        seed_post_drain_state(
+            &mut deps,
+            &env,
+            Uint128::new(100),
+            Uint128::new(200),
+            Uint128::zero(),
+            Uint128::zero(),
+            Uint128::new(1_000),
+        );
+
+        // Bob attempts to claim Alice's position.
+        let err = execute(
+            deps.as_mut(),
+            env,
+            message_info(&Addr::unchecked("bob"), &[]),
+            ExecuteMsg::ClaimEmergencyShare {
+                position_id: "1".to_string(),
+            },
+        )
+        .unwrap_err();
+        assert!(matches!(err, ContractError::Unauthorized {}));
+    }
+
+    /// Sweep-unclaimed: pre-dormancy attempt must reject with the
+    /// dedicated dormancy-not-elapsed error so the admin's intent
+    /// can't bypass the year-long claim window.
+    #[test]
+    fn sweep_before_dormancy_rejects() {
+        let mut deps = mock_dependencies();
+        setup_pool_post_threshold(&mut deps);
+        // Seed factory_addr in POOL_INFO so the auth check finds it.
+        let pi = POOL_INFO.load(&deps.storage).unwrap();
+        let factory = pi.factory_addr.clone();
+        let env = mock_env();
+        seed_post_drain_state(
+            &mut deps,
+            &env,
+            Uint128::new(1_000_000),
+            Uint128::new(1_000_000),
+            Uint128::zero(),
+            Uint128::zero(),
+            Uint128::new(1_000),
+        );
+
+        // Just shy of the dormancy.
+        let mut early_env = env.clone();
+        early_env.block.time = early_env
+            .block
+            .time
+            .plus_seconds(EMERGENCY_CLAIM_DORMANCY_SECONDS - 1);
+
+        let err = execute(
+            deps.as_mut(),
+            early_env,
+            message_info(&factory, &[]),
+            ExecuteMsg::SweepUnclaimedEmergencyShares {},
+        )
+        .unwrap_err();
+        match err {
+            ContractError::EmergencyClaimDormancyNotElapsed { .. } => {}
+            other => panic!("expected EmergencyClaimDormancyNotElapsed, got: {:?}", other),
+        }
+    }
+
+    /// Sweep-unclaimed by non-factory must reject with Unauthorized,
+    /// even after the dormancy elapsed.
+    #[test]
+    fn sweep_unauthorized_rejects() {
+        let mut deps = mock_dependencies();
+        setup_pool_post_threshold(&mut deps);
+        let env = mock_env();
+        seed_post_drain_state(
+            &mut deps,
+            &env,
+            Uint128::new(1),
+            Uint128::new(1),
+            Uint128::zero(),
+            Uint128::zero(),
+            Uint128::new(1),
+        );
+
+        let mut late_env = env;
+        late_env.block.time = late_env
+            .block
+            .time
+            .plus_seconds(EMERGENCY_CLAIM_DORMANCY_SECONDS + 1);
+
+        let err = execute(
+            deps.as_mut(),
+            late_env,
+            message_info(&Addr::unchecked("not_factory"), &[]),
+            ExecuteMsg::SweepUnclaimedEmergencyShares {},
+        )
+        .unwrap_err();
+        assert!(matches!(err, ContractError::Unauthorized {}));
+    }
+
+    /// Sweep-unclaimed happy path: after the 1-year dormancy, factory
+    /// admin can sweep the residual to the bluechip wallet. Residual
+    /// = drainable - already_claimed. Tests with a partial pre-claim
+    /// to confirm the residual subtracts correctly.
+    #[test]
+    fn sweep_after_dormancy_transfers_residual_to_bluechip_wallet() {
+        let mut deps = mock_dependencies();
+        setup_pool_post_threshold(&mut deps);
+        let pi = POOL_INFO.load(&deps.storage).unwrap();
+        let factory = pi.factory_addr.clone();
+
+        let alice_liq = Uint128::new(3_000);
+        let bob_liq = Uint128::new(7_000);
+        let total_liq = alice_liq.checked_add(bob_liq).unwrap();
+        create_test_position(&mut deps, 1, "alice", alice_liq);
+        create_test_position(&mut deps, 2, "bob", bob_liq);
+
+        let env = mock_env();
+        seed_post_drain_state(
+            &mut deps,
+            &env,
+            Uint128::new(1_000_000),
+            Uint128::new(2_000_000),
+            Uint128::zero(),
+            Uint128::zero(),
+            total_liq,
+        );
+
+        // Alice claims 30%; Bob never claims. Bob's 70% becomes the
+        // residual after the dormancy elapses.
+        install_owner_querier(&mut deps, "alice");
+        execute(
+            deps.as_mut(),
+            env.clone(),
+            message_info(&Addr::unchecked("alice"), &[]),
+            ExecuteMsg::ClaimEmergencyShare {
+                position_id: "1".to_string(),
+            },
+        )
+        .unwrap();
+
+        let mut late_env = env;
+        late_env.block.time = late_env
+            .block
+            .time
+            .plus_seconds(EMERGENCY_CLAIM_DORMANCY_SECONDS + 1);
+
+        let res = execute(
+            deps.as_mut(),
+            late_env,
+            message_info(&factory, &[]),
+            ExecuteMsg::SweepUnclaimedEmergencyShares {},
+        )
+        .expect("sweep after dormancy must succeed");
+
+        // Residual = total - claimed = (1_000_000 - 300_000) = 700_000
+        // on side 0; (2_000_000 - 600_000) = 1_400_000 on side 1.
+        let res_0_attr = res
+            .attributes
+            .iter()
+            .find(|a| a.key == "residual_0")
+            .unwrap();
+        let res_1_attr = res
+            .attributes
+            .iter()
+            .find(|a| a.key == "residual_1")
+            .unwrap();
+        assert_eq!(res_0_attr.value, "700000");
+        assert_eq!(res_1_attr.value, "1400000");
+
+        // residual_swept latch flipped — second sweep is a no-op
+        // error to prevent double-sweeping a since-bumped tally.
+        let snap = EMERGENCY_DRAIN_SNAPSHOT.load(&deps.storage).unwrap();
+        assert!(snap.residual_swept);
+
+        let err = execute(
+            deps.as_mut(),
+            mock_env().tap(|e| {
+                e.block.time = e
+                    .block
+                    .time
+                    .plus_seconds(EMERGENCY_CLAIM_DORMANCY_SECONDS + 100)
+            }),
+            message_info(&factory, &[]),
+            ExecuteMsg::SweepUnclaimedEmergencyShares {},
+        )
+        .unwrap_err();
+        assert!(matches!(err, ContractError::NoUnclaimedEmergencyResidual));
+    }
+
+    /// `tap` helper to mutate an Env in a single expression. Local
+    /// because we don't want to pull a tap crate just for tests.
+    trait TapEnv {
+        fn tap<F: FnOnce(&mut Self)>(self, f: F) -> Self;
+    }
+    impl TapEnv for cosmwasm_std::Env {
+        fn tap<F: FnOnce(&mut Self)>(mut self, f: F) -> Self {
+            f(&mut self);
+            self
+        }
+    }
+}

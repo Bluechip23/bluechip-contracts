@@ -116,6 +116,30 @@ pub enum ExecuteMsg {
         min_amount1: Option<Uint128>,
         max_ratio_deviation_bps: Option<u16>,
     },
+
+    // H-NFT-4 audit fix: per-position claim against the post-emergency-
+    // drain escrow. Caller must own the position NFT (CW721 OwnerOf
+    // check). Each position can be claimed exactly once; a successful
+    // claim sets `position.liquidity = 0` and bumps the snapshot's
+    // `total_claimed_*` running tally. Funds = pro-rata share of
+    // `(reserve_*_at_drain + fee_reserve_*_at_drain)` weighted by
+    // `position.liquidity / total_liquidity_at_drain`, transferred to
+    // `info.sender`.
+    //
+    // Available immediately post-drain through the full 1-year
+    // `EMERGENCY_CLAIM_DORMANCY_SECONDS` window. After dormancy, claims
+    // still compute math but the pool's bank balance may have been
+    // swept by `SweepUnclaimedEmergencyShares`, so a late claim
+    // would error on insufficient balance.
+    ClaimEmergencyShare {
+        position_id: String,
+    },
+
+    // H-NFT-4 audit fix: factory-only post-dormancy sweep. After 1
+    // year, factory admin sends the unclaimed residual to the
+    // bluechip wallet. One-shot; `residual_swept` flag prevents
+    // double-sweeps.
+    SweepUnclaimedEmergencyShares {},
 }
 
 #[cw_serde]

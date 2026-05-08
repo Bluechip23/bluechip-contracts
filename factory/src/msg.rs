@@ -88,6 +88,14 @@ pub enum ExecuteMsg {
     CancelEmergencyWithdrawPool {
         pool_id: u64,
     },
+    /// H-NFT-4 audit fix: forwards `SweepUnclaimedEmergencyShares {}`
+    /// to a pool whose 1-year claim dormancy has elapsed. Admin-only;
+    /// the pool itself verifies both the dormancy and the
+    /// factory-as-sender invariants before sweeping its unclaimed
+    /// residual to the bluechip wallet.
+    SweepUnclaimedEmergencyPool {
+        pool_id: u64,
+    },
     RecoverPoolStuckStates {
         pool_id: u64,
         recovery_type: RecoveryType,

@@ -84,6 +84,71 @@ pub struct EmergencyWithdrawalInfo {
     pub total_liquidity_at_withdrawal: Uint128,
 }
 
+/// Snapshot written by Phase-2 emergency drain. Captures the LP-owned
+/// portion of the pool's funds (reserves + fee_reserve) at the moment
+/// of drain so each position can later claim its pro-rata share via
+/// `ClaimEmergencyShare`. Funds remain in the pool's bank balance
+/// during the year-long claim window — they are NOT swept to the
+/// treasury at drain time.
+///
+/// `total_claimed_0/1` accumulate as positions claim. After
+/// `EMERGENCY_CLAIM_DORMANCY_SECONDS` elapse, the factory admin may
+/// invoke `SweepUnclaimedEmergencyShares` to send the still-unclaimed
+/// remainder (`reserve_*_at_drain - total_claimed_*` plus floor-
+/// division dust) to the bluechip wallet — covering truly abandoned
+/// positions whose owners never returned to claim.
+///
+/// Pro-rata math intentionally uses simple `position.liquidity /
+/// total_liquidity_at_drain` weighting against both reserve and
+/// fee_reserve. A more "fair" alternative would walk fee-growth
+/// checkpoints, but that's strictly an emergency-drain situation
+/// where the pool is being shut down — equal-by-liquidity is a
+/// defensible "good enough" approximation given the savings in math
+/// complexity and edge-case surface.
+#[cw_serde]
+pub struct EmergencyDrainSnapshot {
+    /// Block time at which Phase 2 fired.
+    pub drained_at: Timestamp,
+    /// Earliest block time at which `SweepUnclaimedEmergencyShares`
+    /// may run. Equals `drained_at + EMERGENCY_CLAIM_DORMANCY_SECONDS`
+    /// pinned at drain time so a future change to the constant doesn't
+    /// retroactively shorten an existing dormancy window.
+    pub dormancy_expires_at: Timestamp,
+    /// Pool reserve0 at drain — denominator-numerator pair with
+    /// total_liquidity_at_drain for principal pro-rata.
+    pub reserve0_at_drain: Uint128,
+    pub reserve1_at_drain: Uint128,
+    /// Pool fee_reserve at drain — pending-fees pot also distributed
+    /// pro-rata by liquidity weight (see struct doc).
+    pub fee_reserve_0_at_drain: Uint128,
+    pub fee_reserve_1_at_drain: Uint128,
+    /// Total liquidity outstanding at drain — denominator for both
+    /// principal and fee shares. Snapshot here so post-drain
+    /// `pool_state.total_liquidity = 0` doesn't break claim math.
+    pub total_liquidity_at_drain: Uint128,
+    /// Running tallies of claimed amounts per asset side. Bumped on
+    /// every successful `ClaimEmergencyShare`. The dormancy sweep
+    /// transfers `reserve_*_at_drain + fee_reserve_*_at_drain -
+    /// total_claimed_*` to the bluechip wallet.
+    pub total_claimed_0: Uint128,
+    pub total_claimed_1: Uint128,
+    /// Sweep-completed flag. Flipped by
+    /// `SweepUnclaimedEmergencyShares` so a second call no-ops
+    /// rather than double-sweeping a since-bumped tally.
+    pub residual_swept: bool,
+}
+
+/// Per-position dormancy claim window. After this many seconds elapse
+/// from `EmergencyDrainSnapshot.drained_at`, the factory admin may
+/// sweep the unclaimed residual to the bluechip wallet. 1 year =
+/// `365 * 86_400` seconds. Sized to give passive LPs (set-and-forget,
+/// vacationers, custodians on quarterly review cycles, etc.) a real
+/// chance to surface and claim. Tuned narrower would reintroduce the
+/// "24h timelock isn't a fair window for non-active LPs" issue this
+/// pattern was added to address; tuned wider provides no further LP
+/// benefit but indefinitely defers cleanup of provably-abandoned funds.
+pub const EMERGENCY_CLAIM_DORMANCY_SECONDS: u64 = 365 * 86_400;
+
 #[cw_serde]
 pub struct PoolState {
     pub pool_contract_address: Addr,
@@ -254,6 +319,9 @@ pub const EMERGENCY_WITHDRAWAL: Item<EmergencyWithdrawalInfo> = Item::new("emerg
 pub const PENDING_EMERGENCY_WITHDRAW: Item<Timestamp> = Item::new("pending_emergency_withdraw");
 /// Permanent flag set after a successful emergency drain.
 pub const EMERGENCY_DRAINED: Item<bool> = Item::new("emergency_drained");
+
+pub const EMERGENCY_DRAIN_SNAPSHOT: Item<EmergencyDrainSnapshot> =
+    Item::new("emergency_drain_snapshot");
 /// Expected factory address pinned at instantiate for sanity checks.
 pub const EXPECTED_FACTORY: Item<ExpectedFactory> = Item::new("expected_factory");
 

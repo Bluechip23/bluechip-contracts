@@ -162,6 +162,34 @@ pub enum ExecuteMsg {
     ClaimFailedDistribution {
         recipient: Option<String>,
     },
+
+    // H-NFT-4 audit fix: per-position claim against the post-emergency
+    // -drain escrow. Caller must own (CW721) the position NFT — the
+    // handler checks `verify_position_ownership` against the stored NFT
+    // contract. Each position can be claimed exactly once; a successful
+    // claim sets `position.liquidity = 0` and bumps the snapshot's
+    // `total_claimed_*` running tally. The funds the claimant receives
+    // are their pro-rata share of `(reserve_*_at_drain +
+    // fee_reserve_*_at_drain) * position.liquidity /
+    // total_liquidity_at_drain`, transferred to `info.sender`.
+    //
+    // Available immediately after Phase-2 drain and through the full
+    // 1-year `EMERGENCY_CLAIM_DORMANCY_SECONDS` window. After
+    // dormancy, individual claims still work in principle but the
+    // pool's bank balance may have been swept by
+    // SweepUnclaimedEmergencyShares, so a late claim would error on
+    // insufficient balance.
+    ClaimEmergencyShare {
+        position_id: String,
+    },
+
+    // H-NFT-4 audit fix: factory-only sweep of the unclaimed residual
+    // after the dormancy window expires. `info.sender` must equal the
+    // pool's `factory_addr`; the handler verifies
+    // `env.block.time >= dormancy_expires_at` (1 year post-drain) and
+    // sends the residual to `bluechip_wallet_address`. One-shot —
+    // `residual_swept` flag prevents double-sweeps.
+    SweepUnclaimedEmergencyShares {},
 }
 
 #[cw_serde]

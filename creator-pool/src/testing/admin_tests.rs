@@ -177,25 +177,48 @@ fn test_emergency_withdraw() {
         .unwrap();
     assert_eq!(action.value, "emergency_withdraw");
 
+    // H-NFT-4 audit fix: LP-owned funds (reserve0=1000, reserve1=2000) are
+    // now escrowed for per-position claims via ClaimEmergencyShare rather
+    // than swept to the bluechip wallet. The response's `amount0/amount1`
+    // attributes report ONLY the funds actually swept (CREATOR_FEE_POT +
+    // creator-excess-position). Both are empty in this test setup, so
+    // sweep is zero on both sides and no transfer messages are emitted.
     let amount0 = exec_res
         .attributes
         .iter()
         .find(|a| a.key == "amount0")
         .unwrap();
-    assert_eq!(amount0.value, "1000");
+    assert_eq!(
+        amount0.value, "0",
+        "post-fix: LP funds escrow, only non-LP buckets sweep — both empty here"
+    );
 
     let amount1 = exec_res
         .attributes
         .iter()
         .find(|a| a.key == "amount1")
         .unwrap();
-    assert_eq!(amount1.value, "2000");
+    assert_eq!(amount1.value, "0");
 
     let pool_state = POOL_STATE.load(&deps.storage).unwrap();
     assert_eq!(pool_state.reserve0, Uint128::zero());
     assert_eq!(pool_state.reserve1, Uint128::zero());
 
-    assert_eq!(exec_res.messages.len(), 2);
+    // No transfer messages — sweep was zero on both sides.
+    assert_eq!(exec_res.messages.len(), 0);
+
+    // The LP-owned funds are now captured in EMERGENCY_DRAIN_SNAPSHOT
+    // for per-position claims. Verify the snapshot recorded the
+    // pre-drain reserves correctly so positions can claim against
+    // them.
+    let snap = pool_core::state::EMERGENCY_DRAIN_SNAPSHOT
+        .load(&deps.storage)
+        .expect("snapshot must exist post-Phase-2");
+    assert_eq!(snap.reserve0_at_drain, Uint128::new(1000));
+    assert_eq!(snap.reserve1_at_drain, Uint128::new(2000));
+    assert_eq!(snap.total_claimed_0, Uint128::zero());
+    assert_eq!(snap.total_claimed_1, Uint128::zero());
+    assert!(!snap.residual_swept);
 }
 
 #[test]

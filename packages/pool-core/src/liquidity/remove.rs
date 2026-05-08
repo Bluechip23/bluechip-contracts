@@ -21,8 +21,7 @@ use crate::liquidity_helpers::{
 };
 use crate::state::{
     maybe_auto_pause_on_low_liquidity, PoolSpecs, CREATOR_FEE_POT, LIQUIDITY_POSITIONS,
-    OWNER_POSITIONS, POOL_ANALYTICS, POOL_FEE_STATE, POOL_INFO, POOL_SPECS, POOL_STATE,
-    REENTRANCY_LOCK,
+    POOL_ANALYTICS, POOL_FEE_STATE, POOL_INFO, POOL_SPECS, POOL_STATE, REENTRANCY_LOCK,
 };
 use crate::swap::update_price_accumulator;
 

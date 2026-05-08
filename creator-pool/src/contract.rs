@@ -3,9 +3,10 @@
 //! Commit logic lives in [`crate::commit`], admin operations in [`crate::admin`].
 
 use crate::admin::{
-    ensure_not_drained, execute_cancel_emergency_withdraw, execute_claim_failed_distribution,
-    execute_emergency_withdraw, execute_pause, execute_recover_stuck_states,
-    execute_self_recover_distribution, execute_skip_distribution_user, execute_unpause,
+    ensure_not_drained, execute_cancel_emergency_withdraw, execute_claim_emergency_share,
+    execute_claim_failed_distribution, execute_emergency_withdraw, execute_pause,
+    execute_recover_stuck_states, execute_self_recover_distribution,
+    execute_skip_distribution_user, execute_sweep_unclaimed_emergency_shares, execute_unpause,
     execute_update_config_from_factory,
 };
 use crate::asset::{PoolPairType, TokenInfoPoolExt, TokenType};
@@ -572,6 +573,17 @@ pub fn execute(
             // address; an optional alternate `recipient` lets them
             // route the mint to a fresh wallet.
             execute_claim_failed_distribution(deps, env, info, recipient)
+        }
+        // H-NFT-4 audit fix: per-position post-emergency-drain claim
+        // escrow. Auth gate (CW721 ownership of position_id) lives in
+        // the handler.
+        ExecuteMsg::ClaimEmergencyShare { position_id } => {
+            execute_claim_emergency_share(deps, env, info, position_id)
+        }
+        // H-NFT-4 audit fix: factory-only post-1y-dormancy sweep of
+        // the unclaimed residual.
+        ExecuteMsg::SweepUnclaimedEmergencyShares {} => {
+            execute_sweep_unclaimed_emergency_shares(deps, env, info)
         }
     }
 }
