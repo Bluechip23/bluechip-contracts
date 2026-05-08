@@ -79,6 +79,39 @@ pub enum ContractError {
     NoPendingBootstrapPriceToCancel,
 
     // ---------------------------------------------------------------------
+    // Oracle-eligibility curation (M-3).
+    // ---------------------------------------------------------------------
+    #[error("Pool {pool_addr} is already in the oracle allowlist")]
+    OracleEligiblePoolAlreadyAdded { pool_addr: String },
+
+    #[error("Pool {pool_addr} not found in factory pool registry")]
+    OracleEligiblePoolNotInRegistry { pool_addr: String },
+
+    #[error("Pool {pool_addr} has no bluechip side (cannot be priced against ATOM)")]
+    OracleEligiblePoolMissingBluechipSide { pool_addr: String },
+
+    #[error("Pool {pool_addr} already has a pending oracle-allowlist add")]
+    OracleEligiblePoolAddAlreadyPending { pool_addr: String },
+
+    #[error("Pool {pool_addr} has no pending oracle-allowlist add")]
+    NoPendingOracleEligiblePoolAdd { pool_addr: String },
+
+    #[error("Pool {pool_addr} is not in the oracle allowlist")]
+    OracleEligiblePoolNotAllowlisted { pool_addr: String },
+
+    #[error("A commit-pools-auto-eligible flip is already pending. Cancel it first.")]
+    CommitPoolsAutoEligibleAlreadyPending,
+
+    #[error("No pending commit-pools-auto-eligible flip to cancel")]
+    NoPendingCommitPoolsAutoEligible,
+
+    #[error("commit_pools_auto_eligible already equals {value}; nothing to flip")]
+    CommitPoolsAutoEligibleNoChange { value: bool },
+
+    #[error("Oracle pool snapshot was refreshed too recently; next refresh available at block {next_block}")]
+    OracleRefreshRateLimited { next_block: u64 },
+
+    // ---------------------------------------------------------------------
     // Pool-creation reply chain errors.
     // ---------------------------------------------------------------------
     #[error("Pool reply '{step}' missing address: {kind}")]
@@ -95,6 +128,15 @@ pub enum ContractError {
 
     #[error("Invalid pair shape: {reason}")]
     InvalidPairShape { reason: String },
+
+    #[error(
+        "Duplicate pair: pool_id {existing_pool_id} is already registered for ({asset_a}, {asset_b})"
+    )]
+    DuplicatePair {
+        existing_pool_id: u64,
+        asset_a: String,
+        asset_b: String,
+    },
 
     // ---------------------------------------------------------------------
     // Migration / config errors.

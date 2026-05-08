@@ -94,6 +94,76 @@ pub const PENDING_FACTORY_NOTIFY: Item<bool> = Item::new("pending_factory_notify
 pub const REPLY_ID_FACTORY_NOTIFY_INITIAL: u64 = 1;
 pub const REPLY_ID_FACTORY_NOTIFY_RETRY: u64 = 2;
 
+/// Distribution-mint reply IDs occupy `[REPLY_ID_DISTRIBUTION_MINT_BASE,
+/// u64::MAX]`. Each mint dispatched from `process_distribution_batch` (or
+/// from `ClaimFailedDistribution`) bumps `NEXT_DIST_MINT_REPLY_ID` and uses
+/// the resulting integer as its reply id, so per-mint failure isolation
+/// can be wired without colliding with the existing factory-notify ids.
+/// 1_000_000 is large enough that a runaway counter (would have to overflow
+/// past u64::MAX) won't ever step on the low ids; sparseness leaves
+/// headroom for future SubMsg features below the base.
+pub const REPLY_ID_DISTRIBUTION_MINT_BASE: u64 = 1_000_000;
+
+/// Monotonic counter used to allocate distribution-mint reply ids.
+/// Starts from 0; the actual reply id used is
+/// `REPLY_ID_DISTRIBUTION_MINT_BASE + counter`. Persisted across batches
+/// so a re-entry on the same pool always observes a fresh id, never a
+/// reused one (reuse would alias `PENDING_MINT_REPLIES` entries between
+/// dispatches).
+pub const NEXT_DIST_MINT_REPLY_ID: Item<u64> = Item::new("next_dist_mint_reply_id");
+
+/// In-flight distribution-mint stash. Keyed by reply id (the same value
+/// passed to `SubMsg::reply_always`). The reply handler reads + removes
+/// the entry to learn which `(user, amount)` was being minted, then
+/// either acknowledges the success or accumulates the amount into
+/// `FAILED_MINTS` for the user to claim later.
+///
+/// Reply IDs are unique-per-mint AND per-pool (each pool has its own
+/// `NEXT_DIST_MINT_REPLY_ID`). Same-id collisions across pools are
+/// impossible because every pool runs its own contract instance with
+/// its own storage namespace.
+#[cw_serde]
+pub struct PendingMint {
+    pub user: Addr,
+    pub amount: Uint128,
+}
+
+pub const PENDING_MINT_REPLIES: Map<u64, PendingMint> =
+    Map::new("pending_mint_replies");
+
+/// Per-user accumulator of distribution-mint amounts whose dispatch
+/// failed (e.g., the recipient is a contract that rejects CW20 receive,
+/// is on a future mint allowlist, or otherwise rejects the mint).
+///
+/// Without this map, a single failing recipient would have reverted the
+/// entire batch tx and stalled the distribution. With it, the failing
+/// recipient's mint is captured here while every other committer in the
+/// batch is paid normally; the failed user can later call
+/// `ClaimFailedDistribution` with an alternate recipient address to
+/// retrieve their owed amount. Multiple failures across batches
+/// accumulate (saturate-safe via `checked_add`).
+///
+/// Keyed by the originally-intended recipient (the committer), not the
+/// claim recipient. This keeps the canonical entitlement tied to the
+/// committer's address even if they claim to a different wallet.
+pub const FAILED_MINTS: Map<&Addr, Uint128> = Map::new("failed_mints");
+
+/// Permissionless self-recovery window for a stalled distribution.
+/// After 7 days of no successful batch progress, ANY caller can invoke
+/// `SelfRecoverDistribution` to restart the cursor — eliminating the
+/// hard liveness dependency on the factory admin. The standard admin
+/// path (`RecoverPoolStuckStates::StuckDistribution`) still works on
+/// the shorter `STUCK_DISTRIBUTION_RECOVERY_WINDOW_SECONDS` (1h)
+/// window for fast-path recovery.
+///
+/// 7 days is intentionally long enough that the admin's 1h window
+/// has plenty of time to fire first, while still capping the
+/// worst-case "all keepers AND the admin are unreachable" liveness
+/// gap to a week. Tuning narrower would let opportunistic callers
+/// race the admin during legitimate investigation periods; tuning
+/// wider weakens the liveness guarantee for no further benefit.
+pub const PUBLIC_DISTRIBUTION_RECOVERY_WINDOW_SECONDS: u64 = 7 * 86_400;
+
 // `POOL_KIND` / `load_pool_kind` / `require_commit_pool` were removed
 // in 4d. Now that standard pools run their own wasm (`standard-pool`
 // crate), the kind is determined by which binary is executing — the

@@ -17,7 +17,7 @@ use crate::{asset::TokenType, error::ContractError};
 use cosmwasm_schema::cw_serde;
 use cosmwasm_std::{
     Addr, BankMsg, Coin, CosmosMsg, Deps, DepsMut, Env, MessageInfo, Order, Response, StdError,
-    StdResult, Uint128, Uint256,
+    StdResult, Storage, Uint128, Uint256,
 };
 use cw_storage_plus::Item;
 use pool_factory_interfaces::{ConversionResponse, PoolKind, PoolQueryMsg, PoolStateResponseForFactory};
@@ -35,10 +35,136 @@ pub const MOCK_PYTH_SHOULD_FAIL: Item<bool> = Item::new("mock_pyth_should_fail")
 /// no longer scales cost linearly with the full pool set — only with the
 /// per-sample cross-contract queries inside `calculate_weighted_price_with_atom`.
 pub const ORACLE_POOL_COUNT: usize = 75;
-pub const MIN_POOL_LIQUIDITY: Uint128 = Uint128::new(10_000_000_000);
+/// Hardcoded fallback bluechip-side floor used by `pool_meets_liquidity_floor`
+/// when the oracle has no usable price (bootstrap window, breaker tripped,
+/// post-anchor-change warm-up). Denominated in ubluechip — the bluechip-side
+/// reserve must meet this on its own (per-side, not summed). 5_000_000_000
+/// ubluechip = 5_000 BC, half of the legacy `MIN_POOL_LIQUIDITY` constant
+/// which was applied to the SUM of both sides; the per-side equivalent that
+/// a balanced pool must have met under the old code is therefore identical.
+///
+/// Mirrors the `STANDARD_POOL_CREATION_FEE_FALLBACK_BLUECHIP` pattern: a
+/// known-conservative bluechip-denominated value used when the
+/// USD-denominated source of truth can't be resolved.
+pub const MIN_POOL_LIQUIDITY_FALLBACK_BLUECHIP_PER_SIDE: Uint128 =
+    Uint128::new(5_000_000_000);
+/// Legacy constant retained for one cycle of git-grep continuity. Callers
+/// MUST use `pool_meets_liquidity_floor` instead — this constant is
+/// intentionally inaccessible at runtime.
+#[allow(dead_code)]
+pub(crate) const MIN_POOL_LIQUIDITY: Uint128 = Uint128::new(10_000_000_000);
+
+/// USD-denominated floor for total pool liquidity, enforced at oracle
+/// sampling time. Scale matches `standard_pool_creation_fee_usd` and the
+/// oracle's `bluechip_price_cache.last_price` numerator: 6-decimal USD
+/// (so `5_000_000_000` = $5_000.00).
+///
+/// The total-USD floor is converted to a bluechip-side floor (= total/2,
+/// since xyk pools have equal-USD sides at the spot-implied price) and
+/// compared against the bluechip-side reserve. The bluechip side carrying
+/// half the total USD acts as both the total liquidity gate AND the
+/// per-side floor — a pool whose bluechip side meets `floor/2` cannot
+/// be lopsided away from the spot equilibrium without arb pressure
+/// closing the gap on the next block, which is the whole reason xyk
+/// reserves stay near parity in USD terms.
+///
+/// Default sized for early-ecosystem standard pools (bluechip/USDC,
+/// bluechip/OSMO, etc.) where ~$5k each side ≈ $10k total is the
+/// minimum where a single-block reserve manipulation costs more than
+/// the would-be attacker can recover even from a 30% TWAP move
+/// (capped by `MAX_TWAP_DRIFT_BPS`).
+pub const MIN_POOL_LIQUIDITY_USD: Uint128 = Uint128::new(5_000_000_000);
+
 pub const TWAP_WINDOW: u64 = 3600;
 pub const UPDATE_INTERVAL: u64 = 300;
 pub const ROTATION_INTERVAL: u64 = 3600;
+
+/// Liquidity-floor gate used by every eligible-pool path
+/// (`get_eligible_creator_pools` for both sources, plus the per-sample
+/// check inside `calculate_weighted_price_with_atom`).
+///
+/// Two-tier evaluation:
+///
+///   1. **USD-denominated path** (preferred). When
+///      `INTERNAL_ORACLE.bluechip_price_cache.last_price` is non-zero,
+///      converts `MIN_POOL_LIQUIDITY_USD` to bluechip via the cached
+///      price and requires `bluechip_reserve >= floor_bluechip / 2`
+///      (the per-side share of the total floor for an xyk pool at
+///      spot equilibrium).
+///
+///   2. **Hardcoded fallback** (bootstrap / breaker / warm-up). When
+///      the cached price is zero, falls back to
+///      `MIN_POOL_LIQUIDITY_FALLBACK_BLUECHIP_PER_SIDE` so the gate
+///      stays meaningful before the oracle has produced a usable USD
+///      price. Sized to be conservative-equivalent to the legacy
+///      "summed reserves >= MIN_POOL_LIQUIDITY" check on a balanced
+///      pool, so existing deployments with no oracle data yet behave
+///      no more permissively than before.
+///
+/// Reads cache directly rather than going through `usd_to_bluechip` so:
+///   - No `Env` dependency at the callsite (avoids plumbing it
+///     through `calculate_weighted_price_with_atom`).
+///   - No warm-up gate (the floor check is informational — at worst
+///     we admit a borderline pool for one round; the TWAP / breaker
+///     handle the actual price math).
+///   - No Pyth dependency (the floor is a function of the bluechip
+///     side only; ATOM/USD doesn't enter).
+pub fn pool_meets_liquidity_floor(
+    storage: &dyn Storage,
+    pool_state: &PoolStateResponseForFactory,
+    bluechip_index: u8,
+) -> StdResult<bool> {
+    let bluechip_reserve = if bluechip_index == 0 {
+        pool_state.reserve0
+    } else {
+        pool_state.reserve1
+    };
+
+    // `may_load` rather than `load`: this helper runs during the
+    // instantiate path (initialize_internal_bluechip_oracle ->
+    // select_random_pools_with_atom -> refresh_eligible_pool_snapshot ->
+    // get_eligible_creator_pools), before INTERNAL_ORACLE has been
+    // saved. A missing oracle is the same outcome as a zero `last_price`:
+    // no usable USD reading, fall back to the hardcoded bluechip-side
+    // floor.
+    let last_price = INTERNAL_ORACLE
+        .may_load(storage)?
+        .map(|o| o.bluechip_price_cache.last_price)
+        .unwrap_or_default();
+
+    let floor_per_side = if last_price.is_zero() {
+        // No usable USD price yet — fall back to the legacy bluechip-
+        // denominated per-side floor.
+        MIN_POOL_LIQUIDITY_FALLBACK_BLUECHIP_PER_SIDE
+    } else {
+        // floor_bluechip = MIN_POOL_LIQUIDITY_USD * PRICE_PRECISION / last_price
+        // floor_per_side = floor_bluechip / 2
+        // checked_mul/div all return StdError on overflow/division by zero;
+        // last_price is non-zero by branch guard, so the div can't fault.
+        let total_bluechip = MIN_POOL_LIQUIDITY_USD
+            .checked_mul(Uint128::from(PRICE_PRECISION))
+            .map_err(|e| {
+                StdError::generic_err(format!(
+                    "pool_meets_liquidity_floor: overflow scaling USD floor: {e}"
+                ))
+            })?
+            .checked_div(last_price)
+            .map_err(|e| {
+                StdError::generic_err(format!(
+                    "pool_meets_liquidity_floor: divide-by-zero converting USD floor: {e}"
+                ))
+            })?;
+        total_bluechip
+            .checked_div(Uint128::from(2u128))
+            .map_err(|e| {
+                StdError::generic_err(format!(
+                    "pool_meets_liquidity_floor: halving total floor: {e}"
+                ))
+            })?
+    };
+
+    Ok(bluechip_reserve >= floor_per_side)
+}
 
 /// TWAP circuit breaker. Maximum allowed drift between the previously-cached
 /// `bluechip_price_cache.last_price` and the freshly-computed TWAP, in basis
@@ -66,10 +192,13 @@ pub const BPS_SCALE: u128 = 10_000;
 /// Saturating drift-in-bps between two prices.
 ///
 /// Returns `|a - b| * 10_000 / min(a, b)` clamped to `u128::MAX` on any
-/// overflow or division-by-zero. Used by the TWAP circuit-breaker
+/// overflow OR division-by-zero. Used by the TWAP circuit-breaker
 /// branches; saturating semantics map "math overflowed" to "definitely
 /// tripped" so the breaker fires unconditionally rather than silently
-/// wrapping. Returns 0 if both inputs are zero (no drift to measure).
+/// wrapping. The (0, 0) case lands in the saturating div-by-zero branch
+/// and also returns `u128::MAX` — production callers gate the drift
+/// check on `prior != 0` separately so this is unreachable in practice,
+/// but the fail-safe direction is preserved here as belt-and-braces.
 pub fn drift_bps_saturating(a: Uint128, b: Uint128) -> u128 {
     let (smaller, larger) = if a > b { (b, a) } else { (a, b) };
     let diff = larger.saturating_sub(smaller);
@@ -90,7 +219,8 @@ pub fn drift_bps_saturating(a: Uint128, b: Uint128) -> u128 {
 // enforcing a floor would deadlock the protocol on day one.
 //
 // Defense-in-depth that bounds the bootstrap manipulation risk:
-//   - `MIN_POOL_LIQUIDITY` raises the cost of moving the anchor.
+//   - `pool_meets_liquidity_floor` raises the cost of moving the anchor
+//     (USD-denominated total floor; per-side check via xyk symmetry).
 //   - The anchor pool is curated and seeded by the deployment team.
 //   - The TWAP circuit breaker caps per-update drift to
 //     `MAX_TWAP_DRIFT_BPS` (30%) on every update *after* the first.
@@ -456,75 +586,141 @@ pub fn initialize_internal_bluechip_oracle(
 /// `i` has bluechip on reserve-side `bluechip_indices[i]` (0 or 1).
 /// Hoisting this into the snapshot is what makes oracle updates O(1) per
 /// sampled pool instead of O(N).
+///
+/// Two parallel inputs feed the result (M-3 audit fix):
+///
+///   1. **Admin-curated allowlist** (`ORACLE_ELIGIBLE_POOLS`). Any pool
+///      kind. Bluechip-side index pre-resolved at allowlist-add time so
+///      no per-call scan is needed. Required for the early-stage
+///      roadmap where bluechip/IBC standard pools are the only
+///      externally-priced sources.
+///
+///   2. **Threshold-crossed commit pools** — included ONLY when
+///      `COMMIT_POOLS_AUTO_ELIGIBLE` is true. Default false on fresh
+///      deployments; set true by migrate to preserve legacy behaviour
+///      for existing deployments. When false, commit pools enter the
+///      oracle only via the allowlist (manual override during stages
+///      3–4 of the roadmap).
+///
+/// Both sources independently apply:
+///   - skip-anchor (the anchor is added separately by
+///     `select_random_pools_with_atom`),
+///   - bluechip-side resolution (skip pools without one),
+///   - cross-contract `pool_meets_liquidity_floor` check (skip drained
+///     and lopsided pools; USD-denominated with a hardcoded fallback
+///     when the oracle has no price yet).
+///
+/// Dedup by pool address: a pool that's both allowlisted AND
+/// threshold-crossed-commit shows up once. Allowlist takes precedence
+/// for the bluechip-index value (it was admin-blessed at add time).
 pub fn get_eligible_creator_pools(
     deps: Deps,
     atom_pool_contract_address: &str,
 ) -> StdResult<(Vec<String>, Vec<u8>)> {
-    // Return every pool eligible for oracle sampling. A pool is eligible iff:
-    //   1. It is a commit pool (NOT a standard pool — standard pools can
-    //      hold arbitrary pairs including non-bluechip ones and their price
-    //      isn't meaningful for bluechip/USD derivation).
-    //   2. It contains a bluechip token (so we can price it against ATOM).
-    //   3. It has crossed its commit threshold (POOL_THRESHOLD_MINTED == true).
-    //   4. Its current reserves sum to >= MIN_POOL_LIQUIDITY.
-    //
-    // The threshold-crossed gate is the important one: pool creation is
-    // permissionless, so without this check a spammer could bloat the oracle
-    // sample set with pre-threshold pools. The MIN_POOL_LIQUIDITY check is
-    // defense-in-depth for pools that crossed threshold but later drained.
-    //
-    // Single pass over POOLS_BY_ID: for each candidate we check the cheap
-    // in-storage gates first and only incur the cross-contract
-    // PoolStateResponseForFactory query when they all pass. The older
-    // implementation did two full range scans plus a HashSet build, which
-    // dominated oracle-update gas at scale.
-    // Building entries as a single struct per pool (rather than two
-    // parallel `Vec`s with a "couple by position" invariant) makes it
-    // structurally impossible for a future code path to push to one
-    // collection without the other. The `unzip` at the end produces the
-    // wire-format expected by `EligiblePoolSnapshot`.
+    use std::collections::HashSet;
     let mut entries: Vec<EligiblePoolEntry> = Vec::new();
-    for row in POOLS_BY_ID.range(deps.storage, None, None, Order::Ascending) {
-        let (pool_id, pool_details) = row?;
+    let mut seen: HashSet<String> = HashSet::new();
 
-        if pool_details.creator_pool_addr.as_str() == atom_pool_contract_address {
+    // ---- Source 1: admin allowlist (any pool kind) ----
+    for entry in crate::state::ORACLE_ELIGIBLE_POOLS.range(
+        deps.storage,
+        None,
+        None,
+        Order::Ascending,
+    ) {
+        let (pool_addr, allowlist_entry) = entry?;
+        let pool_addr_str = pool_addr.to_string();
+        if pool_addr_str == atom_pool_contract_address {
             continue;
         }
-        // Standard pools are never eligible for TWAP sampling — see gate (1) above.
-        if pool_details.pool_kind == PoolKind::Standard {
-            continue;
-        }
-        // Resolve bluechip side once at snapshot capture time. Commit pools
-        // are validated at instantiate to contain exactly one Bluechip and
-        // one CreatorToken, so this find always succeeds for eligible pools.
-        let bluechip_idx = match pool_details
-            .pool_token_info
-            .iter()
-            .position(|t| matches!(t, TokenType::Native { .. }))
+
+        // Cross-contract liquidity gate (M-4 audit fix). The allowlist is
+        // curated by admin at propose/apply time, but a pool that met the
+        // floor at allowlist-add time can drain afterwards — drop those
+        // without an admin RemoveOracleEligiblePool, so the snapshot stays
+        // honest until the next admin action.
+        let pool_state: PoolStateResponseForFactory = match deps
+            .querier
+            .query_wasm_smart(pool_addr_str.clone(), &PoolQueryMsg::GetPoolState {})
         {
-            Some(i) => i as u8,
-            None => continue, // No bluechip side — gate (2) fails.
+            Ok(s) => s,
+            Err(_) => continue,
         };
-        if !POOL_THRESHOLD_MINTED
-            .may_load(deps.storage, pool_id)?
-            .unwrap_or(false)
-        {
+        if !pool_meets_liquidity_floor(
+            deps.storage,
+            &pool_state,
+            allowlist_entry.bluechip_index,
+        )? {
             continue;
         }
 
-        let pool_state: PoolStateResponseForFactory = deps.querier.query_wasm_smart(
-            pool_details.creator_pool_addr.to_string(),
-            &PoolQueryMsg::GetPoolState {},
-        )?;
+        seen.insert(pool_addr_str.clone());
+        entries.push(EligiblePoolEntry {
+            address: pool_addr_str,
+            bluechip_index: allowlist_entry.bluechip_index,
+        });
+    }
 
-        let total_liquidity = pool_state.reserve0.saturating_add(pool_state.reserve1);
-        if total_liquidity >= MIN_POOL_LIQUIDITY {
+    // ---- Source 2: threshold-crossed commit pools (gated by global flag) ----
+    let auto_commit = crate::state::load_commit_pools_auto_eligible(deps.storage);
+    if auto_commit {
+        for row in POOLS_BY_ID.range(deps.storage, None, None, Order::Ascending) {
+            let (pool_id, pool_details) = row?;
+
+            let pool_addr_str = pool_details.creator_pool_addr.to_string();
+            if pool_addr_str == atom_pool_contract_address {
+                continue;
+            }
+            if seen.contains(&pool_addr_str) {
+                continue;
+            }
+            // Auto-eligible source covers commit pools only — standard
+            // pools enter the oracle through the curated allowlist
+            // (no programmatic gate exists for "is this standard pool's
+            // non-bluechip side externally priced?").
+            if pool_details.pool_kind == PoolKind::Standard {
+                continue;
+            }
+            // Bluechip-side resolution. Commit pools are validated at
+            // instantiate to contain exactly one Bluechip and one
+            // CreatorToken, so this `find` always succeeds for eligible
+            // pools.
+            let bluechip_idx = match pool_details
+                .pool_token_info
+                .iter()
+                .position(|t| matches!(t, TokenType::Native { .. }))
+            {
+                Some(i) => i as u8,
+                None => continue,
+            };
+            // Threshold-cross gate. Without it, a creator could spam
+            // pre-threshold pools and bloat the oracle sample set.
+            if !POOL_THRESHOLD_MINTED
+                .may_load(deps.storage, pool_id)?
+                .unwrap_or(false)
+            {
+                continue;
+            }
+
+            let pool_state: PoolStateResponseForFactory = match deps
+                .querier
+                .query_wasm_smart(pool_addr_str.clone(), &PoolQueryMsg::GetPoolState {})
+            {
+                Ok(s) => s,
+                Err(_) => continue,
+            };
+            if !pool_meets_liquidity_floor(deps.storage, &pool_state, bluechip_idx)? {
+                continue;
+            }
+
+            seen.insert(pool_addr_str.clone());
             entries.push(EligiblePoolEntry {
-                address: pool_details.creator_pool_addr.to_string(),
+                address: pool_addr_str,
                 bluechip_index: bluechip_idx,
             });
         }
     }
+
     let (eligible, indices) = entries
         .into_iter()
         .map(|e| (e.address, e.bluechip_index))
@@ -1199,9 +1395,9 @@ fn bluechip_index_lookup(deps: Deps, pool_address: &str) -> StdResult<Option<u8>
 //     were removed.
 //
 //   - `new_snapshots` is always populated for every sampled pool that
-//     answered a `GetPoolState` query and met `MIN_POOL_LIQUIDITY`,
-//     regardless of whether its price contributed to the weighted sum
-//     this round.
+//     answered a `GetPoolState` query and met `pool_meets_liquidity_floor`
+//     (USD-denominated, per-side aware; M-4 audit fix), regardless of
+//     whether its price contributed to the weighted sum this round.
 //
 // SPOT PRICE IS NEVER USED. All three former spot-fallback branches
 // (anchor-stale-cumulative, bootstrap, anchor-missing-from-prev) now
@@ -1234,15 +1430,6 @@ pub fn calculate_weighted_price_with_atom(
     for pool_address in pool_addresses {
         match query_pool_safe(deps, pool_address) {
             Ok(pool_state) => {
-                let total_liquidity = pool_state
-                    .reserve0
-                    .checked_add(pool_state.reserve1)
-                    .map_err(|_| ContractError::Std(StdError::generic_err("Liquidity overflow")))?;
-
-                if total_liquidity < MIN_POOL_LIQUIDITY {
-                    continue;
-                }
-
                 // Determine if Bluechip is reserve0 or reserve1.
                 //
                 //   - Anchor pool: read the index pinned on
@@ -1271,6 +1458,21 @@ pub fn calculate_weighted_price_with_atom(
                     // shows up there on the next refresh.
                     continue;
                 };
+
+                // M-4 liquidity-floor gate. Resolves the bluechip-side
+                // index first so the floor can be applied per-side
+                // (USD-denominated; falls back to a hardcoded bluechip
+                // value when the oracle has no price yet). Replaces the
+                // legacy `reserve0 + reserve1 >= MIN_POOL_LIQUIDITY`
+                // check, which conflated units across asymmetric pairs
+                // and missed lopsided pools whose bluechip side held
+                // negligible value despite a large notional total.
+                let bluechip_idx_u8 = if is_bluechip_second { 1u8 } else { 0u8 };
+                if !pool_meets_liquidity_floor(deps.storage, &pool_state, bluechip_idx_u8)
+                    .map_err(ContractError::Std)?
+                {
+                    continue;
+                }
 
                 // Resolve bluechip reserve based on token ordering.
                 let bluechip_reserve = if is_bluechip_second {
@@ -1311,13 +1513,19 @@ pub fn calculate_weighted_price_with_atom(
                         cumulative_for_price.saturating_sub(prev.price0_cumulative);
 
                     if time_delta > 0 && !cumulative_delta.is_zero() {
-                        // TWAP = cumulative_delta / time_delta
-                        // Scale to PRICE_PRECISION for consistency.
+                        // TWAP = cumulative_delta / time_delta.
+                        //
+                        // The accumulator on the pool side is already
+                        // pre-scaled by `PRICE_ACCUMULATOR_SCALE` (==
+                        // `PRICE_PRECISION`) inside
+                        // `pool_core::swap::update_price_accumulator`, so
+                        // the result of this division is already in the
+                        // 6-decimal `bluechip-per-other` representation
+                        // the rest of the oracle expects. The previous
+                        // post-divide `* PRICE_PRECISION` step would have
+                        // applied scaling twice and is intentionally
+                        // omitted here.
                         cumulative_delta
-                            .checked_mul(Uint128::from(PRICE_PRECISION))
-                            .map_err(|_| {
-                                ContractError::Std(StdError::generic_err("TWAP scale overflow"))
-                            })?
                             .checked_div(Uint128::from(time_delta))
                             .map_err(|_| {
                                 ContractError::Std(StdError::generic_err("TWAP division error"))

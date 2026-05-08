@@ -16,10 +16,10 @@ use crate::error::ContractError;
 use crate::msg::{CreatorTokenInfo, TokenInstantiateMsg};
 use crate::pool_struct::{CreatePool, TempPoolCreation};
 use crate::state::{
-    CreationStatus, COMMIT_POOL_COUNTER, COMMIT_POOL_CREATE_RATE_LIMIT_SECONDS,
-    FACTORYINSTANTIATEINFO, LAST_COMMIT_POOL_CREATE_AT, LAST_STANDARD_POOL_CREATE_AT,
-    POOL_COUNTER, POOL_CREATION_CONTEXT, PoolCreationContext, PoolCreationState,
-    STANDARD_POOL_CREATE_RATE_LIMIT_SECONDS,
+    canonical_pair_key, CreationStatus, COMMIT_POOL_COUNTER,
+    COMMIT_POOL_CREATE_RATE_LIMIT_SECONDS, FACTORYINSTANTIATEINFO, LAST_COMMIT_POOL_CREATE_AT,
+    LAST_STANDARD_POOL_CREATE_AT, PAIRS, POOL_COUNTER, POOL_CREATION_CONTEXT,
+    PoolCreationContext, PoolCreationState, STANDARD_POOL_CREATE_RATE_LIMIT_SECONDS,
 };
 
 use super::super::{encode_reply_id, MINT_STANDARD_NFT, SET_TOKENS};
@@ -472,6 +472,28 @@ pub(crate) fn execute_create_standard_pool(
         &factory_config.bluechip_denom,
         &pool_token_info,
     )?;
+
+    // Pair-uniqueness pre-check (single-pool-per-pair invariant). The
+    // canonical guard lives inside `register_pool` and would catch this
+    // duplicate at finalize time too, but doing the check here lets us
+    // reject before charging the creation fee — without this, a duplicate
+    // attempt would forward `required_bluechip` to the bluechip wallet,
+    // run the NFT instantiate, and only fail in the finalize reply, which
+    // (because the reply chain is `reply_on_success`) reverts the whole
+    // tx and the fee is recovered atomically — but a frontend caller
+    // sees a much later, less actionable error than what they get here.
+    //
+    // Doing this check AFTER `validate_standard_pool_token_info` means
+    // we only canonicalize already-shape-validated pairs, so the key
+    // function never sees malformed input.
+    let pair_key = canonical_pair_key(&pool_token_info);
+    if let Some(existing) = PAIRS.may_load(deps.storage, pair_key.clone())? {
+        return Err(ContractError::DuplicatePair {
+            existing_pool_id: existing,
+            asset_a: pair_key.0,
+            asset_b: pair_key.1,
+        });
+    }
 
     // Per-address rate limit on standard-pool creation (audit fix). Mirror
     // of the commit-pool rate-limit at `execute_create_creator_pool`.

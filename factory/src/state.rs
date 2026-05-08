@@ -51,14 +51,23 @@ pub const POOL_COUNTER: Item<u64> = Item::new("pool_counter");
 /// anchored to actual commit-pool creation activity.
 pub const COMMIT_POOL_COUNTER: Item<u64> = Item::new("commit_pool_counter");
 
-// Two coupled pool-registry maps. They MUST stay in sync — every pool
-// that exists must appear in both. Always go through `register_pool`
+// Three coupled pool-registry maps. They MUST stay in sync — every pool
+// that exists must appear in all three. Always go through `register_pool`
 // rather than touching them individually.
 //   - POOLS_BY_ID:               pool_id  -> PoolDetails (token info, addresses)
 //   - POOLS_BY_CONTRACT_ADDRESS: pool addr -> snapshot used by oracle / queries
+//   - PAIRS:                     canonical (asset_a, asset_b) key -> pool_id.
+//     Single-pool-per-pair guard. The Uniswap-style invariant: at most one
+//     pool exists per (asset_a, asset_b) tuple. Without it, any sender can
+//     register an arbitrary number of identical pairs (each from a different
+//     `info.sender` to bypass the per-address rate limit), bloating the
+//     registry, fragmenting LP, and — most concretely — letting attackers
+//     spawn thin "anchor candidate" duplicates that the oracle's snapshot
+//     refresh may sample. See `canonical_pair_key` for the encoding.
 pub const POOLS_BY_ID: Map<u64, PoolDetails> = Map::new("pools_by_id");
 pub const POOLS_BY_CONTRACT_ADDRESS: Map<Addr, PoolStateResponseForFactory> =
     Map::new("pools_by_contract_address");
+pub const PAIRS: Map<(String, String), u64> = Map::new("pairs");
 // Maximum age (seconds) of a Pyth price we are willing to use for USD
 // conversions. 90 seconds is inside typical Pyth publish cadence while
 // still cutting an attacker's useful "pick a favorable spot in the
@@ -482,6 +491,114 @@ pub const ELIGIBLE_POOL_SNAPSHOT: Item<EligiblePoolSnapshot> =
 /// rebuilds it. 72_000 blocks at 6s per block ≈ 5 days.
 pub const ELIGIBLE_POOL_REFRESH_BLOCKS: u64 = 72_000;
 
+// ---------------------------------------------------------------------------
+// Oracle-eligible pool curation (audit M-3)
+// ---------------------------------------------------------------------------
+//
+// Two parallel inputs feed `get_eligible_creator_pools`:
+//
+//   1. `ORACLE_ELIGIBLE_POOLS` — admin-curated allowlist. Any pool kind
+//      (Standard or Commit). Required for the early-stage roadmap where
+//      bluechip/IBC standard pools are the only externally-priced sources.
+//      Add: 48h timelock via `PENDING_ORACLE_ELIGIBLE_POOL_ADD`. Remove:
+//      immediate (always safe to drop a contributor).
+//
+//   2. `COMMIT_POOLS_AUTO_ELIGIBLE` — global flag. When true, every
+//      threshold-crossed `PoolKind::Commit` pool also flows in
+//      automatically (legacy behaviour, programmatic gate). Default
+//      false on fresh deployments; the migrate handler sets it true
+//      to preserve current-behaviour for existing chains. Flip:
+//      48h timelock via `PENDING_COMMIT_POOLS_AUTO_ELIGIBLE`.
+//
+// Snapshot rebuild reads both, dedupes, runs the cross-contract
+// liquidity / bluechip-side check, and writes `ELIGIBLE_POOL_SNAPSHOT`.
+// The refresh job NEVER writes to either input — only admin actions
+// (gated by the timelocks above) can change which pools the oracle
+// samples.
+
+/// One entry in the admin-curated oracle allowlist.
+///
+/// `bluechip_index` is resolved at apply-time (post-timelock) so the
+/// per-sample lookup at oracle-update time is O(1) instead of an O(N)
+/// re-scan of `POOLS_BY_ID`. The same index is mirrored into
+/// `ELIGIBLE_POOL_SNAPSHOT.bluechip_indices` on every refresh.
+///
+/// `added_at` is for observability only — operators can audit the age
+/// of every allowlist entry without scanning logs.
+#[cw_serde]
+pub struct AllowlistedOraclePool {
+    pub bluechip_index: u8,
+    pub added_at: Timestamp,
+}
+
+pub const ORACLE_ELIGIBLE_POOLS: Map<Addr, AllowlistedOraclePool> =
+    Map::new("oracle_eligible_pools");
+
+/// Pending allowlist additions awaiting timelock expiry. Keyed by the
+/// proposed pool's contract address so the admin can have multiple
+/// distinct adds in flight at once. Each entry stores the proposal
+/// timestamp; `effective_after` = `proposed_at + ADMIN_TIMELOCK_SECONDS`.
+/// `apply` reverts if `block.time < effective_after`. `cancel` removes
+/// the entry without applying.
+#[cw_serde]
+pub struct PendingOracleEligiblePoolAdd {
+    pub proposed_at: Timestamp,
+    /// Pre-resolved bluechip-side index, captured at propose time so the
+    /// apply path doesn't have to re-scan `POOLS_BY_ID`. Re-validated
+    /// against the current pool token info on apply (defense in depth
+    /// against pool-token-info mutations between propose and apply,
+    /// which shouldn't happen but isn't disprovable in storage).
+    pub bluechip_index: u8,
+}
+
+pub const PENDING_ORACLE_ELIGIBLE_POOL_ADD: Map<Addr, PendingOracleEligiblePoolAdd> =
+    Map::new("pending_oracle_eligible_add");
+
+/// Global flag controlling whether threshold-crossed `PoolKind::Commit`
+/// pools flow into the oracle snapshot automatically (in addition to
+/// the curated allowlist).
+///
+/// Default behaviour:
+///   - Fresh instantiate: flag missing → treated as `false`. Admin
+///     must explicitly opt in to auto-include commit pools (matches
+///     stages 1–3 of the roadmap where curation is manual).
+///   - Migrate from pre-flag versions: handler explicitly sets `true`
+///     to preserve the legacy "commits auto-eligible on threshold
+///     cross" behaviour for existing deployments.
+///
+/// Flipping the flag goes through the standard 48h timelock (both
+/// directions — turning OFF deserves observability so creators
+/// can react before their pools stop contributing).
+pub const COMMIT_POOLS_AUTO_ELIGIBLE: Item<bool> =
+    Item::new("commit_pools_auto_eligible");
+
+pub fn load_commit_pools_auto_eligible(storage: &dyn Storage) -> bool {
+    COMMIT_POOLS_AUTO_ELIGIBLE
+        .may_load(storage)
+        .ok()
+        .flatten()
+        .unwrap_or(false)
+}
+
+#[cw_serde]
+pub struct PendingCommitPoolsAutoEligible {
+    pub new_value: bool,
+    pub proposed_at: Timestamp,
+}
+
+pub const PENDING_COMMIT_POOLS_AUTO_ELIGIBLE: Item<PendingCommitPoolsAutoEligible> =
+    Item::new("pending_commit_auto_eligible");
+
+/// Rate limit on the permissionless `RefreshOraclePoolSnapshot`.
+/// Mirrors the cadence of `ELIGIBLE_POOL_REFRESH_BLOCKS / 10` so the
+/// permissionless path is meaningfully more responsive than the lazy
+/// in-line refresh inside `select_random_pools_with_atom`, but can't
+/// be spammed to burn keeper / public gas. ≈12h between forced
+/// refreshes at 6s blocks.
+pub const ORACLE_REFRESH_RATE_LIMIT_BLOCKS: u64 = 7_200;
+pub const LAST_ORACLE_REFRESH_BLOCK: Item<u64> = Item::new("last_oracle_refresh_block");
+
+
 #[cw_serde]
 pub enum CreationStatus {
     Started,
@@ -505,11 +622,49 @@ pub struct PoolUpgrade {
 // ---------------------------------------------------------------------------
 // Pool registry helpers
 // ---------------------------------------------------------------------------
-// Centralized so the two pool-registry maps cannot drift. Direct writes to
-// POOLS_BY_ID / POOLS_BY_CONTRACT_ADDRESS outside this module risk leaving
-// the factory's view of pools internally inconsistent.
+// Centralized so the three pool-registry maps cannot drift. Direct writes to
+// POOLS_BY_ID / POOLS_BY_CONTRACT_ADDRESS / PAIRS outside this module risk
+// leaving the factory's view of pools internally inconsistent.
 
-/// Atomically register a freshly created pool across both registry maps.
+/// Canonicalized fingerprint of a single side of a pool pair.
+///
+/// Native denoms and CW20 contract addresses are both stringly-typed, so a
+/// kind-tag prefix is required to keep them in disjoint namespaces — a
+/// chain that ever ended up with a CW20 contract address that happens to
+/// equal a native denom string would otherwise alias two different
+/// asset references onto the same key. The prefixes (`n:` for native,
+/// `c:` for creator-token) are short, opaque to user-facing surfaces
+/// (the key is internal-only), and stable forever — changing them is a
+/// breaking storage migration.
+fn token_fingerprint(t: &TokenType) -> String {
+    match t {
+        TokenType::Native { denom } => format!("n:{}", denom),
+        TokenType::CreatorToken { contract_addr } => format!("c:{}", contract_addr),
+    }
+}
+
+/// Order-independent key for the `(asset_a, asset_b)` uniqueness map.
+///
+/// The two fingerprints are sorted lexicographically before being returned
+/// as `(min, max)`, so `[A, B]` and `[B, A]` map to the same storage slot.
+/// This matches Uniswap V2's `getPair[a][b] == getPair[b][a]` convention
+/// and is the right shape for "at most one pool per unordered pair." If a
+/// future pool variant ever needs to permit parallel pools at different
+/// fee tiers / curve types / hook configurations, widen this key with the
+/// extra discriminator(s) — do NOT add a parallel uniqueness map.
+pub fn canonical_pair_key(pair: &[TokenType; 2]) -> (String, String) {
+    let a = token_fingerprint(&pair[0]);
+    let b = token_fingerprint(&pair[1]);
+    if a <= b { (a, b) } else { (b, a) }
+}
+
+/// Atomically register a freshly created pool across all three registry
+/// maps. Rejects with a generic_err if `pair` already exists in `PAIRS`
+/// — this is the canonical guard against silent duplicate registrations
+/// from any code path (entry-point pre-check, future admin restore,
+/// migrate back-fill, etc). The pre-check at the create entry points
+/// exists purely to fail-fast before the caller's fee is forwarded;
+/// THIS is the load-bearing check.
 ///
 /// Initial `PoolStateResponseForFactory` is materialized from `pool_details`
 /// — caller doesn't need to construct it. Reserves and TWAP accumulators
@@ -520,6 +675,15 @@ pub fn register_pool(
     pool_address: &Addr,
     pool_details: &PoolDetails,
 ) -> StdResult<()> {
+    let pair_key = canonical_pair_key(&pool_details.pool_token_info);
+    if let Some(existing) = PAIRS.may_load(storage, pair_key.clone())? {
+        return Err(cosmwasm_std::StdError::generic_err(format!(
+            "duplicate pair: pool_id {} already registered for ({}, {})",
+            existing, pair_key.0, pair_key.1
+        )));
+    }
+    PAIRS.save(storage, pair_key, &pool_id)?;
+
     POOLS_BY_ID.save(storage, pool_id, pool_details)?;
 
     let asset_strings: Vec<String> = pool_details

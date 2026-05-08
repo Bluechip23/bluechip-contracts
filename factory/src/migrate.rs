@@ -28,10 +28,60 @@ pub fn migrate(deps: DepsMut, _env: Env, _msg: Empty) -> Result<Response, Contra
         });
     }
 
+    // M-3 migration shim. Existing deployments ran with "every threshold-
+    // crossed commit pool is automatically oracle-eligible" baked into the
+    // code path. The new build moves that behaviour behind the
+    // `COMMIT_POOLS_AUTO_ELIGIBLE` flag (default false on fresh
+    // instantiates so admins must opt in for stage 1–3 of the roadmap).
+    // Set it true here on migrate so existing chains keep their current
+    // oracle composition; admin can flip it off via the timelocked
+    // `ProposeSetCommitPoolsAutoEligible` flow at the appropriate stage.
+    // Idempotent (saving `true` twice is a no-op), so re-running the
+    // migrate is safe.
+    if crate::state::COMMIT_POOLS_AUTO_ELIGIBLE
+        .may_load(deps.storage)?
+        .is_none()
+    {
+        crate::state::COMMIT_POOLS_AUTO_ELIGIBLE.save(deps.storage, &true)?;
+    }
+
+    // PAIRS back-fill. Older deployments registered pools through the
+    // pre-uniqueness `register_pool`, so `PAIRS` is empty even though
+    // pools exist. Walk `POOLS_BY_ID` once and insert one entry per
+    // pair, keeping the FIRST pool seen for any given pair (lowest
+    // `pool_id`) and skipping subsequent duplicates. This preserves
+    // any legacy duplicates already registered (they remain queryable
+    // via `POOLS_BY_ID` / `POOLS_BY_CONTRACT_ADDRESS`) but blocks any
+    // FURTHER duplicate creations of the same pair after migration —
+    // which is the security-relevant invariant we care about.
+    //
+    // `range(..)` already iterates in ascending pool_id order, so the
+    // first-seen pool wins naturally without a sort.
+    //
+    // Idempotent: if PAIRS is already populated (re-run migrate), the
+    // `may_load` check below short-circuits each entry as a no-op.
+    let pool_ids: Vec<u64> = crate::state::POOLS_BY_ID
+        .keys(deps.storage, None, None, cosmwasm_std::Order::Ascending)
+        .collect::<cosmwasm_std::StdResult<Vec<u64>>>()?;
+    let mut backfilled: u32 = 0;
+    let mut legacy_duplicates: u32 = 0;
+    for pool_id in pool_ids {
+        let details = crate::state::POOLS_BY_ID.load(deps.storage, pool_id)?;
+        let key = crate::state::canonical_pair_key(&details.pool_token_info);
+        if crate::state::PAIRS.may_load(deps.storage, key.clone())?.is_none() {
+            crate::state::PAIRS.save(deps.storage, key, &pool_id)?;
+            backfilled += 1;
+        } else {
+            legacy_duplicates += 1;
+        }
+    }
+
     set_contract_version(deps.storage, CONTRACT_NAME, CONTRACT_VERSION)?;
 
     Ok(Response::new()
         .add_attribute("action", "migrate")
         .add_attribute("from", stored_version.version)
-        .add_attribute("to", CONTRACT_VERSION))
+        .add_attribute("to", CONTRACT_VERSION)
+        .add_attribute("pairs_backfilled", backfilled.to_string())
+        .add_attribute("legacy_duplicate_pairs_skipped", legacy_duplicates.to_string()))
 }

@@ -134,6 +134,18 @@ pub fn setup_atom_pool(deps: &mut OwnedDeps<MockStorage, MockApi, WasmMockQuerie
     POOLS_BY_CONTRACT_ADDRESS
         .save(deps.as_mut().storage, atom_pool_addr, &atom_pool_state)
         .unwrap();
+
+    // Mirror the migrate-time default for `COMMIT_POOLS_AUTO_ELIGIBLE`
+    // (M-3 audit fix). Tests written before this flag existed assume
+    // "every threshold-crossed commit pool is automatically eligible";
+    // setting the flag true here preserves that assumption without
+    // every test having to call the timelocked propose/apply flow.
+    // Tests that explicitly want to exercise the OFF behaviour (or
+    // the allowlist-only path) overwrite the flag after this helper
+    // returns.
+    crate::state::COMMIT_POOLS_AUTO_ELIGIBLE
+        .save(deps.as_mut().storage, &true)
+        .unwrap();
 }
 
 /// Advance the anchor pool's block_time_last + price1_cumulative_last so
@@ -153,13 +165,15 @@ pub fn tick_anchor_pool(
         .load(&deps.storage, atom_addr.clone())
         .unwrap();
     let dt = new_block_time.saturating_sub(state.block_time_last);
-    // Cumulative grows at rate (reserve0/reserve1) * 1 per second = 10 per
-    // second for the 1T:100B anchor. price1_cumulative_last is what the
-    // oracle reads for is_bluechip_second = false (anchor with bluechip
-    // at index 0).
+    // Cumulative grows at rate (reserve0/reserve1) * scale * 1 per second.
+    // For the 1T:100B anchor that's 10 * 1e6 = 10_000_000 per second
+    // (the pool-side accumulator is pre-scaled by
+    // `pool_core::swap::PRICE_ACCUMULATOR_SCALE`).
+    // price1_cumulative_last is what the oracle reads for
+    // is_bluechip_second = false (anchor with bluechip at index 0).
     state.block_time_last = new_block_time;
     state.price1_cumulative_last =
-        state.price1_cumulative_last + Uint128::from(10u64 * dt);
+        state.price1_cumulative_last + Uint128::from(10_000_000u64 * dt);
     POOLS_BY_CONTRACT_ADDRESS
         .save(&mut deps.storage, atom_addr, &state)
         .unwrap();
@@ -190,10 +204,12 @@ pub fn prime_oracle_for_first_update(
         .load(&deps.storage, atom_addr.clone())
         .unwrap();
     // Reserves 1T:100B ⇒ bluechip-per-atom = 10.0 (≡ 10_000_000 in 1e6 precision).
-    // Over a 100s synthetic window the cumulative grows to 1000 (raw).
-    // TWAP = (1000 − 0) × 1e6 / (100 − 0) = 10_000_000.
+    // Over a 100s synthetic window the pool-side scaled cumulative grows to
+    // 1000 × 1e6 = 1_000_000_000. TWAP = (1e9 − 0) / (100 − 0) = 10_000_000
+    // (the consumer no longer re-multiplies by 1e6 because the pool-side
+    // accumulator is already pre-scaled by `PRICE_ACCUMULATOR_SCALE`).
     state.block_time_last = 100;
-    state.price1_cumulative_last = Uint128::new(1_000);
+    state.price1_cumulative_last = Uint128::new(1_000_000_000);
     POOLS_BY_CONTRACT_ADDRESS
         .save(&mut deps.storage, atom_addr.clone(), &state)
         .unwrap();
@@ -4539,6 +4555,13 @@ mod post_reset_buffer_tests {
     /// `calculate_weighted_price_with_atom`'s TWAP formula).
     ///
     /// Returns the new `block_time_last` so callers can chain rounds.
+    /// Advance the anchor pool's `(block_time_last, price1_cumulative_last)`.
+    /// `cumulative_delta` is the RAW (pre-scale) ratio·time the test wants to
+    /// represent — the helper multiplies it by `PRICE_ACCUMULATOR_SCALE`
+    /// (1e6) internally so the stored value matches what the pool's
+    /// production `update_price_accumulator` would produce. Tests stay
+    /// readable in unscaled units (e.g. `cumulative_delta = 3_000` for a
+    /// 30:1 reserve ratio sustained over 100s).
     fn advance_anchor_cumulative(
         deps: &mut OwnedDeps<MockStorage, MockApi, WasmMockQuerier>,
         time_advance: u64,
@@ -4549,9 +4572,12 @@ mod post_reset_buffer_tests {
             .load(&deps.storage, atom_addr.clone())
             .unwrap();
         state.block_time_last = state.block_time_last.saturating_add(time_advance);
+        let scaled = cumulative_delta
+            .checked_mul(1_000_000)
+            .expect("test input cumulative_delta * 1e6 overflowed u128");
         state.price1_cumulative_last = state
             .price1_cumulative_last
-            .checked_add(Uint128::from(cumulative_delta))
+            .checked_add(Uint128::from(scaled))
             .unwrap();
         let new_block_time = state.block_time_last;
         POOLS_BY_CONTRACT_ADDRESS
@@ -4575,7 +4601,12 @@ mod post_reset_buffer_tests {
             .load(&deps.storage, atom_addr.clone())
             .unwrap();
         state.block_time_last = 100;
-        state.price1_cumulative_last = Uint128::new(1_000);
+        // Pool-side accumulator is pre-scaled by `PRICE_ACCUMULATOR_SCALE`
+        // (== 1e6); see `pool_core::swap::update_price_accumulator`.
+        // Raw 1000 over 100s would yield `bluechip-per-atom = 10` post-divide
+        // — the consumer no longer re-multiplies by 1e6, so feed in the
+        // pre-scaled cumulative directly: 1000 × 1e6 = 1_000_000_000.
+        state.price1_cumulative_last = Uint128::new(1_000_000_000);
         POOLS_BY_CONTRACT_ADDRESS
             .save(&mut deps.storage, atom_addr.clone(), &state)
             .unwrap();
@@ -4852,7 +4883,13 @@ mod post_reset_buffer_tests {
                 MAX_POST_RESET_CONSECUTIVE_FAILURES - 1;
             oracle.pool_cumulative_snapshots = vec![PoolCumulativeSnapshot {
                 pool_address: atom_addr.to_string(),
-                price0_cumulative: Uint128::new(1_000),
+                // Baseline matches the pool's prime-time
+                // `price1_cumulative_last` (raw 1000 × scale 1e6 = 1e9). The
+                // snapshot's `price0_cumulative` field name is historic — it
+                // actually stores whichever side `cumulative_for_price`
+                // resolved to at sample time; for `is_bluechip_second = false`
+                // anchors that's `price1_cumulative_last`.
+                price0_cumulative: Uint128::new(1_000_000_000),
                 block_time: 100,
             }];
             INTERNAL_ORACLE.save(&mut deps.storage, &oracle).unwrap();
@@ -4860,6 +4897,8 @@ mod post_reset_buffer_tests {
 
         // Round X: drift > 30% from candidate. cumulative_delta = 3000
         // over time_delta = 100 ⇒ TWAP = 30_000_000 (+200% drift).
+        // `advance_anchor_cumulative` scales by 1e6 internally to mirror
+        // pool-side `update_price_accumulator`.
         advance_anchor_cumulative(&mut deps, 100, 3_000);
         let mut env = mock_env();
         env.block.time = env.block.time.plus_seconds(360);

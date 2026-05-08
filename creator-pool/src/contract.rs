@@ -3,8 +3,9 @@
 //! Commit logic lives in [`crate::commit`], admin operations in [`crate::admin`].
 
 use crate::admin::{
-    ensure_not_drained, execute_cancel_emergency_withdraw, execute_emergency_withdraw,
-    execute_pause, execute_recover_stuck_states, execute_unpause,
+    ensure_not_drained, execute_cancel_emergency_withdraw, execute_claim_failed_distribution,
+    execute_emergency_withdraw, execute_pause, execute_recover_stuck_states,
+    execute_self_recover_distribution, execute_skip_distribution_user, execute_unpause,
     execute_update_config_from_factory,
 };
 use crate::asset::{PoolPairType, TokenInfoPoolExt, TokenType};
@@ -24,8 +25,9 @@ use crate::state::{
     MIN_LP_FEE, OracleInfo, PoolAnalytics,
     PoolDetails, PoolFeeState, PoolInfo, PoolSpecs, PoolState, Position, ThresholdPayoutAmounts,
     COMMITFEEINFO, COMMIT_LIMIT_INFO, EXPECTED_FACTORY, IS_THRESHOLD_HIT, LIQUIDITY_POSITIONS,
-    NATIVE_RAISED_FROM_COMMIT, NEXT_POSITION_ID, ORACLE_INFO, OWNER_POSITIONS, PENDING_FACTORY_NOTIFY,
-    POOL_ANALYTICS, POOL_FEE_STATE, POOL_INFO, POOL_PAUSED, POOL_SPECS, POOL_STATE,
+    FAILED_MINTS, NATIVE_RAISED_FROM_COMMIT, NEXT_POSITION_ID, ORACLE_INFO, OWNER_POSITIONS,
+    PENDING_FACTORY_NOTIFY, PENDING_MINT_REPLIES, POOL_ANALYTICS, POOL_FEE_STATE, POOL_INFO,
+    POOL_PAUSED, POOL_SPECS, POOL_STATE, REPLY_ID_DISTRIBUTION_MINT_BASE,
     REPLY_ID_FACTORY_NOTIFY_INITIAL, REPLY_ID_FACTORY_NOTIFY_RETRY, THRESHOLD_PAYOUT_AMOUNTS,
     USD_RAISED_FROM_COMMIT,
 };
@@ -535,6 +537,26 @@ pub fn execute(
             // pools never cross a threshold, so there's nothing to retry.
             execute_retry_factory_notify(deps, env, info)
         }
+        // H6 audit fix: distribution-liveness primitives.
+        ExecuteMsg::SkipDistributionUser { user } => {
+            // Factory-only escape hatch — auth gate lives inside the
+            // handler so a misrouted call surfaces with the canonical
+            // Unauthorized error rather than a dispatch-level mismatch.
+            execute_skip_distribution_user(deps, env, info, user)
+        }
+        ExecuteMsg::SelfRecoverDistribution {} => {
+            // Permissionless 7-day distribution-stall recovery. The
+            // handler enforces the elapsed-time gate and rejects calls
+            // before the window expires.
+            execute_self_recover_distribution(deps, env, info)
+        }
+        ExecuteMsg::ClaimFailedDistribution { recipient } => {
+            // Committer-side claim of an isolated mint failure recorded
+            // in FAILED_MINTS. Caller must be the original committer
+            // address; an optional alternate `recipient` lets them
+            // route the mint to a fresh wallet.
+            execute_claim_failed_distribution(deps, env, info, recipient)
+        }
     }
 }
 
@@ -622,6 +644,76 @@ pub fn reply(deps: DepsMut, env: Env, msg: Reply) -> StdResult<Response> {
                     .add_attribute("block_time", env.block.time.seconds().to_string()))
             }
         },
+        id if id >= REPLY_ID_DISTRIBUTION_MINT_BASE
+            && PENDING_MINT_REPLIES.has(deps.storage, id) =>
+        {
+            // Distribution-mint reply (H6 audit fix). The parent
+            // `process_distribution_batch` (or `ClaimFailedDistribution`)
+            // dispatched a per-user CW20 mint as a `reply_always` SubMsg
+            // and stashed `(user, amount)` in PENDING_MINT_REPLIES under
+            // this id. Two outcomes:
+            //
+            //   - Mint succeeded: clear the stash and emit an attribute.
+            //     The CW20's bank-side state (recipient balance bumped)
+            //     stands.
+            //
+            //   - Mint failed: clear the stash and accumulate the amount
+            //     under `user` in FAILED_MINTS. This is the load-bearing
+            //     liveness invariant: a single rejecting recipient no
+            //     longer reverts the entire batch tx; their amount is
+            //     held for `ClaimFailedDistribution` to retrieve later.
+            //     We always return Ok(...) from this branch — bubbling
+            //     the error would re-introduce the very stall this fix
+            //     was designed to eliminate.
+            //
+            // The dispatch arm is gated on `PENDING_MINT_REPLIES.has(id)`
+            // so any id ≥ BASE without a stash entry falls through to the
+            // canonical "unknown reply id" handler below (preserves the
+            // pre-fix invariant and keeps the unknown-id regression test
+            // valid).
+            let pending = PENDING_MINT_REPLIES
+                .load(deps.storage, msg.id)
+                .map_err(|e| {
+                    StdError::generic_err(format!(
+                        "distribution-mint reply load failed for id {}: {}",
+                        msg.id, e
+                    ))
+                })?;
+            PENDING_MINT_REPLIES.remove(deps.storage, msg.id);
+
+            match msg.result {
+                SubMsgResult::Ok(_) => Ok(Response::new()
+                    .add_attribute("action", "distribution_mint_succeeded")
+                    .add_attribute("user", pending.user.to_string())
+                    .add_attribute("amount", pending.amount.to_string())
+                    .add_attribute("reply_id", msg.id.to_string())),
+                SubMsgResult::Err(e) => {
+                    // Saturate-safe accumulation under the user's
+                    // canonical address. `Uint128::checked_add` returns
+                    // OverflowError on the (effectively impossible)
+                    // overflow path; bubble it as StdError so the reply
+                    // does revert in that single edge case rather than
+                    // silently dropping the failed amount.
+                    FAILED_MINTS.update::<_, StdError>(
+                        deps.storage,
+                        &pending.user,
+                        |existing| {
+                            let prior = existing.unwrap_or_default();
+                            prior
+                                .checked_add(pending.amount)
+                                .map_err(|o| StdError::generic_err(o.to_string()))
+                        },
+                    )?;
+                    Ok(Response::new()
+                        .add_attribute("action", "distribution_mint_isolated_failure")
+                        .add_attribute("user", pending.user.to_string())
+                        .add_attribute("amount", pending.amount.to_string())
+                        .add_attribute("reply_id", msg.id.to_string())
+                        .add_attribute("reason", e)
+                        .add_attribute("block_time", env.block.time.seconds().to_string()))
+                }
+            }
+        }
         other => Err(StdError::generic_err(
             pool_core::generic::unknown_reply_id_msg(
                 pool_core::state::POOL_KIND_COMMIT,
@@ -637,7 +729,7 @@ pub fn reply(deps: DepsMut, env: Env, msg: Reply) -> StdResult<Response> {
 // ---------------------------------------------------------------------------
 
 #[entry_point]
-pub fn migrate(deps: DepsMut, _env: Env, msg: MigrateMsg) -> Result<Response, ContractError> {
+pub fn migrate(deps: DepsMut, env: Env, msg: MigrateMsg) -> Result<Response, ContractError> {
     // Reject downgrades. The chain has already replaced the wasm
     // bytecode by the time this handler runs, so this is the last
     // chance to abort a downgrade — a hard `Err` here causes the chain
@@ -696,6 +788,19 @@ pub fn migrate(deps: DepsMut, _env: Env, msg: MigrateMsg) -> Result<Response, Co
         // `set_contract_version` below so the cw2 stored version
         // always lands at the new release on a successful migrate.
         MigrateMsg::UpdateVersion {} => {}
+    }
+
+    // Reset the price accumulator on every migrate. Mirrors the equivalent
+    // block in `standard-pool::contract::migrate`; the rationale (clean
+    // unit-scale boundary across a `PRICE_ACCUMULATOR_SCALE` change in
+    // `pool_core::swap::update_price_accumulator`) lives there. Costs at
+    // most one factory oracle TWAP round per upgrade, which the breaker /
+    // snapshot machinery handles cleanly.
+    if let Ok(mut state) = POOL_STATE.load(deps.storage) {
+        state.price0_cumulative_last = cosmwasm_std::Uint128::zero();
+        state.price1_cumulative_last = cosmwasm_std::Uint128::zero();
+        state.block_time_last = env.block.time.seconds();
+        POOL_STATE.save(deps.storage, &state)?;
     }
 
     set_contract_version(deps.storage, CONTRACT_NAME, CONTRACT_VERSION)?;

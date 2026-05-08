@@ -7,7 +7,7 @@
 //! native reserve, not LP funds), and advances the cursor in
 //! `DISTRIBUTION_STATE` until the pool is fully distributed.
 
-use cosmwasm_std::{to_json_binary, CosmosMsg, DepsMut, Env, MessageInfo, Response, WasmMsg};
+use cosmwasm_std::{to_json_binary, CosmosMsg, DepsMut, Env, MessageInfo, Response, SubMsg, WasmMsg};
 
 use crate::admin::ensure_not_drained;
 use crate::error::ContractError;
@@ -70,7 +70,12 @@ pub fn execute_continue_distribution(
 
     let pool_info = POOL_INFO.load(deps.storage)?;
 
-    let (mut msgs, processed_count) =
+    // process_distribution_batch returns a `Vec<SubMsg>` — each per-user
+    // mint is wrapped in `reply_always` so a single failing recipient
+    // can no longer revert the batch. Failures land in `FAILED_MINTS`
+    // via the contract's reply handler and are claimable later through
+    // `ClaimFailedDistribution`.
+    let (mint_submsgs, processed_count): (Vec<SubMsg>, u32) =
         process_distribution_batch(deps.storage, &pool_info, &env)?;
 
     // Bounty paid by the factory from its own reserve, not pool LP funds.
@@ -79,6 +84,7 @@ pub fn execute_continue_distribution(
     // end, stale-state cleanup) must not earn a bounty: it would let a
     // keeper farm the factory reserve for zero work, and the factory's
     // bounty cap doesn't gate frequency the way the oracle cooldown does.
+    let mut msgs: Vec<CosmosMsg> = Vec::new();
     if processed_count > 0 {
         // Factory rejects unregistered pools, which reverts this whole tx —
         // desired behavior since only legitimate pools should pay bounties.
@@ -103,6 +109,7 @@ pub fn execute_continue_distribution(
     };
 
     Ok(Response::new()
+        .add_submessages(mint_submsgs)
         .add_messages(msgs)
         .add_attribute("action", "continue_distribution")
         .add_attribute("caller", info.sender.to_string())

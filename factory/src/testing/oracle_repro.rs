@@ -67,8 +67,12 @@ fn test_repro_token_sort_order_bug() {
         .save(deps.as_mut().storage, 1, &pool_details)
         .unwrap();
 
-    // Setup ATOM Pool. Cumulative price1 = (reserve0/reserve1) × time = 1 × 100 = 100,
-    // so a TWAP over the next 100s yields 1.0 (1e6 precision). For the
+    // Setup ATOM Pool. Cumulative price1 = (reserve0/reserve1) × scale × time
+    // = 1 × 1e6 × 100 = 1e8 raw, so a TWAP over the next 100s yields 1.0
+    // (1e6 precision). The pool-side accumulator is pre-scaled by
+    // `pool_core::swap::PRICE_ACCUMULATOR_SCALE` (== 1e6); the consumer in
+    // `calculate_weighted_price_with_atom` no longer re-scales, so test
+    // inputs here are the post-pool-side scaled values. For the
     // inverted-order test below we'll repoint reserves and price0_cumulative
     // to exercise the is_bluechip_second branch.
     let atom_pool_state = PoolStateResponseForFactory {
@@ -78,16 +82,17 @@ fn test_repro_token_sort_order_bug() {
         reserve1: Uint128::new(100_000_000_000),
         total_liquidity: Uint128::new(200_000_000_000),
         block_time_last: 100,
-        price0_cumulative_last: Uint128::new(100),
-        price1_cumulative_last: Uint128::new(100),
+        price0_cumulative_last: Uint128::new(100_000_000),
+        price1_cumulative_last: Uint128::new(100_000_000),
         assets: vec!["BC".to_string(), "atom_addr_123".to_string()],
     };
     POOLS_BY_CONTRACT_ADDRESS
         .save(deps.as_mut().storage, atom_pool.clone(), &atom_pool_state)
         .unwrap();
 
-    // Prior snapshot at t=0, cumulative=0 — yields cumulative_delta=100 over
-    // time_delta=100, i.e. TWAP = 100 × 1e6 / 100 = 1_000_000.
+    // Prior snapshot at t=0, cumulative=0 — yields cumulative_delta=1e8 over
+    // time_delta=100, i.e. TWAP = 1e8 / 100 = 1_000_000 (the pool-side
+    // accumulator already pre-scaled by 1e6).
     let prev_snapshots = vec![PoolCumulativeSnapshot {
         pool_address: atom_pool.to_string(),
         price0_cumulative: Uint128::zero(),
@@ -129,7 +134,8 @@ fn test_repro_token_sort_order_bug() {
         .unwrap();
 
     // For inverted shape, oracle reads price0_cumulative_last (because
-    // is_bluechip_second = true). Set it to 50 over a 100s window to yield
+    // is_bluechip_second = true). Set it to 5e7 over a 100s window — that's
+    // the pool-side pre-scaled value (raw 50 × 1e6 scale) — to yield
     // bluechip-per-atom TWAP of 0.5 (500_000 in 1e6 precision), matching
     // the 200B atom : 100B bluechip reserve ratio.
     let inverted_state = PoolStateResponseForFactory {
@@ -139,8 +145,8 @@ fn test_repro_token_sort_order_bug() {
         reserve1: Uint128::new(100_000_000_000),
         total_liquidity: Uint128::new(300_000_000_000),
         block_time_last: 100,
-        price0_cumulative_last: Uint128::new(50),
-        price1_cumulative_last: Uint128::new(200),
+        price0_cumulative_last: Uint128::new(50_000_000),
+        price1_cumulative_last: Uint128::new(200_000_000),
         assets: vec!["atom_addr_123".to_string(), "BC".to_string()],
     };
     POOLS_BY_CONTRACT_ADDRESS

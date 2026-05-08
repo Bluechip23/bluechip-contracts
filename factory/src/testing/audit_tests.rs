@@ -2027,8 +2027,12 @@ mod anchor_bluechip_index_cache_tests {
         state.reserve0 = Uint128::new(100_000_000_000);
         state.reserve1 = Uint128::new(50_000_000_000);
         state.block_time_last = 100;
-        state.price0_cumulative_last = Uint128::new(500);
-        state.price1_cumulative_last = Uint128::new(2_000);
+        // The pool-side accumulator is pre-scaled by
+        // `pool_core::swap::PRICE_ACCUMULATOR_SCALE` (== 1e6), so the
+        // cumulative values stored on a real pool are raw_ratio·time·1e6.
+        // 500 raw × 1e6 = 5e8; 2000 raw × 1e6 = 2e9.
+        state.price0_cumulative_last = Uint128::new(500_000_000);
+        state.price1_cumulative_last = Uint128::new(2_000_000_000);
         POOLS_BY_CONTRACT_ADDRESS
             .save(&mut deps.storage, atom_addr.clone(), &state)
             .unwrap();
@@ -2041,7 +2045,7 @@ mod anchor_bluechip_index_cache_tests {
         let pools = vec![atom_addr.to_string()];
 
         // Invocation A: anchor_bluechip_index = 0. cumulative_for_price
-        // reads price1_cumulative_last (2000) → TWAP = 2000*1e6/100 = 20_000_000.
+        // reads price1_cumulative_last (2e9) → TWAP = 2e9 / 100 = 20_000_000.
         let (_, atom_price_a, _) =
             calculate_weighted_price_with_atom(deps.as_ref(), &pools, &prev_snapshots, 0)
                 .expect("call A must succeed");
@@ -2049,7 +2053,7 @@ mod anchor_bluechip_index_cache_tests {
             atom_price_a.expect("anchor TWAP under index=0 must be Some");
 
         // Invocation B: anchor_bluechip_index = 1. cumulative_for_price
-        // reads price0_cumulative_last (500) → TWAP = 500*1e6/100 = 5_000_000.
+        // reads price0_cumulative_last (5e8) → TWAP = 5e8 / 100 = 5_000_000.
         let (_, atom_price_b, _) =
             calculate_weighted_price_with_atom(deps.as_ref(), &pools, &prev_snapshots, 1)
                 .expect("call B must succeed");
@@ -2664,6 +2668,2280 @@ mod anchor_validation_failure_tests {
             "expected one-shot guard error, got: {}",
             err
         );
+    }
+}
+
+// ===========================================================================
+// M-3: oracle eligibility curation
+//
+// Allowlist (any pool kind) + global commit-pool auto-include flag, both
+// behind a 48h timelock for adds / flips. Removes are immediate.
+// Permissionless `RefreshOraclePoolSnapshot` is rate-limited.
+// ===========================================================================
+mod oracle_eligibility_tests {
+    use super::*;
+    use crate::execute::instantiate;
+    use crate::internal_bluechip_price_oracle::get_eligible_creator_pools;
+    use crate::state::{
+        load_commit_pools_auto_eligible, ADMIN_TIMELOCK_SECONDS, COMMIT_POOLS_AUTO_ELIGIBLE,
+        ORACLE_ELIGIBLE_POOLS, ORACLE_REFRESH_RATE_LIMIT_BLOCKS,
+        PENDING_COMMIT_POOLS_AUTO_ELIGIBLE, PENDING_ORACLE_ELIGIBLE_POOL_ADD,
+    };
+
+    /// Stand up a factory + register a single commit pool that has crossed
+    /// threshold and meets the liquidity floor. Returns the pool's
+    /// contract address. Caller chooses the auto-eligible flag value.
+    fn setup_factory_with_commit_pool(
+        deps: &mut OwnedDeps<MockStorage, MockApi, WasmMockQuerier>,
+        auto_eligible: bool,
+    ) -> Addr {
+        setup_atom_pool(deps);
+        let env = mock_env();
+        instantiate(
+            deps.as_mut(),
+            env,
+            message_info(&admin_addr(), &[]),
+            default_factory_config(),
+        )
+        .unwrap();
+        // setup_atom_pool sets the flag to true; respect the caller's
+        // choice instead.
+        COMMIT_POOLS_AUTO_ELIGIBLE
+            .save(deps.as_mut().storage, &auto_eligible)
+            .unwrap();
+
+        let pool_addr = make_addr("creator_pool_1");
+        let pool_details = PoolDetails {
+            pool_id: 1,
+            pool_token_info: [
+                TokenType::Native {
+                    denom: "ubluechip".to_string(),
+                },
+                TokenType::CreatorToken {
+                    contract_addr: Addr::unchecked("creator_token_1"),
+                },
+            ],
+            creator_pool_addr: pool_addr.clone(),
+            pool_kind: pool_factory_interfaces::PoolKind::Commit,
+            commit_pool_ordinal: 0,
+        };
+        POOLS_BY_ID.save(deps.as_mut().storage, 1, &pool_details).unwrap();
+        POOLS_BY_CONTRACT_ADDRESS
+            .save(
+                deps.as_mut().storage,
+                pool_addr.clone(),
+                &PoolStateResponseForFactory {
+                    pool_contract_address: pool_addr.clone(),
+                    nft_ownership_accepted: true,
+                    reserve0: Uint128::new(50_000_000_000),
+                    reserve1: Uint128::new(50_000_000_000),
+                    total_liquidity: Uint128::new(100_000_000_000),
+                    block_time_last: 100,
+                    price0_cumulative_last: Uint128::zero(),
+                    price1_cumulative_last: Uint128::zero(),
+                    assets: vec![],
+                },
+            )
+            .unwrap();
+        POOL_THRESHOLD_MINTED
+            .save(deps.as_mut().storage, 1, &true)
+            .unwrap();
+        pool_addr
+    }
+
+    /// Register a standard pool whose canonical bluechip side is at index 0.
+    fn register_standard_pool(
+        deps: &mut OwnedDeps<MockStorage, MockApi, WasmMockQuerier>,
+        pool_id: u64,
+        addr: &Addr,
+    ) {
+        register_standard_pool_with_reserves(
+            deps,
+            pool_id,
+            addr,
+            50_000_000_000,
+            50_000_000_000,
+        );
+    }
+
+    /// Same as `register_standard_pool` but with explicit reserves so M-4
+    /// liquidity-floor tests can dial in pool-state edges.
+    pub(super) fn register_standard_pool_with_reserves(
+        deps: &mut OwnedDeps<MockStorage, MockApi, WasmMockQuerier>,
+        pool_id: u64,
+        addr: &Addr,
+        reserve0: u128,
+        reserve1: u128,
+    ) {
+        let pool_details = PoolDetails {
+            pool_id,
+            pool_token_info: [
+                TokenType::Native {
+                    denom: "ubluechip".to_string(),
+                },
+                TokenType::Native {
+                    denom: "uusdc".to_string(),
+                },
+            ],
+            creator_pool_addr: addr.clone(),
+            pool_kind: pool_factory_interfaces::PoolKind::Standard,
+            commit_pool_ordinal: 0,
+        };
+        POOLS_BY_ID
+            .save(deps.as_mut().storage, pool_id, &pool_details)
+            .unwrap();
+        POOLS_BY_CONTRACT_ADDRESS
+            .save(
+                deps.as_mut().storage,
+                addr.clone(),
+                &PoolStateResponseForFactory {
+                    pool_contract_address: addr.clone(),
+                    nft_ownership_accepted: true,
+                    reserve0: Uint128::new(reserve0),
+                    reserve1: Uint128::new(reserve1),
+                    total_liquidity: Uint128::new(reserve0 + reserve1),
+                    block_time_last: 100,
+                    price0_cumulative_last: Uint128::zero(),
+                    price1_cumulative_last: Uint128::zero(),
+                    assets: vec![],
+                },
+            )
+            .unwrap();
+    }
+
+    /// Auto-flag OFF: a threshold-crossed commit pool that's NOT in the
+    /// allowlist must NOT be eligible. This is the stage 1–3 default.
+    #[test]
+    fn auto_off_threshold_crossed_commit_pool_not_eligible() {
+        let mut deps = mock_deps_with_querier(&[]);
+        let _pool = setup_factory_with_commit_pool(&mut deps, false);
+
+        let (eligible, _) = get_eligible_creator_pools(
+            deps.as_ref(),
+            atom_bluechip_pool_addr().as_str(),
+        )
+        .unwrap();
+        assert!(
+            eligible.is_empty(),
+            "auto-flag OFF + empty allowlist => no eligible pools (got {:?})",
+            eligible
+        );
+    }
+
+    /// Auto-flag ON: a threshold-crossed commit pool flows in
+    /// automatically without an allowlist entry. Mirrors the legacy
+    /// behaviour we preserve via the migrate handler.
+    #[test]
+    fn auto_on_threshold_crossed_commit_pool_eligible() {
+        let mut deps = mock_deps_with_querier(&[]);
+        let pool = setup_factory_with_commit_pool(&mut deps, true);
+
+        let (eligible, _) = get_eligible_creator_pools(
+            deps.as_ref(),
+            atom_bluechip_pool_addr().as_str(),
+        )
+        .unwrap();
+        assert_eq!(eligible, vec![pool.to_string()]);
+    }
+
+    /// Allowlist propose -> wait -> apply must respect the 48h timelock.
+    /// Apply before the timelock fails; cancel removes the pending entry.
+    #[test]
+    fn allowlist_propose_apply_timelock() {
+        let mut deps = mock_deps_with_querier(&[]);
+        setup_factory_with_commit_pool(&mut deps, false);
+        let std_pool = make_addr("std_pool_usdc");
+        register_standard_pool(&mut deps, 2, &std_pool);
+
+        // Propose.
+        let mut env = mock_env();
+        execute(
+            deps.as_mut(),
+            env.clone(),
+            message_info(&admin_addr(), &[]),
+            ExecuteMsg::ProposeAddOracleEligiblePool {
+                pool_addr: std_pool.to_string(),
+            },
+        )
+        .unwrap();
+        assert!(
+            PENDING_ORACLE_ELIGIBLE_POOL_ADD.has(&deps.storage, std_pool.clone()),
+            "pending entry must exist after propose"
+        );
+
+        // Apply BEFORE timelock => TimelockNotExpired.
+        let too_early = execute(
+            deps.as_mut(),
+            env.clone(),
+            message_info(&admin_addr(), &[]),
+            ExecuteMsg::ApplyAddOracleEligiblePool {
+                pool_addr: std_pool.to_string(),
+            },
+        )
+        .unwrap_err();
+        assert!(
+            matches!(too_early, ContractError::TimelockNotExpired { .. }),
+            "expected TimelockNotExpired, got {:?}",
+            too_early
+        );
+
+        // Apply AFTER timelock => allowlisted, pending cleared.
+        env.block.time = env.block.time.plus_seconds(ADMIN_TIMELOCK_SECONDS + 1);
+        execute(
+            deps.as_mut(),
+            env,
+            message_info(&admin_addr(), &[]),
+            ExecuteMsg::ApplyAddOracleEligiblePool {
+                pool_addr: std_pool.to_string(),
+            },
+        )
+        .unwrap();
+        assert!(ORACLE_ELIGIBLE_POOLS.has(&deps.storage, std_pool.clone()));
+        assert!(
+            !PENDING_ORACLE_ELIGIBLE_POOL_ADD.has(&deps.storage, std_pool),
+            "pending must be cleared after apply"
+        );
+    }
+
+    /// Cancel during the timelock window drops the pending entry without
+    /// landing it.
+    #[test]
+    fn allowlist_cancel_drops_pending() {
+        let mut deps = mock_deps_with_querier(&[]);
+        setup_factory_with_commit_pool(&mut deps, false);
+        let std_pool = make_addr("std_pool_usdc");
+        register_standard_pool(&mut deps, 2, &std_pool);
+
+        execute(
+            deps.as_mut(),
+            mock_env(),
+            message_info(&admin_addr(), &[]),
+            ExecuteMsg::ProposeAddOracleEligiblePool {
+                pool_addr: std_pool.to_string(),
+            },
+        )
+        .unwrap();
+        execute(
+            deps.as_mut(),
+            mock_env(),
+            message_info(&admin_addr(), &[]),
+            ExecuteMsg::CancelAddOracleEligiblePool {
+                pool_addr: std_pool.to_string(),
+            },
+        )
+        .unwrap();
+        assert!(!PENDING_ORACLE_ELIGIBLE_POOL_ADD.has(&deps.storage, std_pool.clone()));
+        assert!(!ORACLE_ELIGIBLE_POOLS.has(&deps.storage, std_pool));
+    }
+
+    /// Remove is immediate (no timelock) — drops the pool from the
+    /// allowlist on the same tx.
+    #[test]
+    fn allowlist_remove_is_immediate() {
+        let mut deps = mock_deps_with_querier(&[]);
+        setup_factory_with_commit_pool(&mut deps, false);
+        let std_pool = make_addr("std_pool_usdc");
+        register_standard_pool(&mut deps, 2, &std_pool);
+
+        // Propose + apply.
+        let mut env = mock_env();
+        execute(
+            deps.as_mut(),
+            env.clone(),
+            message_info(&admin_addr(), &[]),
+            ExecuteMsg::ProposeAddOracleEligiblePool {
+                pool_addr: std_pool.to_string(),
+            },
+        )
+        .unwrap();
+        env.block.time = env.block.time.plus_seconds(ADMIN_TIMELOCK_SECONDS + 1);
+        execute(
+            deps.as_mut(),
+            env.clone(),
+            message_info(&admin_addr(), &[]),
+            ExecuteMsg::ApplyAddOracleEligiblePool {
+                pool_addr: std_pool.to_string(),
+            },
+        )
+        .unwrap();
+        assert!(ORACLE_ELIGIBLE_POOLS.has(&deps.storage, std_pool.clone()));
+
+        // Remove — same tx, no timelock.
+        execute(
+            deps.as_mut(),
+            env,
+            message_info(&admin_addr(), &[]),
+            ExecuteMsg::RemoveOracleEligiblePool {
+                pool_addr: std_pool.to_string(),
+            },
+        )
+        .unwrap();
+        assert!(!ORACLE_ELIGIBLE_POOLS.has(&deps.storage, std_pool));
+    }
+
+    /// Allowlisted standard pool is eligible even when the auto-flag is OFF.
+    #[test]
+    fn allowlisted_standard_pool_eligible_with_auto_off() {
+        let mut deps = mock_deps_with_querier(&[]);
+        setup_factory_with_commit_pool(&mut deps, false);
+        let std_pool = make_addr("std_pool_usdc");
+        register_standard_pool(&mut deps, 2, &std_pool);
+
+        // Propose + apply (timelock).
+        let mut env = mock_env();
+        execute(
+            deps.as_mut(),
+            env.clone(),
+            message_info(&admin_addr(), &[]),
+            ExecuteMsg::ProposeAddOracleEligiblePool {
+                pool_addr: std_pool.to_string(),
+            },
+        )
+        .unwrap();
+        env.block.time = env.block.time.plus_seconds(ADMIN_TIMELOCK_SECONDS + 1);
+        execute(
+            deps.as_mut(),
+            env,
+            message_info(&admin_addr(), &[]),
+            ExecuteMsg::ApplyAddOracleEligiblePool {
+                pool_addr: std_pool.to_string(),
+            },
+        )
+        .unwrap();
+
+        // Eligibility resolved: only the allowlisted standard pool, no
+        // commit pools (auto-flag OFF, the threshold-crossed creator
+        // pool from setup is NOT in the allowlist).
+        let (eligible, indices) = get_eligible_creator_pools(
+            deps.as_ref(),
+            atom_bluechip_pool_addr().as_str(),
+        )
+        .unwrap();
+        assert_eq!(eligible, vec![std_pool.to_string()]);
+        // bluechip is at index 0 in the standard pool we registered.
+        assert_eq!(indices, vec![0u8]);
+    }
+
+    /// A pool that's both allowlisted AND threshold-crossed (auto-flag ON)
+    /// appears exactly once in the eligible set, with the allowlist's
+    /// recorded bluechip_index taking precedence.
+    #[test]
+    fn dedup_when_pool_is_both_allowlisted_and_auto_eligible() {
+        let mut deps = mock_deps_with_querier(&[]);
+        let commit_pool = setup_factory_with_commit_pool(&mut deps, true);
+
+        // Add the SAME commit pool to the allowlist via the timelock flow.
+        let mut env = mock_env();
+        execute(
+            deps.as_mut(),
+            env.clone(),
+            message_info(&admin_addr(), &[]),
+            ExecuteMsg::ProposeAddOracleEligiblePool {
+                pool_addr: commit_pool.to_string(),
+            },
+        )
+        .unwrap();
+        env.block.time = env.block.time.plus_seconds(ADMIN_TIMELOCK_SECONDS + 1);
+        execute(
+            deps.as_mut(),
+            env,
+            message_info(&admin_addr(), &[]),
+            ExecuteMsg::ApplyAddOracleEligiblePool {
+                pool_addr: commit_pool.to_string(),
+            },
+        )
+        .unwrap();
+
+        // Both inputs reference the same pool — dedup ensures one entry.
+        let (eligible, _) = get_eligible_creator_pools(
+            deps.as_ref(),
+            atom_bluechip_pool_addr().as_str(),
+        )
+        .unwrap();
+        assert_eq!(eligible.len(), 1);
+        assert_eq!(eligible[0], commit_pool.to_string());
+    }
+
+    /// Flag flip goes through the same 48h timelock; apply before the
+    /// timelock fails; cancel discards the pending change.
+    #[test]
+    fn flag_flip_timelock() {
+        let mut deps = mock_deps_with_querier(&[]);
+        setup_factory_with_commit_pool(&mut deps, false);
+
+        // Propose ON.
+        let mut env = mock_env();
+        execute(
+            deps.as_mut(),
+            env.clone(),
+            message_info(&admin_addr(), &[]),
+            ExecuteMsg::ProposeSetCommitPoolsAutoEligible { enabled: true },
+        )
+        .unwrap();
+        assert_eq!(load_commit_pools_auto_eligible(&deps.storage), false);
+
+        // Apply too early.
+        let early = execute(
+            deps.as_mut(),
+            env.clone(),
+            message_info(&admin_addr(), &[]),
+            ExecuteMsg::ApplySetCommitPoolsAutoEligible {},
+        )
+        .unwrap_err();
+        assert!(matches!(early, ContractError::TimelockNotExpired { .. }));
+
+        // Apply after timelock.
+        env.block.time = env.block.time.plus_seconds(ADMIN_TIMELOCK_SECONDS + 1);
+        execute(
+            deps.as_mut(),
+            env,
+            message_info(&admin_addr(), &[]),
+            ExecuteMsg::ApplySetCommitPoolsAutoEligible {},
+        )
+        .unwrap();
+        assert_eq!(load_commit_pools_auto_eligible(&deps.storage), true);
+        assert!(PENDING_COMMIT_POOLS_AUTO_ELIGIBLE
+            .may_load(&deps.storage)
+            .unwrap()
+            .is_none());
+    }
+
+    /// Cancel a pending flag flip drops the pending without changing the
+    /// effective value.
+    #[test]
+    fn flag_flip_cancel() {
+        let mut deps = mock_deps_with_querier(&[]);
+        setup_factory_with_commit_pool(&mut deps, true);
+
+        execute(
+            deps.as_mut(),
+            mock_env(),
+            message_info(&admin_addr(), &[]),
+            ExecuteMsg::ProposeSetCommitPoolsAutoEligible { enabled: false },
+        )
+        .unwrap();
+        execute(
+            deps.as_mut(),
+            mock_env(),
+            message_info(&admin_addr(), &[]),
+            ExecuteMsg::CancelSetCommitPoolsAutoEligible {},
+        )
+        .unwrap();
+        assert_eq!(load_commit_pools_auto_eligible(&deps.storage), true);
+    }
+
+    /// Proposing a flag flip when the flag is already at the proposed
+    /// value is a no-op error (don't waste the 48h window on nothing).
+    #[test]
+    fn flag_flip_no_change_rejected() {
+        let mut deps = mock_deps_with_querier(&[]);
+        setup_factory_with_commit_pool(&mut deps, true);
+
+        let err = execute(
+            deps.as_mut(),
+            mock_env(),
+            message_info(&admin_addr(), &[]),
+            ExecuteMsg::ProposeSetCommitPoolsAutoEligible { enabled: true },
+        )
+        .unwrap_err();
+        assert!(matches!(
+            err,
+            ContractError::CommitPoolsAutoEligibleNoChange { value: true }
+        ));
+    }
+
+    /// Permissionless refresh: first call lands; second within the rate
+    /// limit fails; third after the rate limit elapses lands again.
+    #[test]
+    fn refresh_rate_limited() {
+        let mut deps = mock_deps_with_querier(&[]);
+        setup_factory_with_commit_pool(&mut deps, true);
+
+        let mut env = mock_env();
+        // First refresh — no prior, lands.
+        execute(
+            deps.as_mut(),
+            env.clone(),
+            message_info(&make_addr("randomkeeper"), &[]),
+            ExecuteMsg::RefreshOraclePoolSnapshot {},
+        )
+        .unwrap();
+
+        // Second refresh in the same block — rate-limited.
+        let err = execute(
+            deps.as_mut(),
+            env.clone(),
+            message_info(&make_addr("randomkeeper"), &[]),
+            ExecuteMsg::RefreshOraclePoolSnapshot {},
+        )
+        .unwrap_err();
+        assert!(matches!(
+            err,
+            ContractError::OracleRefreshRateLimited { .. }
+        ));
+
+        // Advance past the rate limit.
+        env.block.height = env.block.height + ORACLE_REFRESH_RATE_LIMIT_BLOCKS + 1;
+        execute(
+            deps.as_mut(),
+            env,
+            message_info(&make_addr("randomkeeper"), &[]),
+            ExecuteMsg::RefreshOraclePoolSnapshot {},
+        )
+        .unwrap();
+    }
+
+    /// Non-admin cannot propose, apply, or remove allowlist entries; nor
+    /// can they propose / apply / cancel flag flips.
+    #[test]
+    fn non_admin_rejected_on_admin_actions() {
+        let mut deps = mock_deps_with_querier(&[]);
+        setup_factory_with_commit_pool(&mut deps, false);
+        let std_pool = make_addr("std_pool_usdc");
+        register_standard_pool(&mut deps, 2, &std_pool);
+        let attacker = make_addr("attacker");
+
+        for msg in [
+            ExecuteMsg::ProposeAddOracleEligiblePool {
+                pool_addr: std_pool.to_string(),
+            },
+            ExecuteMsg::ApplyAddOracleEligiblePool {
+                pool_addr: std_pool.to_string(),
+            },
+            ExecuteMsg::CancelAddOracleEligiblePool {
+                pool_addr: std_pool.to_string(),
+            },
+            ExecuteMsg::RemoveOracleEligiblePool {
+                pool_addr: std_pool.to_string(),
+            },
+            ExecuteMsg::ProposeSetCommitPoolsAutoEligible { enabled: true },
+            ExecuteMsg::ApplySetCommitPoolsAutoEligible {},
+            ExecuteMsg::CancelSetCommitPoolsAutoEligible {},
+        ] {
+            let err = execute(
+                deps.as_mut(),
+                mock_env(),
+                message_info(&attacker, &[]),
+                msg,
+            )
+            .unwrap_err();
+            assert!(
+                matches!(err, ContractError::Unauthorized {}),
+                "expected Unauthorized, got {:?}",
+                err
+            );
+        }
+    }
+
+    /// Adding a pool whose address is unknown to the factory registry
+    /// fails at propose time (don't burn the timelock on a non-existent
+    /// pool).
+    #[test]
+    fn propose_unknown_pool_rejected() {
+        let mut deps = mock_deps_with_querier(&[]);
+        setup_factory_with_commit_pool(&mut deps, false);
+
+        let err = execute(
+            deps.as_mut(),
+            mock_env(),
+            message_info(&admin_addr(), &[]),
+            ExecuteMsg::ProposeAddOracleEligiblePool {
+                pool_addr: make_addr("ghost_pool").to_string(),
+            },
+        )
+        .unwrap_err();
+        assert!(matches!(
+            err,
+            ContractError::OracleEligiblePoolNotInRegistry { .. }
+        ));
+    }
+}
+
+// ===========================================================================
+// M-4: USD-denominated liquidity floor + per-side floor
+//
+// Replaces the legacy `reserve0 + reserve1 >= MIN_POOL_LIQUIDITY` check
+// (which conflated units across asymmetric pairs) with a single
+// `pool_meets_liquidity_floor` helper:
+//
+//   - When the oracle cache has a non-zero `last_price`, the helper
+//     converts MIN_POOL_LIQUIDITY_USD ($5,000 default) to bluechip via
+//     the cache and requires bluechip-side >= floor / 2.
+//   - When the cache is zero (bootstrap, breaker tripped, post-warmup),
+//     it falls back to MIN_POOL_LIQUIDITY_FALLBACK_BLUECHIP_PER_SIDE
+//     (5_000 BC) so the gate stays meaningful before the oracle has
+//     produced a usable USD price.
+// ===========================================================================
+mod liquidity_floor_tests {
+    use super::*;
+    use crate::internal_bluechip_price_oracle::{
+        pool_meets_liquidity_floor, INTERNAL_ORACLE,
+        MIN_POOL_LIQUIDITY_FALLBACK_BLUECHIP_PER_SIDE, MIN_POOL_LIQUIDITY_USD,
+    };
+
+    /// Build a `PoolStateResponseForFactory` with explicit reserves.
+    fn pool_with_reserves(
+        addr: &Addr,
+        reserve0: u128,
+        reserve1: u128,
+    ) -> PoolStateResponseForFactory {
+        PoolStateResponseForFactory {
+            pool_contract_address: addr.clone(),
+            nft_ownership_accepted: true,
+            reserve0: Uint128::new(reserve0),
+            reserve1: Uint128::new(reserve1),
+            total_liquidity: Uint128::new(reserve0 + reserve1),
+            block_time_last: 100,
+            price0_cumulative_last: Uint128::zero(),
+            price1_cumulative_last: Uint128::zero(),
+            assets: vec![],
+        }
+    }
+
+    /// Set `INTERNAL_ORACLE.bluechip_price_cache.last_price` to the given
+    /// USD-per-bluechip value (6-decimal scale: 1_000_000 = $1.00).
+    fn seed_oracle_price(
+        deps: &mut OwnedDeps<MockStorage, MockApi, WasmMockQuerier>,
+        price_micro_usd: u128,
+    ) {
+        // Lazy-load the existing oracle (initialized by `instantiate`),
+        // mutate just the price field, save back.
+        let mut oracle = INTERNAL_ORACLE
+            .load(deps.as_mut().storage)
+            .expect("oracle must be initialized before seeding price");
+        oracle.bluechip_price_cache.last_price = Uint128::new(price_micro_usd);
+        INTERNAL_ORACLE
+            .save(deps.as_mut().storage, &oracle)
+            .unwrap();
+    }
+
+    /// Standard "factory + atom pool ready, oracle initialized" scaffold.
+    fn setup_factory_and_init_oracle(
+        deps: &mut OwnedDeps<MockStorage, MockApi, WasmMockQuerier>,
+    ) {
+        setup_atom_pool(deps);
+        instantiate(
+            deps.as_mut(),
+            mock_env(),
+            message_info(&admin_addr(), &[]),
+            default_factory_config(),
+        )
+        .unwrap();
+    }
+
+    /// Fallback path: oracle has no price (last_price == 0). Helper must
+    /// require bluechip-side >= MIN_POOL_LIQUIDITY_FALLBACK_BLUECHIP_PER_SIDE.
+    #[test]
+    fn fallback_passes_when_bluechip_side_meets_legacy_floor() {
+        let mut deps = mock_deps_with_querier(&[]);
+        setup_factory_and_init_oracle(&mut deps);
+        seed_oracle_price(&mut deps, 0);
+        let pool = make_addr("balanced_pool");
+        let state = pool_with_reserves(
+            &pool,
+            MIN_POOL_LIQUIDITY_FALLBACK_BLUECHIP_PER_SIDE.u128(),
+            MIN_POOL_LIQUIDITY_FALLBACK_BLUECHIP_PER_SIDE.u128(),
+        );
+        let ok = pool_meets_liquidity_floor(&deps.storage, &state, 0).unwrap();
+        assert!(ok, "balanced pool at the fallback floor must pass");
+    }
+
+    /// Fallback path: bluechip-side strictly below the legacy floor fails.
+    #[test]
+    fn fallback_fails_when_bluechip_side_below_legacy_floor() {
+        let mut deps = mock_deps_with_querier(&[]);
+        setup_factory_and_init_oracle(&mut deps);
+        seed_oracle_price(&mut deps, 0);
+        let pool = make_addr("thin_pool");
+        let bluechip_side = MIN_POOL_LIQUIDITY_FALLBACK_BLUECHIP_PER_SIDE.u128() - 1;
+        let state = pool_with_reserves(&pool, bluechip_side, bluechip_side);
+        let ok = pool_meets_liquidity_floor(&deps.storage, &state, 0).unwrap();
+        assert!(!ok, "bluechip-side one below the floor must fail");
+    }
+
+    /// Fallback path: lopsided pool whose SUMMED reserves clear the legacy
+    /// MIN_POOL_LIQUIDITY (10 BC) but whose BLUECHIP SIDE is far below
+    /// must fail. This is the exact pre-M-4 false-pass case.
+    #[test]
+    fn fallback_rejects_lopsided_pool_that_old_check_passed() {
+        let mut deps = mock_deps_with_querier(&[]);
+        setup_factory_and_init_oracle(&mut deps);
+        seed_oracle_price(&mut deps, 0);
+        let pool = make_addr("lopsided_pool");
+        // bluechip side: 100 ubluechip (essentially zero). Other side:
+        // 100 BC (big). Legacy check (sum >= 10 BC) would have PASSED.
+        // New check on bluechip-side must FAIL.
+        let state = pool_with_reserves(&pool, 100, 100_000_000_000);
+        let ok = pool_meets_liquidity_floor(&deps.storage, &state, 0).unwrap();
+        assert!(
+            !ok,
+            "lopsided pool with bluechip-side dust must fail the M-4 floor"
+        );
+    }
+
+    /// USD path: oracle has price = $1.00 / bluechip. $5_000 floor /
+    /// $1.00 / 2 sides = 2_500 BC = 2_500_000_000 ubluechip per side.
+    /// Pool exactly at the floor passes.
+    #[test]
+    fn usd_path_passes_at_computed_floor() {
+        let mut deps = mock_deps_with_querier(&[]);
+        setup_factory_and_init_oracle(&mut deps);
+        // last_price units: USD-6dp per bluechip-1.0
+        // 1_000_000 = $1.00 per bluechip.
+        seed_oracle_price(&mut deps, 1_000_000);
+        let pool = make_addr("usd_floor_exact");
+        // floor_per_side = MIN_POOL_LIQUIDITY_USD * 1_000_000 / last_price / 2
+        //                = 5_000_000_000 * 1_000_000 / 1_000_000 / 2
+        //                = 2_500_000_000 ubluechip
+        let floor_per_side = MIN_POOL_LIQUIDITY_USD.u128() / 2;
+        let state = pool_with_reserves(&pool, floor_per_side, floor_per_side);
+        let ok = pool_meets_liquidity_floor(&deps.storage, &state, 0).unwrap();
+        assert!(ok, "exactly at the computed USD floor must pass");
+    }
+
+    /// USD path: doubling the bluechip price halves the bluechip-side
+    /// floor (same USD value at higher price = less bluechip).
+    #[test]
+    fn usd_path_floor_inverse_to_price() {
+        let mut deps = mock_deps_with_querier(&[]);
+        setup_factory_and_init_oracle(&mut deps);
+        // $2.00 / bluechip → floor_per_side = 5_000_000_000 / 2 / 2 = 1_250 BC
+        seed_oracle_price(&mut deps, 2_000_000);
+        let pool = make_addr("usd_floor_halved");
+        let floor_per_side = MIN_POOL_LIQUIDITY_USD.u128() / 2 / 2;
+        let state = pool_with_reserves(&pool, floor_per_side, floor_per_side);
+        assert!(pool_meets_liquidity_floor(&deps.storage, &state, 0).unwrap());
+
+        // One ubluechip below must fail.
+        let just_under = pool_with_reserves(&pool, floor_per_side - 1, floor_per_side - 1);
+        assert!(!pool_meets_liquidity_floor(&deps.storage, &just_under, 0).unwrap());
+    }
+
+    /// USD path: bluechip-side index correctly selects the right reserve.
+    /// Pool lays out [creator_token, bluechip] (index 1 is bluechip).
+    /// reserve0 has dust, reserve1 has plenty — must pass when index=1.
+    #[test]
+    fn bluechip_index_one_picks_reserve1() {
+        let mut deps = mock_deps_with_querier(&[]);
+        setup_factory_and_init_oracle(&mut deps);
+        seed_oracle_price(&mut deps, 1_000_000);
+        let pool = make_addr("idx1_pool");
+        let floor_per_side = MIN_POOL_LIQUIDITY_USD.u128() / 2;
+        // Lopsided in absolute units, but bluechip is on side 1.
+        let state = pool_with_reserves(&pool, 100, floor_per_side);
+        assert!(
+            pool_meets_liquidity_floor(&deps.storage, &state, 1).unwrap(),
+            "bluechip_index=1 must read reserve1, not reserve0"
+        );
+        // Same pool with bluechip_index=0 must FAIL (reserve0 = 100).
+        assert!(
+            !pool_meets_liquidity_floor(&deps.storage, &state, 0).unwrap(),
+            "bluechip_index=0 must read reserve0 (100 ubluechip, far below floor)"
+        );
+    }
+
+    /// Pre-instantiate: oracle hasn't been initialized yet. Helper must
+    /// fall back rather than panic. Mirrors the bootstrap order
+    /// (instantiate -> initialize_internal_bluechip_oracle ->
+    /// select_random_pools_with_atom -> get_eligible_creator_pools).
+    #[test]
+    fn missing_oracle_falls_back_without_panic() {
+        let deps = mock_deps_with_querier(&[]);
+        // No setup_factory_and_init_oracle — INTERNAL_ORACLE intentionally absent.
+        let pool = make_addr("preinit");
+        let state = pool_with_reserves(
+            &pool,
+            MIN_POOL_LIQUIDITY_FALLBACK_BLUECHIP_PER_SIDE.u128(),
+            MIN_POOL_LIQUIDITY_FALLBACK_BLUECHIP_PER_SIDE.u128(),
+        );
+        let ok = pool_meets_liquidity_floor(&deps.storage, &state, 0).unwrap();
+        assert!(ok);
+    }
+
+    // Note on integration coverage: the per-pool integration path is
+    // covered indirectly by `oracle_eligibility_tests` (allowlist
+    // add/remove/dedup). The mock querier in this crate returns the same
+    // reserves for every contract address, so it can't distinguish
+    // drained / lopsided pools at the cross-contract query layer; the
+    // helper-level tests above pin the actual gate semantics directly,
+    // which is the only thing M-4 changes.
+}
+
+// ===========================================================================
+// Pre-testnet oracle coverage backfill.
+//
+// Targets the highest-priority gaps identified in the coverage audit
+// (drift_bps saturating math, bootstrap exact-boundary timestamp,
+// best-effort warmup fallback combinations, zero-amount conversions).
+// These cover paths whose breakage would either silently corrupt the
+// oracle (drift saturation) or surface only on real anchor rotations
+// (warmup fallback) — exactly the kinds of bugs that get caught late
+// or never on testnet without explicit unit coverage.
+// ===========================================================================
+mod oracle_coverage_backfill {
+    use super::*;
+    use crate::internal_bluechip_price_oracle::{
+        drift_bps_saturating, usd_to_bluechip, usd_to_bluechip_best_effort,
+        ANCHOR_CHANGE_WARMUP_OBSERVATIONS, INTERNAL_ORACLE,
+    };
+
+    fn setup_factory_and_init_oracle(
+        deps: &mut OwnedDeps<MockStorage, MockApi, WasmMockQuerier>,
+    ) {
+        setup_atom_pool(deps);
+        instantiate(
+            deps.as_mut(),
+            mock_env(),
+            message_info(&admin_addr(), &[]),
+            default_factory_config(),
+        )
+        .unwrap();
+    }
+
+    /// Mutate `INTERNAL_ORACLE` with a closure. Loads, applies, saves.
+    fn mutate_oracle(
+        deps: &mut OwnedDeps<MockStorage, MockApi, WasmMockQuerier>,
+        f: impl FnOnce(&mut crate::internal_bluechip_price_oracle::BlueChipPriceInternalOracle),
+    ) {
+        let mut oracle = INTERNAL_ORACLE.load(deps.as_mut().storage).unwrap();
+        f(&mut oracle);
+        INTERNAL_ORACLE.save(deps.as_mut().storage, &oracle).unwrap();
+    }
+
+    // -----------------------------------------------------------------------
+    // drift_bps_saturating: pure-function unit tests (audit P2).
+    //
+    // The breaker's correctness pivots on this helper. Saturating
+    // arithmetic is invisible at integration-test scale because real
+    // prices never reach the regime where wrap or overflow matter, but
+    // a future code change that swaps `saturating_*` for `checked_*`
+    // (or vice versa) flips behaviour silently.
+    // -----------------------------------------------------------------------
+
+    /// Both inputs zero: implementation saturates to `u128::MAX`
+    /// (the fail-safe direction) because `0 / 0` falls into the
+    /// saturating div-by-zero branch. Production callers gate the
+    /// drift check on `prior != 0` separately, so this code path
+    /// is unreachable in practice — but pinning the actual behaviour
+    /// here protects against a future "fix" that returns 0 and
+    /// silently disarms the breaker on (hypothetical) zero-vs-zero
+    /// transitions.
+    #[test]
+    fn drift_zero_zero_saturates_to_max() {
+        assert_eq!(
+            drift_bps_saturating(Uint128::zero(), Uint128::zero()),
+            u128::MAX
+        );
+    }
+
+    /// Identical inputs → 0 bps drift regardless of magnitude.
+    #[test]
+    fn drift_identical_returns_zero() {
+        assert_eq!(
+            drift_bps_saturating(Uint128::new(1_000_000), Uint128::new(1_000_000)),
+            0
+        );
+        assert_eq!(
+            drift_bps_saturating(Uint128::MAX, Uint128::MAX),
+            0
+        );
+    }
+
+    /// One side zero, other non-zero → saturates to u128::MAX (the
+    /// "definitely tripped" sentinel — division by the smaller value
+    /// (= 0) is treated as "infinite drift" rather than a numeric
+    /// error). Maps "math broke" to "fire the breaker", which is the
+    /// safe direction.
+    #[test]
+    fn drift_one_zero_saturates_to_max() {
+        assert_eq!(
+            drift_bps_saturating(Uint128::zero(), Uint128::new(1_000_000)),
+            u128::MAX
+        );
+        assert_eq!(
+            drift_bps_saturating(Uint128::new(1_000_000), Uint128::zero()),
+            u128::MAX
+        );
+    }
+
+    /// Order independence: drift(a, b) == drift(b, a).
+    #[test]
+    fn drift_is_symmetric() {
+        let a = Uint128::new(1_000_000);
+        let b = Uint128::new(1_300_000);
+        assert_eq!(drift_bps_saturating(a, b), drift_bps_saturating(b, a));
+    }
+
+    /// Exactly +30% drift = 3000 bps. The breaker uses `>` against
+    /// MAX_TWAP_DRIFT_BPS (3000), so this exact reading must NOT trip.
+    /// Pins the boundary semantics that a later const change would
+    /// otherwise flip silently.
+    #[test]
+    fn drift_exactly_thirty_percent_yields_3000_bps() {
+        let prior = Uint128::new(10_000_000);
+        let new = Uint128::new(13_000_000); // +30% from prior
+        assert_eq!(drift_bps_saturating(prior, new), 3_000);
+    }
+
+    /// Saturating overflow: a delta so large that
+    /// `diff * BPS_SCALE` would overflow u128. The helper must
+    /// saturate to u128::MAX rather than wrap, so the breaker fires.
+    #[test]
+    fn drift_overflow_saturates_to_max() {
+        // diff = u128::MAX - 1; diff * 10_000 overflows u128.
+        let huge = Uint128::MAX;
+        let small = Uint128::new(1);
+        let drift = drift_bps_saturating(small, huge);
+        assert_eq!(
+            drift, u128::MAX,
+            "overflow in scaling step must saturate, not wrap"
+        );
+    }
+
+    // -----------------------------------------------------------------------
+    // Bootstrap-confirm exact-boundary timestamp (audit P2).
+    //
+    // Existing tests cover `< window` (rejected) and `> window`
+    // (accepted) but not `== window`. The handler uses `<` so equality
+    // must be ACCEPTED — a future refactor swapping to `<=` would flip
+    // the semantics silently.
+    // -----------------------------------------------------------------------
+
+    /// `block.time == proposed_at + BOOTSTRAP_OBSERVATION_SECONDS` exactly
+    /// must succeed. Guard against an off-by-one regression.
+    #[test]
+    fn confirm_bootstrap_at_exact_boundary_accepts() {
+        let mut deps = mock_deps_with_querier(&[]);
+        setup_factory_and_init_oracle(&mut deps);
+        // Prime: zero pre-reset and zero last_price → first update buffers
+        // a candidate via branch (b) → next round's `update` writes
+        // PENDING_BOOTSTRAP_PRICE in branch (d). For the boundary test we
+        // can shortcut: write PENDING_BOOTSTRAP_PRICE directly with a
+        // known proposed_at.
+        let env_now = mock_env();
+        crate::state::PENDING_BOOTSTRAP_PRICE
+            .save(
+                deps.as_mut().storage,
+                &crate::state::PendingBootstrapPrice {
+                    price: Uint128::new(10_000_000),
+                    atom_pool_price: Uint128::new(10_000_000),
+                    proposed_at: env_now.block.time,
+                    observation_count: 1,
+                },
+            )
+            .unwrap();
+        // Make sure warmup is non-zero so the publish path actually
+        // decrements (matches production state immediately after a
+        // reset).
+        mutate_oracle(&mut deps, |o| {
+            o.warmup_remaining = ANCHOR_CHANGE_WARMUP_OBSERVATIONS;
+        });
+
+        let mut confirm_env = env_now.clone();
+        confirm_env.block.time = confirm_env
+            .block
+            .time
+            .plus_seconds(crate::state::BOOTSTRAP_OBSERVATION_SECONDS);
+
+        execute(
+            deps.as_mut(),
+            confirm_env,
+            message_info(&admin_addr(), &[]),
+            ExecuteMsg::ConfirmBootstrapPrice {},
+        )
+        .expect("confirm at exact boundary must succeed");
+
+        let oracle = INTERNAL_ORACLE.load(&deps.storage).unwrap();
+        assert_eq!(
+            oracle.bluechip_price_cache.last_price,
+            Uint128::new(10_000_000)
+        );
+        assert!(crate::state::PENDING_BOOTSTRAP_PRICE
+            .may_load(&deps.storage)
+            .unwrap()
+            .is_none());
+    }
+
+    /// One second BEFORE the boundary must reject. Pinned alongside the
+    /// accept test to make the boundary semantics symmetrically explicit
+    /// rather than relying on the existing "+300s" early-reject test
+    /// (which is far from the edge).
+    #[test]
+    fn confirm_bootstrap_one_second_before_boundary_rejects() {
+        let mut deps = mock_deps_with_querier(&[]);
+        setup_factory_and_init_oracle(&mut deps);
+        let env_now = mock_env();
+        crate::state::PENDING_BOOTSTRAP_PRICE
+            .save(
+                deps.as_mut().storage,
+                &crate::state::PendingBootstrapPrice {
+                    price: Uint128::new(10_000_000),
+                    atom_pool_price: Uint128::new(10_000_000),
+                    proposed_at: env_now.block.time,
+                    observation_count: 1,
+                },
+            )
+            .unwrap();
+
+        let mut confirm_env = env_now.clone();
+        // -1s relative to the boundary.
+        confirm_env.block.time = confirm_env
+            .block
+            .time
+            .plus_seconds(crate::state::BOOTSTRAP_OBSERVATION_SECONDS - 1);
+
+        let err = execute(
+            deps.as_mut(),
+            confirm_env,
+            message_info(&admin_addr(), &[]),
+            ExecuteMsg::ConfirmBootstrapPrice {},
+        )
+        .expect_err("confirm 1s before boundary must reject");
+        let s = format!("{}", err);
+        assert!(s.contains("observation window"), "got: {}", s);
+    }
+
+    // -----------------------------------------------------------------------
+    // Best-effort conversion warmup fallback combinations (audit P0/P1).
+    //
+    // `usd_to_bluechip_best_effort` is supposed to keep the
+    // CreateStandardPool fee + PayDistributionBounty paths functional
+    // through anchor-rotation warmup windows. Three corners matter:
+    //
+    //   (a) warmup_remaining > 0, pre_reset > 0: use pre_reset (fall back)
+    //   (b) warmup_remaining > 0, pre_reset == 0: error (no fallback signal)
+    //   (c) warmup_remaining == 0, last_price > 0: use last_price (steady state)
+    //
+    // Existing tests touch (c) implicitly. (a) and (b) are unwitnessed
+    // and would only surface during a real testnet anchor rotation.
+    // -----------------------------------------------------------------------
+
+    /// (a) During warmup with non-zero pre_reset: best-effort uses the
+    /// pre-reset price, so callers get a usable result. Strict callers
+    /// must still error.
+    ///
+    /// Unit reminder: `pre_reset_last_price` carries the same units as
+    /// `bluechip_price_cache.last_price`, which is bluechip-per-atom in
+    /// `PRICE_PRECISION` (1e6) scaling — NOT USD-per-bluechip directly.
+    /// The full USD price is derived as
+    ///   `bluechip_usd = atom_usd * PRICE_PRECISION / bluechip_per_atom`
+    /// using the live (or mock-default $10) Pyth ATOM/USD reading.
+    /// With `pre_reset = 1_000_000` (= 1 BC/ATOM) and atom_usd_price
+    /// = $10, the derived bluechip price is $10/BC, so
+    /// `usd_to_bluechip($10)` = 1 BC = 1_000_000 ubluechip.
+    #[test]
+    fn best_effort_during_warmup_uses_pre_reset_price() {
+        let mut deps = mock_deps_with_querier(&[]);
+        setup_factory_and_init_oracle(&mut deps);
+        mutate_oracle(&mut deps, |o| {
+            o.warmup_remaining = ANCHOR_CHANGE_WARMUP_OBSERVATIONS;
+            o.bluechip_price_cache.last_price = Uint128::zero();
+            o.pre_reset_last_price = Uint128::new(1_000_000); // 1 BC per ATOM
+        });
+        let env = mock_env();
+
+        // Best-effort path: derives bluechip_usd from
+        // (mock atom_usd = $10) / (pre_reset = 1 BC/ATOM) = $10/BC.
+        // usd_to_bluechip($10) = 1 BC = 1_000_000 ubluechip.
+        let resp = usd_to_bluechip_best_effort(
+            deps.as_ref(),
+            Uint128::new(10_000_000),
+            &env,
+        )
+        .expect("best-effort must succeed during warmup with non-zero pre_reset");
+        assert_eq!(resp.amount, Uint128::new(1_000_000));
+
+        // Strict caller: same state must hard-fail. Confirms the warm-up
+        // gate's strict tier is still doing its job — important because
+        // commit valuation runs through the strict path and a permissive
+        // strict tier here would mean wrong USD valuations during every
+        // anchor rotation.
+        let err = usd_to_bluechip(deps.as_ref(), Uint128::new(10_000_000), &env)
+            .expect_err("strict must error during warmup");
+        assert!(format!("{}", err).contains("warm-up"));
+    }
+
+    /// (b) During warmup with zero pre_reset: best-effort has no
+    /// fallback signal. The function MUST NOT panic (would brick all
+    /// CreateStandardPool / PayDistributionBounty calls during true-
+    /// bootstrap). It MUST return an Err so callers can apply their
+    /// own retry/skip semantics.
+    #[test]
+    fn best_effort_during_warmup_with_zero_pre_reset_errors_gracefully() {
+        let mut deps = mock_deps_with_querier(&[]);
+        setup_factory_and_init_oracle(&mut deps);
+        mutate_oracle(&mut deps, |o| {
+            o.warmup_remaining = ANCHOR_CHANGE_WARMUP_OBSERVATIONS;
+            o.bluechip_price_cache.last_price = Uint128::zero();
+            o.pre_reset_last_price = Uint128::zero();
+        });
+        let env = mock_env();
+
+        // Note: in true bootstrap, `query_pyth_atom_usd_price` returns
+        // mock_price=$10 and the anchor pool has cumulative data from
+        // setup. The best-effort warmup branch has a documented
+        // "anchor-derived warmup price" path (lines 1815–1842 of the
+        // oracle module) that can succeed even with both prices zero,
+        // IF the anchor produces a usable atom_usd × bluechip_per_atom.
+        // The contract here is:
+        //   - either Ok with a non-zero amount derived from anchor
+        //     spot + Pyth; OR
+        //   - Err with a clear message.
+        // Whatever the branch returns, it MUST NOT panic, and the
+        // amount (if Ok) must be non-zero (zero would be a silent
+        // mispricing).
+        match usd_to_bluechip_best_effort(deps.as_ref(), Uint128::new(10_000_000), &env) {
+            Ok(resp) => assert!(
+                !resp.amount.is_zero(),
+                "best-effort must not return zero — caller will divide by 0 downstream"
+            ),
+            Err(_) => {
+                // Acceptable: caller handles via retry/skip.
+            }
+        }
+    }
+
+    /// (c) Sanity: in steady state (no warmup, non-zero last_price),
+    /// best-effort and strict converge on the same answer.
+    ///
+    /// Same unit convention as test (a): `last_price` is
+    /// bluechip-per-atom (PRICE_PRECISION-scaled). With
+    /// `last_price = 2_000_000` (= 2 BC/ATOM) and
+    /// atom_usd_price = $10, derived bluechip_usd = $5/BC.
+    /// usd_to_bluechip($10) = 2 BC = 2_000_000 ubluechip.
+    #[test]
+    fn best_effort_and_strict_match_in_steady_state() {
+        let mut deps = mock_deps_with_querier(&[]);
+        setup_factory_and_init_oracle(&mut deps);
+        mutate_oracle(&mut deps, |o| {
+            o.warmup_remaining = 0;
+            o.bluechip_price_cache.last_price = Uint128::new(2_000_000);
+            o.pre_reset_last_price = Uint128::zero();
+        });
+        let env = mock_env();
+        let strict =
+            usd_to_bluechip(deps.as_ref(), Uint128::new(10_000_000), &env).unwrap();
+        let best_effort =
+            usd_to_bluechip_best_effort(deps.as_ref(), Uint128::new(10_000_000), &env)
+                .unwrap();
+        assert_eq!(strict.amount, best_effort.amount);
+        assert_eq!(strict.amount, Uint128::new(2_000_000));
+    }
+
+    // -----------------------------------------------------------------------
+    // Conversion zero-amount edges.
+    //
+    // Pure-arithmetic guard: usd_to_bluechip(0) == 0 and
+    // bluechip_to_usd(0) == 0. Trivial, but pins behaviour against
+    // a future refactor that adds an "amount > 0" precondition that
+    // would silently break callers passing 0 (e.g. zero-USD bounty
+    // values during bounty-disable).
+    // -----------------------------------------------------------------------
+
+    #[test]
+    fn zero_amount_conversions_are_zero() {
+        let mut deps = mock_deps_with_querier(&[]);
+        setup_factory_and_init_oracle(&mut deps);
+        mutate_oracle(&mut deps, |o| {
+            o.warmup_remaining = 0;
+            o.bluechip_price_cache.last_price = Uint128::new(1_000_000);
+        });
+        let env = mock_env();
+        assert_eq!(
+            usd_to_bluechip(deps.as_ref(), Uint128::zero(), &env)
+                .unwrap()
+                .amount,
+            Uint128::zero()
+        );
+        assert_eq!(
+            crate::internal_bluechip_price_oracle::bluechip_to_usd(
+                deps.as_ref(),
+                Uint128::zero(),
+                &env
+            )
+            .unwrap()
+            .amount,
+            Uint128::zero()
+        );
+    }
+}
+
+// ===========================================================================
+// Cross-pool integration tests for M-3 (allowlist + auto-flag) and M-4
+// (USD-denominated liquidity floor).
+//
+// These exercise the full `get_eligible_creator_pools` path end-to-end
+// with DISTINCT reserves on each pool — only possible after the
+// `pool_state_overrides` extension to `WasmMockQuerier`. Without that,
+// every cross-contract `GetPoolState` query returned the same numbers
+// regardless of which address was asked, which made it impossible to
+// distinguish drained / lopsided / healthy pools at the integration
+// layer.
+//
+// Each test models a realistic deployment shape (allowlist + auto-flag
+// + per-pool reserves) and asserts the eligible-set composition that
+// would actually flow into the oracle's TWAP sample selection.
+// ===========================================================================
+mod cross_pool_integration_tests {
+    use super::*;
+    use cosmwasm_std::StdResult;
+
+    use crate::internal_bluechip_price_oracle::{
+        get_eligible_creator_pools, MIN_POOL_LIQUIDITY_FALLBACK_BLUECHIP_PER_SIDE,
+        MIN_POOL_LIQUIDITY_USD,
+    };
+    use crate::state::{
+        AllowlistedOraclePool, COMMIT_POOLS_AUTO_ELIGIBLE, ORACLE_ELIGIBLE_POOLS,
+    };
+
+    /// Register a `PoolDetails` row + a `pool_state_override` on the
+    /// mock querier. `bluechip_index` is which side of `pool_token_info`
+    /// holds the bluechip native denom — must match what the test
+    /// expects the helper to resolve.
+    fn register_pool(
+        deps: &mut OwnedDeps<MockStorage, MockApi, WasmMockQuerier>,
+        pool_id: u64,
+        addr: &Addr,
+        kind: pool_factory_interfaces::PoolKind,
+        bluechip_index: u8,
+        reserve_bluechip: u128,
+        reserve_other: u128,
+    ) {
+        let bluechip_token = TokenType::Native {
+            denom: "ubluechip".to_string(),
+        };
+        let other_token = match kind {
+            pool_factory_interfaces::PoolKind::Standard => TokenType::Native {
+                denom: "uusdc".to_string(),
+            },
+            pool_factory_interfaces::PoolKind::Commit => TokenType::CreatorToken {
+                contract_addr: Addr::unchecked(format!("creator_token_{}", pool_id)),
+            },
+        };
+        let pool_token_info = if bluechip_index == 0 {
+            [bluechip_token, other_token]
+        } else {
+            [other_token, bluechip_token]
+        };
+        // reserve0 / reserve1 follow the same orientation as
+        // pool_token_info.
+        let (reserve0, reserve1) = if bluechip_index == 0 {
+            (reserve_bluechip, reserve_other)
+        } else {
+            (reserve_other, reserve_bluechip)
+        };
+        POOLS_BY_ID
+            .save(
+                deps.as_mut().storage,
+                pool_id,
+                &PoolDetails {
+                    pool_id,
+                    pool_token_info,
+                    creator_pool_addr: addr.clone(),
+                    pool_kind: kind.clone(),
+                    commit_pool_ordinal: 0,
+                },
+            )
+            .unwrap();
+        let state = PoolStateResponseForFactory {
+            pool_contract_address: addr.clone(),
+            nft_ownership_accepted: true,
+            reserve0: Uint128::new(reserve0),
+            reserve1: Uint128::new(reserve1),
+            total_liquidity: Uint128::new(reserve0.saturating_add(reserve1)),
+            block_time_last: 100,
+            price0_cumulative_last: Uint128::zero(),
+            price1_cumulative_last: Uint128::zero(),
+            assets: vec![],
+        };
+        POOLS_BY_CONTRACT_ADDRESS
+            .save(deps.as_mut().storage, addr.clone(), &state)
+            .unwrap();
+        // The factory queries pools cross-contract via `GetPoolState`,
+        // which on real chains hits the pool wasm. Mirror what the pool
+        // would return into the mock querier so the integration layer
+        // exercises the same code path as production.
+        deps.querier.set_pool_state(addr.as_str(), state);
+        // Mark commit pools as threshold-crossed so the auto-eligible
+        // source counts them.
+        if matches!(kind, pool_factory_interfaces::PoolKind::Commit) {
+            POOL_THRESHOLD_MINTED
+                .save(deps.as_mut().storage, pool_id, &true)
+                .unwrap();
+        }
+    }
+
+    /// Add a pool to the admin allowlist. Bypasses the timelock flow —
+    /// the timelock semantics are pinned in `oracle_eligibility_tests`;
+    /// these tests focus on what the helper computes once the input
+    /// state is in place.
+    fn allowlist(
+        deps: &mut OwnedDeps<MockStorage, MockApi, WasmMockQuerier>,
+        addr: &Addr,
+        bluechip_index: u8,
+    ) {
+        ORACLE_ELIGIBLE_POOLS
+            .save(
+                deps.as_mut().storage,
+                addr.clone(),
+                &AllowlistedOraclePool {
+                    bluechip_index,
+                    added_at: mock_env().block.time,
+                },
+            )
+            .unwrap();
+    }
+
+    /// Stand up factory + init oracle. Auto-flag chosen by caller so the
+    /// integration tests can drive both stages (1-3: allowlist-only and
+    /// 4+: auto + allowlist).
+    fn setup(
+        deps: &mut OwnedDeps<MockStorage, MockApi, WasmMockQuerier>,
+        auto_eligible: bool,
+    ) {
+        setup_atom_pool(deps);
+        instantiate(
+            deps.as_mut(),
+            mock_env(),
+            message_info(&admin_addr(), &[]),
+            default_factory_config(),
+        )
+        .unwrap();
+        COMMIT_POOLS_AUTO_ELIGIBLE
+            .save(deps.as_mut().storage, &auto_eligible)
+            .unwrap();
+    }
+
+    /// M-4 integration. Auto-flag OFF; three allowlisted standard pools
+    /// with very different shapes. Only the healthy one survives.
+    /// Reserves are well above the fallback floor (no oracle price yet
+    /// in this fresh deployment), so the comparison happens against
+    /// `MIN_POOL_LIQUIDITY_FALLBACK_BLUECHIP_PER_SIDE`.
+    #[test]
+    fn allowlist_filters_drained_and_lopsided_pools() {
+        let mut deps = mock_deps_with_querier(&[]);
+        setup(&mut deps, false);
+        let floor = MIN_POOL_LIQUIDITY_FALLBACK_BLUECHIP_PER_SIDE.u128();
+
+        let healthy = make_addr("std_healthy");
+        let drained = make_addr("std_drained");
+        let lopsided = make_addr("std_lopsided");
+
+        // Healthy: balanced, both sides at the floor.
+        register_pool(
+            &mut deps,
+            10,
+            &healthy,
+            pool_factory_interfaces::PoolKind::Standard,
+            0,
+            floor,
+            floor,
+        );
+        // Drained: balanced, both sides far below the floor. Old code's
+        // sum check (10 BC) still failed for this pool, but the per-side
+        // gate fails earlier — at the bluechip side itself.
+        register_pool(
+            &mut deps,
+            11,
+            &drained,
+            pool_factory_interfaces::PoolKind::Standard,
+            0,
+            1_000,
+            1_000,
+        );
+        // Lopsided: 100 ubluechip on the bluechip side (dust) but 1M BC
+        // on the other side. Legacy summed check would PASS this; the
+        // new per-side check must REJECT it. This is the exact
+        // false-pass case M-4 closes.
+        register_pool(
+            &mut deps,
+            12,
+            &lopsided,
+            pool_factory_interfaces::PoolKind::Standard,
+            0,
+            100,
+            1_000_000_000_000,
+        );
+
+        for addr in [&healthy, &drained, &lopsided] {
+            allowlist(&mut deps, addr, 0);
+        }
+
+        let (eligible, indices) = get_eligible_creator_pools(
+            deps.as_ref(),
+            atom_bluechip_pool_addr().as_str(),
+        )
+        .unwrap();
+        assert_eq!(
+            eligible,
+            vec![healthy.to_string()],
+            "only the healthy pool should survive: drained={:?}, lopsided={:?}",
+            drained.to_string(),
+            lopsided.to_string()
+        );
+        assert_eq!(indices, vec![0u8]);
+    }
+
+    /// M-4 integration with the USD-denominated path. Seed the oracle
+    /// price so the helper computes the floor from
+    /// `MIN_POOL_LIQUIDITY_USD` instead of the fallback. Pool exactly at
+    /// the computed floor passes; one ubluechip below fails.
+    #[test]
+    fn usd_path_floor_filters_correctly() {
+        let mut deps = mock_deps_with_querier(&[]);
+        setup(&mut deps, false);
+        // Seed bluechip-per-atom = 1_000_000 (1 BC/ATOM scaled by
+        // PRICE_PRECISION). This gives `bluechip_usd ≈ atom_usd` →
+        // i.e., 1 BC ≈ $atom_usd in dollar terms.
+        // floor_per_side = MIN_POOL_LIQUIDITY_USD * 1e6 / 1_000_000 / 2
+        //                = MIN_POOL_LIQUIDITY_USD / 2
+        //                = 2_500_000_000 ubluechip ($2_500 each side)
+        crate::internal_bluechip_price_oracle::INTERNAL_ORACLE
+            .update(deps.as_mut().storage, |mut o| -> StdResult<_> {
+                o.bluechip_price_cache.last_price = Uint128::new(1_000_000);
+                Ok(o)
+            })
+            .unwrap();
+        let floor_per_side = MIN_POOL_LIQUIDITY_USD.u128() / 2;
+
+        let at_floor = make_addr("std_at_floor");
+        let just_under = make_addr("std_just_under");
+        register_pool(
+            &mut deps,
+            20,
+            &at_floor,
+            pool_factory_interfaces::PoolKind::Standard,
+            0,
+            floor_per_side,
+            floor_per_side,
+        );
+        register_pool(
+            &mut deps,
+            21,
+            &just_under,
+            pool_factory_interfaces::PoolKind::Standard,
+            0,
+            floor_per_side - 1,
+            floor_per_side - 1,
+        );
+        allowlist(&mut deps, &at_floor, 0);
+        allowlist(&mut deps, &just_under, 0);
+
+        let (eligible, _) = get_eligible_creator_pools(
+            deps.as_ref(),
+            atom_bluechip_pool_addr().as_str(),
+        )
+        .unwrap();
+        assert_eq!(eligible, vec![at_floor.to_string()]);
+    }
+
+    /// M-4 integration where the bluechip side is on `index = 1`.
+    /// Confirms the helper consults the recorded bluechip_index (rather
+    /// than always reading reserve0) — the lopsided pool here would pass
+    /// any "look at reserve0" implementation.
+    #[test]
+    fn allowlist_respects_bluechip_index_one() {
+        let mut deps = mock_deps_with_querier(&[]);
+        setup(&mut deps, false);
+        let floor = MIN_POOL_LIQUIDITY_FALLBACK_BLUECHIP_PER_SIDE.u128();
+
+        // bluechip on side 1; side 0 holds the non-bluechip token.
+        // Bluechip side is exactly at the floor; reserve0 is dust.
+        let pool = make_addr("std_idx1");
+        register_pool(
+            &mut deps,
+            30,
+            &pool,
+            pool_factory_interfaces::PoolKind::Standard,
+            /*bluechip_index=*/ 1,
+            /*reserve_bluechip=*/ floor,
+            /*reserve_other=*/ 100,
+        );
+        allowlist(&mut deps, &pool, 1);
+
+        let (eligible, indices) = get_eligible_creator_pools(
+            deps.as_ref(),
+            atom_bluechip_pool_addr().as_str(),
+        )
+        .unwrap();
+        assert_eq!(eligible, vec![pool.to_string()]);
+        assert_eq!(indices, vec![1u8]);
+
+        // Same pool with the WRONG index recorded (0) would read
+        // reserve0 = 100 (dust) and fail the floor — sanity-check the
+        // helper is doing what we think.
+        ORACLE_ELIGIBLE_POOLS.remove(deps.as_mut().storage, pool.clone());
+        allowlist(&mut deps, &pool, 0);
+        let (eligible, _) = get_eligible_creator_pools(
+            deps.as_ref(),
+            atom_bluechip_pool_addr().as_str(),
+        )
+        .unwrap();
+        assert!(
+            eligible.is_empty(),
+            "wrong index reads dust reserve0 → must fail"
+        );
+    }
+
+    /// M-3 dedup integration. A pool that's both allowlisted AND
+    /// threshold-crossed-commit (auto-flag ON) must appear exactly once
+    /// in the eligible set, with the allowlist's recorded
+    /// `bluechip_index` taking precedence.
+    #[test]
+    fn dedup_allowlist_and_auto_eligible_yields_single_entry() {
+        let mut deps = mock_deps_with_querier(&[]);
+        setup(&mut deps, true);
+        let floor = MIN_POOL_LIQUIDITY_FALLBACK_BLUECHIP_PER_SIDE.u128();
+
+        let pool = make_addr("commit_dedup");
+        register_pool(
+            &mut deps,
+            40,
+            &pool,
+            pool_factory_interfaces::PoolKind::Commit,
+            0,
+            floor,
+            floor,
+        );
+        allowlist(&mut deps, &pool, 0);
+
+        let (eligible, _) = get_eligible_creator_pools(
+            deps.as_ref(),
+            atom_bluechip_pool_addr().as_str(),
+        )
+        .unwrap();
+        assert_eq!(eligible.len(), 1, "dedup must collapse to one entry");
+        assert_eq!(eligible[0], pool.to_string());
+    }
+
+    /// Mixed deployment: one allowlisted standard pool (passes the
+    /// floor), one auto-eligible commit pool (passes), one auto-eligible
+    /// commit pool that's drained (fails). Auto-flag ON.
+    /// Both qualifying pools appear; the drained commit is dropped.
+    #[test]
+    fn mixed_allowlist_and_auto_with_floor_filter() {
+        let mut deps = mock_deps_with_querier(&[]);
+        setup(&mut deps, true);
+        let floor = MIN_POOL_LIQUIDITY_FALLBACK_BLUECHIP_PER_SIDE.u128();
+
+        let std_healthy = make_addr("std_healthy_2");
+        let commit_healthy = make_addr("commit_healthy");
+        let commit_drained = make_addr("commit_drained");
+        register_pool(
+            &mut deps,
+            50,
+            &std_healthy,
+            pool_factory_interfaces::PoolKind::Standard,
+            0,
+            floor,
+            floor,
+        );
+        register_pool(
+            &mut deps,
+            51,
+            &commit_healthy,
+            pool_factory_interfaces::PoolKind::Commit,
+            0,
+            floor,
+            floor,
+        );
+        register_pool(
+            &mut deps,
+            52,
+            &commit_drained,
+            pool_factory_interfaces::PoolKind::Commit,
+            0,
+            1_000,
+            1_000,
+        );
+        allowlist(&mut deps, &std_healthy, 0);
+
+        let (eligible, _) = get_eligible_creator_pools(
+            deps.as_ref(),
+            atom_bluechip_pool_addr().as_str(),
+        )
+        .unwrap();
+        // Allowlist iterates first (BTreeMap order on Addr); the
+        // auto-eligible source then adds non-deduped non-drained
+        // commit pools. We don't depend on iteration order here —
+        // assert via set membership.
+        let eligible_set: std::collections::HashSet<_> = eligible.into_iter().collect();
+        assert_eq!(
+            eligible_set,
+            std::collections::HashSet::from([
+                std_healthy.to_string(),
+                commit_healthy.to_string(),
+            ]),
+            "drained commit pool must be filtered; healthy ones must appear once each"
+        );
+    }
+
+    /// Auto-flag toggling (without changing pool state) flips the
+    /// composition of the eligible set. Mirrors the stage-1 -> stage-4
+    /// transition where the admin enables auto-include.
+    #[test]
+    fn auto_flag_toggle_changes_eligible_set() {
+        let mut deps = mock_deps_with_querier(&[]);
+        setup(&mut deps, false);
+        let floor = MIN_POOL_LIQUIDITY_FALLBACK_BLUECHIP_PER_SIDE.u128();
+
+        let std_pool = make_addr("std_only");
+        let commit_pool = make_addr("commit_only");
+        register_pool(
+            &mut deps,
+            60,
+            &std_pool,
+            pool_factory_interfaces::PoolKind::Standard,
+            0,
+            floor,
+            floor,
+        );
+        register_pool(
+            &mut deps,
+            61,
+            &commit_pool,
+            pool_factory_interfaces::PoolKind::Commit,
+            0,
+            floor,
+            floor,
+        );
+        allowlist(&mut deps, &std_pool, 0);
+
+        // Auto OFF: only the allowlisted standard pool is eligible.
+        let (eligible_off, _) = get_eligible_creator_pools(
+            deps.as_ref(),
+            atom_bluechip_pool_addr().as_str(),
+        )
+        .unwrap();
+        assert_eq!(eligible_off, vec![std_pool.to_string()]);
+
+        // Flip the flag (test-only direct write; the timelock semantics
+        // are covered in `oracle_eligibility_tests`).
+        COMMIT_POOLS_AUTO_ELIGIBLE
+            .save(deps.as_mut().storage, &true)
+            .unwrap();
+
+        // Auto ON: both pools are eligible.
+        let (eligible_on, _) = get_eligible_creator_pools(
+            deps.as_ref(),
+            atom_bluechip_pool_addr().as_str(),
+        )
+        .unwrap();
+        let on_set: std::collections::HashSet<_> = eligible_on.into_iter().collect();
+        assert_eq!(
+            on_set,
+            std::collections::HashSet::from([
+                std_pool.to_string(),
+                commit_pool.to_string(),
+            ])
+        );
+    }
+
+    /// Anchor pool exclusion. Even when explicitly allowlisted, the
+    /// anchor must not appear in the eligible-set returned to
+    /// `select_random_pools_with_atom` — that function adds the anchor
+    /// separately. (Defense-in-depth: someone could try to add the
+    /// anchor to the allowlist by mistake.)
+    #[test]
+    fn anchor_pool_is_excluded_even_when_allowlisted() {
+        let mut deps = mock_deps_with_querier(&[]);
+        setup(&mut deps, true);
+        let floor = MIN_POOL_LIQUIDITY_FALLBACK_BLUECHIP_PER_SIDE.u128();
+
+        let anchor = atom_bluechip_pool_addr();
+        // Override the anchor's pool state with healthy reserves so a
+        // missing exclusion would falsely admit it.
+        deps.querier.set_pool_state(
+            anchor.as_str(),
+            PoolStateResponseForFactory {
+                pool_contract_address: anchor.clone(),
+                nft_ownership_accepted: true,
+                reserve0: Uint128::new(floor),
+                reserve1: Uint128::new(floor),
+                total_liquidity: Uint128::new(2 * floor),
+                block_time_last: 100,
+                price0_cumulative_last: Uint128::zero(),
+                price1_cumulative_last: Uint128::zero(),
+                assets: vec![],
+            },
+        );
+        allowlist(&mut deps, &anchor, 0);
+
+        let (eligible, _) = get_eligible_creator_pools(
+            deps.as_ref(),
+            anchor.as_str(),
+        )
+        .unwrap();
+        assert!(
+            eligible.is_empty(),
+            "anchor must never be returned by get_eligible_creator_pools"
+        );
+    }
+
+    /// Pool whose cross-contract `GetPoolState` errors out (simulating
+    /// a broken / migrated pool) must be silently skipped, not crash
+    /// the whole eligibility calculation. Confirms graceful-fallback
+    /// behaviour in both source paths (allowlist + auto-eligible).
+    #[test]
+    fn broken_pool_is_skipped_not_fatal() {
+        let mut deps = mock_deps_with_querier(&[]);
+        setup(&mut deps, true);
+        let floor = MIN_POOL_LIQUIDITY_FALLBACK_BLUECHIP_PER_SIDE.u128();
+
+        let healthy = make_addr("std_healthy_3");
+        let broken = make_addr("std_broken");
+        register_pool(
+            &mut deps,
+            70,
+            &healthy,
+            pool_factory_interfaces::PoolKind::Standard,
+            0,
+            floor,
+            floor,
+        );
+        register_pool(
+            &mut deps,
+            71,
+            &broken,
+            pool_factory_interfaces::PoolKind::Standard,
+            0,
+            floor,
+            floor,
+        );
+        // Make the broken pool error on cross-contract GetPoolState.
+        deps.querier
+            .query_error_pools
+            .insert(broken.to_string());
+        allowlist(&mut deps, &healthy, 0);
+        allowlist(&mut deps, &broken, 0);
+
+        // Must NOT panic; broken pool is silently dropped.
+        let (eligible, _) = get_eligible_creator_pools(
+            deps.as_ref(),
+            atom_bluechip_pool_addr().as_str(),
+        )
+        .unwrap();
+        assert_eq!(eligible, vec![healthy.to_string()]);
+    }
+}
+
+// ---------------------------------------------------------------------------
+// H3 audit fix: pair-uniqueness invariant
+// ---------------------------------------------------------------------------
+//
+// Single-pool-per-pair guard. Sister tests for:
+//   - `canonical_pair_key`: order-independence and namespace separation
+//     between native denoms and CW20 contract addresses.
+//   - `register_pool`: canonical guard that rejects a second registration
+//     of an already-recorded pair regardless of which entry point called
+//     it. This is the load-bearing check.
+//   - `execute_create_standard_pool`: entry-time pre-check that rejects
+//     a duplicate before charging the creation fee, so a sybil-style
+//     "spawn N duplicates from N different addresses to bypass the
+//     per-address rate limit" attack fails fast on the second attempt
+//     onward.
+//   - `migrate`: back-fills `PAIRS` from existing `POOLS_BY_ID` entries
+//     so chains migrating from a pre-uniqueness build land with the
+//     invariant intact (FIRST pool seen wins; legacy duplicates remain
+//     queryable but no further duplicates can be created).
+mod pair_uniqueness_tests {
+    use super::*;
+    use crate::state::{
+        canonical_pair_key, register_pool, FACTORYINSTANTIATEINFO, PAIRS,
+    };
+    use pool_factory_interfaces::PoolKind;
+
+    fn pool_details_for(pair: [TokenType; 2], pool_id: u64, kind: PoolKind) -> PoolDetails {
+        PoolDetails {
+            pool_id,
+            pool_token_info: pair,
+            creator_pool_addr: make_addr(&format!("pool_{}", pool_id)),
+            pool_kind: kind,
+            commit_pool_ordinal: 0,
+        }
+    }
+
+    /// canonical_pair_key([A, B]) must equal canonical_pair_key([B, A]).
+    /// Without this property, registering [A, B] then [B, A] would land
+    /// on different storage slots and the uniqueness guard would silently
+    /// admit duplicates that differed only in argument order.
+    #[test]
+    fn canonical_pair_key_is_order_independent() {
+        let a = TokenType::Native {
+            denom: "ubluechip".to_string(),
+        };
+        let b = TokenType::Native {
+            denom: "uatom".to_string(),
+        };
+        assert_eq!(
+            canonical_pair_key(&[a.clone(), b.clone()]),
+            canonical_pair_key(&[b, a]),
+        );
+    }
+
+    /// A native denom that happens to look like a CW20 contract-address
+    /// string must NOT collide with a CreatorToken whose `contract_addr`
+    /// equals that string. The `n:` / `c:` prefixes keep the namespaces
+    /// disjoint.
+    #[test]
+    fn canonical_pair_key_separates_native_and_cw20_namespaces() {
+        let collision_string = "cosmos1abc";
+        let native_pair = [
+            TokenType::Native {
+                denom: "ubluechip".to_string(),
+            },
+            TokenType::Native {
+                denom: collision_string.to_string(),
+            },
+        ];
+        let cw20_pair = [
+            TokenType::Native {
+                denom: "ubluechip".to_string(),
+            },
+            TokenType::CreatorToken {
+                contract_addr: Addr::unchecked(collision_string),
+            },
+        ];
+        assert_ne!(canonical_pair_key(&native_pair), canonical_pair_key(&cw20_pair));
+    }
+
+    /// register_pool: first call records the pair in PAIRS; second call
+    /// with the same pair (different pool_id, different address) errors
+    /// with the canonical "duplicate pair" message.
+    #[test]
+    fn register_pool_rejects_duplicate_pair_at_canonical_guard() {
+        let mut deps = mock_deps_with_querier(&[]);
+        setup_factory(&mut deps);
+
+        let pair = [
+            TokenType::Native {
+                denom: "ubluechip".to_string(),
+            },
+            TokenType::Native {
+                denom: "uatom".to_string(),
+            },
+        ];
+
+        let pool1 = pool_details_for(pair.clone(), 1, PoolKind::Standard);
+        register_pool(
+            deps.as_mut().storage,
+            1,
+            &pool1.creator_pool_addr.clone(),
+            &pool1,
+        )
+        .expect("first registration must succeed");
+
+        // PAIRS now contains the canonical key pointing at pool 1.
+        let stored = PAIRS
+            .may_load(&deps.storage, canonical_pair_key(&pair))
+            .unwrap();
+        assert_eq!(stored, Some(1));
+
+        // Second registration with the same pair must fail. We use a
+        // different pool_id and a different contract address to make
+        // sure the rejection is keyed on the pair, not on either of
+        // those.
+        let pool2 = pool_details_for(pair.clone(), 2, PoolKind::Standard);
+        let err = register_pool(
+            deps.as_mut().storage,
+            2,
+            &pool2.creator_pool_addr.clone(),
+            &pool2,
+        )
+        .expect_err("duplicate pair must be rejected at register_pool");
+        assert!(
+            err.to_string().contains("duplicate pair"),
+            "expected duplicate-pair error, got: {}",
+            err
+        );
+
+        // Reverse-order pair must also be rejected (canonicalization).
+        let reversed = [pair[1].clone(), pair[0].clone()];
+        let pool3 = pool_details_for(reversed, 3, PoolKind::Standard);
+        let err = register_pool(
+            deps.as_mut().storage,
+            3,
+            &pool3.creator_pool_addr.clone(),
+            &pool3,
+        )
+        .expect_err("reversed-order duplicate must be rejected");
+        assert!(
+            err.to_string().contains("duplicate pair"),
+            "expected duplicate-pair error on reversed order, got: {}",
+            err
+        );
+    }
+
+    /// CreateStandardPool entry-time pre-check: if PAIRS already has an
+    /// entry for the canonical key, the handler must return
+    /// `ContractError::DuplicatePair` BEFORE charging the creation fee or
+    /// stamping the per-address rate-limit timestamp.
+    ///
+    /// This is the sybil-attack mitigation. Pre-fix, an attacker could
+    /// rotate through unlimited fresh addresses to spam duplicate
+    /// (ATOM, bluechip) pools at fee × N cost. Post-fix, the second
+    /// attempt onward (regardless of sender) fails immediately.
+    #[test]
+    fn create_standard_pool_rejects_duplicate_pair_from_different_sender() {
+        let mut deps = mock_deps_with_querier(&[]);
+        setup_factory(&mut deps);
+        // Disable the USD fee so the test isolates pair-uniqueness from
+        // fee-funds plumbing.
+        let mut cfg = default_factory_config();
+        cfg.standard_pool_wasm_contract_id = 12;
+        cfg.standard_pool_creation_fee_usd = Uint128::zero();
+        FACTORYINSTANTIATEINFO
+            .save(deps.as_mut().storage, &cfg)
+            .unwrap();
+
+        let pair = [
+            TokenType::Native {
+                denom: "ubluechip".to_string(),
+            },
+            TokenType::Native {
+                denom: "uatom".to_string(),
+            },
+        ];
+
+        // Simulate that a previous tx already registered this pair as
+        // pool_id 1. (We seed PAIRS directly because the mock querier
+        // does not run the standard-pool reply chain to completion;
+        // production would have landed this entry through `register_pool`
+        // inside `finalize_standard_pool`.)
+        PAIRS
+            .save(
+                deps.as_mut().storage,
+                canonical_pair_key(&pair),
+                &1u64,
+            )
+            .unwrap();
+
+        // A different sender attempts the same pair. Must fail with
+        // DuplicatePair, NOT with rate-limit (the sender has no prior
+        // stamp), NOT with insufficient-fee (fee is disabled).
+        let attacker = make_addr("sybil_attacker");
+        let env = mock_env();
+        let err = execute(
+            deps.as_mut(),
+            env.clone(),
+            message_info(&attacker, &[]),
+            ExecuteMsg::CreateStandardPool {
+                pool_token_info: pair.clone(),
+                label: "duplicate-attempt".to_string(),
+            },
+        )
+        .expect_err("duplicate pair from different sender must reject");
+
+        assert!(
+            matches!(err, ContractError::DuplicatePair { existing_pool_id: 1, .. }),
+            "expected DuplicatePair{{existing_pool_id: 1, ..}}, got: {:?}",
+            err
+        );
+
+        // And the reversed-order pair from yet another sender is also
+        // rejected — order independence at the entry point.
+        let attacker2 = make_addr("sybil_attacker_2");
+        let reversed = [pair[1].clone(), pair[0].clone()];
+        let err = execute(
+            deps.as_mut(),
+            env,
+            message_info(&attacker2, &[]),
+            ExecuteMsg::CreateStandardPool {
+                pool_token_info: reversed,
+                label: "duplicate-attempt-reversed".to_string(),
+            },
+        )
+        .expect_err("reversed-order duplicate must reject");
+        assert!(
+            matches!(err, ContractError::DuplicatePair { existing_pool_id: 1, .. }),
+            "expected DuplicatePair on reversed pair, got: {:?}",
+            err
+        );
+    }
+
+    /// Same pair, same sender within cooldown: the duplicate guard must
+    /// fire BEFORE the rate-limit gate. (Both checks would reject, but
+    /// the duplicate-pair error is the actionable one for a frontend —
+    /// "this pair already exists" tells the user there's nothing to do,
+    /// while "rate-limited" suggests retrying later.)
+    #[test]
+    fn create_standard_pool_duplicate_check_runs_before_rate_limit() {
+        let mut deps = mock_deps_with_querier(&[]);
+        setup_factory(&mut deps);
+        let mut cfg = default_factory_config();
+        cfg.standard_pool_wasm_contract_id = 12;
+        cfg.standard_pool_creation_fee_usd = Uint128::zero();
+        FACTORYINSTANTIATEINFO
+            .save(deps.as_mut().storage, &cfg)
+            .unwrap();
+
+        let pair = [
+            TokenType::Native {
+                denom: "ubluechip".to_string(),
+            },
+            TokenType::Native {
+                denom: "uatom".to_string(),
+            },
+        ];
+        PAIRS
+            .save(
+                deps.as_mut().storage,
+                canonical_pair_key(&pair),
+                &7u64,
+            )
+            .unwrap();
+
+        let caller = make_addr("dup_then_cooldown_caller");
+        // Seed a recent rate-limit stamp so BOTH gates would fire.
+        crate::state::LAST_STANDARD_POOL_CREATE_AT
+            .save(
+                deps.as_mut().storage,
+                caller.clone(),
+                &mock_env().block.time,
+            )
+            .unwrap();
+
+        let err = execute(
+            deps.as_mut(),
+            mock_env(),
+            message_info(&caller, &[]),
+            ExecuteMsg::CreateStandardPool {
+                pool_token_info: pair,
+                label: "ordering".to_string(),
+            },
+        )
+        .expect_err("must reject");
+        assert!(
+            matches!(err, ContractError::DuplicatePair { existing_pool_id: 7, .. }),
+            "duplicate-pair check must fire before rate-limit; got: {:?}",
+            err
+        );
+    }
+
+    /// Migrate back-fill: after instantiating the factory and seeding
+    /// `POOLS_BY_ID` directly with two distinct pools (different pairs),
+    /// migrate must populate `PAIRS` with one entry per pair.
+    #[test]
+    fn migrate_backfills_pairs_from_existing_pools() {
+        let mut deps = mock_deps_with_querier(&[]);
+        setup_factory(&mut deps);
+
+        let pair1 = [
+            TokenType::Native {
+                denom: "ubluechip".to_string(),
+            },
+            TokenType::Native {
+                denom: "uatom".to_string(),
+            },
+        ];
+        let pair2 = [
+            TokenType::Native {
+                denom: "ubluechip".to_string(),
+            },
+            TokenType::CreatorToken {
+                contract_addr: make_addr("creator_token_xyz"),
+            },
+        ];
+
+        POOLS_BY_ID
+            .save(
+                deps.as_mut().storage,
+                10,
+                &pool_details_for(pair1.clone(), 10, PoolKind::Standard),
+            )
+            .unwrap();
+        POOLS_BY_ID
+            .save(
+                deps.as_mut().storage,
+                11,
+                &pool_details_for(pair2.clone(), 11, PoolKind::Commit),
+            )
+            .unwrap();
+
+        // PAIRS empty pre-migrate.
+        assert!(PAIRS
+            .may_load(&deps.storage, canonical_pair_key(&pair1))
+            .unwrap()
+            .is_none());
+
+        cw2::set_contract_version(
+            &mut deps.storage,
+            "crates.io:bluechip-factory",
+            "0.1.0",
+        )
+        .unwrap();
+        let res =
+            crate::migrate::migrate(deps.as_mut(), mock_env(), Empty {}).expect("migrate ok");
+
+        assert_eq!(
+            PAIRS
+                .may_load(&deps.storage, canonical_pair_key(&pair1))
+                .unwrap(),
+            Some(10),
+        );
+        assert_eq!(
+            PAIRS
+                .may_load(&deps.storage, canonical_pair_key(&pair2))
+                .unwrap(),
+            Some(11),
+        );
+        // Observability: backfilled count surfaced as an attribute.
+        let backfilled = res
+            .attributes
+            .iter()
+            .find(|a| a.key == "pairs_backfilled")
+            .map(|a| a.value.as_str());
+        assert_eq!(backfilled, Some("2"));
+        let legacy = res
+            .attributes
+            .iter()
+            .find(|a| a.key == "legacy_duplicate_pairs_skipped")
+            .map(|a| a.value.as_str());
+        assert_eq!(legacy, Some("0"));
+    }
+
+    /// Migrate must preserve legacy duplicates (FIRST pool_id wins) and
+    /// surface the skip count as an observability attribute. Lower
+    /// pool_id wins because `POOLS_BY_ID.range(..)` iterates ascending.
+    #[test]
+    fn migrate_preserves_legacy_duplicates_first_pool_wins() {
+        let mut deps = mock_deps_with_querier(&[]);
+        setup_factory(&mut deps);
+
+        let pair = [
+            TokenType::Native {
+                denom: "ubluechip".to_string(),
+            },
+            TokenType::Native {
+                denom: "uatom".to_string(),
+            },
+        ];
+
+        // Two legacy duplicate pools at the same pair (this is exactly
+        // the pre-fix sybil-attack outcome we're back-filling around).
+        POOLS_BY_ID
+            .save(
+                deps.as_mut().storage,
+                5,
+                &pool_details_for(pair.clone(), 5, PoolKind::Standard),
+            )
+            .unwrap();
+        POOLS_BY_ID
+            .save(
+                deps.as_mut().storage,
+                9,
+                &pool_details_for(pair.clone(), 9, PoolKind::Standard),
+            )
+            .unwrap();
+
+        cw2::set_contract_version(
+            &mut deps.storage,
+            "crates.io:bluechip-factory",
+            "0.1.0",
+        )
+        .unwrap();
+        let res =
+            crate::migrate::migrate(deps.as_mut(), mock_env(), Empty {}).expect("migrate ok");
+
+        // First-seen (lowest pool_id) wins.
+        assert_eq!(
+            PAIRS
+                .may_load(&deps.storage, canonical_pair_key(&pair))
+                .unwrap(),
+            Some(5),
+        );
+        let legacy = res
+            .attributes
+            .iter()
+            .find(|a| a.key == "legacy_duplicate_pairs_skipped")
+            .map(|a| a.value.as_str());
+        assert_eq!(legacy, Some("1"));
+
+        // Crucially: post-migrate, NEW duplicate creations of this pair
+        // must reject. This is what the back-fill actually buys us —
+        // legacy chain state is grandfathered, but the invariant kicks
+        // in for every subsequent creation.
+        let mut cfg = default_factory_config();
+        cfg.standard_pool_wasm_contract_id = 12;
+        cfg.standard_pool_creation_fee_usd = Uint128::zero();
+        FACTORYINSTANTIATEINFO
+            .save(deps.as_mut().storage, &cfg)
+            .unwrap();
+
+        let new_attacker = make_addr("post_migrate_attacker");
+        let err = execute(
+            deps.as_mut(),
+            mock_env(),
+            message_info(&new_attacker, &[]),
+            ExecuteMsg::CreateStandardPool {
+                pool_token_info: pair,
+                label: "should-fail".to_string(),
+            },
+        )
+        .expect_err("post-migrate duplicate must reject");
+        assert!(
+            matches!(err, ContractError::DuplicatePair { existing_pool_id: 5, .. }),
+            "post-migrate: expected DuplicatePair pointing at the grandfathered pool 5; got: {:?}",
+            err
+        );
+    }
+
+    /// Migrate is idempotent: running it twice must not duplicate-insert
+    /// or change the recorded pool_id (no-op on second run).
+    #[test]
+    fn migrate_pairs_backfill_is_idempotent() {
+        let mut deps = mock_deps_with_querier(&[]);
+        setup_factory(&mut deps);
+
+        let pair = [
+            TokenType::Native {
+                denom: "ubluechip".to_string(),
+            },
+            TokenType::Native {
+                denom: "uatom".to_string(),
+            },
+        ];
+        POOLS_BY_ID
+            .save(
+                deps.as_mut().storage,
+                42,
+                &pool_details_for(pair.clone(), 42, PoolKind::Standard),
+            )
+            .unwrap();
+
+        cw2::set_contract_version(
+            &mut deps.storage,
+            "crates.io:bluechip-factory",
+            "0.1.0",
+        )
+        .unwrap();
+        crate::migrate::migrate(deps.as_mut(), mock_env(), Empty {}).expect("first migrate ok");
+        // Second migrate: stored version was just written to CONTRACT_VERSION
+        // (current). Reset to an older value so the migrate handler accepts
+        // the re-run rather than no-op-ing through the equal-version branch.
+        cw2::set_contract_version(
+            &mut deps.storage,
+            "crates.io:bluechip-factory",
+            "0.1.0",
+        )
+        .unwrap();
+        let res2 =
+            crate::migrate::migrate(deps.as_mut(), mock_env(), Empty {}).expect("re-migrate ok");
+
+        assert_eq!(
+            PAIRS
+                .may_load(&deps.storage, canonical_pair_key(&pair))
+                .unwrap(),
+            Some(42),
+            "pool_id must NOT change on re-run",
+        );
+        // Re-run sees the entry already populated → backfilled=0.
+        let backfilled = res2
+            .attributes
+            .iter()
+            .find(|a| a.key == "pairs_backfilled")
+            .map(|a| a.value.as_str());
+        assert_eq!(backfilled, Some("0"));
     }
 }
 

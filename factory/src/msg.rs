@@ -178,6 +178,70 @@ pub enum ExecuteMsg {
     PruneRateLimits {
         batch_size: Option<u32>,
     },
+
+    // ---- Oracle eligibility curation (M-3 audit fix) ----
+    //
+    // Two parallel inputs feed the oracle's eligible-pool set: an
+    // admin-curated allowlist (`ORACLE_ELIGIBLE_POOLS`, any pool kind)
+    // and a global flag that, when true, also auto-includes every
+    // threshold-crossed `PoolKind::Commit` pool. The roadmap is:
+    //   - Stage 1–3: admin curates the allowlist (anchor + a few
+    //     bluechip/IBC standard pools); auto-eligible flag is OFF.
+    //   - Stage 4+: admin flips the flag to ON; threshold-crossed
+    //     creator pools flow in automatically.
+    // Add: 48h timelock. Remove: immediate. Flag flip: 48h timelock.
+
+    /// Admin-only. Stage a pool address for inclusion in the oracle
+    /// allowlist. Requires the standard 48h timelock before
+    /// `ApplyAddOracleEligiblePool` can land it. Validates at propose
+    /// time that the pool exists in `POOLS_BY_ID` and has a bluechip
+    /// side, but final inclusion is gated on re-validation at apply.
+    ProposeAddOracleEligiblePool {
+        pool_addr: String,
+    },
+    /// Admin-only. Apply a previously-proposed oracle-allowlist add
+    /// after the 48h timelock has elapsed. Re-validates the pool's
+    /// bluechip-side index against current registry state.
+    ApplyAddOracleEligiblePool {
+        pool_addr: String,
+    },
+    /// Admin-only. Discard a pending oracle-allowlist add before
+    /// the timelock has expired. No-op on already-applied adds
+    /// (use `RemoveOracleEligiblePool` for those).
+    CancelAddOracleEligiblePool {
+        pool_addr: String,
+    },
+    /// Admin-only. Drop a pool from the oracle allowlist. Effect is
+    /// immediate (no timelock) — removing a contributor is always
+    /// safe relative to oracle integrity, and the breaker /
+    /// snapshot-refresh machinery handles the consequent
+    /// recomputation cleanly.
+    RemoveOracleEligiblePool {
+        pool_addr: String,
+    },
+    /// Admin-only. Stage a flip of the global `COMMIT_POOLS_AUTO_ELIGIBLE`
+    /// flag. Standard 48h timelock before `ApplySetCommitPoolsAutoEligible`
+    /// can land it. Both ON→OFF and OFF→ON are timelocked: turning OFF
+    /// affects creator-pool operators who will lose oracle weight, and
+    /// they deserve the same observability window as turning ON.
+    ProposeSetCommitPoolsAutoEligible {
+        enabled: bool,
+    },
+    /// Admin-only. Apply the previously-proposed flag flip after the
+    /// 48h timelock has elapsed.
+    ApplySetCommitPoolsAutoEligible {},
+    /// Admin-only. Discard a pending flag flip before the timelock
+    /// has expired.
+    CancelSetCommitPoolsAutoEligible {},
+    /// Permissionless. Force a rebuild of `ELIGIBLE_POOL_SNAPSHOT` from
+    /// the current allowlist + auto-flag inputs. Rate-limited via
+    /// `ORACLE_REFRESH_RATE_LIMIT_BLOCKS` so this can't be spammed.
+    /// Useful when the admin has just added a pool to the allowlist
+    /// and wants the oracle to start sampling it without waiting for
+    /// the next lazy refresh inside `select_random_pools_with_atom`.
+    /// Has no effect on which pools are eligible — only on when the
+    /// snapshot reflects the current eligibility inputs.
+    RefreshOraclePoolSnapshot {},
 }
 
 #[cw_serde]

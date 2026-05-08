@@ -23,15 +23,17 @@ pub use pool_core::admin::{
 
 use crate::error::ContractError;
 use crate::state::{
-    DistributionState, RecoveryType, COMMIT_LEDGER, CREATOR_EXCESS_POSITION,
+    DistributionState, RecoveryType, COMMITFEEINFO, COMMIT_LEDGER, CREATOR_EXCESS_POSITION,
     DEFAULT_ESTIMATED_GAS_PER_DISTRIBUTION, DEFAULT_MAX_GAS_PER_TX, DISTRIBUTION_STATE,
-    EXPECTED_FACTORY, IS_THRESHOLD_HIT, LAST_THRESHOLD_ATTEMPT,
-    MAX_CONSECUTIVE_DISTRIBUTION_FAILURES, PENDING_EMERGENCY_WITHDRAW, POOL_INFO, REENTRANCY_LOCK,
+    EXPECTED_FACTORY, FAILED_MINTS, IS_THRESHOLD_HIT, LAST_THRESHOLD_ATTEMPT,
+    MAX_CONSECUTIVE_DISTRIBUTION_FAILURES, PENDING_EMERGENCY_WITHDRAW, POOL_INFO,
+    PUBLIC_DISTRIBUTION_RECOVERY_WINDOW_SECONDS, REENTRANCY_LOCK,
     STUCK_DISTRIBUTION_RECOVERY_WINDOW_SECONDS, STUCK_THRESHOLD_RECOVERY_WINDOW_SECONDS,
     THRESHOLD_PROCESSING,
 };
 use cosmwasm_std::{
-    DepsMut, Env, MessageInfo, Order, Response, StdResult, Storage, Timestamp, Uint128,
+    Addr, DepsMut, Env, MessageInfo, Order, Response, StdError, StdResult, Storage, SubMsg,
+    Timestamp, Uint128, Uint256,
 };
 
 // ---------------------------------------------------------------------------
@@ -271,4 +273,287 @@ fn recover_reentrancy_guard(
         recovered.push("reentrancy_guard".to_string());
     }
     Ok(())
+}
+
+// ---------------------------------------------------------------------------
+// H6 audit fix: distribution liveness primitives
+// ---------------------------------------------------------------------------
+//
+// `SkipDistributionUser`        — factory-only escape hatch.
+// `SelfRecoverDistribution`     — permissionless restart after 7d stall.
+// `ClaimFailedDistribution`     — committer-side claim of an isolated
+//                                 mint failure (lives in commit module
+//                                 alongside the distribution batch
+//                                 builder; see commit/distribution.rs).
+//
+// Together these make distribution live-or-die independent of any
+// single committer (per-mint reply isolation does the heavy lifting),
+// independent of admin availability (7-day permissionless recovery),
+// and independent of unforeseen ledger-row corruption (admin can
+// surgically remove a single poison row without resetting the cursor).
+// ---------------------------------------------------------------------------
+
+/// Compute a single committer's pro-rata share of `total_to_distribute`,
+/// matching `calculate_committer_reward` in distribution_batch.rs. Kept
+/// here so the skip handler can credit the same amount to FAILED_MINTS
+/// that the mint loop would have produced.
+fn compute_committer_reward(
+    usd_paid: Uint128,
+    total_to_distribute: Uint128,
+    total_committed_usd: Uint128,
+) -> StdResult<Uint128> {
+    if total_committed_usd.is_zero() {
+        return Ok(Uint128::zero());
+    }
+    let reward = Uint128::try_from(
+        Uint256::from(usd_paid)
+            .checked_mul(Uint256::from(total_to_distribute))
+            .map_err(|o| StdError::generic_err(o.to_string()))?
+            .checked_div(Uint256::from(total_committed_usd))
+            .map_err(|o| StdError::generic_err(o.to_string()))?,
+    )
+    .map_err(|o| StdError::generic_err(o.to_string()))?;
+    Ok(reward)
+}
+
+/// Factory-only: surgically remove a single committer from `COMMIT_LEDGER`
+/// when their row is blocking distribution progress in a way the per-mint
+/// reply isolation cannot handle (e.g., the row's serialization is itself
+/// corrupt and `range(..)` errors before the mint subroutine ever fires).
+///
+/// Their pro-rata reward is preserved by accumulating it into
+/// `FAILED_MINTS` under the original committer address — the user can
+/// later call `ClaimFailedDistribution` with an alternate recipient to
+/// retrieve it. This keeps the entitlement intact while unblocking the
+/// batch processor.
+///
+/// Side effects:
+///   - Resets `consecutive_failures` and re-enables `is_distributing` so
+///     the next `ContinueDistribution` call resumes work without a
+///     separate `RecoverPoolStuckStates` invocation.
+///   - Advances `last_processed_key` only if the cursor was pointing at
+///     (or past) the skipped user — never rewinds the cursor.
+pub fn execute_skip_distribution_user(
+    deps: DepsMut,
+    env: Env,
+    info: MessageInfo,
+    user: String,
+) -> Result<Response, ContractError> {
+    let real_factory = EXPECTED_FACTORY.load(deps.storage)?;
+    if info.sender != real_factory.expected_factory_address {
+        return Err(ContractError::Unauthorized {});
+    }
+    ensure_not_drained(deps.storage)?;
+
+    let user_addr: Addr = deps.api.addr_validate(&user)?;
+
+    // Take a snapshot of the ledger entry. `may_load` returns the USD
+    // amount the committer paid; if absent, the skip is a no-op error
+    // so the caller knows their input doesn't match a real row.
+    let usd_paid = COMMIT_LEDGER
+        .may_load(deps.storage, &user_addr)?
+        .ok_or_else(|| ContractError::LedgerEntryNotFound {
+            user: user_addr.to_string(),
+        })?;
+
+    // Compute the reward this committer would have received from the
+    // current `DistributionState`. If no distribution is in flight (the
+    // row exists but distribution hasn't started), the reward is zero
+    // and we just remove the row.
+    let credited_amount = match DISTRIBUTION_STATE.may_load(deps.storage)? {
+        Some(dist) => {
+            compute_committer_reward(usd_paid, dist.total_to_distribute, dist.total_committed_usd)?
+        }
+        None => Uint128::zero(),
+    };
+
+    if !credited_amount.is_zero() {
+        FAILED_MINTS.update::<_, StdError>(deps.storage, &user_addr, |existing| {
+            let prior = existing.unwrap_or_default();
+            prior
+                .checked_add(credited_amount)
+                .map_err(|o| StdError::generic_err(o.to_string()))
+        })?;
+    }
+    COMMIT_LEDGER.remove(deps.storage, &user_addr);
+
+    // Reset the consecutive-failures gate and re-enable distribution.
+    // `last_processed_key` is intentionally NOT touched — if it was at
+    // or past the skipped row, the batch processor's range query will
+    // simply skip past on its next call. Rewinding here would replay
+    // already-paid committers on the second pass.
+    if let Some(mut dist) = DISTRIBUTION_STATE.may_load(deps.storage)? {
+        dist.consecutive_failures = 0;
+        dist.is_distributing = true;
+        dist.last_updated = env.block.time;
+        // Decrement the informational `distributions_remaining` so the
+        // exposed counter doesn't tell keepers there's still work to
+        // do for the skipped row. Saturating-sub guards against the
+        // (anomalous) zero case.
+        dist.distributions_remaining = dist.distributions_remaining.saturating_sub(1);
+        DISTRIBUTION_STATE.save(deps.storage, &dist)?;
+    }
+
+    let pool_info = POOL_INFO.load(deps.storage)?;
+    Ok(Response::new()
+        .add_attribute("action", "skip_distribution_user")
+        .add_attribute("skipped_user", user_addr.to_string())
+        .add_attribute("usd_paid", usd_paid.to_string())
+        .add_attribute("credited_to_failed_mints", credited_amount.to_string())
+        .add_attribute("pool_contract", pool_info.pool_info.contract_addr.to_string())
+        .add_attribute("skipped_by", info.sender.to_string())
+        .add_attribute("block_time", env.block.time.seconds().to_string()))
+}
+
+/// Permissionless: restart a stalled distribution after a 7-day stall
+/// window. Mirrors `recover_distribution`'s cursor-reset semantics but
+/// gates on the longer `PUBLIC_DISTRIBUTION_RECOVERY_WINDOW_SECONDS`
+/// rather than admin auth, so distribution liveness is no longer a
+/// hard dependency on the factory admin.
+///
+/// This handler does NOT skip any rows — if the stall is caused by a
+/// poison committer, the per-mint reply isolation fix already absorbs
+/// the failure on the next batch attempt. Self-recover is the
+/// liveness backstop for the case where keepers are entirely offline
+/// (no batch attempts at all for a week), so a fresh keeper can
+/// resume work without going through the factory.
+pub fn execute_self_recover_distribution(
+    deps: DepsMut,
+    env: Env,
+    info: MessageInfo,
+) -> Result<Response, ContractError> {
+    ensure_not_drained(deps.storage)?;
+
+    let dist_state = DISTRIBUTION_STATE
+        .may_load(deps.storage)?
+        .ok_or(ContractError::NoDistributionToSelfRecover)?;
+
+    let now = env.block.time.seconds();
+    let elapsed = now.saturating_sub(dist_state.last_updated.seconds());
+    if elapsed < PUBLIC_DISTRIBUTION_RECOVERY_WINDOW_SECONDS {
+        return Err(ContractError::DistributionNotStalledForSelfRecover {
+            elapsed,
+            window: PUBLIC_DISTRIBUTION_RECOVERY_WINDOW_SECONDS,
+            admin_window: STUCK_DISTRIBUTION_RECOVERY_WINDOW_SECONDS,
+        });
+    }
+
+    let remaining_committers = COMMIT_LEDGER
+        .keys(deps.storage, None, None, Order::Ascending)
+        .count() as u32;
+
+    if remaining_committers == 0 {
+        DISTRIBUTION_STATE.remove(deps.storage);
+    } else {
+        let restarted = DistributionState {
+            is_distributing: true,
+            total_to_distribute: dist_state.total_to_distribute,
+            total_committed_usd: dist_state.total_committed_usd,
+            last_processed_key: None,
+            distributions_remaining: remaining_committers,
+            estimated_gas_per_distribution: DEFAULT_ESTIMATED_GAS_PER_DISTRIBUTION,
+            max_gas_per_tx: DEFAULT_MAX_GAS_PER_TX,
+            last_successful_batch_size: None,
+            consecutive_failures: 0,
+            started_at: env.block.time,
+            last_updated: env.block.time,
+            // Preserve `distributed_so_far` for the same reason as
+            // `recover_distribution`: the dust-settlement math at the
+            // final batch reads this value, and resetting to zero would
+            // cause the residual mint to double-count the partial mints
+            // from the pre-stall batches.
+            distributed_so_far: dist_state.distributed_so_far,
+        };
+        DISTRIBUTION_STATE.save(deps.storage, &restarted)?;
+    }
+
+    let pool_info = POOL_INFO.load(deps.storage)?;
+    Ok(Response::new()
+        .add_attribute("action", "self_recover_distribution")
+        .add_attribute("recovered_by", info.sender.to_string())
+        .add_attribute("stall_elapsed_seconds", elapsed.to_string())
+        .add_attribute("remaining_committers", remaining_committers.to_string())
+        .add_attribute("pool_contract", pool_info.pool_info.contract_addr.to_string())
+        .add_attribute("block_time", env.block.time.seconds().to_string()))
+}
+
+/// Withdraw an isolated-failure distribution mint. Caller's address (or
+/// any committer they hold the FAILED_MINTS entry for, in practice they
+/// can only claim their own — see auth check) must have a non-zero
+/// FAILED_MINTS entry.
+///
+/// Optional `recipient` lets the user redirect the mint to a fresh
+/// wallet; this is the practical exit when the original recipient is
+/// the very reason the mint failed (a contract that rejects CW20
+/// receive, a future blacklist on the original CW20). Defaults to
+/// `info.sender` so the simple case takes no parameters.
+///
+/// Mint goes through the same `build_distribution_mint_submsg` harness
+/// as the bulk distribution path, so a re-failure (the alternate
+/// recipient is also blocked) is captured cleanly: the amount goes
+/// back into FAILED_MINTS under the original committer for another
+/// retry attempt. The FAILED_MINTS entry is removed BEFORE the SubMsg
+/// dispatches; on dispatch failure the reply handler re-adds it. This
+/// keeps the storage state correct in both branches without requiring
+/// a separate "in-flight claim" stash.
+pub fn execute_claim_failed_distribution(
+    deps: DepsMut,
+    env: Env,
+    info: MessageInfo,
+    recipient: Option<String>,
+) -> Result<Response, ContractError> {
+    ensure_not_drained(deps.storage)?;
+
+    let owed = FAILED_MINTS
+        .may_load(deps.storage, &info.sender)?
+        .ok_or_else(|| ContractError::NoFailedMintEntry {
+            user: info.sender.to_string(),
+        })?;
+    if owed.is_zero() {
+        // Defensive: persisted zero would be a state-corruption shape;
+        // treat it as absent.
+        FAILED_MINTS.remove(deps.storage, &info.sender);
+        return Err(ContractError::NoFailedMintEntry {
+            user: info.sender.to_string(),
+        });
+    }
+
+    let recipient_addr: Addr = match recipient {
+        Some(s) => deps.api.addr_validate(&s)?,
+        None => info.sender.clone(),
+    };
+
+    // Remove the FAILED_MINTS entry BEFORE building the SubMsg. If the
+    // mint succeeds, the removal stands. If it fails, the reply handler
+    // re-credits the original committer's address so a future claim can
+    // retry. This avoids a parallel "in-flight claim" stash; the
+    // PendingMint entry that the SubMsg builder writes already serves
+    // that role.
+    FAILED_MINTS.remove(deps.storage, &info.sender);
+
+    let pool_info = POOL_INFO.load(deps.storage)?;
+    let submsg: SubMsg = crate::commit::distribution_batch::build_distribution_mint_submsg(
+        deps.storage,
+        &pool_info.token_address,
+        &recipient_addr,
+        // accounting key stays the original committer (info.sender) so
+        // a re-failure reaccumulates back to them, not to the alternate
+        // recipient.
+        &info.sender,
+        owed,
+    )?;
+
+    // Touch the COMMITFEEINFO load so a misconfigured pool fails here
+    // rather than deep in the reply handler. Cheap defense-in-depth;
+    // the variable itself is unused.
+    let _ = COMMITFEEINFO.may_load(deps.storage)?;
+
+    Ok(Response::new()
+        .add_submessage(submsg)
+        .add_attribute("action", "claim_failed_distribution")
+        .add_attribute("committer", info.sender.to_string())
+        .add_attribute("recipient", recipient_addr.to_string())
+        .add_attribute("amount", owed.to_string())
+        .add_attribute("pool_contract", pool_info.pool_info.contract_addr.to_string())
+        .add_attribute("block_time", env.block.time.seconds().to_string()))
 }
