@@ -105,11 +105,21 @@ TX_FLAGS=(
 
 # Submit a tx, wait for inclusion, fail on non-zero code.
 # stdout: full tx-result JSON
-# stderr: status messages
+# stderr: status messages, plus the raw osmosisd stderr on submit failure
+# so the operator can see *why* (gas-estimate failure, fee underpayment,
+# simulation revert, etc.) instead of a generic "submit failed".
 submit_tx() {
-    local raw
-    raw="$(osmosisd tx "$@" "${TX_FLAGS[@]}" 2>/dev/null)" \
-        || { echo "error: tx submit (mempool admission) failed for: $*" >&2; return 1; }
+    local raw stderr_file
+    stderr_file="$(mktemp)"
+    if ! raw="$(osmosisd tx "$@" "${TX_FLAGS[@]}" 2>"$stderr_file")"; then
+        echo "error: tx submit (mempool admission) failed for: $*" >&2
+        echo "--- osmosisd stderr ---" >&2
+        cat "$stderr_file" >&2
+        echo "-----------------------" >&2
+        rm -f "$stderr_file"
+        return 1
+    fi
+    rm -f "$stderr_file"
     local tx_hash
     tx_hash="$(echo "$raw" | jq -r '.txhash // empty')"
     if [ -z "$tx_hash" ]; then
@@ -141,8 +151,8 @@ submit_tx() {
 extract_attr() {
     local json="$1" type="$2" key="$3"
     echo "$json" | jq -r --arg t "$type" --arg k "$key" '
-        .events[] | select(.type == $t) | .attributes[]
-        | select(.key == $k) | .value' | head -n 1
+        [ .events[] | select(.type == $t) | .attributes[]
+        | select(.key == $k) | .value ] | first // empty'
 }
 
 # ---- 1. Tokenfactory ubluechip denom -------------------------------
@@ -197,10 +207,18 @@ EXPAND_ECONOMY_CODE_ID="$(upload_wasm expand_economy.wasm 'Expand economy')"
 echo ""
 echo "[3/4] instantiate expand-economy"
 
+# IMPORTANT: pass `bluechip_denom` explicitly. The InstantiateMsg has
+# `#[serde(default)]` on it which falls back to the literal string
+# "ubluechip". On osmo-test-5 our bluechip is a tokenfactory denom
+# (factory/<alice>/ubluechip), and expand-economy holds funds in
+# THAT denom. If we let it default, threshold-crossing payouts in
+# slice 4 would try to send plain "ubluechip" and fail with
+# "insufficient funds" because the contract has none of that denom.
 EXPAND_INIT="$(jq -nc \
-    --arg factory "$ADDR" \
-    --arg owner "$ADDR" \
-    '{factory_address: $factory, owner: $owner}')"
+    --arg factory    "$ADDR" \
+    --arg owner      "$ADDR" \
+    --arg blue_denom "$BLUECHIP_DENOM" \
+    '{factory_address:$factory, owner:$owner, bluechip_denom:$blue_denom}')"
 
 # --no-admin: we never want to migrate expand-economy from a key.
 EXPAND_RESULT="$(submit_tx wasm instantiate "$EXPAND_ECONOMY_CODE_ID" "$EXPAND_INIT" \
