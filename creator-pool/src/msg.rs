@@ -121,6 +121,47 @@ pub enum ExecuteMsg {
     // no-op. Clears the pending flag on successful reply.
     RetryFactoryNotify {},
     CancelEmergencyWithdraw {},
+
+    // Factory-only escape hatch for distribution liveness. Removes a single
+    // committer's COMMIT_LEDGER row, computes their pro-rata reward, and
+    // moves the amount into FAILED_MINTS so the user can claim it later via
+    // ClaimFailedDistribution against an alternate recipient. Use when a
+    // committer's address is genuinely un-mintable (e.g., a contract
+    // recipient that rejects CW20 mint hooks, a CW20 with a future
+    // blacklist) and the per-mint reply isolation isn't enough — for
+    // example, when iteration over the ledger itself fails on a corrupt
+    // row.
+    //
+    // Resets `consecutive_failures` and re-enables `is_distributing` so
+    // distribution resumes without an additional admin call.
+    SkipDistributionUser {
+        user: String,
+    },
+
+    // Permissionless distribution restart for the catastrophic case where
+    // the admin path is unavailable for an extended period. Available
+    // only after PUBLIC_DISTRIBUTION_RECOVERY_WINDOW_SECONDS (7 days)
+    // since the last successful batch — the admin's 1h window has many
+    // chances to fire first. Restarts the cursor at None and resets
+    // failure counters; preserves `distributed_so_far` so dust settlement
+    // still mints exactly the post-distribution residual.
+    SelfRecoverDistribution {},
+
+    // Withdraw a previously-failed distribution mint. Caller must have a
+    // non-zero entry in FAILED_MINTS (the original committer address).
+    // Optional `recipient` lets the user route the claim to a fresh
+    // wallet — useful when the original recipient is the reason the mint
+    // failed (e.g., a contract that rejects CW20 receive). Defaults to
+    // `info.sender` so the simple case requires no parameters.
+    //
+    // Mint is dispatched as a reply_always SubMsg using the same
+    // isolation harness as the bulk distribution path: if it fails again
+    // (e.g., the alternate recipient is also blocked) the amount is
+    // re-stashed into FAILED_MINTS under the original committer address
+    // so they can try again with yet another recipient.
+    ClaimFailedDistribution {
+        recipient: Option<String>,
+    },
 }
 
 #[cw_serde]
