@@ -4425,3 +4425,523 @@ mod cross_pool_integration_tests {
     }
 }
 
+// ---------------------------------------------------------------------------
+// H3 audit fix: pair-uniqueness invariant
+// ---------------------------------------------------------------------------
+//
+// Single-pool-per-pair guard. Sister tests for:
+//   - `canonical_pair_key`: order-independence and namespace separation
+//     between native denoms and CW20 contract addresses.
+//   - `register_pool`: canonical guard that rejects a second registration
+//     of an already-recorded pair regardless of which entry point called
+//     it. This is the load-bearing check.
+//   - `execute_create_standard_pool`: entry-time pre-check that rejects
+//     a duplicate before charging the creation fee, so a sybil-style
+//     "spawn N duplicates from N different addresses to bypass the
+//     per-address rate limit" attack fails fast on the second attempt
+//     onward.
+//   - `migrate`: back-fills `PAIRS` from existing `POOLS_BY_ID` entries
+//     so chains migrating from a pre-uniqueness build land with the
+//     invariant intact (FIRST pool seen wins; legacy duplicates remain
+//     queryable but no further duplicates can be created).
+mod pair_uniqueness_tests {
+    use super::*;
+    use crate::state::{
+        canonical_pair_key, register_pool, FACTORYINSTANTIATEINFO, PAIRS,
+    };
+    use pool_factory_interfaces::PoolKind;
+
+    fn pool_details_for(pair: [TokenType; 2], pool_id: u64, kind: PoolKind) -> PoolDetails {
+        PoolDetails {
+            pool_id,
+            pool_token_info: pair,
+            creator_pool_addr: make_addr(&format!("pool_{}", pool_id)),
+            pool_kind: kind,
+            commit_pool_ordinal: 0,
+        }
+    }
+
+    /// canonical_pair_key([A, B]) must equal canonical_pair_key([B, A]).
+    /// Without this property, registering [A, B] then [B, A] would land
+    /// on different storage slots and the uniqueness guard would silently
+    /// admit duplicates that differed only in argument order.
+    #[test]
+    fn canonical_pair_key_is_order_independent() {
+        let a = TokenType::Native {
+            denom: "ubluechip".to_string(),
+        };
+        let b = TokenType::Native {
+            denom: "uatom".to_string(),
+        };
+        assert_eq!(
+            canonical_pair_key(&[a.clone(), b.clone()]),
+            canonical_pair_key(&[b, a]),
+        );
+    }
+
+    /// A native denom that happens to look like a CW20 contract-address
+    /// string must NOT collide with a CreatorToken whose `contract_addr`
+    /// equals that string. The `n:` / `c:` prefixes keep the namespaces
+    /// disjoint.
+    #[test]
+    fn canonical_pair_key_separates_native_and_cw20_namespaces() {
+        let collision_string = "cosmos1abc";
+        let native_pair = [
+            TokenType::Native {
+                denom: "ubluechip".to_string(),
+            },
+            TokenType::Native {
+                denom: collision_string.to_string(),
+            },
+        ];
+        let cw20_pair = [
+            TokenType::Native {
+                denom: "ubluechip".to_string(),
+            },
+            TokenType::CreatorToken {
+                contract_addr: Addr::unchecked(collision_string),
+            },
+        ];
+        assert_ne!(canonical_pair_key(&native_pair), canonical_pair_key(&cw20_pair));
+    }
+
+    /// register_pool: first call records the pair in PAIRS; second call
+    /// with the same pair (different pool_id, different address) errors
+    /// with the canonical "duplicate pair" message.
+    #[test]
+    fn register_pool_rejects_duplicate_pair_at_canonical_guard() {
+        let mut deps = mock_deps_with_querier(&[]);
+        setup_factory(&mut deps);
+
+        let pair = [
+            TokenType::Native {
+                denom: "ubluechip".to_string(),
+            },
+            TokenType::Native {
+                denom: "uatom".to_string(),
+            },
+        ];
+
+        let pool1 = pool_details_for(pair.clone(), 1, PoolKind::Standard);
+        register_pool(
+            deps.as_mut().storage,
+            1,
+            &pool1.creator_pool_addr.clone(),
+            &pool1,
+        )
+        .expect("first registration must succeed");
+
+        // PAIRS now contains the canonical key pointing at pool 1.
+        let stored = PAIRS
+            .may_load(&deps.storage, canonical_pair_key(&pair))
+            .unwrap();
+        assert_eq!(stored, Some(1));
+
+        // Second registration with the same pair must fail. We use a
+        // different pool_id and a different contract address to make
+        // sure the rejection is keyed on the pair, not on either of
+        // those.
+        let pool2 = pool_details_for(pair.clone(), 2, PoolKind::Standard);
+        let err = register_pool(
+            deps.as_mut().storage,
+            2,
+            &pool2.creator_pool_addr.clone(),
+            &pool2,
+        )
+        .expect_err("duplicate pair must be rejected at register_pool");
+        assert!(
+            err.to_string().contains("duplicate pair"),
+            "expected duplicate-pair error, got: {}",
+            err
+        );
+
+        // Reverse-order pair must also be rejected (canonicalization).
+        let reversed = [pair[1].clone(), pair[0].clone()];
+        let pool3 = pool_details_for(reversed, 3, PoolKind::Standard);
+        let err = register_pool(
+            deps.as_mut().storage,
+            3,
+            &pool3.creator_pool_addr.clone(),
+            &pool3,
+        )
+        .expect_err("reversed-order duplicate must be rejected");
+        assert!(
+            err.to_string().contains("duplicate pair"),
+            "expected duplicate-pair error on reversed order, got: {}",
+            err
+        );
+    }
+
+    /// CreateStandardPool entry-time pre-check: if PAIRS already has an
+    /// entry for the canonical key, the handler must return
+    /// `ContractError::DuplicatePair` BEFORE charging the creation fee or
+    /// stamping the per-address rate-limit timestamp.
+    ///
+    /// This is the sybil-attack mitigation. Pre-fix, an attacker could
+    /// rotate through unlimited fresh addresses to spam duplicate
+    /// (ATOM, bluechip) pools at fee × N cost. Post-fix, the second
+    /// attempt onward (regardless of sender) fails immediately.
+    #[test]
+    fn create_standard_pool_rejects_duplicate_pair_from_different_sender() {
+        let mut deps = mock_deps_with_querier(&[]);
+        setup_factory(&mut deps);
+        // Disable the USD fee so the test isolates pair-uniqueness from
+        // fee-funds plumbing.
+        let mut cfg = default_factory_config();
+        cfg.standard_pool_wasm_contract_id = 12;
+        cfg.standard_pool_creation_fee_usd = Uint128::zero();
+        FACTORYINSTANTIATEINFO
+            .save(deps.as_mut().storage, &cfg)
+            .unwrap();
+
+        let pair = [
+            TokenType::Native {
+                denom: "ubluechip".to_string(),
+            },
+            TokenType::Native {
+                denom: "uatom".to_string(),
+            },
+        ];
+
+        // Simulate that a previous tx already registered this pair as
+        // pool_id 1. (We seed PAIRS directly because the mock querier
+        // does not run the standard-pool reply chain to completion;
+        // production would have landed this entry through `register_pool`
+        // inside `finalize_standard_pool`.)
+        PAIRS
+            .save(
+                deps.as_mut().storage,
+                canonical_pair_key(&pair),
+                &1u64,
+            )
+            .unwrap();
+
+        // A different sender attempts the same pair. Must fail with
+        // DuplicatePair, NOT with rate-limit (the sender has no prior
+        // stamp), NOT with insufficient-fee (fee is disabled).
+        let attacker = make_addr("sybil_attacker");
+        let env = mock_env();
+        let err = execute(
+            deps.as_mut(),
+            env.clone(),
+            message_info(&attacker, &[]),
+            ExecuteMsg::CreateStandardPool {
+                pool_token_info: pair.clone(),
+                label: "duplicate-attempt".to_string(),
+            },
+        )
+        .expect_err("duplicate pair from different sender must reject");
+
+        assert!(
+            matches!(err, ContractError::DuplicatePair { existing_pool_id: 1, .. }),
+            "expected DuplicatePair{{existing_pool_id: 1, ..}}, got: {:?}",
+            err
+        );
+
+        // And the reversed-order pair from yet another sender is also
+        // rejected — order independence at the entry point.
+        let attacker2 = make_addr("sybil_attacker_2");
+        let reversed = [pair[1].clone(), pair[0].clone()];
+        let err = execute(
+            deps.as_mut(),
+            env,
+            message_info(&attacker2, &[]),
+            ExecuteMsg::CreateStandardPool {
+                pool_token_info: reversed,
+                label: "duplicate-attempt-reversed".to_string(),
+            },
+        )
+        .expect_err("reversed-order duplicate must reject");
+        assert!(
+            matches!(err, ContractError::DuplicatePair { existing_pool_id: 1, .. }),
+            "expected DuplicatePair on reversed pair, got: {:?}",
+            err
+        );
+    }
+
+    /// Same pair, same sender within cooldown: the duplicate guard must
+    /// fire BEFORE the rate-limit gate. (Both checks would reject, but
+    /// the duplicate-pair error is the actionable one for a frontend —
+    /// "this pair already exists" tells the user there's nothing to do,
+    /// while "rate-limited" suggests retrying later.)
+    #[test]
+    fn create_standard_pool_duplicate_check_runs_before_rate_limit() {
+        let mut deps = mock_deps_with_querier(&[]);
+        setup_factory(&mut deps);
+        let mut cfg = default_factory_config();
+        cfg.standard_pool_wasm_contract_id = 12;
+        cfg.standard_pool_creation_fee_usd = Uint128::zero();
+        FACTORYINSTANTIATEINFO
+            .save(deps.as_mut().storage, &cfg)
+            .unwrap();
+
+        let pair = [
+            TokenType::Native {
+                denom: "ubluechip".to_string(),
+            },
+            TokenType::Native {
+                denom: "uatom".to_string(),
+            },
+        ];
+        PAIRS
+            .save(
+                deps.as_mut().storage,
+                canonical_pair_key(&pair),
+                &7u64,
+            )
+            .unwrap();
+
+        let caller = make_addr("dup_then_cooldown_caller");
+        // Seed a recent rate-limit stamp so BOTH gates would fire.
+        crate::state::LAST_STANDARD_POOL_CREATE_AT
+            .save(
+                deps.as_mut().storage,
+                caller.clone(),
+                &mock_env().block.time,
+            )
+            .unwrap();
+
+        let err = execute(
+            deps.as_mut(),
+            mock_env(),
+            message_info(&caller, &[]),
+            ExecuteMsg::CreateStandardPool {
+                pool_token_info: pair,
+                label: "ordering".to_string(),
+            },
+        )
+        .expect_err("must reject");
+        assert!(
+            matches!(err, ContractError::DuplicatePair { existing_pool_id: 7, .. }),
+            "duplicate-pair check must fire before rate-limit; got: {:?}",
+            err
+        );
+    }
+
+    /// Migrate back-fill: after instantiating the factory and seeding
+    /// `POOLS_BY_ID` directly with two distinct pools (different pairs),
+    /// migrate must populate `PAIRS` with one entry per pair.
+    #[test]
+    fn migrate_backfills_pairs_from_existing_pools() {
+        let mut deps = mock_deps_with_querier(&[]);
+        setup_factory(&mut deps);
+
+        let pair1 = [
+            TokenType::Native {
+                denom: "ubluechip".to_string(),
+            },
+            TokenType::Native {
+                denom: "uatom".to_string(),
+            },
+        ];
+        let pair2 = [
+            TokenType::Native {
+                denom: "ubluechip".to_string(),
+            },
+            TokenType::CreatorToken {
+                contract_addr: make_addr("creator_token_xyz"),
+            },
+        ];
+
+        POOLS_BY_ID
+            .save(
+                deps.as_mut().storage,
+                10,
+                &pool_details_for(pair1.clone(), 10, PoolKind::Standard),
+            )
+            .unwrap();
+        POOLS_BY_ID
+            .save(
+                deps.as_mut().storage,
+                11,
+                &pool_details_for(pair2.clone(), 11, PoolKind::Commit),
+            )
+            .unwrap();
+
+        // PAIRS empty pre-migrate.
+        assert!(PAIRS
+            .may_load(&deps.storage, canonical_pair_key(&pair1))
+            .unwrap()
+            .is_none());
+
+        cw2::set_contract_version(
+            &mut deps.storage,
+            "crates.io:bluechip-factory",
+            "0.1.0",
+        )
+        .unwrap();
+        let res =
+            crate::migrate::migrate(deps.as_mut(), mock_env(), Empty {}).expect("migrate ok");
+
+        assert_eq!(
+            PAIRS
+                .may_load(&deps.storage, canonical_pair_key(&pair1))
+                .unwrap(),
+            Some(10),
+        );
+        assert_eq!(
+            PAIRS
+                .may_load(&deps.storage, canonical_pair_key(&pair2))
+                .unwrap(),
+            Some(11),
+        );
+        // Observability: backfilled count surfaced as an attribute.
+        let backfilled = res
+            .attributes
+            .iter()
+            .find(|a| a.key == "pairs_backfilled")
+            .map(|a| a.value.as_str());
+        assert_eq!(backfilled, Some("2"));
+        let legacy = res
+            .attributes
+            .iter()
+            .find(|a| a.key == "legacy_duplicate_pairs_skipped")
+            .map(|a| a.value.as_str());
+        assert_eq!(legacy, Some("0"));
+    }
+
+    /// Migrate must preserve legacy duplicates (FIRST pool_id wins) and
+    /// surface the skip count as an observability attribute. Lower
+    /// pool_id wins because `POOLS_BY_ID.range(..)` iterates ascending.
+    #[test]
+    fn migrate_preserves_legacy_duplicates_first_pool_wins() {
+        let mut deps = mock_deps_with_querier(&[]);
+        setup_factory(&mut deps);
+
+        let pair = [
+            TokenType::Native {
+                denom: "ubluechip".to_string(),
+            },
+            TokenType::Native {
+                denom: "uatom".to_string(),
+            },
+        ];
+
+        // Two legacy duplicate pools at the same pair (this is exactly
+        // the pre-fix sybil-attack outcome we're back-filling around).
+        POOLS_BY_ID
+            .save(
+                deps.as_mut().storage,
+                5,
+                &pool_details_for(pair.clone(), 5, PoolKind::Standard),
+            )
+            .unwrap();
+        POOLS_BY_ID
+            .save(
+                deps.as_mut().storage,
+                9,
+                &pool_details_for(pair.clone(), 9, PoolKind::Standard),
+            )
+            .unwrap();
+
+        cw2::set_contract_version(
+            &mut deps.storage,
+            "crates.io:bluechip-factory",
+            "0.1.0",
+        )
+        .unwrap();
+        let res =
+            crate::migrate::migrate(deps.as_mut(), mock_env(), Empty {}).expect("migrate ok");
+
+        // First-seen (lowest pool_id) wins.
+        assert_eq!(
+            PAIRS
+                .may_load(&deps.storage, canonical_pair_key(&pair))
+                .unwrap(),
+            Some(5),
+        );
+        let legacy = res
+            .attributes
+            .iter()
+            .find(|a| a.key == "legacy_duplicate_pairs_skipped")
+            .map(|a| a.value.as_str());
+        assert_eq!(legacy, Some("1"));
+
+        // Crucially: post-migrate, NEW duplicate creations of this pair
+        // must reject. This is what the back-fill actually buys us —
+        // legacy chain state is grandfathered, but the invariant kicks
+        // in for every subsequent creation.
+        let mut cfg = default_factory_config();
+        cfg.standard_pool_wasm_contract_id = 12;
+        cfg.standard_pool_creation_fee_usd = Uint128::zero();
+        FACTORYINSTANTIATEINFO
+            .save(deps.as_mut().storage, &cfg)
+            .unwrap();
+
+        let new_attacker = make_addr("post_migrate_attacker");
+        let err = execute(
+            deps.as_mut(),
+            mock_env(),
+            message_info(&new_attacker, &[]),
+            ExecuteMsg::CreateStandardPool {
+                pool_token_info: pair,
+                label: "should-fail".to_string(),
+            },
+        )
+        .expect_err("post-migrate duplicate must reject");
+        assert!(
+            matches!(err, ContractError::DuplicatePair { existing_pool_id: 5, .. }),
+            "post-migrate: expected DuplicatePair pointing at the grandfathered pool 5; got: {:?}",
+            err
+        );
+    }
+
+    /// Migrate is idempotent: running it twice must not duplicate-insert
+    /// or change the recorded pool_id (no-op on second run).
+    #[test]
+    fn migrate_pairs_backfill_is_idempotent() {
+        let mut deps = mock_deps_with_querier(&[]);
+        setup_factory(&mut deps);
+
+        let pair = [
+            TokenType::Native {
+                denom: "ubluechip".to_string(),
+            },
+            TokenType::Native {
+                denom: "uatom".to_string(),
+            },
+        ];
+        POOLS_BY_ID
+            .save(
+                deps.as_mut().storage,
+                42,
+                &pool_details_for(pair.clone(), 42, PoolKind::Standard),
+            )
+            .unwrap();
+
+        cw2::set_contract_version(
+            &mut deps.storage,
+            "crates.io:bluechip-factory",
+            "0.1.0",
+        )
+        .unwrap();
+        crate::migrate::migrate(deps.as_mut(), mock_env(), Empty {}).expect("first migrate ok");
+        // Second migrate: stored version was just written to CONTRACT_VERSION
+        // (current). Reset to an older value so the migrate handler accepts
+        // the re-run rather than no-op-ing through the equal-version branch.
+        cw2::set_contract_version(
+            &mut deps.storage,
+            "crates.io:bluechip-factory",
+            "0.1.0",
+        )
+        .unwrap();
+        let res2 =
+            crate::migrate::migrate(deps.as_mut(), mock_env(), Empty {}).expect("re-migrate ok");
+
+        assert_eq!(
+            PAIRS
+                .may_load(&deps.storage, canonical_pair_key(&pair))
+                .unwrap(),
+            Some(42),
+            "pool_id must NOT change on re-run",
+        );
+        // Re-run sees the entry already populated → backfilled=0.
+        let backfilled = res2
+            .attributes
+            .iter()
+            .find(|a| a.key == "pairs_backfilled")
+            .map(|a| a.value.as_str());
+        assert_eq!(backfilled, Some("0"));
+    }
+}
+

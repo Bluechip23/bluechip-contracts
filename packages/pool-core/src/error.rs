@@ -143,6 +143,30 @@ pub enum ContractError {
     #[error("Batch processing failed (attempt {attempt}): {reason}")]
     DistributionBatchFailed { attempt: u32, reason: String },
 
+    #[error("Distribution-mint reply id {id} has no in-flight stash entry; pool state is corrupt or this reply id was reused")]
+    PendingMintReplyMissing { id: u64 },
+
+    #[error("No failed-mint entry for {user}; nothing to claim")]
+    NoFailedMintEntry { user: String },
+
+    #[error("Cannot skip {user}: no entry in COMMIT_LEDGER")]
+    LedgerEntryNotFound { user: String },
+
+    #[error(
+        "Distribution is not stalled long enough for permissionless recovery: \
+         time_since_last_update={elapsed}s, public-recovery window={window}s. \
+         Use the admin recovery path (RecoverPoolStuckStates) for the shorter \
+         {admin_window}s window."
+    )]
+    DistributionNotStalledForSelfRecover {
+        elapsed: u64,
+        window: u64,
+        admin_window: u64,
+    },
+
+    #[error("No active distribution to self-recover")]
+    NoDistributionToSelfRecover,
+
     #[error(
         "THRESHOLD_PROCESSING is stuck = true; should be unreachable in normal operation. \
          Use the factory's RecoverPoolStuckStates with StuckThreshold to clear it \

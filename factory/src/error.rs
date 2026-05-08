@@ -129,6 +129,15 @@ pub enum ContractError {
     #[error("Invalid pair shape: {reason}")]
     InvalidPairShape { reason: String },
 
+    #[error(
+        "Duplicate pair: pool_id {existing_pool_id} is already registered for ({asset_a}, {asset_b})"
+    )]
+    DuplicatePair {
+        existing_pool_id: u64,
+        asset_a: String,
+        asset_b: String,
+    },
+
     // ---------------------------------------------------------------------
     // Migration / config errors.
     // ---------------------------------------------------------------------

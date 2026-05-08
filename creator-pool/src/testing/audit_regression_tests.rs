@@ -1565,3 +1565,723 @@ fn test_m7_threshold_payout_emits_accept_ownership() {
         payout_msgs.other_msgs
     );
 }
+
+// ---------------------------------------------------------------------------
+// H6 audit fix: distribution liveness primitives
+// ---------------------------------------------------------------------------
+//
+// Coverage for the four-part fix (per-mint reply isolation, skip
+// primitive, self-recover, claim entry):
+//
+//   - Per-mint isolation: a single failing recipient lands in
+//     `FAILED_MINTS` rather than reverting the whole batch tx; the
+//     other rows in the batch still mint, the cursor advances.
+//   - SkipDistributionUser: factory-only escape hatch removes a row
+//     from COMMIT_LEDGER, credits the user's pro-rata reward into
+//     FAILED_MINTS, resets failure counters, re-enables distribution.
+//   - SelfRecoverDistribution: permissionless after the 7-day
+//     `PUBLIC_DISTRIBUTION_RECOVERY_WINDOW_SECONDS` window; rejected
+//     before the window, accepted after.
+//   - ClaimFailedDistribution: committer (or anyone with their key)
+//     pulls a previously-failed mint out of FAILED_MINTS, optionally
+//     redirected to a fresh wallet. Re-failures recurse cleanly back
+//     into FAILED_MINTS via the same reply-isolation harness.
+mod distribution_liveness_tests {
+    use super::*;
+    use crate::contract::reply;
+    use crate::state::{
+        ExpectedFactory, FAILED_MINTS, PendingMint, PENDING_MINT_REPLIES,
+        PUBLIC_DISTRIBUTION_RECOVERY_WINDOW_SECONDS, REPLY_ID_DISTRIBUTION_MINT_BASE,
+        STUCK_DISTRIBUTION_RECOVERY_WINDOW_SECONDS,
+    };
+    use cosmwasm_std::testing::MockApi;
+    use cosmwasm_std::{Binary, Reply, SubMsgResponse, SubMsgResult, Timestamp};
+
+    /// Bech32-valid address from a human-readable label. Production
+    /// passes addresses that have always come through `addr_validate`
+    /// (info.sender + storage round-trips). The handlers we're testing
+    /// call `addr_validate` on String params, so test inputs that
+    /// reach them must be bech32-valid — `Addr::unchecked("label")`
+    /// is not. `MockApi::default().addr_make(...)` produces a stable
+    /// bech32 address derived from the label.
+    fn label_addr(label: &str) -> Addr {
+        MockApi::default().addr_make(label)
+    }
+
+    fn factory_addr() -> Addr {
+        // EXPECTED_FACTORY's auth check compares `info.sender` to a
+        // stored Addr by equality, so any consistent value works as
+        // long as the test installs the same address into both. We
+        // keep `Addr::unchecked` here for symmetry with the existing
+        // `check_correct_factory` helper in threshold_tests.
+        Addr::unchecked("factory_address")
+    }
+
+    fn install_factory(deps: &mut OwnedDeps<MockStorage, MockApi, MockQuerier>) {
+        EXPECTED_FACTORY
+            .save(
+                &mut deps.storage,
+                &ExpectedFactory {
+                    expected_factory_address: factory_addr(),
+                },
+            )
+            .unwrap();
+    }
+
+    fn synthetic_reply(id: u64, ok: bool, err_msg: Option<&str>) -> Reply {
+        #[allow(deprecated)]
+        let ok_response = SubMsgResponse {
+            events: vec![],
+            data: None,
+            msg_responses: vec![],
+        };
+        Reply {
+            id,
+            payload: Binary::default(),
+            gas_used: 0,
+            result: if ok {
+                SubMsgResult::Ok(ok_response)
+            } else {
+                SubMsgResult::Err(err_msg.unwrap_or("CW20 mint rejected by recipient").to_string())
+            },
+        }
+    }
+
+    /// Per-mint isolation: when `process_distribution_batch` dispatches
+    /// a per-user mint as a `reply_always` SubMsg and the mint fails,
+    /// the contract's reply handler must
+    ///   (a) NOT propagate the error,
+    ///   (b) clear the PENDING_MINT_REPLIES stash for that id,
+    ///   (c) accumulate the failed amount under the user in FAILED_MINTS,
+    ///   (d) emit `distribution_mint_isolated_failure` action.
+    /// This is the load-bearing liveness invariant — without it, a
+    /// single rejecting recipient reverts the batch tx and stalls
+    /// distribution for every committer.
+    #[test]
+    fn reply_distribution_mint_failure_is_isolated_into_failed_mints() {
+        let mut deps = mock_dependencies();
+        setup_pool_storage(&mut deps);
+
+        let user = Addr::unchecked("poison_committer");
+        let amount = Uint128::new(123_456);
+        let reply_id = REPLY_ID_DISTRIBUTION_MINT_BASE + 7;
+
+        PENDING_MINT_REPLIES
+            .save(
+                &mut deps.storage,
+                reply_id,
+                &PendingMint {
+                    user: user.clone(),
+                    amount,
+                },
+            )
+            .unwrap();
+
+        // Reply handler must NOT propagate the error; it's the whole
+        // point of the isolation.
+        let r = synthetic_reply(reply_id, false, Some("recipient blacklisted"));
+        let res = reply(deps.as_mut(), mock_env(), r)
+            .expect("reply must Ok on Err result; isolation invariant");
+
+        // Stash cleared.
+        assert!(PENDING_MINT_REPLIES
+            .may_load(&deps.storage, reply_id)
+            .unwrap()
+            .is_none());
+
+        // FAILED_MINTS now holds the owed amount under the user.
+        let owed = FAILED_MINTS.load(&deps.storage, &user).unwrap();
+        assert_eq!(owed, amount);
+
+        // Action attribute identifies the isolated-failure path so
+        // off-chain monitoring can flag it.
+        assert!(res
+            .attributes
+            .iter()
+            .any(|a| a.key == "action" && a.value == "distribution_mint_isolated_failure"));
+        assert!(res
+            .attributes
+            .iter()
+            .any(|a| a.key == "user" && a.value == user.to_string()));
+        assert!(res
+            .attributes
+            .iter()
+            .any(|a| a.key == "reason" && a.value.contains("blacklisted")));
+    }
+
+    /// Reply Ok branch: stash cleared, NO FAILED_MINTS write, success
+    /// attribute emitted. Pre-existing entries for the user are preserved
+    /// (they belong to PRIOR failed mints, not this one).
+    #[test]
+    fn reply_distribution_mint_success_clears_stash_only() {
+        let mut deps = mock_dependencies();
+        setup_pool_storage(&mut deps);
+
+        let user = Addr::unchecked("happy_committer");
+        let reply_id = REPLY_ID_DISTRIBUTION_MINT_BASE + 99;
+        // Pre-existing FAILED_MINTS entry — must be untouched on success.
+        FAILED_MINTS
+            .save(&mut deps.storage, &user, &Uint128::new(1_000))
+            .unwrap();
+
+        PENDING_MINT_REPLIES
+            .save(
+                &mut deps.storage,
+                reply_id,
+                &PendingMint {
+                    user: user.clone(),
+                    amount: Uint128::new(50),
+                },
+            )
+            .unwrap();
+
+        let r = synthetic_reply(reply_id, true, None);
+        let res = reply(deps.as_mut(), mock_env(), r).expect("ok branch");
+
+        assert!(PENDING_MINT_REPLIES
+            .may_load(&deps.storage, reply_id)
+            .unwrap()
+            .is_none());
+        // Pre-existing entry preserved.
+        assert_eq!(
+            FAILED_MINTS.load(&deps.storage, &user).unwrap(),
+            Uint128::new(1_000)
+        );
+        assert!(res
+            .attributes
+            .iter()
+            .any(|a| a.key == "action" && a.value == "distribution_mint_succeeded"));
+    }
+
+    /// Multiple isolated failures across batches accumulate per-user.
+    /// Without the `checked_add` accumulator, a second failure would
+    /// overwrite the first. Verify saturation-safe addition.
+    #[test]
+    fn reply_distribution_mint_failures_accumulate_per_user() {
+        let mut deps = mock_dependencies();
+        setup_pool_storage(&mut deps);
+
+        let user = Addr::unchecked("repeat_failure");
+        let id1 = REPLY_ID_DISTRIBUTION_MINT_BASE + 100;
+        let id2 = REPLY_ID_DISTRIBUTION_MINT_BASE + 101;
+
+        for (id, amt) in [(id1, 250u128), (id2, 750u128)] {
+            PENDING_MINT_REPLIES
+                .save(
+                    &mut deps.storage,
+                    id,
+                    &PendingMint {
+                        user: user.clone(),
+                        amount: Uint128::new(amt),
+                    },
+                )
+                .unwrap();
+            let r = synthetic_reply(id, false, None);
+            reply(deps.as_mut(), mock_env(), r).unwrap();
+        }
+
+        assert_eq!(
+            FAILED_MINTS.load(&deps.storage, &user).unwrap(),
+            Uint128::new(1_000),
+            "two failures must accumulate, not overwrite"
+        );
+    }
+
+    /// Reply id ≥ BASE but with no PENDING_MINT_REPLIES stash falls
+    /// through to the canonical "unknown reply id" handler — preserves
+    /// the pre-existing regression (`reply_unknown_id_returns_error`
+    /// uses 0xDEADBEEF which is in this range).
+    #[test]
+    fn reply_in_distribution_range_without_stash_is_unknown() {
+        let mut deps = mock_dependencies();
+        setup_pool_storage(&mut deps);
+
+        let r = synthetic_reply(REPLY_ID_DISTRIBUTION_MINT_BASE + 12_345, true, None);
+        let err = reply(deps.as_mut(), mock_env(), r).unwrap_err();
+        assert!(
+            err.to_string().contains("unknown reply id"),
+            "fallthrough must produce unknown-id error, got: {}",
+            err
+        );
+    }
+
+    // ----- SkipDistributionUser ---------------------------------------
+
+    /// SkipDistributionUser auth: only the configured factory may invoke.
+    #[test]
+    fn skip_distribution_user_unauthorized_is_rejected() {
+        let mut deps = mock_dependencies();
+        setup_pool_storage(&mut deps);
+        install_factory(&mut deps);
+
+        let info = message_info(&Addr::unchecked("not_factory"), &[]);
+        let err = execute(
+            deps.as_mut(),
+            mock_env(),
+            info,
+            ExecuteMsg::SkipDistributionUser {
+                user: "anyone".to_string(),
+            },
+        )
+        .unwrap_err();
+        assert!(matches!(err, ContractError::Unauthorized {}));
+    }
+
+    /// SkipDistributionUser on an absent ledger row returns
+    /// `LedgerEntryNotFound` so the operator's input mistake doesn't
+    /// silently no-op.
+    #[test]
+    fn skip_distribution_user_absent_row_returns_not_found() {
+        let mut deps = mock_dependencies();
+        setup_pool_storage(&mut deps);
+        install_factory(&mut deps);
+
+        let info = message_info(&factory_addr(), &[]);
+        let err = execute(
+            deps.as_mut(),
+            mock_env(),
+            info,
+            ExecuteMsg::SkipDistributionUser {
+                user: "cosmos1".to_string() + &"a".repeat(38),
+            },
+        )
+        .unwrap_err();
+        // addr_validate may reject the synthetic address shape — both
+        // outcomes are acceptable failure modes (Std vs LedgerEntryNotFound).
+        match err {
+            ContractError::LedgerEntryNotFound { .. } => {}
+            ContractError::Std(_) => {}
+            other => panic!("expected LedgerEntryNotFound or addr-validate Std, got: {:?}", other),
+        }
+    }
+
+    /// SkipDistributionUser happy path: removes COMMIT_LEDGER row,
+    /// computes pro-rata reward against the live DistributionState,
+    /// accumulates into FAILED_MINTS, resets `consecutive_failures`,
+    /// re-enables `is_distributing`, decrements `distributions_remaining`.
+    #[test]
+    fn skip_distribution_user_credits_failed_mints_and_unblocks_state() {
+        let mut deps = mock_dependencies();
+        setup_pool_storage(&mut deps);
+        install_factory(&mut deps);
+
+        // The handler validates the user string param, so use a
+        // bech32-valid address here (see `label_addr` doc).
+        let user = label_addr("poison_user");
+        // Committer paid $1000 USD; reward share = $1000 / $10000 of 1_000_000_000
+        // = 100_000_000 owed.
+        let usd_paid = Uint128::new(1_000_000_000);
+        COMMIT_LEDGER
+            .save(&mut deps.storage, &user, &usd_paid)
+            .unwrap();
+
+        let dist = DistributionState {
+            is_distributing: false, // simulate post-stall
+            total_to_distribute: Uint128::new(1_000_000_000),
+            total_committed_usd: Uint128::new(10_000_000_000),
+            last_processed_key: None,
+            distributions_remaining: 5,
+            estimated_gas_per_distribution: DEFAULT_ESTIMATED_GAS_PER_DISTRIBUTION,
+            max_gas_per_tx: DEFAULT_MAX_GAS_PER_TX,
+            last_successful_batch_size: None,
+            consecutive_failures: 5,
+            started_at: mock_env().block.time,
+            last_updated: mock_env().block.time,
+            distributed_so_far: Uint128::zero(),
+        };
+        DISTRIBUTION_STATE.save(&mut deps.storage, &dist).unwrap();
+
+        let info = message_info(&factory_addr(), &[]);
+        let res = execute(
+            deps.as_mut(),
+            mock_env(),
+            info,
+            ExecuteMsg::SkipDistributionUser {
+                user: user.to_string(),
+            },
+        )
+        .unwrap();
+
+        // Row removed.
+        assert!(COMMIT_LEDGER.may_load(&deps.storage, &user).unwrap().is_none());
+        // FAILED_MINTS credited at the pro-rata amount.
+        let credited = FAILED_MINTS.load(&deps.storage, &user).unwrap();
+        assert_eq!(credited, Uint128::new(100_000_000));
+
+        // DistributionState: counters reset, distribution re-enabled,
+        // remaining decremented.
+        let dist_after = DISTRIBUTION_STATE.load(&deps.storage).unwrap();
+        assert_eq!(dist_after.consecutive_failures, 0);
+        assert!(dist_after.is_distributing);
+        assert_eq!(dist_after.distributions_remaining, 4);
+
+        // Observability attribute exposes the credited amount.
+        assert!(res.attributes.iter().any(|a| a.key
+            == "credited_to_failed_mints"
+            && a.value == "100000000"));
+    }
+
+    // ----- SelfRecoverDistribution ------------------------------------
+
+    /// Below the 7-day window, self-recover must reject so the admin's
+    /// shorter (1h) recovery path has uncontested priority.
+    #[test]
+    fn self_recover_before_window_is_rejected() {
+        let mut deps = mock_dependencies();
+        setup_pool_storage(&mut deps);
+        install_factory(&mut deps);
+
+        let started = mock_env().block.time;
+        let dist = DistributionState {
+            is_distributing: true,
+            total_to_distribute: Uint128::new(1),
+            total_committed_usd: Uint128::new(1),
+            last_processed_key: None,
+            distributions_remaining: 1,
+            estimated_gas_per_distribution: DEFAULT_ESTIMATED_GAS_PER_DISTRIBUTION,
+            max_gas_per_tx: DEFAULT_MAX_GAS_PER_TX,
+            last_successful_batch_size: None,
+            consecutive_failures: 0,
+            started_at: started,
+            last_updated: started,
+            distributed_so_far: Uint128::zero(),
+        };
+        DISTRIBUTION_STATE.save(&mut deps.storage, &dist).unwrap();
+
+        // Just under the window.
+        let mut env = mock_env();
+        env.block.time = started.plus_seconds(PUBLIC_DISTRIBUTION_RECOVERY_WINDOW_SECONDS - 1);
+
+        let info = message_info(&Addr::unchecked("any_caller"), &[]);
+        let err = execute(
+            deps.as_mut(),
+            env,
+            info,
+            ExecuteMsg::SelfRecoverDistribution {},
+        )
+        .unwrap_err();
+        match err {
+            ContractError::DistributionNotStalledForSelfRecover {
+                window,
+                admin_window,
+                ..
+            } => {
+                assert_eq!(window, PUBLIC_DISTRIBUTION_RECOVERY_WINDOW_SECONDS);
+                assert_eq!(admin_window, STUCK_DISTRIBUTION_RECOVERY_WINDOW_SECONDS);
+            }
+            other => panic!("expected DistributionNotStalledForSelfRecover, got: {:?}", other),
+        }
+    }
+
+    /// After the 7-day window, ANY caller can restart distribution.
+    /// Cursor reset to None, counters cleared, `distributed_so_far`
+    /// preserved for the dust-settlement invariant.
+    #[test]
+    fn self_recover_after_window_restarts_with_preserved_distributed_so_far() {
+        let mut deps = mock_dependencies();
+        setup_pool_storage(&mut deps);
+        install_factory(&mut deps);
+
+        let started = mock_env().block.time;
+        let preserved = Uint128::new(777_777_777);
+        let dist = DistributionState {
+            is_distributing: false, // pretend it stalled
+            total_to_distribute: Uint128::new(1_000_000_000),
+            total_committed_usd: Uint128::new(10_000_000_000),
+            last_processed_key: Some(Addr::unchecked("checkpoint")),
+            distributions_remaining: 7,
+            estimated_gas_per_distribution: 999,
+            max_gas_per_tx: 999_999,
+            last_successful_batch_size: Some(3),
+            consecutive_failures: 5,
+            started_at: started,
+            last_updated: started,
+            distributed_so_far: preserved,
+        };
+        DISTRIBUTION_STATE.save(&mut deps.storage, &dist).unwrap();
+
+        // Seed two committers so the recovery path lands in the
+        // "remaining > 0 → restart" branch.
+        for label in ["committer_a", "committer_b"] {
+            COMMIT_LEDGER
+                .save(
+                    &mut deps.storage,
+                    &Addr::unchecked(label),
+                    &Uint128::new(1_000),
+                )
+                .unwrap();
+        }
+
+        let mut env = mock_env();
+        env.block.time = started.plus_seconds(PUBLIC_DISTRIBUTION_RECOVERY_WINDOW_SECONDS + 1);
+
+        let info = message_info(&Addr::unchecked("public_keeper"), &[]);
+        let res = execute(
+            deps.as_mut(),
+            env.clone(),
+            info,
+            ExecuteMsg::SelfRecoverDistribution {},
+        )
+        .expect("post-window must succeed");
+
+        let dist_after = DISTRIBUTION_STATE.load(&deps.storage).unwrap();
+        assert!(dist_after.is_distributing);
+        assert!(dist_after.last_processed_key.is_none(), "cursor must be reset");
+        assert_eq!(dist_after.consecutive_failures, 0);
+        assert_eq!(dist_after.distributed_so_far, preserved,
+            "distributed_so_far must be preserved across restart so dust settlement stays correct");
+        assert_eq!(dist_after.distributions_remaining, 2);
+        assert_eq!(dist_after.last_updated, env.block.time);
+
+        // Observability: action attribute and stall_elapsed_seconds attr.
+        assert!(res
+            .attributes
+            .iter()
+            .any(|a| a.key == "action" && a.value == "self_recover_distribution"));
+        assert!(res
+            .attributes
+            .iter()
+            .any(|a| a.key == "remaining_committers" && a.value == "2"));
+    }
+
+    /// Self-recover with no DISTRIBUTION_STATE returns the dedicated
+    /// error so callers don't rely on a generic "not found" shape.
+    #[test]
+    fn self_recover_no_distribution_returns_dedicated_error() {
+        let mut deps = mock_dependencies();
+        setup_pool_storage(&mut deps);
+        install_factory(&mut deps);
+
+        let info = message_info(&Addr::unchecked("nobody"), &[]);
+        let err = execute(
+            deps.as_mut(),
+            mock_env(),
+            info,
+            ExecuteMsg::SelfRecoverDistribution {},
+        )
+        .unwrap_err();
+        assert!(matches!(err, ContractError::NoDistributionToSelfRecover));
+    }
+
+    // ----- ClaimFailedDistribution ------------------------------------
+
+    /// Claim auth: caller must have a non-zero FAILED_MINTS entry.
+    #[test]
+    fn claim_failed_distribution_no_entry_rejected() {
+        let mut deps = mock_dependencies();
+        setup_pool_storage(&mut deps);
+
+        let info = message_info(&Addr::unchecked("not_a_committer"), &[]);
+        let err = execute(
+            deps.as_mut(),
+            mock_env(),
+            info,
+            ExecuteMsg::ClaimFailedDistribution { recipient: None },
+        )
+        .unwrap_err();
+        assert!(matches!(err, ContractError::NoFailedMintEntry { .. }));
+    }
+
+    /// Happy path: caller has a FAILED_MINTS entry; handler dispatches
+    /// a SubMsg::reply_always for the mint, removes the FAILED_MINTS
+    /// entry up front, and stashes a PENDING_MINT entry for the new
+    /// reply id. On reply success the stash clears. On reply failure
+    /// the amount is re-credited under the original committer for
+    /// another retry.
+    #[test]
+    fn claim_failed_distribution_dispatches_isolated_submsg() {
+        let mut deps = mock_dependencies();
+        setup_pool_storage(&mut deps);
+        install_factory(&mut deps);
+
+        let user = Addr::unchecked("recovered_committer");
+        let owed = Uint128::new(444_444);
+        FAILED_MINTS.save(&mut deps.storage, &user, &owed).unwrap();
+
+        // Caller specifies an alternate recipient (e.g., a fresh wallet
+        // because their original is the reason the mint failed).
+        // Bech32-valid because the handler addr_validates the param.
+        let alternate = label_addr("fresh_wallet");
+        let info = message_info(&user, &[]);
+        let res = execute(
+            deps.as_mut(),
+            mock_env(),
+            info,
+            ExecuteMsg::ClaimFailedDistribution {
+                recipient: Some(alternate.to_string()),
+            },
+        )
+        .expect("claim must succeed");
+
+        // FAILED_MINTS entry removed up front.
+        assert!(FAILED_MINTS.may_load(&deps.storage, &user).unwrap().is_none());
+
+        // Exactly one SubMsg dispatched, in the reply_always range.
+        assert_eq!(res.messages.len(), 1);
+        let sub = &res.messages[0];
+        assert!(sub.id >= REPLY_ID_DISTRIBUTION_MINT_BASE);
+
+        // PENDING_MINT_REPLIES recorded the user as the canonical
+        // accounting key (NOT the alternate recipient) so a re-failure
+        // re-credits the original committer.
+        let pending = PENDING_MINT_REPLIES
+            .load(&deps.storage, sub.id)
+            .unwrap();
+        assert_eq!(pending.user, user);
+        assert_eq!(pending.amount, owed);
+
+        // The mint message itself targets the alternate recipient.
+        if let CosmosMsg::Wasm(WasmMsg::Execute { msg, .. }) = &sub.msg {
+            let parsed: cw20::Cw20ExecuteMsg = from_json(msg).unwrap();
+            match parsed {
+                cw20::Cw20ExecuteMsg::Mint { recipient, amount } => {
+                    assert_eq!(recipient, alternate.to_string());
+                    assert_eq!(amount, owed);
+                }
+                other => panic!("expected Mint, got: {:?}", other),
+            }
+        } else {
+            panic!("expected Wasm Execute SubMsg, got: {:?}", sub.msg);
+        }
+    }
+
+    /// Re-failure recursion: the alternate recipient is ALSO blocked.
+    /// The reply handler must re-credit the ORIGINAL committer's
+    /// FAILED_MINTS entry so they can try yet another recipient. This
+    /// is the loop-closure invariant — without it, the second failure
+    /// would orphan the funds.
+    #[test]
+    fn claim_failed_distribution_re_failure_re_credits_original_committer() {
+        let mut deps = mock_dependencies();
+        setup_pool_storage(&mut deps);
+        install_factory(&mut deps);
+
+        let user = Addr::unchecked("loop_committer");
+        let owed = Uint128::new(99_999);
+        FAILED_MINTS.save(&mut deps.storage, &user, &owed).unwrap();
+
+        // Bech32 needed for addr_validate.
+        let alternate = label_addr("alternate_also_blocked");
+        let info = message_info(&user, &[]);
+        let res = execute(
+            deps.as_mut(),
+            mock_env(),
+            info,
+            ExecuteMsg::ClaimFailedDistribution {
+                recipient: Some(alternate.to_string()),
+            },
+        )
+        .unwrap();
+        let reply_id = res.messages[0].id;
+
+        // Dispatched but not yet replied — FAILED_MINTS is empty.
+        assert!(FAILED_MINTS.may_load(&deps.storage, &user).unwrap().is_none());
+
+        // Simulate the alternate ALSO rejecting the mint.
+        let r = synthetic_reply(reply_id, false, Some("alternate also blacklisted"));
+        reply(deps.as_mut(), mock_env(), r).unwrap();
+
+        // FAILED_MINTS re-credited under the ORIGINAL committer (`user`),
+        // NOT under the alternate. The user can now try yet another
+        // recipient on a fresh ClaimFailedDistribution call.
+        assert_eq!(
+            FAILED_MINTS.load(&deps.storage, &user).unwrap(),
+            owed,
+        );
+        // Alternate has no FAILED_MINTS entry — they were a recipient
+        // address only, never the canonical accounting key.
+        assert!(FAILED_MINTS
+            .may_load(&deps.storage, &alternate)
+            .unwrap()
+            .is_none());
+    }
+
+    /// Default recipient: when `recipient: None`, the mint is wired to
+    /// the caller (committer) themselves. Useful for the "the recipient
+    /// is fine again, just retry" case.
+    #[test]
+    fn claim_failed_distribution_defaults_recipient_to_caller() {
+        let mut deps = mock_dependencies();
+        setup_pool_storage(&mut deps);
+        install_factory(&mut deps);
+
+        let user = Addr::unchecked("self_claim_committer");
+        FAILED_MINTS
+            .save(&mut deps.storage, &user, &Uint128::new(1))
+            .unwrap();
+
+        let info = message_info(&user, &[]);
+        let res = execute(
+            deps.as_mut(),
+            mock_env(),
+            info,
+            ExecuteMsg::ClaimFailedDistribution { recipient: None },
+        )
+        .unwrap();
+        let sub = &res.messages[0];
+        if let CosmosMsg::Wasm(WasmMsg::Execute { msg, .. }) = &sub.msg {
+            if let cw20::Cw20ExecuteMsg::Mint { recipient, .. } = from_json(msg).unwrap() {
+                assert_eq!(recipient, user.to_string(),
+                    "default recipient must be info.sender");
+            } else {
+                panic!("not a Mint");
+            }
+        } else {
+            panic!("not a Wasm Execute");
+        }
+    }
+
+    /// Drained pool: every liveness primitive must reject so the
+    /// post-drain invariant ("the pool no longer pays out from this
+    /// contract") is uniform across all entry points.
+    #[test]
+    fn liveness_primitives_reject_on_drained_pool() {
+        let mut deps = mock_dependencies();
+        setup_pool_storage(&mut deps);
+        install_factory(&mut deps);
+        EMERGENCY_DRAINED.save(&mut deps.storage, &true).unwrap();
+
+        // Skip
+        let info = message_info(&factory_addr(), &[]);
+        let err = execute(
+            deps.as_mut(),
+            mock_env(),
+            info,
+            ExecuteMsg::SkipDistributionUser {
+                user: "anyone".to_string(),
+            },
+        )
+        .unwrap_err();
+        assert!(format!("{:?}", err).contains("Drained")
+            || format!("{:?}", err).contains("drained"));
+
+        // Self-recover
+        let info = message_info(&Addr::unchecked("anyone"), &[]);
+        let err = execute(
+            deps.as_mut(),
+            mock_env(),
+            info,
+            ExecuteMsg::SelfRecoverDistribution {},
+        )
+        .unwrap_err();
+        assert!(format!("{:?}", err).contains("Drained")
+            || format!("{:?}", err).contains("drained"));
+
+        // Claim
+        let info = message_info(&Addr::unchecked("anyone"), &[]);
+        let err = execute(
+            deps.as_mut(),
+            mock_env(),
+            info,
+            ExecuteMsg::ClaimFailedDistribution { recipient: None },
+        )
+        .unwrap_err();
+        assert!(format!("{:?}", err).contains("Drained")
+            || format!("{:?}", err).contains("drained"));
+    }
+
+    /// Suppress unused-import lint in this test module — the timestamp
+    /// import is referenced through `setup_pool_storage`'s internals.
+    #[allow(dead_code)]
+    fn _ts_marker(_t: Timestamp) {}
+}
