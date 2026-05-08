@@ -51,14 +51,23 @@ pub const POOL_COUNTER: Item<u64> = Item::new("pool_counter");
 /// anchored to actual commit-pool creation activity.
 pub const COMMIT_POOL_COUNTER: Item<u64> = Item::new("commit_pool_counter");
 
-// Two coupled pool-registry maps. They MUST stay in sync — every pool
-// that exists must appear in both. Always go through `register_pool`
+// Three coupled pool-registry maps. They MUST stay in sync — every pool
+// that exists must appear in all three. Always go through `register_pool`
 // rather than touching them individually.
 //   - POOLS_BY_ID:               pool_id  -> PoolDetails (token info, addresses)
 //   - POOLS_BY_CONTRACT_ADDRESS: pool addr -> snapshot used by oracle / queries
+//   - PAIRS:                     canonical (asset_a, asset_b) key -> pool_id.
+//     Single-pool-per-pair guard. The Uniswap-style invariant: at most one
+//     pool exists per (asset_a, asset_b) tuple. Without it, any sender can
+//     register an arbitrary number of identical pairs (each from a different
+//     `info.sender` to bypass the per-address rate limit), bloating the
+//     registry, fragmenting LP, and — most concretely — letting attackers
+//     spawn thin "anchor candidate" duplicates that the oracle's snapshot
+//     refresh may sample. See `canonical_pair_key` for the encoding.
 pub const POOLS_BY_ID: Map<u64, PoolDetails> = Map::new("pools_by_id");
 pub const POOLS_BY_CONTRACT_ADDRESS: Map<Addr, PoolStateResponseForFactory> =
     Map::new("pools_by_contract_address");
+pub const PAIRS: Map<(String, String), u64> = Map::new("pairs");
 // Maximum age (seconds) of a Pyth price we are willing to use for USD
 // conversions. 90 seconds is inside typical Pyth publish cadence while
 // still cutting an attacker's useful "pick a favorable spot in the
@@ -613,11 +622,49 @@ pub struct PoolUpgrade {
 // ---------------------------------------------------------------------------
 // Pool registry helpers
 // ---------------------------------------------------------------------------
-// Centralized so the two pool-registry maps cannot drift. Direct writes to
-// POOLS_BY_ID / POOLS_BY_CONTRACT_ADDRESS outside this module risk leaving
-// the factory's view of pools internally inconsistent.
+// Centralized so the three pool-registry maps cannot drift. Direct writes to
+// POOLS_BY_ID / POOLS_BY_CONTRACT_ADDRESS / PAIRS outside this module risk
+// leaving the factory's view of pools internally inconsistent.
 
-/// Atomically register a freshly created pool across both registry maps.
+/// Canonicalized fingerprint of a single side of a pool pair.
+///
+/// Native denoms and CW20 contract addresses are both stringly-typed, so a
+/// kind-tag prefix is required to keep them in disjoint namespaces — a
+/// chain that ever ended up with a CW20 contract address that happens to
+/// equal a native denom string would otherwise alias two different
+/// asset references onto the same key. The prefixes (`n:` for native,
+/// `c:` for creator-token) are short, opaque to user-facing surfaces
+/// (the key is internal-only), and stable forever — changing them is a
+/// breaking storage migration.
+fn token_fingerprint(t: &TokenType) -> String {
+    match t {
+        TokenType::Native { denom } => format!("n:{}", denom),
+        TokenType::CreatorToken { contract_addr } => format!("c:{}", contract_addr),
+    }
+}
+
+/// Order-independent key for the `(asset_a, asset_b)` uniqueness map.
+///
+/// The two fingerprints are sorted lexicographically before being returned
+/// as `(min, max)`, so `[A, B]` and `[B, A]` map to the same storage slot.
+/// This matches Uniswap V2's `getPair[a][b] == getPair[b][a]` convention
+/// and is the right shape for "at most one pool per unordered pair." If a
+/// future pool variant ever needs to permit parallel pools at different
+/// fee tiers / curve types / hook configurations, widen this key with the
+/// extra discriminator(s) — do NOT add a parallel uniqueness map.
+pub fn canonical_pair_key(pair: &[TokenType; 2]) -> (String, String) {
+    let a = token_fingerprint(&pair[0]);
+    let b = token_fingerprint(&pair[1]);
+    if a <= b { (a, b) } else { (b, a) }
+}
+
+/// Atomically register a freshly created pool across all three registry
+/// maps. Rejects with a generic_err if `pair` already exists in `PAIRS`
+/// — this is the canonical guard against silent duplicate registrations
+/// from any code path (entry-point pre-check, future admin restore,
+/// migrate back-fill, etc). The pre-check at the create entry points
+/// exists purely to fail-fast before the caller's fee is forwarded;
+/// THIS is the load-bearing check.
 ///
 /// Initial `PoolStateResponseForFactory` is materialized from `pool_details`
 /// — caller doesn't need to construct it. Reserves and TWAP accumulators
@@ -628,6 +675,15 @@ pub fn register_pool(
     pool_address: &Addr,
     pool_details: &PoolDetails,
 ) -> StdResult<()> {
+    let pair_key = canonical_pair_key(&pool_details.pool_token_info);
+    if let Some(existing) = PAIRS.may_load(storage, pair_key.clone())? {
+        return Err(cosmwasm_std::StdError::generic_err(format!(
+            "duplicate pair: pool_id {} already registered for ({}, {})",
+            existing, pair_key.0, pair_key.1
+        )));
+    }
+    PAIRS.save(storage, pair_key, &pool_id)?;
+
     POOLS_BY_ID.save(storage, pool_id, pool_details)?;
 
     let asset_strings: Vec<String> = pool_details
