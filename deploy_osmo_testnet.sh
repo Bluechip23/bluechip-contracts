@@ -78,13 +78,13 @@ GAS_BAL="$(echo "$BAL_JSON" | jq -r --arg d "$NATIVE_DENOM" \
     '.balances[]? | select(.denom == $d) | .amount' || echo 0)"
 [ -z "$GAS_BAL" ] && GAS_BAL=0
 if [ "$GAS_BAL" -lt "$MIN_GAS_BALANCE" ]; then
-    echo "error: $ADDR has only $GAS_BAL u$NATIVE_DENOM, need >= $MIN_GAS_BALANCE" >&2
+    echo "error: $ADDR has only $GAS_BAL $NATIVE_DENOM, need >= $MIN_GAS_BALANCE" >&2
     echo "       faucet: https://faucet.testnet.osmosis.zone/" >&2
     exit 1
 fi
 
 echo "deployer:        $ADDR"
-echo "gas balance:     $GAS_BAL u$NATIVE_DENOM (>= $MIN_GAS_BALANCE required)"
+echo "gas balance:     $GAS_BAL $NATIVE_DENOM (>= $MIN_GAS_BALANCE required)"
 echo "chain:           $CHAIN_ID via $NODE"
 echo ""
 
