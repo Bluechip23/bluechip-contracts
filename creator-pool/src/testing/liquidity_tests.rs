@@ -359,7 +359,20 @@ fn test_remove_all_liquidity() {
     )
     .unwrap();
     assert!(res.messages.len() >= 2);
-    assert!(LIQUIDITY_POSITIONS.load(&deps.storage, "1").is_err());
+    // H-NFT-1 audit fix: standard exits now keep the LIQUIDITY_POSITIONS
+    // row alive at `liquidity == 0` so the user's CW721 NFT remains
+    // rehydrate-able rather than becoming a tombstone (NFT exists on
+    // CW721 but every pool-side handler errors with "not found"). Pre-fix
+    // this test asserted the row was deleted; post-fix the row persists
+    // with zero liquidity, no unclaimed fees, and the snapshot's
+    // fee_growth_inside_*_last set to current globals.
+    let pos = LIQUIDITY_POSITIONS
+        .load(&deps.storage, "1")
+        .expect("position row must persist after full removal");
+    assert_eq!(pos.liquidity, Uint128::zero(), "non-first-depositor exit drops to zero");
+    assert_eq!(pos.locked_liquidity, Uint128::zero(), "no lock on non-first-depositor positions");
+    assert_eq!(pos.unclaimed_fees_0, Uint128::zero());
+    assert_eq!(pos.unclaimed_fees_1, Uint128::zero());
     // Verify pool liquidity decreased back to initial amount
     let final_liquidity = POOL_STATE.load(&deps.storage).unwrap().total_liquidity;
     assert_eq!(final_liquidity, initial_liquidity);

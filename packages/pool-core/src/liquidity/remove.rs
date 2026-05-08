@@ -120,24 +120,39 @@ pub fn remove_all_liquidity(
     // Future swaps/removes will reject; the next deposit that restores
     // reserves above MIN auto-clears both flags.
     let auto_paused_now = maybe_auto_pause_on_low_liquidity(deps.storage, &pool_state)?;
-    if liquidity_position.locked_liquidity.is_zero() {
-        // Standard exit: nothing locked, burn the position completely.
-        LIQUIDITY_POSITIONS.remove(deps.storage, &position_id);
-        OWNER_POSITIONS.remove(deps.storage, (&info.sender, &position_id));
-    } else {
-        // First-depositor exit: the locked slice stays as a live Position
-        // so the depositor keeps fee rights forever. Reduce liquidity to
-        // exactly the locked amount, refresh fee multiplier and
-        // collection timestamp, persist the (reduced) position, and
-        // leave the NFT in place.
-        liquidity_position.liquidity = liquidity_position.locked_liquidity;
-        liquidity_position.fee_size_multiplier =
-            calculate_fee_size_multiplier(liquidity_position.liquidity);
-        liquidity_position.last_fee_collection = env.block.time.seconds();
-        liquidity_position.unclaimed_fees_0 = Uint128::zero();
-        liquidity_position.unclaimed_fees_1 = Uint128::zero();
-        LIQUIDITY_POSITIONS.save(deps.storage, &position_id, &liquidity_position)?;
-    }
+
+    // H-NFT-1 audit fix: both exit cases keep the LIQUIDITY_POSITIONS
+    // row alive. The prior behaviour deleted the row on a standard exit
+    // (locked_liquidity == 0), leaving the user's CW721 NFT as a
+    // tombstone — it still existed on-chain (no BurnNft is ever
+    // dispatched) but every pool-side handler that loaded
+    // LIQUIDITY_POSITIONS would fail with a "not found" error. The NFT
+    // was tradeable on secondary markets despite being functionally
+    // inert; a buyer thinking they were acquiring an LP position would
+    // get a token id that AddToPosition / CollectFees / RemoveLiquidity
+    // all reject. Mirrors Uniswap V3's empty-position model: the NFT
+    // and its position row stay alive at zero, ready to be rehydrated
+    // by a future AddToPosition call.
+    //
+    // Difference between the two branches: first-depositor positions
+    // (locked_liquidity > 0) drop to exactly the locked floor
+    // (MINIMUM_LIQUIDITY), preserving fee rights against the perma-
+    // locked slice. Standard positions (locked_liquidity == 0) drop
+    // to zero. In both cases the NFT remains usable — owner can
+    // re-deposit, transfer, or just hold an "empty position" NFT.
+    //
+    // OWNER_POSITIONS index stays so frontends listing "your
+    // positions" still surface empty NFTs for re-deposit. If the
+    // owner transfers the NFT, sync_position_on_transfer updates
+    // both position.owner and the OWNER_POSITIONS index to track
+    // the new holder — same flow as a non-empty position.
+    liquidity_position.liquidity = liquidity_position.locked_liquidity;
+    liquidity_position.fee_size_multiplier =
+        calculate_fee_size_multiplier(liquidity_position.liquidity);
+    liquidity_position.last_fee_collection = env.block.time.seconds();
+    liquidity_position.unclaimed_fees_0 = Uint128::zero();
+    liquidity_position.unclaimed_fees_1 = Uint128::zero();
+    LIQUIDITY_POSITIONS.save(deps.storage, &position_id, &liquidity_position)?;
     POOL_FEE_STATE.save(deps.storage, &pool_fee_state)?;
 
     // Update analytics

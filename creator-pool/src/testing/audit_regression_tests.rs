@@ -2723,3 +2723,346 @@ mod deposit_verify_tests {
         );
     }
 }
+
+// ---------------------------------------------------------------------------
+// H-NFT-1 audit fix: empty-position persistence on full removal
+// ---------------------------------------------------------------------------
+//
+// Pre-fix, `RemoveAllLiquidity` on a non-first-depositor position
+// (`locked_liquidity == 0`) deleted the LIQUIDITY_POSITIONS storage row
+// while leaving the user's CW721 NFT in place — no BurnNft was ever
+// dispatched. The NFT became a "tombstone": tradeable on secondary
+// markets but functionally inert, since every pool-side handler
+// (AddToPosition, CollectFees, RemoveLiquidity) loaded LIQUIDITY_POSITIONS
+// and errored with "not found".
+//
+// Option A fix: keep the row alive at `liquidity == 0`. The NFT
+// remains rehydrate-able — a future `AddToPosition` against the same
+// token id grows the position from zero. Mirrors Uniswap V3's
+// empty-position model.
+//
+// Tests in this module confirm:
+//   - The row persists with `liquidity == 0` after full removal.
+//   - OWNER_POSITIONS index entry persists so frontends can still list
+//     the empty NFT under "your positions."
+//   - AddToPosition successfully rehydrates the empty position.
+//   - CollectFees on an empty position is a clean no-op (no double-debit).
+//   - First-depositor positions still drop to `locked_liquidity` rather
+//     than zero (the locked-floor invariant is preserved).
+mod empty_position_persistence_tests {
+    use super::*;
+    use crate::testing::liquidity_tests::{create_test_position, setup_pool_post_threshold};
+    use cosmwasm_std::{
+        to_json_binary, ContractResult, SystemResult, WasmQuery,
+    };
+    use pool_core::liquidity::{
+        execute_collect_fees, execute_remove_all_liquidity,
+    };
+    use pool_core::state::{LIQUIDITY_POSITIONS, OWNER_POSITIONS, POOL_STATE};
+
+    /// Install a CW721 OwnerOf querier that returns the given owner for
+    /// any token id. Also answers CW20 Balance queries with a fixed
+    /// balance so the verify-path deposit can run its pre/post snapshot
+    /// without erroring out on an unstubbed balance read.
+    fn install_owner_querier(
+        deps: &mut OwnedDeps<MockStorage, MockApi, MockQuerier>,
+        owner: &str,
+    ) {
+        let owner_str = owner.to_string();
+        deps.querier.update_wasm(move |query| match query {
+            WasmQuery::Smart { contract_addr, msg } => {
+                if contract_addr == "nft_contract" {
+                    if let Ok(pool_factory_interfaces::cw721_msgs::Cw721QueryMsg::OwnerOf {
+                        ..
+                    }) = cosmwasm_std::from_json(msg)
+                    {
+                        let resp =
+                            pool_factory_interfaces::cw721_msgs::OwnerOfResponse {
+                                owner: owner_str.clone(),
+                                approvals: vec![],
+                            };
+                        return SystemResult::Ok(ContractResult::Ok(
+                            to_json_binary(&resp).unwrap(),
+                        ));
+                    }
+                }
+                if let Ok(cw20::Cw20QueryMsg::Balance { .. }) =
+                    cosmwasm_std::from_json(msg)
+                {
+                    // Fixed pool CW20 balance for the verify-path
+                    // pre/post snapshot. The actual value doesn't
+                    // matter for these tests — only that the query
+                    // resolves so the deposit handler reaches the
+                    // SubMsg-emit step.
+                    let resp = cw20::BalanceResponse {
+                        balance: Uint128::zero(),
+                    };
+                    return SystemResult::Ok(ContractResult::Ok(
+                        to_json_binary(&resp).unwrap(),
+                    ));
+                }
+                SystemResult::Err(cosmwasm_std::SystemError::InvalidRequest {
+                    error: format!("unexpected wasm query to {}", contract_addr),
+                    request: msg.clone(),
+                })
+            }
+            _ => SystemResult::Err(cosmwasm_std::SystemError::UnsupportedRequest {
+                kind: "non-Smart wasm query".to_string(),
+            }),
+        });
+    }
+
+    /// Full-removal path keeps LIQUIDITY_POSITIONS row alive at zero
+    /// liquidity for non-first-depositor positions. Pre-fix the row
+    /// was deleted; this assertion is the regression fence.
+    #[test]
+    fn full_removal_keeps_position_row_alive_at_zero() {
+        let mut deps = mock_dependencies();
+        setup_pool_post_threshold(&mut deps);
+        create_test_position(&mut deps, 5, "lp_holder", Uint128::new(10_000_000));
+        // create_test_position only seeds LIQUIDITY_POSITIONS; production
+        // deposits seed OWNER_POSITIONS too. Seed it here so the post-
+        // removal assertion has something to inspect.
+        OWNER_POSITIONS
+            .save(
+                &mut deps.storage,
+                (&Addr::unchecked("lp_holder"), "5"),
+                &true,
+            )
+            .unwrap();
+        install_owner_querier(&mut deps, "lp_holder");
+
+        let info = message_info(&Addr::unchecked("lp_holder"), &[]);
+        execute_remove_all_liquidity(
+            deps.as_mut(),
+            mock_env(),
+            info,
+            "5".to_string(),
+            None,
+            None,
+            None,
+            None,
+        )
+        .expect("full removal must succeed");
+
+        // The row must still be present — no tombstone NFT pointing at
+        // a deleted storage entry.
+        let pos = LIQUIDITY_POSITIONS
+            .load(&deps.storage, "5")
+            .expect("LIQUIDITY_POSITIONS row must persist after full removal");
+        assert_eq!(
+            pos.liquidity,
+            Uint128::zero(),
+            "non-first-depositor full exit must drop liquidity to zero"
+        );
+        assert_eq!(
+            pos.locked_liquidity,
+            Uint128::zero(),
+            "no locked floor on non-first-depositor positions"
+        );
+        assert_eq!(pos.unclaimed_fees_0, Uint128::zero());
+        assert_eq!(pos.unclaimed_fees_1, Uint128::zero());
+
+        // OWNER_POSITIONS index entry must also persist so the user's
+        // empty NFT still shows up in their position list.
+        assert!(
+            OWNER_POSITIONS
+                .may_load(&deps.storage, (&Addr::unchecked("lp_holder"), "5"))
+                .unwrap()
+                .is_some(),
+            "OWNER_POSITIONS entry must persist for the empty NFT"
+        );
+    }
+
+    /// First-depositor full removal still drops to the locked floor
+    /// (MINIMUM_LIQUIDITY), not to zero. This is the
+    /// `locked_liquidity > 0` branch that was already correct pre-fix
+    /// — guard that the new code didn't accidentally collapse both
+    /// branches and break the first-depositor's perpetual fee right.
+    #[test]
+    fn first_depositor_full_removal_drops_to_locked_floor_not_zero() {
+        use pool_core::state::MINIMUM_LIQUIDITY;
+        let mut deps = mock_dependencies();
+        setup_pool_post_threshold(&mut deps);
+        // Manually seed a first-depositor-style position: locked_liquidity
+        // > 0 indicates the perma-locked slice was honored on initial
+        // deposit.
+        let position = pool_core::state::Position {
+            liquidity: Uint128::new(50_000_000),
+            owner: Addr::unchecked("first_depositor"),
+            fee_growth_inside_0_last: cosmwasm_std::Decimal::zero(),
+            fee_growth_inside_1_last: cosmwasm_std::Decimal::zero(),
+            created_at: 1_600_000_000,
+            last_fee_collection: 1_600_000_000,
+            fee_size_multiplier: cosmwasm_std::Decimal::one(),
+            unclaimed_fees_0: Uint128::zero(),
+            unclaimed_fees_1: Uint128::zero(),
+            locked_liquidity: MINIMUM_LIQUIDITY,
+        };
+        LIQUIDITY_POSITIONS
+            .save(&mut deps.storage, "1", &position)
+            .unwrap();
+        OWNER_POSITIONS
+            .save(
+                &mut deps.storage,
+                (&Addr::unchecked("first_depositor"), "1"),
+                &true,
+            )
+            .unwrap();
+        install_owner_querier(&mut deps, "first_depositor");
+
+        let info = message_info(&Addr::unchecked("first_depositor"), &[]);
+        execute_remove_all_liquidity(
+            deps.as_mut(),
+            mock_env(),
+            info,
+            "1".to_string(),
+            None,
+            None,
+            None,
+            None,
+        )
+        .expect("first-depositor full removal must succeed");
+
+        let pos = LIQUIDITY_POSITIONS.load(&deps.storage, "1").unwrap();
+        assert_eq!(
+            pos.liquidity, MINIMUM_LIQUIDITY,
+            "first-depositor exit must keep liquidity at locked floor"
+        );
+        assert_eq!(
+            pos.locked_liquidity, MINIMUM_LIQUIDITY,
+            "locked_liquidity itself must not change"
+        );
+    }
+
+    /// AddToPosition rehydrates an emptied position. Pre-fix this would
+    /// fail with `LIQUIDITY_POSITIONS::not_found` because the storage row
+    /// had been deleted on full removal; post-fix the row is alive at
+    /// zero liquidity and AddToPosition grows it from there.
+    #[test]
+    fn add_to_position_rehydrates_emptied_position() {
+        let mut deps = mock_dependencies();
+        setup_pool_post_threshold(&mut deps);
+        create_test_position(&mut deps, 7, "rehydrator", Uint128::new(5_000_000));
+        install_owner_querier(&mut deps, "rehydrator");
+
+        // Step 1: drain the position to zero.
+        let user = Addr::unchecked("rehydrator");
+        execute_remove_all_liquidity(
+            deps.as_mut(),
+            mock_env(),
+            message_info(&user, &[]),
+            "7".to_string(),
+            None,
+            None,
+            None,
+            None,
+        )
+        .expect("removal must succeed");
+        // Confirm the row is at zero (not deleted).
+        let pos = LIQUIDITY_POSITIONS.load(&deps.storage, "7").unwrap();
+        assert_eq!(pos.liquidity, Uint128::zero());
+
+        // Step 2: re-deposit into the same position via AddToPosition.
+        // We advance time past `min_commit_interval` to avoid the
+        // per-user commit gate (orthogonal to the rehydration we're
+        // testing).
+        let mut env = mock_env();
+        env.block.time = env.block.time.plus_seconds(120);
+        let info = message_info(
+            &user,
+            &[cosmwasm_std::Coin {
+                denom: "ubluechip".to_string(),
+                amount: Uint128::new(1_000_000_000),
+            }],
+        );
+        let res = execute(
+            deps.as_mut(),
+            env,
+            info,
+            ExecuteMsg::AddToPosition {
+                position_id: "7".to_string(),
+                amount0: Uint128::new(1_000_000_000),
+                amount1: Uint128::new(14_893_617_021),
+                min_amount0: None,
+                min_amount1: None,
+                transaction_deadline: None,
+            },
+        )
+        .expect("re-deposit into emptied position must succeed");
+
+        // Pool state advanced — total_liquidity grew, position now has
+        // non-zero liquidity. The exact value depends on prep math; the
+        // load-bearing assertion is "the rehydration is possible at all,"
+        // which it now is.
+        assert!(!res.messages.is_empty());
+        let pos = LIQUIDITY_POSITIONS.load(&deps.storage, "7").unwrap();
+        assert!(
+            !pos.liquidity.is_zero(),
+            "AddToPosition into a zero-liquidity row must produce non-zero liquidity, \
+             got: {}",
+            pos.liquidity
+        );
+
+        // Pool's total_liquidity must have grown to reflect the
+        // re-deposit (sanity check that the position's growth was
+        // booked into the pool, not just the position).
+        let pool_state = POOL_STATE.load(&deps.storage).unwrap();
+        // setup_pool_post_threshold seeds total_liquidity = 91_104_335_791
+        // so any growth above that confirms the rehydration was credited.
+        assert!(
+            pool_state.total_liquidity > Uint128::new(91_104_335_791),
+            "total_liquidity must have grown from re-deposit"
+        );
+    }
+
+    /// CollectFees on an empty position is a clean no-op: zero fees
+    /// transferred, no underflow on `fee_reserve`, position row stays
+    /// at zero. This is the second canary against a future change that
+    /// might assume `position.liquidity > 0` when calling collect.
+    #[test]
+    fn collect_fees_on_empty_position_is_noop() {
+        let mut deps = mock_dependencies();
+        setup_pool_post_threshold(&mut deps);
+        create_test_position(&mut deps, 9, "no_fees_yet", Uint128::new(5_000_000));
+        install_owner_querier(&mut deps, "no_fees_yet");
+
+        // Drain to zero first.
+        let user = Addr::unchecked("no_fees_yet");
+        execute_remove_all_liquidity(
+            deps.as_mut(),
+            mock_env(),
+            message_info(&user, &[]),
+            "9".to_string(),
+            None,
+            None,
+            None,
+            None,
+        )
+        .unwrap();
+
+        // Now CollectFees on the empty position: should succeed with
+        // zero fees transferred. The fee-transfer messages should be
+        // absent or zero-valued; what we assert here is just "no error."
+        let res = execute_collect_fees(
+            deps.as_mut(),
+            mock_env(),
+            message_info(&user, &[]),
+            "9".to_string(),
+        )
+        .expect("collect_fees on empty position must succeed");
+
+        // Position row still alive, still at zero liquidity.
+        let pos = LIQUIDITY_POSITIONS.load(&deps.storage, "9").unwrap();
+        assert_eq!(pos.liquidity, Uint128::zero());
+        // unclaimed_fees stays zero — no fees accrued, no fees swept.
+        assert_eq!(pos.unclaimed_fees_0, Uint128::zero());
+        assert_eq!(pos.unclaimed_fees_1, Uint128::zero());
+        // Response carries the action attribute regardless of fee
+        // amount — confirms we hit the success path.
+        assert!(res
+            .attributes
+            .iter()
+            .any(|a| a.key == "action" && a.value == "collect_fees"));
+    }
+}
