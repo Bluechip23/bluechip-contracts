@@ -2285,3 +2285,441 @@ mod distribution_liveness_tests {
     #[allow(dead_code)]
     fn _ts_marker(_t: Timestamp) {}
 }
+
+// ---------------------------------------------------------------------------
+// H1 audit fix: creator-pool deposit balance verification
+// ---------------------------------------------------------------------------
+//
+// The creator-pool dispatcher used to call the no-verify deposit /
+// add-to-position variants on the assumption that the pool's CW20 was
+// always a vanilla cw20-base freshly minted by the factory — true
+// today, but a single careless future `update_pool_token_address` or
+// factory upgrade permitting third-party CW20s would let the pool
+// credit user-claimed amounts to reserves while the actual on-chain
+// CW20 balance lagged (fee-on-transfer, rebasing, malicious receiver).
+//
+// The fix flips the dispatcher to the `_with_verify` variants and
+// wires `DEPOSIT_VERIFY_REPLY_ID` into the contract's `reply()`
+// dispatcher so the post-balance delta is checked before the
+// transaction commits.
+//
+// Tests in this module confirm that production deposits routed through
+// `ExecuteMsg::DepositLiquidity` / `ExecuteMsg::AddToPosition` now:
+//   - emit a final SubMsg tagged `reply_on_success` with the verify
+//     reply id (the anchor the reply handler hooks onto), and
+//   - persist `DEPOSIT_VERIFY_CTX` carrying the pre-balance snapshot
+//     and credited delta for the reply to consume.
+mod deposit_verify_tests {
+    use super::*;
+    use crate::contract::reply;
+    use crate::testing::liquidity_tests::setup_pool_post_threshold;
+    use cosmwasm_std::{
+        to_json_binary, Binary, Coin, ContractResult, Reply, ReplyOn, SubMsgResponse,
+        SubMsgResult, SystemResult, WasmQuery,
+    };
+    use cw20::BalanceResponse as Cw20BalanceResponse;
+    use pool_core::state::{
+        DepositVerifyContext, DEPOSIT_VERIFY_CTX, DEPOSIT_VERIFY_REPLY_ID,
+    };
+
+    /// Install a CW20 balance querier that returns a fixed balance for
+    /// any cw20 query and an `OwnerOf` querier for the NFT contract so
+    /// the deposit / add-to-position handlers can look up position
+    /// ownership during dispatch. The CW20 balance is parametric so
+    /// callers can simulate matching deltas (success path) or
+    /// mismatched deltas (fee-on-transfer / rebasing rejection path)
+    /// against a known pre-balance.
+    fn install_balance_querier(
+        deps: &mut OwnedDeps<MockStorage, MockApi, MockQuerier>,
+        cw20_balance: Uint128,
+        nft_owner: &str,
+    ) {
+        let owner = nft_owner.to_string();
+        deps.querier.update_wasm(move |query| match query {
+            WasmQuery::Smart { contract_addr, msg } => {
+                if contract_addr == "nft_contract" {
+                    if let Ok(pool_factory_interfaces::cw721_msgs::Cw721QueryMsg::OwnerOf {
+                        ..
+                    }) = cosmwasm_std::from_json(msg)
+                    {
+                        let resp =
+                            pool_factory_interfaces::cw721_msgs::OwnerOfResponse {
+                                owner: owner.clone(),
+                                approvals: vec![],
+                            };
+                        return SystemResult::Ok(ContractResult::Ok(
+                            to_json_binary(&resp).unwrap(),
+                        ));
+                    }
+                }
+                if let Ok(cw20::Cw20QueryMsg::Balance { .. }) =
+                    cosmwasm_std::from_json(msg)
+                {
+                    let resp = Cw20BalanceResponse {
+                        balance: cw20_balance,
+                    };
+                    return SystemResult::Ok(ContractResult::Ok(
+                        to_json_binary(&resp).unwrap(),
+                    ));
+                }
+                SystemResult::Err(cosmwasm_std::SystemError::InvalidRequest {
+                    error: format!("unexpected wasm query to {}", contract_addr),
+                    request: msg.clone(),
+                })
+            }
+            _ => SystemResult::Err(cosmwasm_std::SystemError::UnsupportedRequest {
+                kind: "non-Smart wasm query".to_string(),
+            }),
+        });
+    }
+
+    /// `ExecuteMsg::DepositLiquidity` (creator-pool dispatch path)
+    /// must emit a final SubMsg tagged `reply_on_success` carrying
+    /// `DEPOSIT_VERIFY_REPLY_ID`. This is the dispatch-anchor — without
+    /// it the reply handler never fires and the verify invariant is
+    /// vacuous.
+    #[test]
+    fn deposit_liquidity_through_dispatcher_emits_verify_reply_anchor() {
+        let mut deps = mock_dependencies();
+        setup_pool_post_threshold(&mut deps);
+        // Pre-balance is read by `prepare_deposit` — install ANY value;
+        // the test only asserts the SubMsg shape, not the reply outcome.
+        install_balance_querier(&mut deps, Uint128::zero(), "liquidity_provider");
+
+        let user = Addr::unchecked("liquidity_provider");
+        let bluechip_amount = Uint128::new(1_000_000_000);
+        let token_amount = Uint128::new(14_893_617_021);
+        let info = message_info(
+            &user,
+            &[Coin {
+                denom: "ubluechip".to_string(),
+                amount: bluechip_amount,
+            }],
+        );
+
+        let res = execute(
+            deps.as_mut(),
+            mock_env(),
+            info,
+            ExecuteMsg::DepositLiquidity {
+                amount0: bluechip_amount,
+                amount1: token_amount,
+                min_amount0: None,
+                min_amount1: None,
+                transaction_deadline: None,
+            },
+        )
+        .expect("dispatch must succeed");
+
+        // The LAST outgoing SubMsg must carry the verify reply id and
+        // be wired as `reply_on_success`. Production code uses the
+        // last-message anchor so the reply runs strictly after every
+        // bank/cw20 transfer the deposit emitted.
+        let last = res
+            .messages
+            .last()
+            .expect("response must contain at least one SubMsg");
+        assert_eq!(
+            last.id, DEPOSIT_VERIFY_REPLY_ID,
+            "last SubMsg must carry DEPOSIT_VERIFY_REPLY_ID — got id {} \
+             (creator-pool dispatcher must route DepositLiquidity through \
+             execute_deposit_liquidity_with_verify, not the unverified variant)",
+            last.id
+        );
+        assert!(
+            matches!(last.reply_on, ReplyOn::Success),
+            "DEPOSIT_VERIFY_REPLY_ID must be wired reply_on_success — got {:?}; \
+             reply_always or reply_on_error would let a deposit subroutine \
+             error short-circuit the verification entirely.",
+            last.reply_on
+        );
+
+        // DEPOSIT_VERIFY_CTX is the transient handoff to the reply
+        // handler; it carries the pre-balance snapshot and credited
+        // delta. Must be present after a verify-path deposit.
+        let ctx = DEPOSIT_VERIFY_CTX
+            .may_load(&deps.storage)
+            .unwrap()
+            .expect("DEPOSIT_VERIFY_CTX must be saved by the verify-path deposit");
+        assert!(
+            ctx.cw20_side1_addr.is_some(),
+            "creator-pool's pair has the CW20 on side 1; verify ctx must record it"
+        );
+        // The credited delta on side 1 should equal the user-supplied
+        // CW20 amount (subject to the deposit prep math; for a first
+        // deposit shape the credit is the user-supplied amount minus
+        // any internal adjustment — we assert non-zero rather than an
+        // exact value because the deposit math is exercised separately
+        // in liquidity_tests).
+        assert!(
+            !ctx.expected_delta1.is_zero(),
+            "expected non-zero credited delta on the CW20 side"
+        );
+    }
+
+    /// `ExecuteMsg::AddToPosition` must also route through the verify
+    /// path. Without this assertion, a future refactor that flips just
+    /// one of the two dispatcher arms back to the unverified variant
+    /// would silently regress the H1 invariant on add-to-position.
+    #[test]
+    fn add_to_position_through_dispatcher_emits_verify_reply_anchor() {
+        let mut deps = mock_dependencies();
+        setup_pool_post_threshold(&mut deps);
+        install_balance_querier(&mut deps, Uint128::zero(), "liquidity_provider");
+
+        let user = Addr::unchecked("liquidity_provider");
+        // First seed a position. We go through the dispatcher so the
+        // verify path produces a position id "2" (id 1 belongs to the
+        // initial setup). The setup_pool_post_threshold helper does
+        // not pre-create LIQUIDITY_POSITIONS; the deposit handler
+        // mints id 2 because NEXT_POSITION_ID starts at 1 and is
+        // bumped post-deposit.
+        let mut env = mock_env();
+        let info = message_info(
+            &user,
+            &[Coin {
+                denom: "ubluechip".to_string(),
+                amount: Uint128::new(1_000_000_000),
+            }],
+        );
+        execute(
+            deps.as_mut(),
+            env.clone(),
+            info,
+            ExecuteMsg::DepositLiquidity {
+                amount0: Uint128::new(1_000_000_000),
+                amount1: Uint128::new(14_893_617_021),
+                min_amount0: None,
+                min_amount1: None,
+                transaction_deadline: None,
+            },
+        )
+        .expect("first deposit must succeed");
+
+        // DEPOSIT_VERIFY_CTX is one-shot — the next deposit-class call
+        // saves a fresh one. Remove the prior context so the next save
+        // doesn't see a stale snapshot. (Production: the reply handler
+        // removes it before the next handler call ever fires.)
+        DEPOSIT_VERIFY_CTX.remove(&mut deps.storage);
+
+        // Advance past `min_commit_interval` (60s in setup_pool_storage)
+        // so the second deposit-class call from the same user isn't
+        // rate-limited as a "too frequent commit" — that gate is
+        // orthogonal to the verify-path assertion this test exists for.
+        env.block.time = env.block.time.plus_seconds(120);
+
+        let info = message_info(
+            &user,
+            &[Coin {
+                denom: "ubluechip".to_string(),
+                amount: Uint128::new(500_000_000),
+            }],
+        );
+        let res = execute(
+            deps.as_mut(),
+            env,
+            info,
+            ExecuteMsg::AddToPosition {
+                position_id: "2".to_string(),
+                amount0: Uint128::new(500_000_000),
+                amount1: Uint128::new(7_446_808_510),
+                min_amount0: None,
+                min_amount1: None,
+                transaction_deadline: None,
+            },
+        )
+        .expect("AddToPosition dispatch must succeed");
+
+        let last = res
+            .messages
+            .last()
+            .expect("response must carry SubMsgs");
+        assert_eq!(
+            last.id, DEPOSIT_VERIFY_REPLY_ID,
+            "AddToPosition must also route through the verify path; got id {}",
+            last.id
+        );
+        assert!(matches!(last.reply_on, ReplyOn::Success));
+
+        let ctx = DEPOSIT_VERIFY_CTX
+            .may_load(&deps.storage)
+            .unwrap()
+            .expect("AddToPosition with verify must save DEPOSIT_VERIFY_CTX");
+        assert!(ctx.cw20_side1_addr.is_some());
+        assert!(!ctx.expected_delta1.is_zero());
+    }
+
+    /// Reply id `DEPOSIT_VERIFY_REPLY_ID` must route to
+    /// `handle_deposit_verify_reply` in creator-pool's `reply()`
+    /// dispatcher. Without this dispatch arm, the post-balance check
+    /// never runs even though the deposit handler dispatches the
+    /// SubMsg. Test: synthesize a Reply with the verify id, install
+    /// a balance querier whose post value matches the expected delta
+    /// for the saved context, and assert success path attributes
+    /// land (proves we hit the verify handler, not the catch-all
+    /// unknown-id error).
+    #[test]
+    fn reply_dispatcher_routes_deposit_verify_id_to_handler() {
+        let mut deps = mock_dependencies();
+        setup_pool_post_threshold(&mut deps);
+
+        // Synthetic CTX: pre-balance 1_000, expected delta 250 → post
+        // must be 1_250 for the verify handler's strict equality
+        // check to pass.
+        let pool_addr = Addr::unchecked("pool_contract");
+        let cw20 = Addr::unchecked("token_contract");
+        DEPOSIT_VERIFY_CTX
+            .save(
+                &mut deps.storage,
+                &DepositVerifyContext {
+                    pool_addr: pool_addr.clone(),
+                    cw20_side0_addr: None,
+                    cw20_side1_addr: Some(cw20.clone()),
+                    pre_balance0: Uint128::zero(),
+                    pre_balance1: Uint128::new(1_000),
+                    expected_delta0: Uint128::zero(),
+                    expected_delta1: Uint128::new(250),
+                },
+            )
+            .unwrap();
+        install_balance_querier(&mut deps, Uint128::new(1_250), "anyone");
+
+        #[allow(deprecated)]
+        let ok_response = SubMsgResponse {
+            events: vec![],
+            data: None,
+            msg_responses: vec![],
+        };
+        let r = Reply {
+            id: DEPOSIT_VERIFY_REPLY_ID,
+            payload: Binary::default(),
+            gas_used: 0,
+            result: SubMsgResult::Ok(ok_response),
+        };
+        let res = reply(deps.as_mut(), mock_env(), r)
+            .expect("verify reply must succeed when post == pre + expected");
+
+        assert!(
+            res.attributes
+                .iter()
+                .any(|a| a.key == "action" && a.value == "deposit_balance_verified"),
+            "must hit handle_deposit_verify_reply (success path emits this attribute); \
+             got attrs: {:?}",
+            res.attributes
+        );
+        assert!(
+            DEPOSIT_VERIFY_CTX
+                .may_load(&deps.storage)
+                .unwrap()
+                .is_none(),
+            "verify handler must clear DEPOSIT_VERIFY_CTX on success"
+        );
+    }
+
+    /// Reply dispatcher rejects on a fee-on-transfer / rebasing-down
+    /// shortfall: post-balance < pre + expected, so delta != expected
+    /// and the verify handler returns Err. Creator-pool's `reply`
+    /// returns `StdResult<Response>`, so the typed `ContractError`
+    /// from the verify handler is mapped into `StdError::generic_err`
+    /// — assert the error string contains the canonical "balance
+    /// delta does not match" phrase that off-chain monitoring keys on.
+    #[test]
+    fn reply_dispatcher_rejects_balance_shortfall() {
+        let mut deps = mock_dependencies();
+        setup_pool_post_threshold(&mut deps);
+
+        let pool_addr = Addr::unchecked("pool_contract");
+        let cw20 = Addr::unchecked("token_contract");
+        DEPOSIT_VERIFY_CTX
+            .save(
+                &mut deps.storage,
+                &DepositVerifyContext {
+                    pool_addr,
+                    cw20_side0_addr: None,
+                    cw20_side1_addr: Some(cw20.clone()),
+                    pre_balance0: Uint128::zero(),
+                    pre_balance1: Uint128::new(1_000),
+                    expected_delta0: Uint128::zero(),
+                    expected_delta1: Uint128::new(250),
+                },
+            )
+            .unwrap();
+        // Post = 1_240 — short by 10 base units (simulates a 4% FoT
+        // tax on the credited 250).
+        install_balance_querier(&mut deps, Uint128::new(1_240), "anyone");
+
+        #[allow(deprecated)]
+        let ok_response = SubMsgResponse {
+            events: vec![],
+            data: None,
+            msg_responses: vec![],
+        };
+        let r = Reply {
+            id: DEPOSIT_VERIFY_REPLY_ID,
+            payload: Binary::default(),
+            gas_used: 0,
+            result: SubMsgResult::Ok(ok_response),
+        };
+        let err = reply(deps.as_mut(), mock_env(), r)
+            .expect_err("shortfall must propagate as Err to revert the parent tx");
+        let msg = err.to_string();
+        assert!(
+            msg.contains("balance delta") && msg.contains("does not match"),
+            "shortfall error must carry the canonical phrase off-chain monitoring \
+             keys on; got: {}",
+            msg
+        );
+    }
+
+    /// Reply dispatcher also rejects an inflation overage (post >
+    /// pre + expected). Without this, an attacker controlling a CW20
+    /// that mints to the pool mid-deposit could grow the pool's
+    /// reserve without paying for it (the strict-equality check
+    /// blocks both shortfall and overage).
+    #[test]
+    fn reply_dispatcher_rejects_inflation_overage() {
+        let mut deps = mock_dependencies();
+        setup_pool_post_threshold(&mut deps);
+
+        let pool_addr = Addr::unchecked("pool_contract");
+        let cw20 = Addr::unchecked("token_contract");
+        DEPOSIT_VERIFY_CTX
+            .save(
+                &mut deps.storage,
+                &DepositVerifyContext {
+                    pool_addr,
+                    cw20_side0_addr: None,
+                    cw20_side1_addr: Some(cw20.clone()),
+                    pre_balance0: Uint128::zero(),
+                    pre_balance1: Uint128::new(1_000),
+                    expected_delta0: Uint128::zero(),
+                    expected_delta1: Uint128::new(250),
+                },
+            )
+            .unwrap();
+        // Post = 1_500 — overage of 250 (simulates a CW20 that
+        // double-mints during transfer or a rebase-up event landing
+        // mid-deposit).
+        install_balance_querier(&mut deps, Uint128::new(1_500), "anyone");
+
+        #[allow(deprecated)]
+        let ok_response = SubMsgResponse {
+            events: vec![],
+            data: None,
+            msg_responses: vec![],
+        };
+        let r = Reply {
+            id: DEPOSIT_VERIFY_REPLY_ID,
+            payload: Binary::default(),
+            gas_used: 0,
+            result: SubMsgResult::Ok(ok_response),
+        };
+        let err = reply(deps.as_mut(), mock_env(), r)
+            .expect_err("overage must propagate as Err");
+        assert!(
+            err.to_string().contains("does not match"),
+            "overage rejection must surface; got: {}",
+            err
+        );
+    }
+}

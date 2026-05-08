@@ -13,9 +13,9 @@ use crate::commit::{commit, execute_continue_distribution};
 use crate::error::ContractError;
 use crate::generic_helpers::validate_pool_threshold_payments;
 use crate::liquidity::{
-    execute_add_to_position, execute_collect_fees, execute_deposit_liquidity,
-    execute_remove_all_liquidity, execute_remove_partial_liquidity,
-    execute_remove_partial_liquidity_by_percent,
+    execute_add_to_position_with_verify, execute_collect_fees,
+    execute_deposit_liquidity_with_verify, execute_remove_all_liquidity,
+    execute_remove_partial_liquidity, execute_remove_partial_liquidity_by_percent,
 };
 use crate::liquidity_helpers::{execute_claim_creator_excess, execute_claim_creator_fees};
 use crate::msg::{ExecuteMsg, MigrateMsg, PoolInstantiateMsg};
@@ -25,14 +25,15 @@ use crate::state::{
     MIN_LP_FEE, OracleInfo, PoolAnalytics,
     PoolDetails, PoolFeeState, PoolInfo, PoolSpecs, PoolState, Position, ThresholdPayoutAmounts,
     COMMITFEEINFO, COMMIT_LIMIT_INFO, EXPECTED_FACTORY, IS_THRESHOLD_HIT, LIQUIDITY_POSITIONS,
-    FAILED_MINTS, NATIVE_RAISED_FROM_COMMIT, NEXT_POSITION_ID, ORACLE_INFO, OWNER_POSITIONS,
-    PENDING_FACTORY_NOTIFY, PENDING_MINT_REPLIES, POOL_ANALYTICS, POOL_FEE_STATE, POOL_INFO,
-    POOL_PAUSED, POOL_SPECS, POOL_STATE, REPLY_ID_DISTRIBUTION_MINT_BASE,
-    REPLY_ID_FACTORY_NOTIFY_INITIAL, REPLY_ID_FACTORY_NOTIFY_RETRY, THRESHOLD_PAYOUT_AMOUNTS,
-    USD_RAISED_FROM_COMMIT,
+    DEPOSIT_VERIFY_REPLY_ID, FAILED_MINTS, NATIVE_RAISED_FROM_COMMIT, NEXT_POSITION_ID,
+    ORACLE_INFO, OWNER_POSITIONS, PENDING_FACTORY_NOTIFY, PENDING_MINT_REPLIES, POOL_ANALYTICS,
+    POOL_FEE_STATE, POOL_INFO, POOL_PAUSED, POOL_SPECS, POOL_STATE,
+    REPLY_ID_DISTRIBUTION_MINT_BASE, REPLY_ID_FACTORY_NOTIFY_INITIAL,
+    REPLY_ID_FACTORY_NOTIFY_RETRY, THRESHOLD_PAYOUT_AMOUNTS, USD_RAISED_FROM_COMMIT,
 };
 // Swap orchestration moved to pool_core::swap; re-exported via swap_helper.
 use crate::swap_helper::{execute_swap_cw20, simple_swap};
+use pool_core::balance_verify::handle_deposit_verify_reply;
 use cosmwasm_std::{
     entry_point, from_json, to_json_binary, Addr, CosmosMsg, Decimal, DepsMut, Env, MessageInfo,
     Reply, Response, StdError, StdResult, Storage, SubMsg, SubMsgResult, Uint128, WasmMsg,
@@ -400,7 +401,19 @@ pub fn execute(
                 return Err(ContractError::ShortOfThreshold {});
             }
             let sender = info.sender.clone();
-            execute_deposit_liquidity(
+            // H1 audit fix: route every CW20-bearing deposit through the
+            // balance-verify variant. The pre-fix path skipped the
+            // pre/post snapshot under the assumption that the pool's
+            // CW20 is always a vanilla cw20-base freshly minted by the
+            // factory — true today, but a single careless future
+            // `update_pool_token_address` admin path or factory upgrade
+            // permitting third-party CW20s would let reserves drift
+            // from on-chain balances silently. Two extra balance
+            // queries per deposit is negligible relative to the
+            // strength of the invariant; the verify reply rolls the
+            // entire tx back on any delta mismatch (see
+            // pool_core::balance_verify::handle_deposit_verify_reply).
+            execute_deposit_liquidity_with_verify(
                 deps,
                 env,
                 info,
@@ -426,7 +439,10 @@ pub fn execute(
                 return Err(ContractError::ShortOfThreshold {});
             }
             let sender = info.sender.clone();
-            execute_add_to_position(
+            // H1 audit fix: same balance-verify rationale as
+            // DepositLiquidity above. Also closes the implicit-trust
+            // gap on the add-to-position path.
+            execute_add_to_position_with_verify(
                 deps,
                 env,
                 info,
@@ -644,6 +660,27 @@ pub fn reply(deps: DepsMut, env: Env, msg: Reply) -> StdResult<Response> {
                     .add_attribute("block_time", env.block.time.seconds().to_string()))
             }
         },
+        // H1 audit fix: route the deposit balance-verify reply through
+        // the shared pool-core handler. Listed BEFORE the H6 distribution-
+        // mint guard arm because `DEPOSIT_VERIFY_REPLY_ID` (0xD550_0000)
+        // is numerically above `REPLY_ID_DISTRIBUTION_MINT_BASE` and the
+        // guard arm would otherwise match it; literal arms before guard
+        // arms in a Rust `match` win regardless of relative numeric
+        // ordering, so this is the canonical placement.
+        //
+        // The verify handler returns `Result<Response, ContractError>`;
+        // creator-pool's `reply` returns `StdResult<Response>` to stay
+        // symmetric with the other branches above. The error is mapped
+        // into `StdError::generic_err(<message>)` here — variant typing
+        // is lost on this one path, but the failure message is verbose
+        // enough for off-chain monitoring to match against the
+        // "balance delta does not match" substring that
+        // `handle_deposit_verify_reply` emits on a fee-on-transfer or
+        // rebasing CW20.
+        DEPOSIT_VERIFY_REPLY_ID => {
+            handle_deposit_verify_reply(deps, env, msg)
+                .map_err(|e| StdError::generic_err(e.to_string()))
+        }
         id if id >= REPLY_ID_DISTRIBUTION_MINT_BASE
             && PENDING_MINT_REPLIES.has(deps.storage, id) =>
         {
