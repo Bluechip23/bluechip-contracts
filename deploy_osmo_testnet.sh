@@ -71,11 +71,25 @@ if ! osmosisd keys show "$FROM" --keyring-backend "$KEYRING" >/dev/null 2>&1; th
 fi
 ADDR="$(osmosisd keys show "$FROM" -a --keyring-backend "$KEYRING")"
 
+# ---- Helper: query osmosisd in a way that survives stderr-output bug ----
+# osmosisd v29 (Cosmos-SDK v0.50) routes `query ... -o json` output to
+# stderr instead of stdout when invoked in a non-TTY context (subshell
+# capture, pipe). `2>&1` merges both streams so jq always sees the JSON
+# regardless of which one osmosisd picked. If the binary ever switches
+# back to stdout-only, this still works — we just don't drop the stderr
+# diagnostics.
+query_json() {
+    osmosisd query "$@" --node "$NODE" -o json 2>&1
+}
+
 # Ping the node + check gas balance.
-BAL_JSON="$(osmosisd query bank balances "$ADDR" --node "$NODE" -o json 2>/dev/null \
-    || { echo "error: cannot reach $NODE" >&2; exit 1; })"
+if ! BAL_JSON="$(query_json bank balances "$ADDR")"; then
+    echo "error: cannot reach $NODE" >&2
+    echo "$BAL_JSON" >&2
+    exit 1
+fi
 GAS_BAL="$(echo "$BAL_JSON" | jq -r --arg d "$NATIVE_DENOM" \
-    '.balances[]? | select(.denom == $d) | .amount' || echo 0)"
+    '.balances[]? | select(.denom == $d) | .amount' 2>/dev/null || echo 0)"
 [ -z "$GAS_BAL" ] && GAS_BAL=0
 if [ "$GAS_BAL" -lt "$MIN_GAS_BALANCE" ]; then
     echo "error: $ADDR has only $GAS_BAL $NATIVE_DENOM, need >= $MIN_GAS_BALANCE" >&2
@@ -108,22 +122,23 @@ TX_FLAGS=(
 # stderr: status messages, plus the raw osmosisd stderr on submit failure
 # so the operator can see *why* (gas-estimate failure, fee underpayment,
 # simulation revert, etc.) instead of a generic "submit failed".
+#
+# Same osmosisd-v29 stderr-routing quirk that affects queries also affects
+# tx submission: the response JSON sometimes lands on stderr. We capture
+# both streams and let jq find the JSON.
 submit_tx() {
-    local raw stderr_file
-    stderr_file="$(mktemp)"
-    if ! raw="$(osmosisd tx "$@" "${TX_FLAGS[@]}" 2>"$stderr_file")"; then
+    local raw
+    if ! raw="$(osmosisd tx "$@" "${TX_FLAGS[@]}" 2>&1)"; then
         echo "error: tx submit (mempool admission) failed for: $*" >&2
-        echo "--- osmosisd stderr ---" >&2
-        cat "$stderr_file" >&2
+        echo "--- osmosisd output ---" >&2
+        echo "$raw" >&2
         echo "-----------------------" >&2
-        rm -f "$stderr_file"
         return 1
     fi
-    rm -f "$stderr_file"
     local tx_hash
-    tx_hash="$(echo "$raw" | jq -r '.txhash // empty')"
+    tx_hash="$(echo "$raw" | jq -r '.txhash // empty' 2>/dev/null || true)"
     if [ -z "$tx_hash" ]; then
-        echo "error: tx submit returned no hash. raw output:" >&2
+        echo "error: tx submit returned no parseable txhash. raw output:" >&2
         echo "$raw" >&2
         return 1
     fi
@@ -131,11 +146,11 @@ submit_tx() {
     local i result code
     for i in 1 2 3 4 5 6; do
         sleep 5
-        if result="$(osmosisd query tx "$tx_hash" --node "$NODE" -o json 2>/dev/null)"; then
-            code="$(echo "$result" | jq -r '.code // 0')"
+        if result="$(query_json tx "$tx_hash" 2>/dev/null)"; then
+            code="$(echo "$result" | jq -r '.code // 0' 2>/dev/null || echo 0)"
             if [ "$code" != "0" ]; then
                 echo "error: tx $tx_hash failed with code $code" >&2
-                echo "$result" | jq -r '.raw_log' >&2
+                echo "$result" | jq -r '.raw_log' 2>/dev/null >&2 || echo "$result" >&2
                 return 1
             fi
             echo "$result"
@@ -162,8 +177,8 @@ echo "[1/4] tokenfactory $BLUECHIP_DENOM"
 # Idempotent guard: query existing denoms-from-creator, only create if
 # this subdenom isn't already registered. Mint always runs (a re-run
 # is treated as "top up the deployer balance").
-EXISTING_DENOMS="$(osmosisd query tokenfactory denoms-from-creator "$ADDR" \
-    --node "$NODE" -o json 2>/dev/null | jq -r '.denoms[]?' || true)"
+EXISTING_DENOMS="$(query_json tokenfactory denoms-from-creator "$ADDR" \
+    | jq -r '.denoms[]?' 2>/dev/null || true)"
 if echo "$EXISTING_DENOMS" | grep -qx "$BLUECHIP_DENOM"; then
     echo "      denom exists, skipping create-denom"
 else
