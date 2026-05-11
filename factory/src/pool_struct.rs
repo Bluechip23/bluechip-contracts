@@ -36,6 +36,47 @@ pub struct PoolConfigUpdate {
     // ORACLE_INFO directly.
 }
 
+/// Inclusive upper bound on `min_commit_interval` (seconds). Mirrors the pool
+/// side's `86400` cap in `pool_core::admin`. Zero is allowed (disables the
+/// per-address commit cooldown), matching pool-side acceptance.
+pub const POOL_CONFIG_MIN_COMMIT_INTERVAL_MAX_SECONDS: u64 = 86_400;
+
+impl PoolConfigUpdate {
+    /// Validate the update at propose time so a misconfigured value fails
+    /// fast rather than after the 48h timelock. The pool side enforces the
+    /// same bounds again at apply (defense-in-depth across the trust
+    /// boundary), but rejection there would force a Cancel + 48h re-propose
+    /// cycle for the admin — surfacing the same error here saves 48h.
+    ///
+    /// Bounds mirror `pool_core`:
+    ///   - `lp_fee`     : `MIN_LP_FEE` (0.1%) ..= `MAX_LP_FEE` (10%)
+    ///   - `min_commit_interval` : 0 ..= 86400 seconds
+    /// Constants are duplicated rather than imported from `pool-core` to keep
+    /// the factory crate free of a `pool-core` dependency (pool-core already
+    /// depends on the factory-interfaces crate).
+    pub fn validate(&self) -> StdResult<()> {
+        let lp_fee_min = Decimal::permille(1);
+        let lp_fee_max = Decimal::percent(10);
+        if let Some(fee) = self.lp_fee {
+            if fee < lp_fee_min || fee > lp_fee_max {
+                return Err(StdError::generic_err(format!(
+                    "lp_fee {} out of allowed range [{}, {}]; pool will reject at apply time",
+                    fee, lp_fee_min, lp_fee_max
+                )));
+            }
+        }
+        if let Some(interval) = self.min_commit_interval {
+            if interval > POOL_CONFIG_MIN_COMMIT_INTERVAL_MAX_SECONDS {
+                return Err(StdError::generic_err(format!(
+                    "min_commit_interval {} exceeds maximum {} seconds; pool will reject at apply time",
+                    interval, POOL_CONFIG_MIN_COMMIT_INTERVAL_MAX_SECONDS
+                )));
+            }
+        }
+        Ok(())
+    }
+}
+
 // Mirrors pool::state::RecoveryType. Redefined here to avoid a pool -> factory
 // dependency; serde serialization must stay in sync with the pool's variant.
 #[cw_serde]
