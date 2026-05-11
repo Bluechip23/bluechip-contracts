@@ -4,7 +4,42 @@ use crate::msg::CommitFeeInfo;
 use crate::msg::{ExecuteMsg, PoolConfigUpdate, PoolInstantiateMsg};
 use crate::state::{ThresholdPayoutAmounts, POOL_PAUSED, POOL_SPECS, POOL_STATE};
 use cosmwasm_std::testing::{message_info, mock_dependencies, mock_env, MockApi};
-use cosmwasm_std::{to_json_binary, Addr, Coin, Decimal, Uint128};
+use cosmwasm_std::{
+    to_json_binary, Addr, Binary, Coin, ContractResult, Decimal, SystemError, SystemResult,
+    Uint128, WasmQuery,
+};
+
+/// Install a wasm-mock that answers the factory's
+/// `EmergencyWithdrawDelaySeconds {}` query. `execute_emergency_withdraw_initiate`
+/// reads the delay at runtime via `query_wasm_smart` so admin can tune
+/// it without re-instantiating pools; tests that trigger emergency
+/// withdraw must mock that response or the synchronous query errors
+/// with `Querier system error: No such contract: factory_addr`.
+///
+/// Returns the standard 24h delay so tests can assert
+/// `effective_after == now + 86400`.
+fn install_factory_emergency_delay_mock(
+    deps: &mut cosmwasm_std::OwnedDeps<
+        cosmwasm_std::testing::MockStorage,
+        MockApi,
+        cosmwasm_std::testing::MockQuerier,
+    >,
+    factory_addr: &str,
+) {
+    let factory_addr_owned = factory_addr.to_string();
+    deps.querier.update_wasm(move |query| match query {
+        WasmQuery::Smart { contract_addr, .. } if contract_addr == &factory_addr_owned => {
+            let resp = pool_factory_interfaces::EmergencyWithdrawDelayResponse {
+                delay_seconds: 86_400,
+            };
+            SystemResult::Ok(ContractResult::Ok(to_json_binary(&resp).unwrap()))
+        }
+        _ => SystemResult::Err(SystemError::InvalidRequest {
+            error: "unmocked wasm query".to_string(),
+            request: Binary::default(),
+        }),
+    });
+}
 
 fn mock_instantiate_msg() -> PoolInstantiateMsg {
     // Both the CreatorToken entry and `token_address` must be bech32-valid
@@ -120,6 +155,9 @@ fn test_emergency_withdraw() {
     crate::state::IS_THRESHOLD_HIT
         .save(&mut deps.storage, &true)
         .unwrap();
+    // execute_emergency_withdraw_initiate queries the factory at runtime
+    // for the (admin-tunable) delay; install the mock before triggering it.
+    install_factory_emergency_delay_mock(&mut deps, "factory_addr");
 
     // Inject some liquidity mock manually for testing.
     let mut pool_state = POOL_STATE.load(&deps.storage).unwrap();
@@ -233,6 +271,9 @@ fn test_cancel_emergency_withdraw() {
     // creator-pool starts pre-threshold; tests that want post-threshold
     // behavior seed it explicitly.
     crate::state::IS_THRESHOLD_HIT.save(&mut deps.storage, &true).unwrap();
+    // execute_emergency_withdraw_initiate queries the factory at runtime
+    // for the (admin-tunable) delay; install the mock before triggering it.
+    install_factory_emergency_delay_mock(&mut deps, "factory_addr");
 
     // Inject reserves.
     let mut pool_state = POOL_STATE.load(&deps.storage).unwrap();

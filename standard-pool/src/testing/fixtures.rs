@@ -72,6 +72,20 @@ pub fn mock_deps_with_nft_owner(
                     return SystemResult::Ok(ContractResult::Ok(to_json_binary(&resp).unwrap()));
                 }
             }
+            // Factory: EmergencyWithdrawDelaySeconds — read at runtime by
+            // `execute_emergency_withdraw_initiate` so admin can tune the
+            // delay without re-instantiating pools. Match by message shape
+            // so we don't have to plumb the factory address into the
+            // fixture caller; the canonical 24h value matches the factory
+            // default.
+            if let Ok(pool_factory_interfaces::FactoryQueryMsg::EmergencyWithdrawDelaySeconds {}) =
+                cosmwasm_std::from_json(msg)
+            {
+                let resp = pool_factory_interfaces::EmergencyWithdrawDelayResponse {
+                    delay_seconds: 86_400,
+                };
+                return SystemResult::Ok(ContractResult::Ok(to_json_binary(&resp).unwrap()));
+            }
             // CW20 Balance — pre-balance snapshot for the deposit verify
             // path. Match by message shape rather than contract address so
             // any CW20 side any test wires in resolves uniformly to zero.
