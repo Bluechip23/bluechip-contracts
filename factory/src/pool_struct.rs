@@ -153,10 +153,21 @@ pub struct PoolDetails {
     /// permissionless standard-pool creation (which also bumps the
     /// global `POOL_COUNTER`) cannot inflate `x` in the decay polynomial
     /// and shrink legitimate commit pools' threshold-mint reward toward
-    /// zero. Legacy commit pools written before this field existed
-    /// deserialize with `commit_pool_ordinal = 0` via `#[serde(default)]`;
-    /// `calculate_and_mint_bluechip` falls back to `pool_id` in that case
-    /// to preserve their original mint amount.
+    /// zero.
+    ///
+    /// Set non-zero at create time by `execute_create_creator_pool`
+    /// (the counter is bumped to `current + 1` before save), so a
+    /// commit pool with `commit_pool_ordinal == 0` indicates either
+    /// storage corruption or a pre-v1 legacy record. v1 is the launch
+    /// version — there is no legacy chain state to back-fill — so
+    /// `calculate_and_mint_bluechip` fail-closes (`Err`) on a zero
+    /// ordinal rather than falling back to a value that would
+    /// inflate the mint relative to the intended schedule.
+    ///
+    /// `#[serde(default)]` is retained so a future migration that
+    /// extends `PoolDetails` with another field continues to
+    /// deserialize cleanly; it is NOT a back-compat shim for legacy
+    /// records (none exist).
     #[serde(default)]
     pub commit_pool_ordinal: u64,
 }

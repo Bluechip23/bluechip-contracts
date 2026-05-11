@@ -145,15 +145,13 @@ pub fn calculate_and_mint_bluechip(
     // Fail-loud invariant: `commit_pool_ordinal` is set on every commit
     // pool at create time (`execute_create_creator_pool` in
     // `factory/src/execute/pool_lifecycle/create.rs`) and is non-zero by
-    // construction (counter is bumped to `current + 1` before save). A
-    // zero ordinal here can only mean storage corruption or a
-    // hypothetical legacy record from a pre-v1 build. We reject rather
-    // than fall back: `calculate_mint_amount(s, 0)` returns the FULL
-    // base amount (500_000_000), so a silent fallback would *inflate*
-    // the mint relative to the intended schedule — the worst possible
-    // direction. v1 has no legacy data, so this branch should never
-    // fire in practice; if it ever does, the operator must investigate
-    // the pool record before the threshold-cross can complete.
+    // construction (counter is bumped to `current + 1` before save).
+    // v1 is the launch version — there is no pre-existing chain state —
+    // so a zero ordinal at this point can only mean storage corruption.
+    // We reject rather than fall back: `calculate_mint_amount(s, 0)`
+    // returns the FULL base amount (500_000_000), so a silent fallback
+    // would *inflate* the mint relative to the intended schedule — the
+    // worst possible direction.
     if pool_details.commit_pool_ordinal == 0 {
         return Err(ContractError::Std(StdError::generic_err(format!(
             "Pool {} has commit_pool_ordinal == 0; refusing to mint to avoid \
