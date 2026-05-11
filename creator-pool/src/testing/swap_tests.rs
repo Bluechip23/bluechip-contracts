@@ -1109,12 +1109,12 @@ fn test_swap_cw20_via_hook() {
     deps.querier.update_wasm(move |query| match query {
         WasmQuery::Smart { contract_addr, msg } => {
             if contract_addr == "token_contract" {
-                    let balance_response = cw20::BalanceResponse {
-                        balance: Uint128::new(360_000_000_000),
-                    };
-                    SystemResult::Ok(ContractResult::Ok(
-                        to_json_binary(&balance_response).unwrap(),
-                    ))
+                let balance_response = cw20::BalanceResponse {
+                    balance: Uint128::new(360_000_000_000),
+                };
+                SystemResult::Ok(ContractResult::Ok(
+                    to_json_binary(&balance_response).unwrap(),
+                ))
             } else {
                 SystemResult::Err(SystemError::InvalidRequest {
                     error: "Unknown contract".to_string(),
