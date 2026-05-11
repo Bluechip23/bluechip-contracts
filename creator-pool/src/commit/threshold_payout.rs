@@ -133,18 +133,20 @@ pub fn trigger_threshold_payout(
 
     let mut other_msgs: Vec<CosmosMsg> = Vec::new();
 
-    // Accept the position-NFT ownership at threshold-cross time
-    // rather than lazily on first deposit. Closes the "ownership pending"
-    // window between factory's `TransferOwnership` (at pool finalize)
-    // and the first LP's deposit, during which a (compromised) factory
-    // could theoretically re-route the NFT elsewhere via another
-    // TransferOwnership before the pool ever locks it in. The
-    // `nft_ownership_accepted` flag flips here too so the deposit
-    // handler's lazy check skips the AcceptOwnership emit (avoiding a
-    // double-accept that would error at the CW721 contract).
+    // Backstop NFT-ownership accept. Under the canonical create flow
+    // the factory's `finalize_pool` dispatches `AcceptNftOwnership {}`
+    // to this pool in the same tx as the CW721 `TransferOwnership`, so
+    // `nft_ownership_accepted` is already true by the time threshold
+    // crosses and this branch is a no-op. Retained as defense-in-depth
+    // for the test-fixture path (and any hypothetical future code path
+    // that instantiates a pool directly) where the factory-side
+    // dispatch may not have run; the deposit handler in pool-core
+    // carries the same idempotent fallback.
     //
-    // Idempotent: if the flag is already true (e.g. a hand-rolled
-    // factory dispatch path that pre-accepted), this branch is a no-op.
+    // Idempotent: the `if !nft_ownership_accepted` gate makes a second
+    // accept a no-op — important because the CW721 contract rejects a
+    // duplicate `AcceptOwnership` with `NoPendingOwner` and that error
+    // would revert the entire threshold-cross tx.
     if !pool_state.nft_ownership_accepted {
         other_msgs.push(CosmosMsg::Wasm(WasmMsg::Execute {
             contract_addr: pool_info.position_nft_address.to_string(),

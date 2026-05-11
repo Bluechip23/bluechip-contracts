@@ -585,7 +585,62 @@ pub fn execute(
         ExecuteMsg::SweepUnclaimedEmergencyShares {} => {
             execute_sweep_unclaimed_emergency_shares(deps, env, info)
         }
+        ExecuteMsg::AcceptNftOwnership {} => execute_accept_nft_ownership(deps, info),
     }
+}
+
+/// Factory-only callback dispatched immediately after `register_pool` in
+/// `factory::finalize_pool`. Completes the two-phase CW721 ownership
+/// handoff begun by the factory's `TransferOwnership` to the position
+/// NFT: sends the matching `AcceptOwnership` back to the NFT and flips
+/// `pool_state.nft_ownership_accepted`.
+///
+/// Mirrors `standard-pool`'s handler of the same name. Pre-this-handler
+/// the commit pool relied on a lazy `AcceptOwnership` emitted by
+/// `trigger_threshold_payout` (the first time threshold crossed), which
+/// left the factory as the NFT contract's actual owner for the entire
+/// pre-threshold window. The synchronous accept at finalize closes
+/// that window.
+///
+/// Authorisation: `info.sender` must equal `pool_info.factory_addr`.
+/// Idempotent: a second call (or a call after the deposit-side lazy
+/// fallback in pool-core has already flipped the flag) returns Ok
+/// without emitting a second `AcceptOwnership` — the CW721 would
+/// reject the duplicate with `NoPendingOwner`, which would revert the
+/// entire create tx if dispatched.
+fn execute_accept_nft_ownership(
+    deps: DepsMut,
+    info: MessageInfo,
+) -> Result<Response, ContractError> {
+    let pool_info = POOL_INFO.load(deps.storage)?;
+    if info.sender != pool_info.factory_addr {
+        return Err(ContractError::Unauthorized {});
+    }
+
+    let mut pool_state = POOL_STATE.load(deps.storage)?;
+    if pool_state.nft_ownership_accepted {
+        return Ok(Response::new()
+            .add_attribute("action", "accept_nft_ownership_noop")
+            .add_attribute("pool_contract", pool_info.pool_info.contract_addr.to_string()));
+    }
+
+    let accept_msg = WasmMsg::Execute {
+        contract_addr: pool_info.position_nft_address.to_string(),
+        msg: to_json_binary(
+            &pool_factory_interfaces::cw721_msgs::Cw721ExecuteMsg::<()>::UpdateOwnership(
+                pool_factory_interfaces::cw721_msgs::Action::AcceptOwnership,
+            ),
+        )?,
+        funds: vec![],
+    };
+    pool_state.nft_ownership_accepted = true;
+    POOL_STATE.save(deps.storage, &pool_state)?;
+
+    Ok(Response::new()
+        .add_message(CosmosMsg::Wasm(accept_msg))
+        .add_attribute("action", "accept_nft_ownership")
+        .add_attribute("pool_contract", pool_info.pool_info.contract_addr.to_string())
+        .add_attribute("nft", pool_info.position_nft_address.to_string()))
 }
 
 /// Re-sends `NotifyThresholdCrossed` to the factory when the initial
