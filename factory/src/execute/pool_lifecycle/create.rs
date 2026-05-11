@@ -263,7 +263,9 @@ pub(crate) fn execute_create_creator_pool(
     // reverts the whole tx atomically) also reverts the stamp —
     // no permanent rate-limit state leaks from failed creates.
     let now = env.block.time;
-    if let Some(last) = LAST_COMMIT_POOL_CREATE_AT.may_load(deps.storage, info.sender.clone())? {
+    let prior_stamp =
+        LAST_COMMIT_POOL_CREATE_AT.may_load(deps.storage, info.sender.clone())?;
+    if let Some(last) = prior_stamp {
         let next_allowed = last.plus_seconds(COMMIT_POOL_CREATE_RATE_LIMIT_SECONDS);
         if now < next_allowed {
             return Err(ContractError::Std(StdError::generic_err(format!(
@@ -274,6 +276,19 @@ pub(crate) fn execute_create_creator_pool(
         }
     }
     LAST_COMMIT_POOL_CREATE_AT.save(deps.storage, info.sender.clone(), &now)?;
+    // Sync the timestamp-ordered secondary index used by PruneRateLimits.
+    // Remove the prior (old_ts, addr) entry first so the index stays
+    // single-entry-per-address; the index is keyed by timestamp so an
+    // un-removed prior would persist as a stale ghost.
+    if let Some(prior) = prior_stamp {
+        crate::state::COMMIT_POOL_CREATE_TS_INDEX
+            .remove(deps.storage, (prior.seconds(), info.sender.clone()));
+    }
+    crate::state::COMMIT_POOL_CREATE_TS_INDEX.save(
+        deps.storage,
+        (now.seconds(), info.sender.clone()),
+        &(),
+    )?;
 
     let creator_attr = info.sender.to_string();
     let pool_counter = POOL_COUNTER.may_load(deps.storage)?.unwrap_or(0);
@@ -503,9 +518,9 @@ pub(crate) fn execute_create_standard_pool(
     // rest of the tx, so no permanent rate-limit residue from rejected
     // creations.
     let now = env.block.time;
-    if let Some(last) =
-        LAST_STANDARD_POOL_CREATE_AT.may_load(deps.storage, info.sender.clone())?
-    {
+    let prior_std_stamp =
+        LAST_STANDARD_POOL_CREATE_AT.may_load(deps.storage, info.sender.clone())?;
+    if let Some(last) = prior_std_stamp {
         let next_allowed = last.plus_seconds(STANDARD_POOL_CREATE_RATE_LIMIT_SECONDS);
         if now < next_allowed {
             return Err(ContractError::Std(StdError::generic_err(format!(
@@ -516,6 +531,17 @@ pub(crate) fn execute_create_standard_pool(
         }
     }
     LAST_STANDARD_POOL_CREATE_AT.save(deps.storage, info.sender.clone(), &now)?;
+    // Sync the timestamp-ordered secondary index for prune. See the
+    // commit-pool variant above for the rationale.
+    if let Some(prior) = prior_std_stamp {
+        crate::state::STANDARD_POOL_CREATE_TS_INDEX
+            .remove(deps.storage, (prior.seconds(), info.sender.clone()));
+    }
+    crate::state::STANDARD_POOL_CREATE_TS_INDEX.save(
+        deps.storage,
+        (now.seconds(), info.sender.clone()),
+        &(),
+    )?;
 
     if label.trim().is_empty() {
         return Err(ContractError::Std(StdError::generic_err(

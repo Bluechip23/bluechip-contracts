@@ -138,6 +138,17 @@ pub fn execute_propose_pool_upgrade(
 // doesn't migrate a pool that is mid-emergency-withdraw or otherwise in a
 // sensitive state. Returns the built messages and records how many pools
 // were processed (skipped + migrated) so the next batch can resume.
+//
+// Anchor exclusion runs here in addition to the propose-time check.
+// `execute_propose_pool_upgrade` snapshots the anchor at propose time, but
+// the pending list can outlive an anchor change (Propose pool upgrade
+// containing pool X -> 48h elapses -> ProposeConfigUpdate that promotes X
+// to anchor -> apply config update -> apply upgrade: X is now the live
+// anchor but is still in the frozen list). Re-resolving the anchor here
+// and hard-failing if it appears in the batch closes that race. We
+// hard-fail rather than silently skip so an operator notices the
+// collision and decides whether to drop X from the upgrade or rotate
+// the anchor first.
 fn build_upgrade_batch(
     deps: Deps,
     pool_ids: &[u64],
@@ -148,8 +159,22 @@ fn build_upgrade_batch(
     let mut skipped: Vec<u64> = Vec::new();
     let processed: u32 = pool_ids.len() as u32;
 
+    let current_anchor_addr = crate::state::FACTORYINSTANTIATEINFO
+        .load(deps.storage)?
+        .atom_bluechip_anchor_pool_address;
+
     for pool_id in pool_ids.iter() {
         let pool_addr = POOLS_BY_ID.load(deps.storage, *pool_id)?.creator_pool_addr;
+
+        if pool_addr == current_anchor_addr {
+            return Err(ContractError::Std(StdError::generic_err(format!(
+                "Pool {} ({}) is the current anchor pool. The pending upgrade was \
+                 created when a different pool was the anchor; an anchor change \
+                 has landed since. Cancel this upgrade, choose whether to keep \
+                 the new anchor or drop pool {} from the batch, and re-propose.",
+                pool_id, pool_addr, pool_id
+            ))));
+        }
 
         // Query pause state; if the pool is paused, skip it. A paused pool
         // may be in the middle of a 24h emergency-withdraw timelock or other

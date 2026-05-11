@@ -127,6 +127,15 @@ pub fn register_test_pool_addr(
             },
         )
         .unwrap();
+    // Mirror `state::register_pool` — the reverse address->id index is a
+    // load-bearing invariant that `lookup_pool_by_addr` now depends on.
+    // Bypassing it in tests would leave any handler that resolves a pool
+    // by address (NotifyThresholdCrossed, PayDistributionBounty,
+    // SetAnchorPool, anchor-change config apply, oracle eligibility
+    // propose/apply) unable to find the test fixture.
+    crate::state::POOL_ID_BY_ADDRESS
+        .save(storage, pool_addr.clone(), &pool_id)
+        .unwrap();
 }
 
 pub fn setup_atom_pool(deps: &mut OwnedDeps<MockStorage, MockApi, WasmMockQuerier>) {

@@ -374,13 +374,32 @@ pub(crate) fn validate_anchor_pool_choice(
 }
 
 /// Look up a registered pool by its contract address. Returns the
-/// `PoolDetails` if present, or `None` if no pool in `POOLS_BY_ID` has
-/// that `creator_pool_addr`. Linear scan; fires at most once per
-/// `propose` / `apply` of an anchor change, so the cost is fine.
+/// `PoolDetails` if present, or `None` if no pool matches.
+///
+/// Fast path: `POOL_ID_BY_ADDRESS.may_load` resolves the address to a
+/// `pool_id` in O(1), then `POOLS_BY_ID.load` resolves the id to the
+/// full record. Both maps are written atomically inside
+/// `state::register_pool`, so every pool created through the live
+/// reply chain hits the fast path.
+///
+/// Slow-path fallback: if the reverse index misses, fall back to an
+/// O(N) linear scan of `POOLS_BY_ID`. This exists ONLY so that test
+/// fixtures (which historically wrote `POOLS_BY_ID` directly without
+/// going through `register_pool`) continue to resolve. Hitting this
+/// path in production would indicate a `POOLS_BY_ID` write that
+/// bypassed `register_pool` — a bug. The fallback emits no marker on
+/// chain; a future tightening could replace it with a defensive panic
+/// once all test fixtures and any migrate back-fill are confirmed to
+/// populate `POOL_ID_BY_ADDRESS`.
 pub(crate) fn lookup_pool_by_addr(
     deps: cosmwasm_std::Deps,
     pool_addr: &cosmwasm_std::Addr,
 ) -> StdResult<Option<crate::pool_struct::PoolDetails>> {
+    if let Some(pool_id) =
+        crate::state::POOL_ID_BY_ADDRESS.may_load(deps.storage, pool_addr.clone())?
+    {
+        return Ok(Some(POOLS_BY_ID.load(deps.storage, pool_id)?));
+    }
     use cosmwasm_std::Order;
     for entry in POOLS_BY_ID.range(deps.storage, None, None, Order::Ascending) {
         let (_id, details) = entry?;

@@ -65,6 +65,10 @@ pub fn migrate(deps: DepsMut, _env: Env, _msg: Empty) -> Result<Response, Contra
         .collect::<cosmwasm_std::StdResult<Vec<u64>>>()?;
     let mut backfilled: u32 = 0;
     let mut legacy_duplicates: u32 = 0;
+    // POOL_ID_BY_ADDRESS reverse-index back-fill. Same walk as PAIRS,
+    // no extra IO. Idempotent — `may_load`-then-save short-circuits if
+    // already populated by a prior migrate or a fresh register_pool.
+    let mut addr_index_backfilled: u32 = 0;
     for pool_id in pool_ids {
         let details = crate::state::POOLS_BY_ID.load(deps.storage, pool_id)?;
         let key = crate::state::canonical_pair_key(&details.pool_token_info);
@@ -73,6 +77,17 @@ pub fn migrate(deps: DepsMut, _env: Env, _msg: Empty) -> Result<Response, Contra
             backfilled += 1;
         } else {
             legacy_duplicates += 1;
+        }
+        if crate::state::POOL_ID_BY_ADDRESS
+            .may_load(deps.storage, details.creator_pool_addr.clone())?
+            .is_none()
+        {
+            crate::state::POOL_ID_BY_ADDRESS.save(
+                deps.storage,
+                details.creator_pool_addr.clone(),
+                &pool_id,
+            )?;
+            addr_index_backfilled += 1;
         }
     }
 
@@ -83,5 +98,9 @@ pub fn migrate(deps: DepsMut, _env: Env, _msg: Empty) -> Result<Response, Contra
         .add_attribute("from", stored_version.version)
         .add_attribute("to", CONTRACT_VERSION)
         .add_attribute("pairs_backfilled", backfilled.to_string())
-        .add_attribute("legacy_duplicate_pairs_skipped", legacy_duplicates.to_string()))
+        .add_attribute("legacy_duplicate_pairs_skipped", legacy_duplicates.to_string())
+        .add_attribute(
+            "pool_id_by_address_backfilled",
+            addr_index_backfilled.to_string(),
+        ))
 }
