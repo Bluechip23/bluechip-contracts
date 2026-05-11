@@ -1653,6 +1653,37 @@ fn test_oracle_anchor_only_when_basket_disabled() {
         "Anchor TWAP should land in expected range, got: {}",
         price
     );
+
+    // End-to-end consumer-path check. Anchor-only mode must still let
+    // other pools read a bluechip USD price via the conversion path
+    // (`get_oracle_conversion_with_staleness` → factory's
+    // `ConvertBluechipToUsd` → `convert_with_oracle` →
+    // `get_bluechip_usd_price_with_meta`). With:
+    //   - mock Pyth ATOM/USD = $10 (default 10_000_000 in 6-dec)
+    //   - anchor TWAP ~ 10 bluechip per ATOM (10_000_000 in 6-dec)
+    // the derived bluechip USD price is `10 / 10 = $1` → 1_000_000 in
+    // 6-dec. Converting 1 bluechip (1_000_000 base units) yields $1
+    // (1_000_000) +/- a couple base units of integer rounding.
+    let conv = crate::internal_bluechip_price_oracle::bluechip_to_usd(
+        deps.as_ref(),
+        Uint128::new(1_000_000),
+        &future_env,
+    )
+    .expect("strict bluechip_to_usd must succeed under anchor-only mode");
+    assert!(
+        conv.amount >= Uint128::new(900_000) && conv.amount <= Uint128::new(1_100_000),
+        "expected ~$1 for 1 bluechip at $10 ATOM and 10 bluechip/ATOM TWAP, got {}",
+        conv.amount
+    );
+    assert!(
+        conv.rate_used > Uint128::zero(),
+        "ConversionResponse.rate_used must be non-zero so callers can do the inverse conversion"
+    );
+    assert!(
+        conv.timestamp > 0,
+        "ConversionResponse.timestamp must be set so pool-side \
+         get_oracle_conversion_with_staleness can enforce its freshness check"
+    );
 }
 
 #[test]
