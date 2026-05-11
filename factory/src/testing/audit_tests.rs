@@ -2727,6 +2727,23 @@ mod oracle_eligibility_tests {
             commit_pool_ordinal: 0,
         };
         POOLS_BY_ID.save(deps.as_mut().storage, 1, &pool_details).unwrap();
+        // Faithful fixture (audits L-2 + M-5): keep reverse-index and
+        // POOL_COUNTER in sync with POOLS_BY_ID. Without these, the
+        // random-sampling auto-eligible loop never picks this pool
+        // (POOL_COUNTER == 0), and `lookup_pool_by_addr` falls back
+        // to the linear scan instead of the O(1) path.
+        crate::state::POOL_ID_BY_ADDRESS
+            .save(deps.as_mut().storage, pool_addr.clone(), &1u64)
+            .unwrap();
+        let current_counter = crate::state::POOL_COUNTER
+            .may_load(deps.as_ref().storage)
+            .unwrap()
+            .unwrap_or(0);
+        if 1 > current_counter {
+            crate::state::POOL_COUNTER
+                .save(deps.as_mut().storage, &1u64)
+                .unwrap();
+        }
         POOLS_BY_CONTRACT_ADDRESS
             .save(
                 deps.as_mut().storage,
@@ -2819,6 +2836,7 @@ mod oracle_eligibility_tests {
 
         let (eligible, _) = get_eligible_creator_pools(
             deps.as_ref(),
+            &mock_env(),
             atom_bluechip_pool_addr().as_str(),
         )
         .unwrap();
@@ -2839,6 +2857,7 @@ mod oracle_eligibility_tests {
 
         let (eligible, _) = get_eligible_creator_pools(
             deps.as_ref(),
+            &mock_env(),
             atom_bluechip_pool_addr().as_str(),
         )
         .unwrap();
@@ -3015,6 +3034,7 @@ mod oracle_eligibility_tests {
         // pool from setup is NOT in the allowlist).
         let (eligible, indices) = get_eligible_creator_pools(
             deps.as_ref(),
+            &mock_env(),
             atom_bluechip_pool_addr().as_str(),
         )
         .unwrap();
@@ -3056,6 +3076,7 @@ mod oracle_eligibility_tests {
         // Both inputs reference the same pool — dedup ensures one entry.
         let (eligible, _) = get_eligible_creator_pools(
             deps.as_ref(),
+            &mock_env(),
             atom_bluechip_pool_addr().as_str(),
         )
         .unwrap();
@@ -3940,10 +3961,33 @@ mod cross_pool_integration_tests {
                     pool_token_info,
                     creator_pool_addr: addr.clone(),
                     pool_kind: kind.clone(),
-                    commit_pool_ordinal: 0,
+                    commit_pool_ordinal: pool_id,
                 },
             )
             .unwrap();
+        // Faithful fixture: mirror what the real `state::register_pool`
+        // writes. Several production code paths depend on these maps
+        // staying in sync — without them the test helper diverges from
+        // the live invariant.
+        //
+        //   - `POOL_ID_BY_ADDRESS` (audit L-2): reverse address->id index
+        //     consulted by `lookup_pool_by_addr`.
+        //   - `POOL_COUNTER` upper bound (audit M-5): the auto-eligible
+        //     random-sampling loop in `get_eligible_creator_pools` ranges
+        //     `[1, POOL_COUNTER]`; without the bump, the loop never picks
+        //     these test fixtures.
+        crate::state::POOL_ID_BY_ADDRESS
+            .save(deps.as_mut().storage, addr.clone(), &pool_id)
+            .unwrap();
+        let current_counter = crate::state::POOL_COUNTER
+            .may_load(deps.as_ref().storage)
+            .unwrap()
+            .unwrap_or(0);
+        if pool_id > current_counter {
+            crate::state::POOL_COUNTER
+                .save(deps.as_mut().storage, &pool_id)
+                .unwrap();
+        }
         let state = PoolStateResponseForFactory {
             pool_contract_address: addr.clone(),
             nft_ownership_accepted: true,
@@ -4070,6 +4114,7 @@ mod cross_pool_integration_tests {
 
         let (eligible, indices) = get_eligible_creator_pools(
             deps.as_ref(),
+            &mock_env(),
             atom_bluechip_pool_addr().as_str(),
         )
         .unwrap();
@@ -4130,6 +4175,7 @@ mod cross_pool_integration_tests {
 
         let (eligible, _) = get_eligible_creator_pools(
             deps.as_ref(),
+            &mock_env(),
             atom_bluechip_pool_addr().as_str(),
         )
         .unwrap();
@@ -4162,6 +4208,7 @@ mod cross_pool_integration_tests {
 
         let (eligible, indices) = get_eligible_creator_pools(
             deps.as_ref(),
+            &mock_env(),
             atom_bluechip_pool_addr().as_str(),
         )
         .unwrap();
@@ -4175,6 +4222,7 @@ mod cross_pool_integration_tests {
         allowlist(&mut deps, &pool, 0);
         let (eligible, _) = get_eligible_creator_pools(
             deps.as_ref(),
+            &mock_env(),
             atom_bluechip_pool_addr().as_str(),
         )
         .unwrap();
@@ -4208,6 +4256,7 @@ mod cross_pool_integration_tests {
 
         let (eligible, _) = get_eligible_creator_pools(
             deps.as_ref(),
+            &mock_env(),
             atom_bluechip_pool_addr().as_str(),
         )
         .unwrap();
@@ -4259,6 +4308,7 @@ mod cross_pool_integration_tests {
 
         let (eligible, _) = get_eligible_creator_pools(
             deps.as_ref(),
+            &mock_env(),
             atom_bluechip_pool_addr().as_str(),
         )
         .unwrap();
@@ -4311,6 +4361,7 @@ mod cross_pool_integration_tests {
         // Auto OFF: only the allowlisted standard pool is eligible.
         let (eligible_off, _) = get_eligible_creator_pools(
             deps.as_ref(),
+            &mock_env(),
             atom_bluechip_pool_addr().as_str(),
         )
         .unwrap();
@@ -4325,6 +4376,7 @@ mod cross_pool_integration_tests {
         // Auto ON: both pools are eligible.
         let (eligible_on, _) = get_eligible_creator_pools(
             deps.as_ref(),
+            &mock_env(),
             atom_bluechip_pool_addr().as_str(),
         )
         .unwrap();
@@ -4370,6 +4422,7 @@ mod cross_pool_integration_tests {
 
         let (eligible, _) = get_eligible_creator_pools(
             deps.as_ref(),
+            &mock_env(),
             anchor.as_str(),
         )
         .unwrap();
@@ -4419,6 +4472,7 @@ mod cross_pool_integration_tests {
         // Must NOT panic; broken pool is silently dropped.
         let (eligible, _) = get_eligible_creator_pools(
             deps.as_ref(),
+            &mock_env(),
             atom_bluechip_pool_addr().as_str(),
         )
         .unwrap();

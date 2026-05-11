@@ -68,11 +68,29 @@ pub const POOLS_BY_ID: Map<u64, PoolDetails> = Map::new("pools_by_id");
 pub const POOLS_BY_CONTRACT_ADDRESS: Map<Addr, PoolStateResponseForFactory> =
     Map::new("pools_by_contract_address");
 pub const PAIRS: Map<(String, String), u64> = Map::new("pairs");
+
+/// Reverse index: pool contract address -> `pool_id`. Maintained alongside
+/// `POOLS_BY_ID` by `register_pool` so any caller that has a pool address
+/// and needs the full `PoolDetails` can do two O(1) loads
+/// (`POOL_ID_BY_ADDRESS.load(addr) -> POOLS_BY_ID.load(id)`) instead of
+/// the previous O(N) linear scan of `POOLS_BY_ID` inside
+/// `lookup_pool_by_addr`. `POOLS_BY_CONTRACT_ADDRESS` exists but stores
+/// `PoolStateResponseForFactory` (a snapshot for oracle/queries), not the
+/// kind/ordinal-bearing `PoolDetails`, so it can't short-circuit the
+/// lookup on its own.
+///
+/// MUST stay in sync with `POOLS_BY_ID`. `register_pool` writes both
+/// atomically. Direct writes outside `register_pool` risk drift.
+pub const POOL_ID_BY_ADDRESS: Map<Addr, u64> = Map::new("pool_id_by_address");
 // Maximum age (seconds) of a Pyth price we are willing to use for USD
-// conversions. 90 seconds is inside typical Pyth publish cadence while
-// still cutting an attacker's useful "pick a favorable spot in the
-// last N seconds" window to a fraction of a volatility half-life.
-pub const MAX_PRICE_AGE_SECONDS_BEFORE_STALE: u64 = 90;
+// conversions. 300 seconds (5 minutes) gives Pyth headroom across
+// publisher hiccups and short network outages without making the
+// staleness window so wide that a stale-but-acceptable price becomes
+// useful for "pick a favorable point in time" manipulation. The same
+// threshold is enforced on the live Pyth read, on the cache-fallback
+// re-read inside `get_bluechip_usd_price_with_meta`, and on the
+// best-effort warm-up path.
+pub const MAX_PRICE_AGE_SECONDS_BEFORE_STALE: u64 = 300;
 
 /// Confidence-interval gate on Pyth ATOM/USD reads, expressed as basis
 /// points of price. Admin-tunable via `SetPythConfThresholdBps`,
@@ -173,6 +191,23 @@ pub const PENDING_POOL_CONFIG: Map<u64, PendingPoolConfig> = Map::new("pending_p
 pub const LAST_COMMIT_POOL_CREATE_AT: Map<Addr, Timestamp> =
     Map::new("last_commit_pool_create_at");
 
+/// Time-ordered secondary index over `LAST_COMMIT_POOL_CREATE_AT`,
+/// keyed by `(timestamp_secs, Addr)`. Exists so the permissionless
+/// `PruneRateLimits` handler can iterate stale entries in O(stale_count)
+/// instead of walking the full address-keyed map (which is alphabetic
+/// in `Addr` and therefore uncorrelated with timestamp — a prune call
+/// against a million-entry map would otherwise visit every entry
+/// looking for the first stale one).
+///
+/// Maintained alongside `LAST_COMMIT_POOL_CREATE_AT` by the create
+/// handler: on each stamp it removes the prior `(old_ts, addr)`
+/// entry (if any) and inserts the new `(now_ts, addr)`. Prune deletes
+/// from BOTH on each stale entry it processes. Both updates ride in
+/// the same tx as the primary save, so a failure reverts both maps
+/// atomically and they cannot drift.
+pub const COMMIT_POOL_CREATE_TS_INDEX: Map<(u64, Addr), ()> =
+    Map::new("commit_pool_create_ts_idx");
+
 /// Minimum seconds between consecutive `Create` calls from the same
 /// `info.sender`. 3600s = 1h. Reasonable for legitimate creator-pool
 /// flows (you launch one token at a time) and asymmetric enough against
@@ -192,6 +227,14 @@ pub const COMMIT_POOL_CREATE_RATE_LIMIT_SECONDS: u64 = 3600;
 // as commit pools so the two flows symmetric.
 pub const LAST_STANDARD_POOL_CREATE_AT: Map<Addr, Timestamp> =
     Map::new("last_std_pool_create_at");
+
+/// Time-ordered secondary index for `LAST_STANDARD_POOL_CREATE_AT`.
+/// Mirror of `COMMIT_POOL_CREATE_TS_INDEX`; same invariant — every
+/// write to the primary updates this index in the same tx; prune walks
+/// in ascending timestamp order with an early-exit on the first
+/// non-stale entry.
+pub const STANDARD_POOL_CREATE_TS_INDEX: Map<(u64, Addr), ()> =
+    Map::new("std_pool_create_ts_idx");
 
 pub const STANDARD_POOL_CREATE_RATE_LIMIT_SECONDS: u64 = 3600;
 
@@ -716,6 +759,10 @@ pub fn register_pool(
     PAIRS.save(storage, pair_key, &pool_id)?;
 
     POOLS_BY_ID.save(storage, pool_id, pool_details)?;
+    // Reverse index — see `POOL_ID_BY_ADDRESS` doc. Written here so the
+    // three-map invariant becomes a four-map invariant inside this
+    // single helper rather than every call site having to know about it.
+    POOL_ID_BY_ADDRESS.save(storage, pool_address.clone(), &pool_id)?;
 
     let asset_strings: Vec<String> = pool_details
         .pool_token_info

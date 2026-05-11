@@ -230,6 +230,32 @@ pub enum ContractError {
     )]
     InvalidCommitFunds { reason: String },
 
+    /// M-7 audit fix. CW20-side swap entry (`execute_swap_cw20`) verifies
+    /// that the CW20's claimed transfer actually landed on the pool by
+    /// comparing the pool's current CW20 balance to the pre-Receive
+    /// invariant `reserve + fee_reserve + creator_pot` plus the
+    /// `cw20_msg.amount` the CW20 claims to have just transferred. A
+    /// shortfall means either a malicious CW20 dispatched the Receive
+    /// hook with a fabricated amount (no real transfer), a fee-on-
+    /// transfer CW20 deducted on its way in, or a negative rebase. In
+    /// every case crediting `amount` to the offer-side reserve would
+    /// over-state reserves vs the pool's actual balance and let the
+    /// caller drain the ask side. Rejecting here keeps the invariant.
+    #[error(
+        "CW20 ({cw20}) Receive-hook balance verification failed: actual pool \
+         balance {actual} is below the expected post-transfer minimum \
+         {expected_min} (offer side claimed +{claimed_amount}). \
+         Likely cause: hostile/buggy CW20 that dispatched a Receive without \
+         a matching transfer, a fee-on-transfer CW20 that skimmed the move, \
+         or a negative-rebase token. Transaction reverted."
+    )]
+    Cw20SwapBalanceMismatch {
+        cw20: String,
+        expected_min: Uint128,
+        actual: Uint128,
+        claimed_amount: Uint128,
+    },
+
     #[error("No pending factory notification to retry")]
     NoPendingFactoryNotify,
 

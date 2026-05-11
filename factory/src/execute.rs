@@ -290,6 +290,7 @@ fn execute_prune_rate_limits(
     let commit_pruned = prune_rate_limit_map(
         deps.storage,
         crate::state::LAST_COMMIT_POOL_CREATE_AT,
+        crate::state::COMMIT_POOL_CREATE_TS_INDEX,
         now_secs,
         stale_after_secs,
         batch,
@@ -297,6 +298,7 @@ fn execute_prune_rate_limits(
     let std_pruned = prune_rate_limit_map(
         deps.storage,
         crate::state::LAST_STANDARD_POOL_CREATE_AT,
+        crate::state::STANDARD_POOL_CREATE_TS_INDEX,
         now_secs,
         stale_after_secs,
         batch,
@@ -316,28 +318,44 @@ fn execute_prune_rate_limits(
 /// removed (`<= batch`). Centralized so adding a third such map (e.g.
 /// per-keeper bounty cooldown) is a one-line addition rather than a
 /// copy-pasted loop with risk of attribute-key drift.
+///
+/// The walk is timestamp-ordered via the secondary `(ts, addr)` index,
+/// NOT alphabetic over `map`. Because the index is sorted ascending
+/// by timestamp, the first entry whose timestamp is younger than the
+/// stale threshold guarantees every later entry is also fresh — we
+/// break out immediately. Worst-case work is therefore O(stale_count)
+/// regardless of overall map size, instead of the previous O(N) walk
+/// over the alphabetic primary which could visit every entry before
+/// finding the first stale one.
 fn prune_rate_limit_map(
     storage: &mut dyn cosmwasm_std::Storage,
-    map: cw_storage_plus::Map<cosmwasm_std::Addr, cosmwasm_std::Timestamp>,
+    primary: cw_storage_plus::Map<cosmwasm_std::Addr, cosmwasm_std::Timestamp>,
+    ts_index: cw_storage_plus::Map<(u64, cosmwasm_std::Addr), ()>,
     now_secs: u64,
     stale_after_secs: u64,
     batch: usize,
 ) -> cosmwasm_std::StdResult<u32> {
     use cosmwasm_std::Order;
 
-    let mut to_remove: Vec<cosmwasm_std::Addr> = Vec::new();
-    for entry in map.range(storage, None, None, Order::Ascending) {
+    let mut to_remove: Vec<(u64, cosmwasm_std::Addr)> = Vec::new();
+    for entry in ts_index.range(storage, None, None, Order::Ascending) {
         if to_remove.len() >= batch {
             break;
         }
-        let (addr, ts) = entry?;
-        if now_secs.saturating_sub(ts.seconds()) >= stale_after_secs {
-            to_remove.push(addr);
+        let ((ts, addr), _) = entry?;
+        if now_secs.saturating_sub(ts) >= stale_after_secs {
+            to_remove.push((ts, addr));
+        } else {
+            // Ascending-timestamp iteration: the first fresh entry
+            // guarantees no later entry is stale. Break early instead
+            // of paying for the rest of the walk.
+            break;
         }
     }
     let mut pruned: u32 = 0;
-    for addr in to_remove.into_iter() {
-        map.remove(storage, addr);
+    for (ts, addr) in to_remove.into_iter() {
+        primary.remove(storage, addr.clone());
+        ts_index.remove(storage, (ts, addr));
         pruned = pruned.saturating_add(1);
     }
     Ok(pruned)

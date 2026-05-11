@@ -943,6 +943,28 @@ fn test_emergency_withdraw_clears_distribution() {
         .save(&mut deps.storage, &dist_state)
         .unwrap();
 
+    // `execute_emergency_withdraw_initiate` reads the admin-tunable
+    // delay at runtime via `query_wasm_smart`, so the synchronous
+    // wasm-querier must mock the factory's response. The pool's
+    // configured factory_addr from `setup_pool_post_threshold` is
+    // `"factory_contract"`.
+    deps.querier.update_wasm(move |query| match query {
+        cosmwasm_std::WasmQuery::Smart { contract_addr, .. }
+            if contract_addr == "factory_contract" =>
+        {
+            let resp = pool_factory_interfaces::EmergencyWithdrawDelayResponse {
+                delay_seconds: 86_400,
+            };
+            cosmwasm_std::SystemResult::Ok(cosmwasm_std::ContractResult::Ok(
+                cosmwasm_std::to_json_binary(&resp).unwrap(),
+            ))
+        }
+        _ => cosmwasm_std::SystemResult::Err(cosmwasm_std::SystemError::InvalidRequest {
+            error: "unmocked wasm query".to_string(),
+            request: cosmwasm_std::Binary::default(),
+        }),
+    });
+
     // Phase 1: initiate emergency withdrawal
     let mut env = mock_env();
     env.block.time = Timestamp::from_seconds(1_700_000_000);

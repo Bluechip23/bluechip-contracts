@@ -374,13 +374,32 @@ pub(crate) fn validate_anchor_pool_choice(
 }
 
 /// Look up a registered pool by its contract address. Returns the
-/// `PoolDetails` if present, or `None` if no pool in `POOLS_BY_ID` has
-/// that `creator_pool_addr`. Linear scan; fires at most once per
-/// `propose` / `apply` of an anchor change, so the cost is fine.
+/// `PoolDetails` if present, or `None` if no pool matches.
+///
+/// Fast path: `POOL_ID_BY_ADDRESS.may_load` resolves the address to a
+/// `pool_id` in O(1), then `POOLS_BY_ID.load` resolves the id to the
+/// full record. Both maps are written atomically inside
+/// `state::register_pool`, so every pool created through the live
+/// reply chain hits the fast path.
+///
+/// Slow-path fallback: if the reverse index misses, fall back to an
+/// O(N) linear scan of `POOLS_BY_ID`. This exists ONLY so that test
+/// fixtures (which historically wrote `POOLS_BY_ID` directly without
+/// going through `register_pool`) continue to resolve. Hitting this
+/// path in production would indicate a `POOLS_BY_ID` write that
+/// bypassed `register_pool` — a bug. The fallback emits no marker on
+/// chain; a future tightening could replace it with a defensive panic
+/// once all test fixtures and any migrate back-fill are confirmed to
+/// populate `POOL_ID_BY_ADDRESS`.
 pub(crate) fn lookup_pool_by_addr(
     deps: cosmwasm_std::Deps,
     pool_addr: &cosmwasm_std::Addr,
 ) -> StdResult<Option<crate::pool_struct::PoolDetails>> {
+    if let Some(pool_id) =
+        crate::state::POOL_ID_BY_ADDRESS.may_load(deps.storage, pool_addr.clone())?
+    {
+        return Ok(Some(POOLS_BY_ID.load(deps.storage, pool_id)?));
+    }
     use cosmwasm_std::Order;
     for entry in POOLS_BY_ID.range(deps.storage, None, None, Order::Ascending) {
         let (_id, details) = entry?;
@@ -466,6 +485,11 @@ pub(crate) fn refresh_internal_oracle_for_anchor_change(
     oracle.warmup_remaining =
         crate::internal_bluechip_price_oracle::ANCHOR_CHANGE_WARMUP_OBSERVATIONS;
     crate::internal_bluechip_price_oracle::INTERNAL_ORACLE.save(deps.storage, &oracle)?;
+    // H-2 audit fix: clear any pre-confirm bootstrap candidate so an
+    // anchor change before the first `ConfirmBootstrapPrice` does not
+    // leave a stale candidate with its old `proposed_at` lying around
+    // for branch (d) of update_internal_oracle_price to pick back up.
+    crate::state::PENDING_BOOTSTRAP_PRICE.remove(deps.storage);
     Ok(new_pools.len())
 }
 
@@ -754,6 +778,7 @@ pub fn execute_refresh_oracle_pool_snapshot(
     let (pool_addresses, bluechip_indices) =
         crate::internal_bluechip_price_oracle::get_eligible_creator_pools(
             deps.as_ref(),
+            &env,
             &atom_pool_addr,
         )?;
     crate::state::ELIGIBLE_POOL_SNAPSHOT.save(

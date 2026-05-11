@@ -140,16 +140,30 @@ pub fn calculate_and_mint_bluechip(
     // Use the commit-pool-only ordinal in the decay polynomial so that
     // permissionless standard-pool creations (which also bump the global
     // POOL_COUNTER) cannot inflate `x` and shrink legitimate commit pools'
-    // mint reward toward zero. Legacy commit pools written before
-    // `commit_pool_ordinal` existed have it default to zero on
-    // deserialize; for those, fall back to `pool_id` to preserve the
-    // exact mint amount they would have produced under the old code.
-    // (`pool_details` is reused from the standard-pool guard above.)
-    let decay_x = if pool_details.commit_pool_ordinal == 0 {
-        pool_id
-    } else {
-        pool_details.commit_pool_ordinal
-    };
+    // mint reward toward zero.
+    //
+    // Fail-loud invariant: `commit_pool_ordinal` is set on every commit
+    // pool at create time (`execute_create_creator_pool` in
+    // `factory/src/execute/pool_lifecycle/create.rs`) and is non-zero by
+    // construction (counter is bumped to `current + 1` before save). A
+    // zero ordinal here can only mean storage corruption or a
+    // hypothetical legacy record from a pre-v1 build. We reject rather
+    // than fall back: `calculate_mint_amount(s, 0)` returns the FULL
+    // base amount (500_000_000), so a silent fallback would *inflate*
+    // the mint relative to the intended schedule — the worst possible
+    // direction. v1 has no legacy data, so this branch should never
+    // fire in practice; if it ever does, the operator must investigate
+    // the pool record before the threshold-cross can complete.
+    if pool_details.commit_pool_ordinal == 0 {
+        return Err(ContractError::Std(StdError::generic_err(format!(
+            "Pool {} has commit_pool_ordinal == 0; refusing to mint to avoid \
+             base-amount inflation in the decay formula. This indicates either \
+             a pre-v1 legacy record or storage corruption — investigate the \
+             pool's PoolDetails entry before retrying.",
+            pool_id
+        ))));
+    }
+    let decay_x = pool_details.commit_pool_ordinal;
     let mint_amount = calculate_mint_amount(seconds_elapsed, decay_x)?;
 
     if !mint_amount.is_zero() {

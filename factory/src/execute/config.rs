@@ -314,6 +314,12 @@ pub fn execute_propose_pool_config_update(
         )));
     }
 
+    // Propose-time bound check. Mirrors `pool_core`'s apply-time validation
+    // so an out-of-range value fails immediately rather than after the
+    // 48h timelock (where the pool would reject and the admin would have to
+    // Cancel + re-Propose + wait another 48h).
+    update_msg.validate()?;
+
     let effective_after = env.block.time.plus_seconds(ADMIN_TIMELOCK_SECONDS);
 
     PENDING_POOL_CONFIG.save(
@@ -353,6 +359,12 @@ pub fn execute_apply_pool_config_update(
             effective_after: pending.effective_after,
         });
     }
+
+    // Re-validate at apply time. Bounds are static today, but pool-core's
+    // bounds could plausibly tighten in a future migration between propose
+    // and apply; re-checking here keeps the factory's behaviour aligned
+    // with whatever the live build accepts. Cheap to run.
+    pending.update.validate()?;
 
     let pool_addr = POOLS_BY_ID.load(deps.storage, pool_id)?.creator_pool_addr;
 

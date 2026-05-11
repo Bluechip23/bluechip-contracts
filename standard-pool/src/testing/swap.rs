@@ -85,6 +85,53 @@ fn cw20_hook_swap_dispatches_via_receive() {
     // CW20 hook: sender is the CW20 contract address itself (simulating
     // the callback); cw20_msg.sender is the original caller.
     let trader = cosmwasm_std::testing::MockApi::default().addr_make("trader");
+
+    // M-7 audit: the swap path's synchronous CW20 balance verify checks
+    // that the pool's actual CW20 balance covers
+    // `reserve1 + fee_reserve_1 + creator_pot.amount_1 + cw20_msg.amount`.
+    // The default fixture mock returns zero for every Cw20Balance query
+    // (true in test-env where TransferFrom messages are collected but
+    // never executed), which would trip the new check. Install a
+    // per-test override that returns the post-Receive balance the
+    // verify is expecting. `seed_pool` deposited 2_000_000_000 CW20;
+    // this Receive claims another 10_000.
+    let nft_contract = addrs.position_nft.to_string();
+    let creator_token = addrs.creator_token.to_string();
+    deps.querier.update_wasm(move |query| match query {
+        cosmwasm_std::WasmQuery::Smart { contract_addr, msg } => {
+            if *contract_addr == nft_contract {
+                if let Ok(pool_factory_interfaces::cw721_msgs::Cw721QueryMsg::OwnerOf { .. }) =
+                    cosmwasm_std::from_json(msg)
+                {
+                    let resp = pool_factory_interfaces::cw721_msgs::OwnerOfResponse {
+                        owner: addrs.pool_owner.to_string(),
+                        approvals: vec![],
+                    };
+                    return cosmwasm_std::SystemResult::Ok(cosmwasm_std::ContractResult::Ok(
+                        cosmwasm_std::to_json_binary(&resp).unwrap(),
+                    ));
+                }
+            }
+            if *contract_addr == creator_token {
+                if let Ok(cw20::Cw20QueryMsg::Balance { .. }) = cosmwasm_std::from_json(msg) {
+                    let resp = cw20::BalanceResponse {
+                        balance: Uint128::new(2_000_000_000 + 10_000),
+                    };
+                    return cosmwasm_std::SystemResult::Ok(cosmwasm_std::ContractResult::Ok(
+                        cosmwasm_std::to_json_binary(&resp).unwrap(),
+                    ));
+                }
+            }
+            cosmwasm_std::SystemResult::Err(cosmwasm_std::SystemError::InvalidRequest {
+                error: format!("unexpected wasm query to {}", contract_addr),
+                request: msg.clone(),
+            })
+        }
+        _ => cosmwasm_std::SystemResult::Err(cosmwasm_std::SystemError::UnsupportedRequest {
+            kind: "non-Smart wasm query".to_string(),
+        }),
+    });
+
     let hook = Cw20HookMsg::Swap {
         belief_price: None,
         max_spread: None,
