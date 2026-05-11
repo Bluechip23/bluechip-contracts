@@ -135,8 +135,29 @@ submit_tx() {
         echo "-----------------------" >&2
         return 1
     fi
+    # osmosisd v29 prints a "gas estimate: N" line to stderr before the
+    # response JSON. With 2>&1 above that lands in $raw alongside the
+    # JSON, so isolate the JSON object (last line starting with '{').
+    local json
+    json="$(echo "$raw" | grep '^{' | tail -n 1)"
+    if [ -z "$json" ]; then
+        echo "error: tx submit returned no JSON. raw output:" >&2
+        echo "$raw" >&2
+        return 1
+    fi
+    # CheckTx rejection: osmosisd exits 0 but the response carries
+    # height="0" and a non-zero code (insufficient fee, account-seq
+    # mismatch, contract revert at simulate, etc.). Surface raw_log so
+    # the operator sees *why* instead of a generic parse failure.
+    local check_code
+    check_code="$(echo "$json" | jq -r '.code // 0' 2>/dev/null || echo 0)"
+    if [ "$check_code" != "0" ]; then
+        echo "error: tx rejected at CheckTx with code $check_code for: $*" >&2
+        echo "$json" | jq -r '.raw_log' 2>/dev/null >&2 || echo "$json" >&2
+        return 1
+    fi
     local tx_hash
-    tx_hash="$(echo "$raw" | jq -r '.txhash // empty' 2>/dev/null || true)"
+    tx_hash="$(echo "$json" | jq -r '.txhash // empty' 2>/dev/null || true)"
     if [ -z "$tx_hash" ]; then
         echo "error: tx submit returned no parseable txhash. raw output:" >&2
         echo "$raw" >&2
@@ -187,7 +208,10 @@ else
 fi
 
 echo "      minting $BLUECHIP_INITIAL_MINT $BLUECHIP_DENOM → $ADDR"
-submit_tx tokenfactory mint "${BLUECHIP_INITIAL_MINT}${BLUECHIP_DENOM}" >/dev/null
+# osmosisd v29 MsgMint takes (amount, mint-to-address). Older releases
+# inferred mint-to from --from, which is why the second arg is easy to
+# miss. Sender (--from) is still the denom creator/admin.
+submit_tx tokenfactory mint "${BLUECHIP_INITIAL_MINT}${BLUECHIP_DENOM}" "$ADDR" >/dev/null
 
 # ---- 2. Upload wasms -----------------------------------------------
 echo ""
@@ -273,6 +297,7 @@ FACTORY_INIT="$(jq -nc \
     --arg atom_denom          "$NATIVE_DENOM" \
     --arg std_fee             "$STANDARD_POOL_CREATION_FEE_USD" \
     --arg anchor_placeholder  "$ADDR" \
+    --arg emergency_delay     "$EMERGENCY_WITHDRAW_DELAY_SECONDS" \
     '{
         factory_admin_address:               $admin,
         commit_threshold_limit_usd:          $threshold_usd,
@@ -291,7 +316,8 @@ FACTORY_INIT="$(jq -nc \
         bluechip_mint_contract_address:      $expand,
         bluechip_denom:                      $blue_denom,
         atom_denom:                          $atom_denom,
-        standard_pool_creation_fee_usd:      $std_fee
+        standard_pool_creation_fee_usd:      $std_fee,
+        emergency_withdraw_delay_seconds:    ($emergency_delay     | tonumber)
     }')"
 
 # --admin: factory keeps an admin so we can migrate later if a future

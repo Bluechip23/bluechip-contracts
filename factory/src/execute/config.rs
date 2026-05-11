@@ -126,6 +126,25 @@ pub(crate) fn validate_factory_config(
     // propose time so a misconfig is caught before the timelock starts.
     config.threshold_payout_amounts.validate()?;
 
+    // Range-validate the emergency-withdraw delay. Below the floor, the
+    // post-incident response window collapses to nothing meaningful and
+    // a compromised admin key could drain reserves before the community
+    // observes the timelock. Above the ceiling, even legitimate
+    // operational use becomes painful and admins may be tempted to
+    // bypass the flow entirely.
+    if config.emergency_withdraw_delay_seconds
+        < crate::state::EMERGENCY_WITHDRAW_DELAY_MIN_SECONDS
+        || config.emergency_withdraw_delay_seconds
+            > crate::state::EMERGENCY_WITHDRAW_DELAY_MAX_SECONDS
+    {
+        return Err(ContractError::Std(StdError::generic_err(format!(
+            "emergency_withdraw_delay_seconds {} outside allowed range [{}, {}]",
+            config.emergency_withdraw_delay_seconds,
+            crate::state::EMERGENCY_WITHDRAW_DELAY_MIN_SECONDS,
+            crate::state::EMERGENCY_WITHDRAW_DELAY_MAX_SECONDS,
+        ))));
+    }
+
     // Strict anchor-pool validation on the post-bootstrap path. Without
     // this gate, the propose/update flow would let an admin point the
     // anchor at any well-formed address — including a non-pool contract

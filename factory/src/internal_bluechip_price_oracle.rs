@@ -3,7 +3,7 @@ use crate::pyth_types::{PriceFeedResponse, PythQueryMsg};
 
 use crate::state::{
     EligiblePoolSnapshot, ELIGIBLE_POOL_REFRESH_BLOCKS, ELIGIBLE_POOL_SNAPSHOT,
-    FACTORYINSTANTIATEINFO, ORACLE_BOUNTY_DENOM, ORACLE_UPDATE_BOUNTY_USD,
+    FACTORYINSTANTIATEINFO, ORACLE_UPDATE_BOUNTY_USD,
     POOLS_BY_ID, POOL_THRESHOLD_MINTED,
 };
 // `POOLS_BY_CONTRACT_ADDRESS` is read only by the `#[cfg(test)]` branch
@@ -807,13 +807,14 @@ fn apply_oracle_bounty(
     bounty_bluechip: Uint128,
     factory_balance: Uint128,
     recipient: &Addr,
+    bluechip_denom: &str,
 ) -> Response {
     if !bounty_bluechip.is_zero() && factory_balance >= bounty_bluechip {
         response = response
             .add_message(CosmosMsg::Bank(BankMsg::Send {
                 to_address: recipient.to_string(),
                 amount: vec![Coin {
-                    denom: ORACLE_BOUNTY_DENOM.to_string(),
+                    denom: bluechip_denom.to_string(),
                     amount: bounty_bluechip,
                 }],
             }))
@@ -882,15 +883,17 @@ pub fn update_internal_oracle_price(
             // the mock oracle (not via get_bluechip_usd_price, which in mock
             // builds returns the ATOM/USD shortcut used by other paths).
             let bounty_bluechip = compute_bounty_bluechip(bounty_usd, price)?;
+            let bounty_cfg = FACTORYINSTANTIATEINFO.load(deps.storage)?;
             let balance = deps
                 .querier
-                .query_balance(env.contract.address.as_str(), ORACLE_BOUNTY_DENOM)?;
+                .query_balance(env.contract.address.as_str(), &bounty_cfg.bluechip_denom)?;
             response = apply_oracle_bounty(
                 response,
                 bounty_usd,
                 bounty_bluechip,
                 balance.amount,
                 &info.sender,
+                &bounty_cfg.bluechip_denom,
             );
         }
         return Ok(response);
@@ -1086,15 +1089,17 @@ pub fn update_internal_oracle_price(
     if !bounty_usd.is_zero() {
         match usd_to_bluechip(deps.as_ref(), bounty_usd, &env) {
             Ok(conv) => {
+                let bounty_cfg = FACTORYINSTANTIATEINFO.load(deps.storage)?;
                 let balance = deps
                     .querier
-                    .query_balance(env.contract.address.as_str(), ORACLE_BOUNTY_DENOM)?;
+                    .query_balance(env.contract.address.as_str(), &bounty_cfg.bluechip_denom)?;
                 response = apply_oracle_bounty(
                     response,
                     bounty_usd,
                     conv.amount,
                     balance.amount,
                     &info.sender,
+                    &bounty_cfg.bluechip_denom,
                 );
             }
             Err(_) => {
@@ -1681,7 +1686,7 @@ pub fn query_pyth_atom_usd_price_with_conf(
         let feed_id = factory.pyth_atom_usd_price_feed_id;
         let pyth_addr = factory.pyth_contract_addr_for_conversions;
 
-        let query_msg = PythQueryMsg::PythConversionPriceFeed {
+        let query_msg = PythQueryMsg::PriceFeed {
             id: feed_id.clone(),
         };
 
@@ -1765,7 +1770,8 @@ pub fn query_pyth_atom_usd_price_with_conf(
         // threshold below — moving or removing it would cause `price as u64`
         // to wrap a negative value into a huge number and pass the conf
         // check vacuously. Don't reorder.
-        if price_data.price <= 0 {
+        let price_i64 = price_data.price.i64();
+        if price_i64 <= 0 {
             return Err(StdError::generic_err("Invalid negative or zero price"));
         }
 
@@ -1781,7 +1787,7 @@ pub fn query_pyth_atom_usd_price_with_conf(
         // or reorders the negative-price check above produces an explicit
         // runtime error rather than a silent wrap to u64::MAX-ish that
         // would let a wide-conf price pass.
-        let price_u64: u64 = price_data.price.try_into().map_err(|_| {
+        let price_u64: u64 = price_i64.try_into().map_err(|_| {
             StdError::generic_err("Price overflow when computing conf threshold")
         })?;
         let conf_bps = crate::state::load_pyth_conf_threshold_bps(deps.storage);
@@ -1791,10 +1797,11 @@ pub fn query_pyth_atom_usd_price_with_conf(
         let conf_threshold = price_u64
             .saturating_mul(conf_bps as u64)
             .saturating_div(10_000);
-        if price_data.conf > conf_threshold {
+        let conf_u64 = price_data.conf.u64();
+        if conf_u64 > conf_threshold {
             return Err(StdError::generic_err(format!(
                 "Pyth confidence interval too wide: conf={} exceeds {} bps of price={}",
-                price_data.conf, conf_bps, price_data.price
+                conf_u64, conf_bps, price_i64
             )));
         }
 
@@ -1820,7 +1827,7 @@ pub fn query_pyth_atom_usd_price_with_conf(
         // applies. The normalized conf is what gets written into the
         // cache so the cache-fallback re-check is bps-comparable
         // against the cached price without re-reading the exponent.
-        let raw_conf_u128: u128 = price_data.conf as u128;
+        let raw_conf_u128: u128 = conf_u64 as u128;
         let (normalized_price, normalized_conf_u128) = match expo.cmp(&-6) {
             std::cmp::Ordering::Equal => (Uint128::from(price_u128), raw_conf_u128),
             std::cmp::Ordering::Less => {

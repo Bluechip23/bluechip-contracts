@@ -435,9 +435,14 @@ pub const POST_THRESHOLD_COOLDOWN_UNTIL_BLOCK: Item<u64> =
 /// Uniswap-V2-style minimum-liquidity floor permanently locked on the
 /// first deposit, and the per-reserve floor used by auto-pause checks.
 pub const MINIMUM_LIQUIDITY: Uint128 = Uint128::new(1000);
-/// 24 hours, in seconds — timelock between emergency_withdraw_initiate
-/// and emergency_withdraw_core_drain.
-pub const EMERGENCY_WITHDRAW_DELAY_SECONDS: u64 = 86_400;
+// `EMERGENCY_WITHDRAW_DELAY_SECONDS` was deleted — the delay is now
+// admin-tunable on the factory side
+// (`FactoryInstantiate.emergency_withdraw_delay_seconds`) and queried at
+// runtime by `execute_emergency_withdraw_initiate` via
+// `FactoryQueryMsg::EmergencyWithdrawDelaySeconds`. Range-validation lives
+// in factory's `validate_factory_config` (60s ≤ delay ≤ 7 days). The
+// previous hardcoded 24h is now the field's `#[serde(default)]`, so
+// pre-this-field deployments deserialize unchanged.
 
 /// Blocks of trading freeze applied immediately after a commit pool's
 /// threshold crosses. With ~6s block time on typical Cosmos chains, 2

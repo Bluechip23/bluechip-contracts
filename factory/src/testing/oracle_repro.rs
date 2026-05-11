@@ -42,6 +42,7 @@ fn test_repro_token_sort_order_bug() {
         atom_denom: "uatom".to_string(),
         standard_pool_creation_fee_usd: cosmwasm_std::Uint128::new(1_000_000),
         threshold_payout_amounts: Default::default(),
+        emergency_withdraw_delay_seconds: 86_400,
     };
     FACTORYINSTANTIATEINFO
         .save(deps.as_mut().storage, &config)

@@ -19,7 +19,8 @@
 //! instead of deriving it from pool TWAPs.
 
 use cosmwasm_schema::cw_serde;
-use cosmwasm_std::Uint128;
+use cosmwasm_std::{Int64, Uint128, Uint64};
+
 #[cw_serde]
 pub struct PriceResponse {
     pub price: Uint128,
@@ -28,10 +29,17 @@ pub struct PriceResponse {
     pub conf: Uint128,
 }
 
+// Pyth's on-chain CW contract uses asymmetric JSON encoding for the
+// integer fields: `price` and `conf` are JSON strings (Cosmos-SDK
+// convention for i64/u64 to avoid JS precision loss), while `expo`
+// (i32) and `publish_time` (i64) come over as plain JSON numbers.
+// Mirror that exactly: `Int64`/`Uint64` for the string-encoded fields,
+// raw `i32`/`i64` for the number-encoded ones. Use sites unwrap the
+// wrapper types via `.i64()` / `.u64()`.
 #[cw_serde]
 pub struct PythPriceRetrievalResponse {
-    pub price: i64,
-    pub conf: u64,
+    pub price: Int64,
+    pub conf: Uint64,
     pub expo: i32,
     pub publish_time: i64,
 }
@@ -51,6 +59,6 @@ pub struct PriceFeedResponse {
 
 #[cw_serde]
 pub enum PythQueryMsg {
-    PythConversionPriceFeed { id: String },
+    PriceFeed { id: String },
     GetPrice { price_id: String },
 }

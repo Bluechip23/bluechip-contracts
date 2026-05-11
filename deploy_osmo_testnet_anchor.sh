@@ -45,7 +45,9 @@ echo "bluechip denom:  $BLUECHIP_DENOM"
 echo ""
 
 # ---- Sanity: gas + bluechip balance ---------------------------------
-BAL_JSON="$(osmosisd query bank balances "$ADDR" --node "$NODE" -o json 2>/dev/null \
+# osmosisd v29 routes query JSON to stderr in non-TTY contexts; merge with 2>&1
+# so jq sees the response regardless of which stream osmosisd picked.
+BAL_JSON="$(osmosisd query bank balances "$ADDR" --node "$NODE" -o json 2>&1 \
     || { echo "error: cannot reach $NODE" >&2; exit 1; })"
 GAS_BAL="$(echo "$BAL_JSON" | jq -r --arg d "$NATIVE_DENOM" \
     '.balances[]? | select(.denom == $d) | .amount' || echo 0)"

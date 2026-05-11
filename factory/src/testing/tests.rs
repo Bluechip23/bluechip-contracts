@@ -83,6 +83,7 @@ fn create_default_instantiate_msg() -> FactoryInstantiate {
         atom_denom: "uatom".to_string(),
         standard_pool_creation_fee_usd: cosmwasm_std::Uint128::new(1_000_000),
         threshold_payout_amounts: Default::default(),
+        emergency_withdraw_delay_seconds: 86_400,
     }
 }
 
@@ -259,6 +260,7 @@ fn proper_initialization() {
         atom_denom: "uatom".to_string(),
         standard_pool_creation_fee_usd: cosmwasm_std::Uint128::new(1_000_000),
         threshold_payout_amounts: Default::default(),
+        emergency_withdraw_delay_seconds: 86_400,
     };
 
     let env = mock_env();
@@ -430,6 +432,7 @@ fn create_pair() {
         atom_denom: "uatom".to_string(),
         standard_pool_creation_fee_usd: cosmwasm_std::Uint128::new(1_000_000),
         threshold_payout_amounts: Default::default(),
+        emergency_withdraw_delay_seconds: 86_400,
     };
 
     let env = mock_env();
@@ -498,6 +501,7 @@ fn test_create_pair_with_custom_params() {
         atom_denom: "uatom".to_string(),
         standard_pool_creation_fee_usd: cosmwasm_std::Uint128::new(1_000_000),
         threshold_payout_amounts: Default::default(),
+        emergency_withdraw_delay_seconds: 86_400,
     };
 
     let env = mock_env();
@@ -716,6 +720,7 @@ fn test_complete_pool_creation_flow() {
         atom_denom: "uatom".to_string(),
         standard_pool_creation_fee_usd: cosmwasm_std::Uint128::new(1_000_000),
         threshold_payout_amounts: Default::default(),
+        emergency_withdraw_delay_seconds: 86_400,
     };
 
     let env = mock_env();
@@ -858,6 +863,7 @@ fn test_config() {
         atom_denom: "uatom".to_string(),
         standard_pool_creation_fee_usd: cosmwasm_std::Uint128::new(1_000_000),
         threshold_payout_amounts: Default::default(),
+        emergency_withdraw_delay_seconds: 86_400,
     };
 
     assert_eq!(config.factory_admin_address, Addr::unchecked("admin1..."));
@@ -900,6 +906,7 @@ fn test_reply_handling() {
         atom_denom: "uatom".to_string(),
         standard_pool_creation_fee_usd: cosmwasm_std::Uint128::new(1_000_000),
         threshold_payout_amounts: Default::default(),
+        emergency_withdraw_delay_seconds: 86_400,
     };
 
     let env = mock_env();
@@ -1774,6 +1781,7 @@ fn test_query_pyth_atom_usd_price_success() {
         atom_denom: "uatom".to_string(),
         standard_pool_creation_fee_usd: cosmwasm_std::Uint128::new(1_000_000),
         threshold_payout_amounts: Default::default(),
+        emergency_withdraw_delay_seconds: 86_400,
     };
     FACTORYINSTANTIATEINFO
         .save(deps.as_mut().storage, &config)
@@ -1820,6 +1828,7 @@ fn test_query_pyth_atom_usd_price_default() {
         atom_denom: "uatom".to_string(),
         standard_pool_creation_fee_usd: cosmwasm_std::Uint128::new(1_000_000),
         threshold_payout_amounts: Default::default(),
+        emergency_withdraw_delay_seconds: 86_400,
     };
     FACTORYINSTANTIATEINFO
         .save(deps.as_mut().storage, &config)
@@ -1856,6 +1865,7 @@ fn test_query_pyth_extreme_atom_prices() {
         atom_denom: "uatom".to_string(),
         standard_pool_creation_fee_usd: cosmwasm_std::Uint128::new(1_000_000),
         threshold_payout_amounts: Default::default(),
+        emergency_withdraw_delay_seconds: 86_400,
     };
     FACTORYINSTANTIATEINFO
         .save(deps.as_mut().storage, &config)
@@ -1911,6 +1921,7 @@ fn test_get_bluechip_usd_price_with_pyth() {
         atom_denom: "uatom".to_string(),
         standard_pool_creation_fee_usd: cosmwasm_std::Uint128::new(1_000_000),
         threshold_payout_amounts: Default::default(),
+        emergency_withdraw_delay_seconds: 86_400,
     };
     FACTORYINSTANTIATEINFO
         .save(deps.as_mut().storage, &config)
@@ -1988,6 +1999,7 @@ fn test_bluechip_usd_price_with_different_atom_prices() {
         atom_denom: "uatom".to_string(),
         standard_pool_creation_fee_usd: cosmwasm_std::Uint128::new(1_000_000),
         threshold_payout_amounts: Default::default(),
+        emergency_withdraw_delay_seconds: 86_400,
     };
     FACTORYINSTANTIATEINFO
         .save(deps.as_mut().storage, &config)
@@ -2068,6 +2080,7 @@ fn test_conversion_functions_with_pyth() {
         atom_denom: "uatom".to_string(),
         standard_pool_creation_fee_usd: cosmwasm_std::Uint128::new(1_000_000),
         threshold_payout_amounts: Default::default(),
+        emergency_withdraw_delay_seconds: 86_400,
     };
     FACTORYINSTANTIATEINFO
         .save(deps.as_mut().storage, &config)
@@ -2158,6 +2171,7 @@ fn test_bluechip_minting_on_threshold_crossing() {
         atom_denom: "uatom".to_string(),
         standard_pool_creation_fee_usd: cosmwasm_std::Uint128::new(1_000_000),
         threshold_payout_amounts: Default::default(),
+        emergency_withdraw_delay_seconds: 86_400,
     };
 
     let env = mock_env();
@@ -2266,6 +2280,7 @@ fn test_no_mint_when_amount_is_zero() {
         atom_denom: "uatom".to_string(),
         standard_pool_creation_fee_usd: cosmwasm_std::Uint128::new(1_000_000),
         threshold_payout_amounts: Default::default(),
+        emergency_withdraw_delay_seconds: 86_400,
     };
 
     let env = mock_env();

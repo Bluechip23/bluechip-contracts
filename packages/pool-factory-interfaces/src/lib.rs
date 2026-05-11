@@ -63,6 +63,20 @@ pub enum FactoryQueryMsg {
 
     #[returns(ConversionResponse)]
     ConvertUsdToBluechip { amount: Uint128 },
+
+    /// Returns the chain-side emergency-withdraw delay (seconds between
+    /// `Phase 1: initiate` and `Phase 2: drain` on each pool's
+    /// `EmergencyWithdraw` flow). Pools query this at initiate time so
+    /// the value tracks `factory_config.emergency_withdraw_delay_seconds`,
+    /// which is admin-tunable through the standard 48h
+    /// `ProposeConfigUpdate` flow.
+    #[returns(EmergencyWithdrawDelayResponse)]
+    EmergencyWithdrawDelaySeconds {},
+}
+
+#[cw_serde]
+pub struct EmergencyWithdrawDelayResponse {
+    pub delay_seconds: u64,
 }
 
 #[cw_serde]

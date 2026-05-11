@@ -208,6 +208,15 @@ pub fn query(deps: Deps, env: Env, msg: HarnessQueryMsg) -> StdResult<Binary> {
                     is_cached: false,
                 })
             }
+            // Fuzz shim: returns a fixed legacy default. The fuzzer's
+            // emergency-withdraw harness predates the admin-tunable
+            // delay; if/when a fuzz scenario needs to exercise the
+            // tunability, wire this to a HARNESS_STATE Item.
+            FactoryQueryMsg::EmergencyWithdrawDelaySeconds {} => {
+                to_json_binary(&pool_factory_interfaces::EmergencyWithdrawDelayResponse {
+                    delay_seconds: 86_400,
+                })
+            }
         },
         HarnessQueryMsg::ThresholdMinted { pool_id } => {
             let v = MINTED.may_load(deps.storage, pool_id)?.unwrap_or(false);

@@ -33,10 +33,37 @@ __TX_FLAGS=(
 
 submit_tx() {
     local raw
-    raw="$(osmosisd tx "$@" "${__TX_FLAGS[@]}" 2>/dev/null)" \
-        || { echo "error: tx submit (mempool admission) failed for: $*" >&2; return 1; }
+    if ! raw="$(osmosisd tx "$@" "${__TX_FLAGS[@]}" 2>&1)"; then
+        echo "error: tx submit (mempool admission) failed for: $*" >&2
+        echo "--- osmosisd output ---" >&2
+        echo "$raw" >&2
+        echo "-----------------------" >&2
+        return 1
+    fi
+    # osmosisd v29 prints a "gas estimate: N" line on stderr before the
+    # JSON response. With 2>&1 it lands in $raw alongside the JSON, so
+    # walk lines from the bottom and pick the first that parses as JSON.
+    # awk avoids subshell quirks (set -u + shell snapshot hooks) seen with
+    # `grep '^{' | tail -n 1` when called inside $(...).
+    local json
+    json="$(printf '%s\n' "$raw" | awk '/^\{.*\}$/ {last=$0} END {print last}')"
+    if [ -z "$json" ]; then
+        echo "error: tx submit returned no JSON. raw output:" >&2
+        echo "$raw" >&2
+        return 1
+    fi
+    # CheckTx rejection: response carries height="0" and a non-zero code
+    # (insufficient fee, contract revert at simulate, etc). Surface raw_log
+    # so the operator sees *why* instead of a generic "no hash" failure.
+    local check_code
+    check_code="$(echo "$json" | jq -r '.code // 0' 2>/dev/null || echo 0)"
+    if [ "$check_code" != "0" ]; then
+        echo "error: tx rejected at CheckTx with code $check_code for: $*" >&2
+        echo "$json" | jq -r '.raw_log' 2>/dev/null >&2 || echo "$json" >&2
+        return 1
+    fi
     local tx_hash
-    tx_hash="$(echo "$raw" | jq -r '.txhash // empty')"
+    tx_hash="$(echo "$json" | jq -r '.txhash // empty')"
     if [ -z "$tx_hash" ]; then
         echo "error: tx submit returned no hash. raw output:" >&2
         echo "$raw" >&2
@@ -45,7 +72,7 @@ submit_tx() {
     local i result code
     for i in 1 2 3 4 5 6; do
         sleep 5
-        if result="$(osmosisd query tx "$tx_hash" --node "$NODE" -o json 2>/dev/null)"; then
+        if result="$(osmosisd query tx "$tx_hash" --node "$NODE" -o json 2>&1)"; then
             code="$(echo "$result" | jq -r '.code // 0')"
             if [ "$code" != "0" ]; then
                 echo "error: tx $tx_hash failed with code $code" >&2
@@ -63,8 +90,10 @@ submit_tx() {
 query_smart() {
     local contract="$1" msg="$2"
     local raw
+    # osmosisd v29 routes query JSON to stderr in non-TTY contexts; merge so
+    # jq finds the response regardless of which stream osmosisd picked.
     raw="$(osmosisd query wasm contract-state smart "$contract" "$msg" \
-        --node "$NODE" -o json)"
+        --node "$NODE" -o json 2>&1)"
     # Newer osmosisd wraps responses in {data: ...}; older versions
     # return the raw response directly. Strip the wrapper if present.
     local data
@@ -86,7 +115,7 @@ query_raw_storage() {
     hex_key="$(printf '%s' "$key_str" | xxd -p -c 256)"
     local raw
     raw="$(osmosisd query wasm contract-state raw "$contract" "$hex_key" \
-        --node "$NODE" -o json 2>/dev/null || echo '{}')"
+        --node "$NODE" -o json 2>&1 || echo '{}')"
     local b64
     b64="$(echo "$raw" | jq -r '.data // empty')"
     if [ -z "$b64" ] || [ "$b64" = "null" ]; then

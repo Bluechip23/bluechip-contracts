@@ -17,10 +17,11 @@ use crate::liquidity_helpers::{sync_position_on_transfer, verify_position_owners
 use crate::state::{
     EmergencyDrainSnapshot, EmergencyWithdrawalInfo, COMMITFEEINFO, CREATOR_FEE_POT,
     EMERGENCY_CLAIM_DORMANCY_SECONDS, EMERGENCY_DRAINED, EMERGENCY_DRAIN_SNAPSHOT,
-    EMERGENCY_WITHDRAWAL, EMERGENCY_WITHDRAW_DELAY_SECONDS, LIQUIDITY_POSITIONS,
+    EMERGENCY_WITHDRAWAL, LIQUIDITY_POSITIONS,
     PENDING_EMERGENCY_WITHDRAW, POOL_FEE_STATE, POOL_INFO, POOL_PAUSED, POOL_PAUSED_AUTO,
     POOL_SPECS, POOL_STATE,
 };
+use pool_factory_interfaces::{EmergencyWithdrawDelayResponse, FactoryQueryMsg};
 use cosmwasm_std::{
     Addr, CosmosMsg, Decimal, DepsMut, Env, MessageInfo, Response, StdError, Storage, Uint128,
 };
@@ -124,10 +125,20 @@ pub fn execute_emergency_withdraw_initiate(
     POOL_PAUSED.save(deps.storage, &true)?;
     // emergency_withdraw_initiate is a "hard" pause — must not be
     // recoverable via opportunistic deposit. Override any prior auto-flag
-    // so the 24h timelock can't be circumvented by a low-liquidity
+    // so the timelock can't be circumvented by a low-liquidity
     // bystander pushing reserves above MIN.
     POOL_PAUSED_AUTO.save(deps.storage, &false)?;
-    let effective_after = now.plus_seconds(EMERGENCY_WITHDRAW_DELAY_SECONDS);
+    // Pull the delay from the factory at runtime so it always reflects the
+    // current `factory_config.emergency_withdraw_delay_seconds` (admin-tunable
+    // via the standard 48h `ProposeConfigUpdate` flow). A snapshot taken at
+    // pool instantiate would silently freeze pre-existing pools at the
+    // delay value present when they were spawned, defeating the
+    // tunability guarantee.
+    let delay: EmergencyWithdrawDelayResponse = deps.querier.query_wasm_smart(
+        pool_info.factory_addr.to_string(),
+        &FactoryQueryMsg::EmergencyWithdrawDelaySeconds {},
+    )?;
+    let effective_after = now.plus_seconds(delay.delay_seconds);
     PENDING_EMERGENCY_WITHDRAW.save(deps.storage, &effective_after)?;
 
     Ok(Response::new()

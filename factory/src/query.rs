@@ -186,6 +186,15 @@ pub fn handle_internal_bluechip_oracle_query(
         FactoryQueryMsg::ConvertUsdToBluechip { amount } => {
             to_json_binary(&usd_to_bluechip(deps, amount, &env)?)
         }
+        FactoryQueryMsg::EmergencyWithdrawDelaySeconds {} => {
+            // Pools call this from `pool-core::execute_emergency_withdraw_initiate`
+            // so the delay always tracks the live factory config rather
+            // than a snapshot taken at pool instantiate.
+            let cfg = FACTORYINSTANTIATEINFO.load(deps.storage)?;
+            to_json_binary(&pool_factory_interfaces::EmergencyWithdrawDelayResponse {
+                delay_seconds: cfg.emergency_withdraw_delay_seconds,
+            })
+        }
     }
 }
 

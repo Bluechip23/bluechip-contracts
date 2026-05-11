@@ -12,7 +12,13 @@ use crate::internal_bluechip_price_oracle::{
     update_internal_oracle_price, INTERNAL_ORACLE,
 };
 use crate::mock_querier::mock_dependencies;
-use crate::state::{FactoryInstantiate, ORACLE_BOUNTY_DENOM, ORACLE_UPDATE_BOUNTY_USD};
+use crate::state::{FactoryInstantiate, ORACLE_UPDATE_BOUNTY_USD};
+
+// The bounty path now reads the bluechip denom from `FactoryInstantiate`
+// rather than a separate constant. The fixture below sets it to
+// `"ubluechip"` (matching the legacy hardcoded value), so test
+// expectations that previously referenced the constant still match.
+const TEST_BOUNTY_DENOM: &str = "ubluechip";
 
 fn addr(label: &str) -> cosmwasm_std::Addr {
     MockApi::default().addr_make(label)
@@ -42,6 +48,8 @@ fn default_init() -> FactoryInstantiate {
         atom_denom: "uatom".to_string(),
         standard_pool_creation_fee_usd: cosmwasm_std::Uint128::new(1_000_000),
         threshold_payout_amounts: Default::default(),
+        emergency_withdraw_delay_seconds:
+            crate::state::default_emergency_withdraw_delay_seconds(),
     }
 }
 
@@ -49,7 +57,7 @@ fn default_init() -> FactoryInstantiate {
 fn mock_path_reads_price_and_pays_bounty_without_any_pool() {
     // Factory pre-funded with 10 bluechip.
     let mut deps = mock_dependencies(&[Coin {
-        denom: ORACLE_BOUNTY_DENOM.to_string(),
+        denom: TEST_BOUNTY_DENOM.to_string(),
         amount: Uint128::new(10_000_000),
     }]);
 
@@ -108,7 +116,7 @@ fn mock_path_reads_price_and_pays_bounty_without_any_pool() {
         BankMsg::Send { to_address, amount } => {
             assert_eq!(to_address, keeper.as_str());
             assert_eq!(amount.len(), 1);
-            assert_eq!(amount[0].denom, ORACLE_BOUNTY_DENOM);
+            assert_eq!(amount[0].denom, TEST_BOUNTY_DENOM);
             // $0.005 at bluechip=$1.00 → 0.005 bluechip = 5000 ubluechip.
             assert_eq!(amount[0].amount, Uint128::new(5_000));
         }
@@ -119,7 +127,7 @@ fn mock_path_reads_price_and_pays_bounty_without_any_pool() {
 #[test]
 fn mock_path_enforces_cooldown() {
     let mut deps = mock_dependencies(&[Coin {
-        denom: ORACLE_BOUNTY_DENOM.to_string(),
+        denom: TEST_BOUNTY_DENOM.to_string(),
         amount: Uint128::new(10_000_000),
     }]);
     deps.querier.mock_bluechip_usd_price = Some(Uint128::new(1_000_000));

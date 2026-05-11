@@ -212,10 +212,11 @@ pub const ORACLE_UPDATE_BOUNTY_USD: Item<Uint128> = Item::new("oracle_update_bou
 // drain at ~$28.80/day ≈ $10.5k/year if admin is compromised.
 pub const MAX_ORACLE_UPDATE_BOUNTY_USD: Uint128 = Uint128::new(100_000);
 
-// Native denom the bounty is paid in (after USD->bluechip conversion).
-// The factory must be pre-funded with this denom by the bluechip main
-// wallet.
-pub const ORACLE_BOUNTY_DENOM: &str = "ubluechip";
+// (`ORACLE_BOUNTY_DENOM` was removed — the bounty path now reads the
+// canonical bluechip denom from `FACTORYINSTANTIATEINFO.bluechip_denom`
+// directly. A separate const created two divergeable sources of truth
+// for the same value and was non-functional on chains where bluechip
+// is a tokenfactory denom (e.g. `factory/<addr>/ubluechip`).)
 
 // Keeper bounty paid per successful pool.ContinueDistribution batch.
 // USD-denominated (6 decimals). Same conversion-at-payout pattern as
@@ -394,6 +395,36 @@ pub struct FactoryInstantiate {
     /// compatibility with old serialized config snapshots.
     #[serde(default)]
     pub threshold_payout_amounts: ThresholdPayoutAmounts,
+    /// Timelock between `EmergencyWithdraw` Phase 1 (initiate) and Phase 2
+    /// (drain) on every pool spawned by this factory. Queried at runtime by
+    /// `pool-core::execute_emergency_withdraw_initiate` via the
+    /// `FactoryQueryMsg::EmergencyWithdrawDelaySeconds` cross-contract query,
+    /// so pools always read the current factory-side value rather than a
+    /// snapshot taken at instantiate time.
+    ///
+    /// Default `86_400` (24h). Range-validated in `validate_factory_config`:
+    /// minimum `EMERGENCY_WITHDRAW_DELAY_MIN_SECONDS` (60s), maximum
+    /// `EMERGENCY_WITHDRAW_DELAY_MAX_SECONDS` (7 days).
+    ///
+    /// Tunable via the standard 48h `ProposeConfigUpdate` flow. Changing
+    /// this affects in-flight emergency-withdraws? No — the
+    /// `effective_after` timestamp is computed at initiate time from the
+    /// then-current value and stored in `PENDING_EMERGENCY_WITHDRAW`; a
+    /// later config update changes only the cadence applied to NEXT
+    /// initiations.
+    ///
+    /// `#[serde(default)]` lets old serialized factory records (no field)
+    /// deserialize cleanly with the legacy default, so existing
+    /// deployments behave identically until the admin proposes an update.
+    #[serde(default = "default_emergency_withdraw_delay_seconds")]
+    pub emergency_withdraw_delay_seconds: u64,
+}
+
+pub const EMERGENCY_WITHDRAW_DELAY_MIN_SECONDS: u64 = 60;
+pub const EMERGENCY_WITHDRAW_DELAY_MAX_SECONDS: u64 = 86_400 * 7;
+
+pub fn default_emergency_withdraw_delay_seconds() -> u64 {
+    86_400
 }
 
 #[cw_serde]

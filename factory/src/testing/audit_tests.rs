@@ -71,6 +71,7 @@ fn default_factory_config() -> FactoryInstantiate {
         atom_denom: "uatom".to_string(),
         standard_pool_creation_fee_usd: cosmwasm_std::Uint128::new(1_000_000),
         threshold_payout_amounts: Default::default(),
+        emergency_withdraw_delay_seconds: 86_400,
     }
 }
 

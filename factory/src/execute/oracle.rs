@@ -18,7 +18,7 @@ use crate::state::{
     AllowlistedOraclePool, PendingCommitPoolsAutoEligible, PendingOracleEligiblePoolAdd,
     ADMIN_TIMELOCK_SECONDS, COMMIT_POOLS_AUTO_ELIGIBLE, DISTRIBUTION_BOUNTY_USD,
     FACTORYINSTANTIATEINFO, LAST_ORACLE_REFRESH_BLOCK, MAX_DISTRIBUTION_BOUNTY_USD,
-    MAX_ORACLE_UPDATE_BOUNTY_USD, ORACLE_BOUNTY_DENOM, ORACLE_ELIGIBLE_POOLS,
+    MAX_ORACLE_UPDATE_BOUNTY_USD, ORACLE_ELIGIBLE_POOLS,
     ORACLE_REFRESH_RATE_LIMIT_BLOCKS, ORACLE_UPDATE_BOUNTY_USD,
     PENDING_COMMIT_POOLS_AUTO_ELIGIBLE, PENDING_ORACLE_ELIGIBLE_POOL_ADD,
     POOLS_BY_CONTRACT_ADDRESS, POOLS_BY_ID,
@@ -215,9 +215,10 @@ pub fn execute_pay_distribution_bounty(
     }
 
     let recipient_addr = deps.api.addr_validate(&recipient)?;
+    let bounty_cfg = FACTORYINSTANTIATEINFO.load(deps.storage)?;
     let balance = deps
         .querier
-        .query_balance(env.contract.address.as_str(), ORACLE_BOUNTY_DENOM)?;
+        .query_balance(env.contract.address.as_str(), &bounty_cfg.bluechip_denom)?;
 
     if balance.amount < bounty_bluechip {
         return Ok(pay_distribution_bounty_skip(
@@ -235,7 +236,7 @@ pub fn execute_pay_distribution_bounty(
         .add_message(CosmosMsg::Bank(BankMsg::Send {
             to_address: recipient_addr.to_string(),
             amount: vec![Coin {
-                denom: ORACLE_BOUNTY_DENOM.to_string(),
+                denom: bounty_cfg.bluechip_denom.clone(),
                 amount: bounty_bluechip,
             }],
         }))
