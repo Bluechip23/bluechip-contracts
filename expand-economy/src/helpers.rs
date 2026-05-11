@@ -75,7 +75,9 @@ pub fn require_timelock_expired(
 /// Owner-gated cancel for any timelocked `Item<T>`. Centralizes the
 /// shape:
 ///
-///     load_config_as_owner -> load_or_err(missing) -> item.remove -> Response
+/// ```text
+/// load_config_as_owner -> load_or_err(missing) -> item.remove -> Response
+/// ```
 ///
 /// shared by `CancelConfigUpdate` and `CancelWithdrawal`. Adding a
 /// third cancel path becomes a one-line call to this helper.
