@@ -1109,19 +1109,12 @@ fn test_swap_cw20_via_hook() {
     deps.querier.update_wasm(move |query| match query {
         WasmQuery::Smart { contract_addr, msg } => {
             if contract_addr == "token_contract" {
-                if msg.to_string().contains("balance") {
                     let balance_response = cw20::BalanceResponse {
-                        balance: Uint128::new(350_000_000_000),
+                        balance: Uint128::new(360_000_000_000),
                     };
                     SystemResult::Ok(ContractResult::Ok(
                         to_json_binary(&balance_response).unwrap(),
                     ))
-                } else {
-                    SystemResult::Err(SystemError::InvalidRequest {
-                        error: "Unknown query".to_string(),
-                        request: msg.clone(),
-                    })
-                }
             } else {
                 SystemResult::Err(SystemError::InvalidRequest {
                     error: "Unknown contract".to_string(),
@@ -1167,6 +1160,69 @@ fn test_swap_cw20_via_hook() {
     let pool_state = POOL_STATE.load(&deps.storage).unwrap();
     assert!(pool_state.reserve0 < Uint128::new(23_500_000_000)); // Native decreased
     assert!(pool_state.reserve1 > Uint128::new(350_000_000_000)); // CW20 increased
+}
+
+/// M-7 audit: a hostile CW20 cannot dispatch a Receive hook with a
+/// fabricated `amount` and drain the opposite reserve. The pool
+/// queries the CW20's balance, compares to `reserve + fee_reserve +
+/// creator_pot + claimed_amount`, and rejects on shortfall.
+#[test]
+fn test_cw20_receive_rejects_balance_shortfall() {
+    let mut deps = mock_dependencies();
+    setup_pool_post_threshold(&mut deps);
+
+    // Hostile CW20: dispatches Receive claiming 10B tokens but its own
+    // balance for the pool is still the pre-attack reserve (350B) — no
+    // actual transfer happened.
+    deps.querier.update_wasm(move |query| match query {
+        WasmQuery::Smart { contract_addr, .. } if contract_addr == "token_contract" => {
+            SystemResult::Ok(ContractResult::Ok(
+                to_json_binary(&cw20::BalanceResponse {
+                    balance: Uint128::new(350_000_000_000),
+                })
+                .unwrap(),
+            ))
+        }
+        _ => SystemResult::Err(SystemError::InvalidRequest {
+            error: "Unknown query".to_string(),
+            request: Binary::default(),
+        }),
+    });
+
+    let env = mock_env();
+    let info = message_info(&Addr::unchecked("token_contract"), &[]);
+    let cw20_msg = Cw20ReceiveMsg {
+        sender: MockApi::default().addr_make("attacker").to_string(),
+        amount: Uint128::new(10_000_000_000), // claim 10B with no actual transfer
+        msg: to_json_binary(&Cw20HookMsg::Swap {
+            belief_price: None,
+            max_spread: Some(Decimal::percent(5)),
+            allow_high_max_spread: None,
+            to: None,
+            transaction_deadline: None,
+        })
+        .unwrap(),
+    };
+
+    let err = execute_swap_cw20(deps.as_mut(), env, info, cw20_msg).unwrap_err();
+    match err {
+        crate::error::ContractError::Cw20SwapBalanceMismatch {
+            expected_min,
+            actual,
+            claimed_amount,
+            ..
+        } => {
+            assert_eq!(claimed_amount, Uint128::new(10_000_000_000));
+            assert_eq!(actual, Uint128::new(350_000_000_000));
+            assert_eq!(expected_min, Uint128::new(360_000_000_000));
+        }
+        other => panic!("expected Cw20SwapBalanceMismatch, got {:?}", other),
+    }
+
+    // Pool state must be untouched after the rejection.
+    let pool_state = POOL_STATE.load(&deps.storage).unwrap();
+    assert_eq!(pool_state.reserve0, Uint128::new(23_500_000_000));
+    assert_eq!(pool_state.reserve1, Uint128::new(350_000_000_000));
 }
 
 #[test]
@@ -1955,9 +2011,9 @@ fn test_swap_cw20_to_bluechip_direct() {
 
     deps.querier.update_wasm(move |query| match query {
         WasmQuery::Smart { contract_addr, msg } => {
-            if contract_addr == "token_contract" && msg.to_string().contains("balance") {
+            if contract_addr == "token_contract" {
                 let balance_response = cw20::BalanceResponse {
-                    balance: Uint128::new(350_000_000_000),
+                    balance: Uint128::new(360_000_000_000),
                 };
                 return SystemResult::Ok(ContractResult::Ok(
                     to_json_binary(&balance_response).unwrap(),
@@ -2027,9 +2083,9 @@ fn test_swap_cw20_with_custom_recipient() {
 
     deps.querier.update_wasm(move |query| match query {
         WasmQuery::Smart { contract_addr, msg } => {
-            if contract_addr == "token_contract" && msg.to_string().contains("balance") {
+            if contract_addr == "token_contract" {
                 let balance_response = cw20::BalanceResponse {
-                    balance: Uint128::new(350_000_000_000),
+                    balance: Uint128::new(350_100_000_000),
                 };
                 return SystemResult::Ok(ContractResult::Ok(
                     to_json_binary(&balance_response).unwrap(),
@@ -2092,9 +2148,9 @@ fn test_cw20_swap_with_belief_price() {
     // Mock CW20 balance
     deps.querier.update_wasm(move |query| match query {
         WasmQuery::Smart { contract_addr, msg } => {
-            if contract_addr == "token_contract" && msg.to_string().contains("balance") {
+            if contract_addr == "token_contract" {
                 let balance_response = cw20::BalanceResponse {
-                    balance: Uint128::new(350_000_000_000),
+                    balance: Uint128::new(450_000_000_000),
                 };
                 return SystemResult::Ok(ContractResult::Ok(
                     to_json_binary(&balance_response).unwrap(),

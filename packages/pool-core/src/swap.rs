@@ -20,8 +20,8 @@ use crate::generic::{check_rate_limit, decimal2decimal256, enforce_transaction_d
     update_pool_fee_growth};
 use crate::msg::Cw20HookMsg;
 use crate::state::{
-    PoolCtx, PoolInfo, PoolState, IS_THRESHOLD_HIT, MINIMUM_LIQUIDITY, POOL_ANALYTICS,
-    POOL_FEE_STATE, POOL_INFO, POOL_PAUSED, POOL_STATE,
+    PoolCtx, PoolInfo, PoolState, CREATOR_FEE_POT, IS_THRESHOLD_HIT, MINIMUM_LIQUIDITY,
+    POOL_ANALYTICS, POOL_FEE_STATE, POOL_INFO, POOL_PAUSED, POOL_STATE,
     POST_THRESHOLD_COOLDOWN_UNTIL_BLOCK, REENTRANCY_LOCK,
 };
 use cosmwasm_std::{
@@ -301,12 +301,72 @@ pub fn execute_swap_cw20(
             transaction_deadline,
         }) => {
             let pool_info: PoolInfo = POOL_INFO.load(deps.storage)?;
-            let authorized = pool_info.pool_info.asset_infos.iter().any(|t| {
-                matches!(t, TokenType::CreatorToken { contract_addr } if contract_addr == info.sender)
-            });
-            if !authorized {
-                return Err(ContractError::Unauthorized {});
+            // Authorisation + offer-side lookup in one pass. Folded
+            // together (vs. the prior `.any()` boolean) so the M-7 verify
+            // step below can use the same index without re-scanning the
+            // pair.
+            let offer_index = pool_info
+                .pool_info
+                .asset_infos
+                .iter()
+                .position(|t| {
+                    matches!(t, TokenType::CreatorToken { contract_addr } if contract_addr == &info.sender)
+                })
+                .ok_or(ContractError::Unauthorized {})?;
+            // M-7 audit fix: confirm the CW20 actually transferred the
+            // claimed `cw20_msg.amount` before letting `simple_swap`
+            // credit the offer side. Standard pools accept arbitrary
+            // user-supplied CW20 contracts (no whitelist on
+            // `create_standard_pool`), so a hostile creator can deploy
+            // a CW20 that dispatches Receive hooks with fabricated
+            // amounts and drain the opposite reserve at AMM rates. We
+            // verify by comparing the pool's actual CW20 balance to the
+            // pre-Receive invariant
+            //   balance == reserve_X + fee_reserve_X + creator_pot.X
+            // plus the claimed `cw20_msg.amount`. A SHORTFALL means
+            // either no real transfer, a fee-on-transfer skim, or a
+            // negative rebase — all attacks/edges we want to reject.
+            // We use `<` (not `!=`) so unsolicited donations to the pool
+            // (`balance > expected`) don't block legitimate swaps; that
+            // surplus is benign orphan liquidity and doesn't enable an
+            // exploit beyond letting the attacker swap their own
+            // donation at market rate.
+            //
+            // Creator pools also benefit defensively: although their
+            // CW20 is auto-minted by the pool itself (no malicious
+            // admin), folding the check in at the shared entry point
+            // closes any future regression vector — same posture as
+            // creator-pool's deposit/add paths already routing through
+            // `*_with_verify`.
+            let pool_state = POOL_STATE.load(deps.storage)?;
+            let pool_fee_state = POOL_FEE_STATE.load(deps.storage)?;
+            let creator_pot = CREATOR_FEE_POT
+                .may_load(deps.storage)?
+                .unwrap_or_default();
+            let (reserve_offer, fee_reserve_offer, pot_offer) = if offer_index == 0 {
+                (pool_state.reserve0, pool_fee_state.fee_reserve_0, creator_pot.amount_0)
+            } else {
+                (pool_state.reserve1, pool_fee_state.fee_reserve_1, creator_pot.amount_1)
+            };
+            let expected_min = reserve_offer
+                .checked_add(fee_reserve_offer)?
+                .checked_add(pot_offer)?
+                .checked_add(cw20_msg.amount)?;
+            let actual_balance =
+                pool_factory_interfaces::asset::query_token_balance_strict(
+                    &deps.querier,
+                    &info.sender,
+                    &env.contract.address,
+                )?;
+            if actual_balance < expected_min {
+                return Err(ContractError::Cw20SwapBalanceMismatch {
+                    cw20: info.sender.to_string(),
+                    expected_min,
+                    actual: actual_balance,
+                    claimed_amount: cw20_msg.amount,
+                });
             }
+
             let to_addr = to.map(|a| deps.api.addr_validate(&a)).transpose()?;
             let validated_sender = deps.api.addr_validate(&cw20_msg.sender)?;
             simple_swap(
