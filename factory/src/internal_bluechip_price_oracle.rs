@@ -35,6 +35,38 @@ pub const MOCK_PYTH_SHOULD_FAIL: Item<bool> = Item::new("mock_pyth_should_fail")
 /// no longer scales cost linearly with the full pool set — only with the
 /// per-sample cross-contract queries inside `calculate_weighted_price_with_atom`.
 pub const ORACLE_POOL_COUNT: usize = 75;
+
+/// Cross-pool basket aggregation gate (audit C-1).
+///
+/// Set `false` for v1. Each AMM pool's TWAP yields a raw
+/// `bluechip-per-non-bluechip-side` exchange rate (see
+/// `packages/pool-core/src/swap.rs::update_price_accumulator`).
+/// Averaging those rates across heterogeneous non-bluechip sides
+/// (ATOM vs USDC vs OSMO vs creator token) without first normalizing
+/// each pool's contribution to a shared unit (e.g. USD-per-bluechip)
+/// produces a result with no economic interpretation. The downstream
+/// consumer at `get_bluechip_usd_price_with_meta` reads `last_price`
+/// as strictly `bluechip-per-ATOM`, so the only safe aggregation today
+/// is "anchor only."
+///
+/// When this is set `true`, the eligible-pool sampling path turns on
+/// and `calculate_weighted_price_with_atom` blends additional pools
+/// into the weighted average. Re-enabling requires:
+///   1. Each `AllowlistedOraclePool` carries a per-pool Pyth feed id
+///      for the non-bluechip side.
+///   2. `calculate_weighted_price_with_atom` converts every pool's
+///      contribution to a USD-per-bluechip estimate via that pool's
+///      Pyth feed before summing.
+///   3. `last_price` semantics + the consumer in
+///      `get_bluechip_usd_price_with_meta` align on whichever
+///      representation the new aggregation produces (USD-per-bluechip
+///      direct, or bluechip-per-ATOM via per-pool normalization).
+///
+/// Until those three are wired, every non-anchor pool added to the
+/// allowlist would drag `last_price` away from the correct value, so
+/// the anchor pool is the sole price source.
+pub const ORACLE_BASKET_ENABLED: bool = false;
+
 /// Hardcoded fallback bluechip-side floor used by `pool_meets_liquidity_floor`
 /// when the oracle has no usable price (bootstrap window, breaker tripped,
 /// post-anchor-change warm-up). Denominated in ubluechip — the bluechip-side
@@ -417,7 +449,7 @@ fn refresh_eligible_pool_snapshot_if_stale(
         return Ok(());
     }
     let (pool_addresses, bluechip_indices) =
-        get_eligible_creator_pools(deps.as_ref(), atom_pool_contract_address)?;
+        get_eligible_creator_pools(deps.as_ref(), env, atom_pool_contract_address)?;
     ELIGIBLE_POOL_SNAPSHOT.save(
         deps.storage,
         &EligiblePoolSnapshot {
@@ -440,6 +472,19 @@ pub fn select_random_pools_with_atom(
 
     #[cfg(feature = "mock")]
     {
+        return Ok(vec![atom_pool_addr]);
+    }
+
+    // Anchor-only short-circuit (audit C-1). Until every non-anchor pool
+    // in the allowlist carries a per-pool Pyth feed for its non-bluechip
+    // side, the weighted-average math at
+    // `calculate_weighted_price_with_atom` cannot meaningfully blend
+    // their contributions — see the doc on `ORACLE_BASKET_ENABLED`.
+    // Returning `[anchor]` here also skips the eligible-pool snapshot
+    // refresh entirely (the snapshot is only used to seed sampling, and
+    // we're not sampling), which keeps oracle update cost bounded
+    // regardless of registry size.
+    if !ORACLE_BASKET_ENABLED {
         return Ok(vec![atom_pool_addr]);
     }
 
@@ -615,6 +660,7 @@ pub fn initialize_internal_bluechip_oracle(
 /// for the bluechip-index value (it was admin-blessed at add time).
 pub fn get_eligible_creator_pools(
     deps: Deps,
+    env: &Env,
     atom_pool_contract_address: &str,
 ) -> StdResult<(Vec<String>, Vec<u8>)> {
     use std::collections::HashSet;
@@ -622,6 +668,12 @@ pub fn get_eligible_creator_pools(
     let mut seen: HashSet<String> = HashSet::new();
 
     // ---- Source 1: admin allowlist (any pool kind) ----
+    //
+    // Full scan — the allowlist is admin-curated and bounded by
+    // propose/apply timelocked actions, so its size stays small
+    // (typically <20 entries). Each entry's `bluechip_index` was
+    // pre-resolved at allowlist-add time so no per-entry registry
+    // scan is needed here.
     for entry in crate::state::ORACLE_ELIGIBLE_POOLS.range(
         deps.storage,
         None,
@@ -662,62 +714,129 @@ pub fn get_eligible_creator_pools(
     }
 
     // ---- Source 2: threshold-crossed commit pools (gated by global flag) ----
+    //
+    // M-5 audit fix. Previously this iterated every entry in
+    // `POOLS_BY_ID` and ran a cross-contract `GetPoolState` query per
+    // candidate; at any meaningful pool count that blew through block
+    // gas for the snapshot refresh and bricked oracle updates whenever
+    // a rotation interval coincided with snapshot staleness.
+    //
+    // New approach: random-pull-with-reject. Pick a random pool id in
+    // `[1, POOL_COUNTER]`, validate (kind == Commit, threshold-minted,
+    // bluechip side present, liquidity floor), accept on success or
+    // toss and re-pick on any failure. Capped at
+    // `MAX_AUTO_ELIGIBLE_SAMPLE_ATTEMPTS` total attempts so a registry
+    // dominated by pre-threshold or drained pools cannot brick the
+    // refresh by exhausting the loop. Target sample size is
+    // `ORACLE_POOL_COUNT`, matching the downstream sampler's target.
+    //
+    // Sample composition differs from the prior "exhaustive eligible
+    // set" — a pool that crosses threshold may not appear in the next
+    // refresh's sample by random chance, but will be a candidate on
+    // every subsequent refresh (the seed is block-dependent, so the
+    // sample rotates across refreshes). Over time eligible pools get
+    // their fair share of inclusions; in any single round, sample bias
+    // is bounded by the snapshot's broader purpose (sampling, not
+    // exhaustive enumeration).
     let auto_commit = crate::state::load_commit_pools_auto_eligible(deps.storage);
     if auto_commit {
-        for row in POOLS_BY_ID.range(deps.storage, None, None, Order::Ascending) {
-            let (pool_id, pool_details) = row?;
+        let pool_count_max = crate::state::POOL_COUNTER
+            .may_load(deps.storage)?
+            .unwrap_or(0);
+        if pool_count_max > 0 {
+            const TARGET_SAMPLE_SIZE: usize = ORACLE_POOL_COUNT;
+            // Cap = 4× target. Sized so a registry where ~75% of pools
+            // fail validation (pre-threshold, paused, drained, or wrong
+            // kind) still yields close to a full sample; tighter and
+            // we'd under-sample healthy registries, looser and a
+            // hostile-pool registry could burn meaningful gas before
+            // giving up.
+            const MAX_AUTO_ELIGIBLE_SAMPLE_ATTEMPTS: usize =
+                TARGET_SAMPLE_SIZE * 4;
 
-            let pool_addr_str = pool_details.creator_pool_addr.to_string();
-            if pool_addr_str == atom_pool_contract_address {
-                continue;
-            }
-            if seen.contains(&pool_addr_str) {
-                continue;
-            }
-            // Auto-eligible source covers commit pools only — standard
-            // pools enter the oracle through the curated allowlist
-            // (no programmatic gate exists for "is this standard pool's
-            // non-bluechip side externally priced?").
-            if pool_details.pool_kind == PoolKind::Standard {
-                continue;
-            }
-            // Bluechip-side resolution. Commit pools are validated at
-            // instantiate to contain exactly one Bluechip and one
-            // CreatorToken, so this `find` always succeeds for eligible
-            // pools.
-            let bluechip_idx = match pool_details
-                .pool_token_info
-                .iter()
-                .position(|t| matches!(t, TokenType::Native { .. }))
-            {
-                Some(i) => i as u8,
-                None => continue,
-            };
-            // Threshold-cross gate. Without it, a creator could spam
-            // pre-threshold pools and bloat the oracle sample set.
-            if !POOL_THRESHOLD_MINTED
-                .may_load(deps.storage, pool_id)?
-                .unwrap_or(false)
-            {
-                continue;
-            }
+            let mut hasher = Sha256::new();
+            hasher.update(env.block.time.seconds().to_be_bytes());
+            hasher.update(env.block.height.to_be_bytes());
+            hasher.update(env.block.chain_id.as_bytes());
+            hasher.update((pool_count_max).to_be_bytes());
+            let hash = hasher.finalize();
 
-            let pool_state: PoolStateResponseForFactory = match deps
-                .querier
-                .query_wasm_smart(pool_addr_str.clone(), &PoolQueryMsg::GetPoolState {})
+            let mut tried: HashSet<u64> = HashSet::new();
+            let mut attempts = 0usize;
+            while entries.len() < TARGET_SAMPLE_SIZE
+                && attempts < MAX_AUTO_ELIGIBLE_SAMPLE_ATTEMPTS
             {
-                Ok(s) => s,
-                Err(_) => continue,
-            };
-            if !pool_meets_liquidity_floor(deps.storage, &pool_state, bluechip_idx)? {
-                continue;
-            }
+                // Take 8 bytes from a rotating window of the hash, mixed
+                // with the attempt index so we visit distinct slots.
+                let i = attempts % 32;
+                let seed_bytes = [
+                    hash[i],
+                    hash[(i + 1) % 32],
+                    hash[(i + 2) % 32],
+                    hash[(i + 3) % 32],
+                    hash[(i + 4) % 32],
+                    hash[(i + 5) % 32],
+                    hash[(i + 6) % 32],
+                    hash[(i + 7) % 32],
+                ];
+                let seed_u64 = u64::from_be_bytes(seed_bytes)
+                    .wrapping_add((attempts as u64).wrapping_mul(0x9e3779b97f4a7c15));
+                attempts += 1;
+                let candidate_id = (seed_u64 % pool_count_max) + 1;
+                if !tried.insert(candidate_id) {
+                    // Already tried this id in an earlier iteration of
+                    // the current loop; skip without burning a query.
+                    continue;
+                }
 
-            seen.insert(pool_addr_str.clone());
-            entries.push(EligiblePoolEntry {
-                address: pool_addr_str,
-                bluechip_index: bluechip_idx,
-            });
+                let pool_details = match POOLS_BY_ID.may_load(deps.storage, candidate_id)? {
+                    Some(d) => d,
+                    None => continue,
+                };
+
+                let pool_addr_str = pool_details.creator_pool_addr.to_string();
+                if pool_addr_str == atom_pool_contract_address {
+                    continue;
+                }
+                if seen.contains(&pool_addr_str) {
+                    continue;
+                }
+                // Auto-eligible source covers commit pools only.
+                if pool_details.pool_kind == PoolKind::Standard {
+                    continue;
+                }
+                let bluechip_idx = match pool_details
+                    .pool_token_info
+                    .iter()
+                    .position(|t| matches!(t, TokenType::Native { .. }))
+                {
+                    Some(i) => i as u8,
+                    None => continue,
+                };
+                if !POOL_THRESHOLD_MINTED
+                    .may_load(deps.storage, candidate_id)?
+                    .unwrap_or(false)
+                {
+                    continue;
+                }
+
+                let pool_state: PoolStateResponseForFactory = match deps
+                    .querier
+                    .query_wasm_smart(pool_addr_str.clone(), &PoolQueryMsg::GetPoolState {})
+                {
+                    Ok(s) => s,
+                    Err(_) => continue,
+                };
+                if !pool_meets_liquidity_floor(deps.storage, &pool_state, bluechip_idx)? {
+                    continue;
+                }
+
+                seen.insert(pool_addr_str.clone());
+                entries.push(EligiblePoolEntry {
+                    address: pool_addr_str,
+                    bluechip_index: bluechip_idx,
+                });
+            }
         }
     }
 
@@ -1087,7 +1206,14 @@ pub fn update_internal_oracle_price(
     }
 
     if !bounty_usd.is_zero() {
-        match usd_to_bluechip(deps.as_ref(), bounty_usd, &env) {
+        // L-6 audit fix: use the best-effort conversion path so keepers
+        // stay paid through the post-reset warm-up window. The bounty
+        // is capped at $0.10/call and the pre-reset price (the fallback
+        // the best-effort path uses) is bounded by the 30% TWAP
+        // circuit breaker that armed it; mispricing exposure during
+        // warm-up is therefore <$0.03 per call, well below the cost
+        // of leaving keepers unpaid and risking oracle staleness.
+        match usd_to_bluechip_best_effort(deps.as_ref(), bounty_usd, &env) {
             Ok(conv) => {
                 let bounty_cfg = FACTORYINSTANTIATEINFO.load(deps.storage)?;
                 let balance = deps
@@ -1411,6 +1537,16 @@ fn bluechip_index_lookup(deps: Deps, pool_address: &str) -> StdResult<Option<u8>
 // into the TWAP and contaminating downstream USD conversions for the
 // next ~1h TWAP_WINDOW, we refuse to publish until the AMM has produced
 // real cumulative-delta evidence over a real time window.
+//
+// ANCHOR-ONLY MODE (audit C-1). When `ORACLE_BASKET_ENABLED == false`
+// the upstream sampler `select_random_pools_with_atom` returns just
+// `[anchor]`, so this function only iterates the anchor and the
+// weighted_average simplifies to `atom_pool_price` — `last_price` is
+// the pure anchor TWAP, which is unambiguously bluechip-per-ATOM and
+// works correctly with the consumer at
+// `get_bluechip_usd_price_with_meta`. The cross-pool aggregation code
+// below is preserved for the basket-enable milestone; it does not
+// run in v1 because no non-anchor pool is ever in `pool_addresses`.
 pub fn calculate_weighted_price_with_atom(
     deps: Deps,
     pool_addresses: &[String],
@@ -2343,6 +2479,16 @@ pub fn execute_force_rotate_pools(
     // Reset the (c)-failure counter — the new post-rotation window
     // gets its own budget of consecutive failures before force-accept.
     oracle.post_reset_consecutive_failures = 0;
+    // H-2 audit fix: clear any pre-confirm bootstrap candidate. Branch
+    // (d) of update_internal_oracle_price only fires when `last_price`
+    // AND `pre_reset` are both zero — i.e. before the very first
+    // `ConfirmBootstrapPrice` has ever published. If admin
+    // force-rotates in that window, the next round re-enters branch
+    // (d) and would otherwise find this stale candidate with its old
+    // `proposed_at`, letting admin confirm immediately without the
+    // 1h observation window re-elapsing against the post-rotation
+    // pool sample.
+    crate::state::PENDING_BOOTSTRAP_PRICE.remove(deps.storage);
 
     INTERNAL_ORACLE.save(deps.storage, &oracle)?;
     crate::state::PENDING_ORACLE_ROTATION.remove(deps.storage);

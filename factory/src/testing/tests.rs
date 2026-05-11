@@ -1510,8 +1510,17 @@ fn test_oracle_twap_with_volatile_prices() {
     );
 }
 
+/// Anchor-only mode (audit C-1): even when multiple threshold-crossed
+/// commit pools exist in the registry, the oracle's `selected_pools`
+/// must contain only the anchor, and `last_price` must equal the
+/// anchor's TWAP. The cross-pool aggregation path is gated by
+/// `ORACLE_BASKET_ENABLED == false` for v1 because non-anchor pools
+/// would otherwise contribute a `bluechip-per-non-bluechip-side`
+/// rate in incompatible units to the weighted average. When the
+/// basket-with-per-pool-Pyth design lands, this test gets rewritten
+/// to verify true multi-pool aggregation.
 #[test]
-fn test_oracle_aggregates_multiple_pool_prices() {
+fn test_oracle_anchor_only_when_basket_disabled() {
     let mut deps = mock_dependencies(&[]);
 
     setup_atom_pool(&mut deps);
@@ -1536,6 +1545,7 @@ fn test_oracle_aggregates_multiple_pool_prices() {
             .save(&mut deps.storage, pool_addr.clone(), &pool_state)
             .unwrap();
 
+        let creator_pool_addr_clone = pool_addr.clone();
         let pool_details = PoolDetails {
             pool_id,
             pool_token_info: [
@@ -1548,11 +1558,25 @@ fn test_oracle_aggregates_multiple_pool_prices() {
             ],
             creator_pool_addr: pool_addr,
             pool_kind: pool_factory_interfaces::PoolKind::Commit,
-            commit_pool_ordinal: 0,
+            commit_pool_ordinal: pool_id,
         };
         POOLS_BY_ID
             .save(&mut deps.storage, pool_id, &pool_details)
             .unwrap();
+        // Faithful fixture (audits L-2 + M-5): reverse-index + counter
+        // upper bound mirror what `state::register_pool` writes.
+        crate::state::POOL_ID_BY_ADDRESS
+            .save(&mut deps.storage, creator_pool_addr_clone, &pool_id)
+            .unwrap();
+        let current_counter = crate::state::POOL_COUNTER
+            .may_load(&deps.storage)
+            .unwrap()
+            .unwrap_or(0);
+        if pool_id > current_counter {
+            crate::state::POOL_COUNTER
+                .save(&mut deps.storage, &pool_id)
+                .unwrap();
+        }
         // Mark as threshold-crossed so the oracle will include this test pool.
         crate::state::POOL_THRESHOLD_MINTED
             .save(&mut deps.storage, pool_id, &true)
@@ -1604,20 +1628,29 @@ fn test_oracle_aggregates_multiple_pool_prices() {
 
     let oracle = INTERNAL_ORACLE.load(&deps.storage).unwrap();
 
-    assert!(
-        oracle.selected_pools.len() > 1,
-        "Should select more than just ATOM pool - found: {:?}",
+    // Anchor-only invariant: even with three threshold-crossed commit
+    // pools registered above, only the anchor is sampled.
+    assert_eq!(
+        oracle.selected_pools.len(),
+        1,
+        "ORACLE_BASKET_ENABLED is false; selected_pools must be \
+         the anchor alone, got: {:?}",
         oracle.selected_pools
     );
 
     let price = oracle.bluechip_price_cache.last_price;
     assert!(
         price > Uint128::zero(),
-        "Aggregated price should be calculated"
+        "Anchor TWAP should be published"
     );
+    // Anchor's bluechip/ATOM reserves in `setup_atom_pool` are 1e12
+    // ATOM-side and 1e11 bluechip-side, yielding a TWAP ratio of
+    // ~10 (6-decimal scale ≈ 10_000_000). The cross-pool perturbations
+    // the old test asserted no longer apply — the price equals the
+    // anchor TWAP directly.
     assert!(
         price >= Uint128::new(9_000_000) && price <= Uint128::new(10_000_000),
-        "Price should be in expected range, got: {}",
+        "Anchor TWAP should land in expected range, got: {}",
         price
     );
 }
@@ -2983,6 +3016,10 @@ fn test_oracle_ignores_pools_without_threshold_crossed() {
         POOLS_BY_ID
             .save(&mut deps.storage, 1, &pool_details)
             .unwrap();
+        // Faithful fixture (audits L-2 + M-5).
+        crate::state::POOL_ID_BY_ADDRESS
+            .save(&mut deps.storage, pool_addr.clone(), &1u64)
+            .unwrap();
         crate::state::POOL_THRESHOLD_MINTED
             .save(&mut deps.storage, 1, &true)
             .unwrap();
@@ -3023,6 +3060,13 @@ fn test_oracle_ignores_pools_without_threshold_crossed() {
         POOLS_BY_ID
             .save(&mut deps.storage, 2, &pool_details)
             .unwrap();
+        // Faithful fixture (audits L-2 + M-5). POOL_COUNTER bumped to 2
+        // here so the random-sampler at `get_eligible_creator_pools`
+        // ranges `[1, 2]` and gets a real chance to pick both pools.
+        crate::state::POOL_ID_BY_ADDRESS
+            .save(&mut deps.storage, pool_addr.clone(), &2u64)
+            .unwrap();
+        crate::state::POOL_COUNTER.save(&mut deps.storage, &2u64).unwrap();
         // Deliberately NOT saving POOL_THRESHOLD_MINTED for pool 2.
         let pool_state = PoolStateResponseForFactory {
             pool_contract_address: pool_addr.clone(),
@@ -3043,6 +3087,7 @@ fn test_oracle_ignores_pools_without_threshold_crossed() {
     let (eligible_addrs, eligible_indices) =
         crate::internal_bluechip_price_oracle::get_eligible_creator_pools(
             deps.as_ref(),
+            &mock_env(),
             &atom_bluechip_pool_addr().to_string(),
         )
         .unwrap();

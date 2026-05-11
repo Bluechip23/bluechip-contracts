@@ -83,10 +83,14 @@ pub const PAIRS: Map<(String, String), u64> = Map::new("pairs");
 /// atomically. Direct writes outside `register_pool` risk drift.
 pub const POOL_ID_BY_ADDRESS: Map<Addr, u64> = Map::new("pool_id_by_address");
 // Maximum age (seconds) of a Pyth price we are willing to use for USD
-// conversions. 90 seconds is inside typical Pyth publish cadence while
-// still cutting an attacker's useful "pick a favorable spot in the
-// last N seconds" window to a fraction of a volatility half-life.
-pub const MAX_PRICE_AGE_SECONDS_BEFORE_STALE: u64 = 90;
+// conversions. 300 seconds (5 minutes) gives Pyth headroom across
+// publisher hiccups and short network outages without making the
+// staleness window so wide that a stale-but-acceptable price becomes
+// useful for "pick a favorable point in time" manipulation. The same
+// threshold is enforced on the live Pyth read, on the cache-fallback
+// re-read inside `get_bluechip_usd_price_with_meta`, and on the
+// best-effort warm-up path.
+pub const MAX_PRICE_AGE_SECONDS_BEFORE_STALE: u64 = 300;
 
 /// Confidence-interval gate on Pyth ATOM/USD reads, expressed as basis
 /// points of price. Admin-tunable via `SetPythConfThresholdBps`,

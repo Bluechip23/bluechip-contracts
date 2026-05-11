@@ -485,6 +485,11 @@ pub(crate) fn refresh_internal_oracle_for_anchor_change(
     oracle.warmup_remaining =
         crate::internal_bluechip_price_oracle::ANCHOR_CHANGE_WARMUP_OBSERVATIONS;
     crate::internal_bluechip_price_oracle::INTERNAL_ORACLE.save(deps.storage, &oracle)?;
+    // H-2 audit fix: clear any pre-confirm bootstrap candidate so an
+    // anchor change before the first `ConfirmBootstrapPrice` does not
+    // leave a stale candidate with its old `proposed_at` lying around
+    // for branch (d) of update_internal_oracle_price to pick back up.
+    crate::state::PENDING_BOOTSTRAP_PRICE.remove(deps.storage);
     Ok(new_pools.len())
 }
 
@@ -773,6 +778,7 @@ pub fn execute_refresh_oracle_pool_snapshot(
     let (pool_addresses, bluechip_indices) =
         crate::internal_bluechip_price_oracle::get_eligible_creator_pools(
             deps.as_ref(),
+            &env,
             &atom_pool_addr,
         )?;
     crate::state::ELIGIBLE_POOL_SNAPSHOT.save(
