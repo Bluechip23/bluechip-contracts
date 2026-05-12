@@ -149,6 +149,15 @@ pub fn execute_propose_withdrawal(
         ContractError::WithdrawalAlreadyPending,
     )?;
 
+    // Reject zero-amount proposals at propose time. A zero amount
+    // is technically a no-op (the apply path clamps to balance and
+    // emits a no-funds note), but accepting it would let an operator
+    // burn a 48h timelock cycle on a value that can never produce a
+    // payout. Fail fast.
+    if amount.is_zero() {
+        return Err(ContractError::WithdrawalAmountZero);
+    }
+
     let target = recipient.unwrap_or_else(|| info.sender.to_string());
     let target_addr = deps.api.addr_validate(&target)?;
     validate_native_denom(&denom)?;
@@ -185,6 +194,15 @@ pub fn execute_withdrawal(
     )?;
 
     require_timelock_expired(env.block.time, pending.unlocks_at)?;
+
+    // Defense-in-depth: re-validate the denom format here in addition
+    // to the propose-time check. PENDING_WITHDRAWAL is written only by
+    // `execute_propose_withdrawal` today (which validates), but a future
+    // migration that ever inserts a `PendingWithdrawal` record directly
+    // could land an invalid denom; the apply path locking the invariant
+    // is a cheap belt-and-braces. Mirrors the same pattern the config
+    // update path uses on its apply leg.
+    validate_native_denom(&pending.denom)?;
 
     PENDING_WITHDRAWAL.remove(deps.storage);
 

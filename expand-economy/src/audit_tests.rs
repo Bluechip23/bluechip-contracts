@@ -106,6 +106,37 @@ mod tests {
         );
     }
 
+    /// A zero-amount withdrawal proposal is rejected at propose time —
+    /// it would burn a 48h timelock cycle on a value that can never
+    /// produce a payout (the apply path clamps to balance and would
+    /// emit a `no_funds` note). Fail fast.
+    #[test]
+    fn test_propose_withdrawal_zero_amount_rejected() {
+        let mut deps = mock_dependencies();
+        setup_contract(&mut deps);
+
+        let owner_addr = MockApi::default().addr_make("owner");
+
+        let msg = ExecuteMsg::ProposeWithdrawal {
+            amount: Uint128::zero(),
+            denom: "ubluechip".to_string(),
+            recipient: None,
+        };
+
+        let err = execute(
+            deps.as_mut(),
+            mock_env(),
+            message_info(&owner_addr, &[]),
+            msg,
+        )
+        .unwrap_err();
+        assert!(
+            matches!(err, crate::error::ContractError::WithdrawalAmountZero),
+            "expected WithdrawalAmountZero, got: {:?}",
+            err
+        );
+    }
+
     #[test]
     fn test_propose_withdrawal_unauthorized() {
         let mut deps = mock_dependencies();
@@ -907,8 +938,6 @@ mod tests {
         assert_eq!(w.spent_in_window, half_cap);
 
         // Call 2: another (just-under) half — total is still <= cap, lands.
-        // Advance block time past the per-recipient rate-limit window so the
-        // same recipient can receive the next payout.
         let just_under_half = half_cap - Uint128::new(1);
         let mut env_call2 = mock_env();
         env_call2.block.time = env_call2.block.time.plus_seconds(120);
@@ -926,9 +955,7 @@ mod tests {
         assert_eq!(w.spent_in_window, half_cap + just_under_half);
 
         // Call 3: another half — overshoots. Reject with prior debits
-        // intact. Same rate-limit advance as call 2 so the rejection
-        // exercises the daily-cap branch rather than the per-recipient
-        // rate-limit branch.
+        // intact.
         let pre_call3 = w.spent_in_window;
         let mut env_call3 = mock_env();
         env_call3.block.time = env_call3.block.time.plus_seconds(240);
