@@ -13,18 +13,18 @@
 use cosmwasm_std::{DepsMut, Env, MessageInfo, Response, Timestamp, Uint128};
 
 use crate::error::ContractError;
-use crate::generic::enforce_transaction_deadline;
+use crate::generic::{enforce_transaction_deadline, with_reentrancy_guard};
 use crate::liquidity_helpers::{
     build_fee_transfer_msgs, calc_capped_fees_with_clip, sync_position_on_transfer,
     verify_position_ownership,
 };
 use crate::state::{
-    CREATOR_FEE_POT, LIQUIDITY_POSITIONS, POOL_FEE_STATE, POOL_INFO, POOL_STATE, REENTRANCY_LOCK,
+    CREATOR_FEE_POT, LIQUIDITY_POSITIONS, POOL_FEE_STATE, POOL_INFO, POOL_STATE,
 };
 use crate::swap::update_price_accumulator;
 
 pub fn execute_collect_fees(
-    mut deps: DepsMut,
+    deps: DepsMut,
     env: Env,
     info: MessageInfo,
     position_id: String,
@@ -37,17 +37,13 @@ pub fn execute_collect_fees(
     // replay long after the caller cancelled their tx is rejected.
     enforce_transaction_deadline(env.block.time, transaction_deadline)?;
 
-    // Reentrancy guard, same shared lock as every other state-mutating
+    // Shared reentrancy guard, same lock as every other state-mutating
     // entry point. CollectFees emits CW20 Transfer messages; a hostile
     // creator token could otherwise re-enter the pool before the response
     // commits and double-collect fees against a stale fee_growth checkpoint.
-    if REENTRANCY_LOCK.may_load(deps.storage)?.unwrap_or(false) {
-        return Err(ContractError::ReentrancyGuard {});
-    }
-    REENTRANCY_LOCK.save(deps.storage, &true)?;
-    let result = execute_collect_fees_inner(deps.branch(), env, info, position_id);
-    REENTRANCY_LOCK.save(deps.storage, &false)?;
-    result
+    with_reentrancy_guard(deps, move |deps| {
+        execute_collect_fees_inner(deps, env, info, position_id)
+    })
 }
 
 fn execute_collect_fees_inner(

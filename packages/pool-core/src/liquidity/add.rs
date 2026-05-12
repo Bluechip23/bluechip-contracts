@@ -15,14 +15,14 @@ use cosmwasm_std::{
 };
 
 use crate::error::ContractError;
-use crate::generic::{check_rate_limit, enforce_transaction_deadline};
+use crate::generic::{check_rate_limit, enforce_transaction_deadline, with_reentrancy_guard};
 use crate::liquidity_helpers::{
     build_fee_transfer_msgs, calc_capped_fees_with_clip, calculate_fee_size_multiplier,
     sync_position_on_transfer, verify_position_ownership,
 };
 use crate::state::{
     PoolSpecs, CREATOR_FEE_POT, LIQUIDITY_POSITIONS, POOL_ANALYTICS, POOL_FEE_STATE, POOL_SPECS,
-    POOL_STATE, REENTRANCY_LOCK,
+    POOL_STATE,
 };
 use crate::swap::update_price_accumulator;
 
@@ -257,7 +257,7 @@ pub fn execute_add_to_position_with_verify(
 
 #[allow(clippy::too_many_arguments)]
 fn execute_add_to_position_dispatch(
-    mut deps: DepsMut,
+    deps: DepsMut,
     env: Env,
     info: MessageInfo,
     position_id: String,
@@ -271,32 +271,24 @@ fn execute_add_to_position_dispatch(
 ) -> Result<Response, ContractError> {
     enforce_transaction_deadline(env.block.time, transaction_deadline)?;
 
-    // Reentrancy guard. Same shared lock as commit/swap/deposit so a
+    // Shared reentrancy guard. Same lock as commit/swap/deposit so a
     // hostile CW20's transfer hook can't reach this handler from any
     // other path, and vice versa.
-    if REENTRANCY_LOCK.may_load(deps.storage)?.unwrap_or(false) {
-        return Err(ContractError::ReentrancyGuard {});
-    }
-    REENTRANCY_LOCK.save(deps.storage, &true)?;
-
-    let pool_specs: PoolSpecs = POOL_SPECS.load(deps.storage)?;
-    if let Err(e) = check_rate_limit(&mut deps, &env, &pool_specs, &sender) {
-        REENTRANCY_LOCK.save(deps.storage, &false)?;
-        return Err(e);
-    }
-    let result = add_to_position_internal(
-        &mut deps,
-        env,
-        info.clone(),
-        sender.clone(),
-        position_id,
-        amount0,
-        amount1,
-        min_amount0,
-        min_amount1,
-        transaction_deadline,
-        verify_balances,
-    );
-    REENTRANCY_LOCK.save(deps.storage, &false)?;
-    result
+    with_reentrancy_guard(deps, move |mut deps| {
+        let pool_specs: PoolSpecs = POOL_SPECS.load(deps.storage)?;
+        check_rate_limit(&mut deps, &env, &pool_specs, &sender)?;
+        add_to_position_internal(
+            &mut deps,
+            env,
+            info,
+            sender,
+            position_id,
+            amount0,
+            amount1,
+            min_amount0,
+            min_amount1,
+            transaction_deadline,
+            verify_balances,
+        )
+    })
 }
