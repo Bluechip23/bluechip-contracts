@@ -30,6 +30,8 @@ pub fn setup_pool_with_excess_config(deps: &mut OwnedDeps<MockStorage, MockApi, 
         commit_amount_for_threshold_usd: Uint128::new(25_000_000_000),
         max_bluechip_lock_per_pool: Uint128::new(100_000),
         creator_excess_liquidity_lock_days: 14,
+        min_commit_usd_pre_threshold: crate::state::DEFAULT_MIN_COMMIT_USD_PRE_THRESHOLD,
+        min_commit_usd_post_threshold: crate::state::DEFAULT_MIN_COMMIT_USD_POST_THRESHOLD,
     };
 
     COMMIT_LIMIT_INFO
@@ -1493,6 +1495,187 @@ mod native_raised_net_semantics_tests {
         assert_eq!(
             pool_state.reserve1, payout.pool_seed_amount,
             "creator-token side of seed should be the full pool_seed_amount"
+        );
+    }
+
+    /// §7-M-2 audit fix: the two threshold-crossing handlers
+    /// (`process_threshold_crossing_with_excess` and
+    /// `process_threshold_hit_exact`) refuse to execute when
+    /// `IS_THRESHOLD_HIT == true`. The dispatcher in
+    /// `commit::execute_commit_logic` already routes only when the flag
+    /// is false; this defensive gate at handler entry keeps the
+    /// no-double-mint invariant load-bearing rather than incidental.
+    ///
+    /// This test directly invokes `process_threshold_hit_exact` with the
+    /// flag pre-set to `true`, simulating any future call site (or
+    /// storage-state desync) that bypasses the dispatcher's gate. The
+    /// handler MUST refuse rather than re-running
+    /// `trigger_threshold_payout` and re-minting the 1.2T splits.
+    #[test]
+    fn threshold_hit_exact_rejects_when_flag_already_true() {
+        use crate::commit::threshold_crossing::process_threshold_hit_exact;
+        use crate::msg::CommitFeeInfo;
+        use crate::state::{
+            CommitLimitInfo, IS_THRESHOLD_HIT, PoolAnalytics, PoolInfo, POOL_FEE_STATE,
+            POOL_INFO, POOL_STATE, THRESHOLD_PAYOUT_AMOUNTS,
+        };
+
+        let mut deps = mock_dependencies();
+        setup_pool_storage(&mut deps);
+
+        // Pre-set the flag — the case we want to defend against. Under
+        // normal operation the dispatcher already gates on this, but
+        // a future call site or storage corruption that bypasses the
+        // dispatcher must not be able to re-mint.
+        IS_THRESHOLD_HIT.save(&mut deps.storage, &true).unwrap();
+
+        let pool_info: PoolInfo = POOL_INFO.load(&deps.storage).unwrap();
+        let mut pool_state = POOL_STATE.load(&deps.storage).unwrap();
+        let mut pool_fee_state = POOL_FEE_STATE.load(&deps.storage).unwrap();
+        let commit_config: CommitLimitInfo = COMMIT_LIMIT_INFO.load(&deps.storage).unwrap();
+        let payout = THRESHOLD_PAYOUT_AMOUNTS.load(&deps.storage).unwrap();
+        let fee_info: CommitFeeInfo = COMMITFEEINFO.load(&deps.storage).unwrap();
+
+        let mut deps_mut = deps.as_mut();
+        let err = process_threshold_hit_exact(
+            &mut deps_mut,
+            mock_env(),
+            Addr::unchecked("alice"),
+            &TokenInfo {
+                info: TokenType::Native {
+                    denom: "ubluechip".to_string(),
+                },
+                amount: Uint128::new(1_000_000),
+            },
+            Uint128::new(1_000_000),
+            Uint128::new(5_000_000),
+            commit_config.commit_amount_for_threshold_usd,
+            &mut pool_state,
+            &mut pool_fee_state,
+            &pool_info,
+            &commit_config,
+            &payout,
+            &fee_info,
+            vec![],
+            &PoolAnalytics::default(),
+        )
+        .unwrap_err();
+
+        assert!(
+            matches!(err, ContractError::StuckThresholdProcessing),
+            "expected StuckThresholdProcessing (no-double-mint gate), got: {:?}",
+            err
+        );
+    }
+
+    /// §7-M-2 follow-up: structural gate moved INTO trigger_threshold_payout.
+    /// Bypasses the crossing handlers entirely and invokes the load-bearing
+    /// mint function directly with `IS_THRESHOLD_HIT == true`. The gate
+    /// must fire here too — any future caller that skips the handler-level
+    /// gates still cannot trigger a re-mint of the 1.2T splits.
+    #[test]
+    fn trigger_threshold_payout_rejects_when_flag_already_true() {
+        use crate::commit::threshold_payout::trigger_threshold_payout;
+        use crate::msg::CommitFeeInfo;
+        use crate::state::{
+            CommitLimitInfo, IS_THRESHOLD_HIT, POOL_FEE_STATE, POOL_INFO, POOL_STATE,
+            THRESHOLD_PAYOUT_AMOUNTS,
+        };
+
+        let mut deps = mock_dependencies();
+        setup_pool_storage(&mut deps);
+        NATIVE_RAISED_FROM_COMMIT
+            .save(&mut deps.storage, &Uint128::new(1_000_000))
+            .unwrap();
+
+        // The case we're defending against: a direct invocation of
+        // trigger_threshold_payout when the flag is already true (handler
+        // gates bypassed, or storage state desynced).
+        IS_THRESHOLD_HIT.save(&mut deps.storage, &true).unwrap();
+
+        let pool_info = POOL_INFO.load(&deps.storage).unwrap();
+        let mut pool_state = POOL_STATE.load(&deps.storage).unwrap();
+        let mut pool_fee_state = POOL_FEE_STATE.load(&deps.storage).unwrap();
+        let commit_config: CommitLimitInfo = COMMIT_LIMIT_INFO.load(&deps.storage).unwrap();
+        let payout = THRESHOLD_PAYOUT_AMOUNTS.load(&deps.storage).unwrap();
+        let fee_info: CommitFeeInfo = COMMITFEEINFO.load(&deps.storage).unwrap();
+
+        let err = trigger_threshold_payout(
+            &mut deps.storage,
+            &pool_info,
+            &mut pool_state,
+            &mut pool_fee_state,
+            &commit_config,
+            &payout,
+            &fee_info,
+            &mock_env(),
+        )
+        .unwrap_err();
+
+        assert!(
+            matches!(err, ContractError::StuckThresholdProcessing),
+            "expected StuckThresholdProcessing from trigger_threshold_payout's \
+             entry gate, got: {:?}",
+            err
+        );
+    }
+
+    /// §7-M-2 follow-up: confirm the structural gate also sets
+    /// IS_THRESHOLD_HIT at the END of a successful trigger run. Pre-fix
+    /// the caller set the flag before calling; now the function itself
+    /// is the single witness to "mint completed".
+    #[test]
+    fn trigger_threshold_payout_sets_is_threshold_hit_on_success() {
+        use crate::commit::threshold_payout::trigger_threshold_payout;
+        use crate::msg::CommitFeeInfo;
+        use crate::state::{
+            CommitLimitInfo, IS_THRESHOLD_HIT, POOL_FEE_STATE, POOL_INFO, POOL_STATE,
+            THRESHOLD_PAYOUT_AMOUNTS,
+        };
+
+        let mut deps = mock_dependencies();
+        setup_pool_storage(&mut deps);
+        NATIVE_RAISED_FROM_COMMIT
+            .save(&mut deps.storage, &Uint128::new(1_000_000))
+            .unwrap();
+
+        // Pre-conditions: flag is false (canonical pre-trigger state).
+        // Either it's been left at its default false (covered by
+        // setup_pool_storage) or set explicitly to false — either way
+        // the entry gate passes.
+        assert_eq!(
+            IS_THRESHOLD_HIT.may_load(&deps.storage).unwrap().unwrap_or(false),
+            false,
+            "pre-trigger: flag must be false"
+        );
+
+        let pool_info = POOL_INFO.load(&deps.storage).unwrap();
+        let mut pool_state = POOL_STATE.load(&deps.storage).unwrap();
+        let mut pool_fee_state = POOL_FEE_STATE.load(&deps.storage).unwrap();
+        let commit_config: CommitLimitInfo = COMMIT_LIMIT_INFO.load(&deps.storage).unwrap();
+        let payout = THRESHOLD_PAYOUT_AMOUNTS.load(&deps.storage).unwrap();
+        let fee_info: CommitFeeInfo = COMMITFEEINFO.load(&deps.storage).unwrap();
+
+        trigger_threshold_payout(
+            &mut deps.storage,
+            &pool_info,
+            &mut pool_state,
+            &mut pool_fee_state,
+            &commit_config,
+            &payout,
+            &fee_info,
+            &mock_env(),
+        )
+        .expect("trigger_threshold_payout must succeed on a clean pool");
+
+        // Post-condition: the function flipped the flag to true at its
+        // tail. Subsequent commits will route to the post-threshold
+        // AMM path; subsequent trigger_threshold_payout calls reject
+        // at the entry gate.
+        assert_eq!(
+            IS_THRESHOLD_HIT.load(&deps.storage).unwrap(),
+            true,
+            "post-trigger: flag must be true (set inside trigger_threshold_payout's tail)"
         );
     }
 }

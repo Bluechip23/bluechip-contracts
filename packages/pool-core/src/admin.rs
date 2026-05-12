@@ -368,6 +368,18 @@ pub fn execute_claim_emergency_share(
         .may_load(deps.storage)?
         .ok_or(ContractError::NoEmergencyDrainSnapshot)?;
 
+    // Hard-close per-position claims once `SweepUnclaimedEmergencyShares`
+    // has fired. Pre-fix, late claims were tolerated in principle (bank
+    // module would reject if balance insufficient), but the snapshot's
+    // `total_claimed_*` tally would still get bumped, producing an
+    // inconsistent record where cumulative claims exceeded drainable.
+    // Matches the documented design intent ("after 1 year, abandoned
+    // funds are gone") and gives off-chain observers a clean signal
+    // that the claim window has closed.
+    if snapshot.residual_swept {
+        return Err(ContractError::EmergencyClaimsClosedPostSweep);
+    }
+
     // CW721 ownership gate. Mirrors every other position-mutating
     // handler — current NFT holder is the only authorized claimant.
     // sync_position_on_transfer aligns the storage `position.owner`
@@ -501,14 +513,10 @@ pub fn execute_claim_emergency_share(
 ///
 /// `residual_swept` flag prevents double-sweeps; a second call after
 /// the first succeeded fails with `NoUnclaimedEmergencyResidual`.
-/// Late-arriving claims after the sweep are still possible in
-/// principle (the dormancy doesn't auto-disable claims on individual
-/// positions), but their reserve-side share would already have been
-/// swept; only the dust on the snapshot's tally remains. In practice
-/// the design intent is "after 1 year, abandoned funds are gone" —
-/// claimants who show up post-sweep should expect at most the
-/// snapshot's pre-sweep arithmetic to credit them, with the actual
-/// transfer failing if the bank balance is insufficient.
+/// `execute_claim_emergency_share` also gates on the same flag and
+/// rejects with `EmergencyClaimsClosedPostSweep` once it flips — the
+/// claim window is hard-closed at sweep time, matching the documented
+/// "after 1 year, abandoned funds are gone" design intent.
 pub fn execute_sweep_unclaimed_emergency_shares(
     deps: DepsMut,
     env: Env,
@@ -685,6 +693,20 @@ pub fn execute_update_config_from_factory(
     if specs_changed {
         POOL_SPECS.save(deps.storage, &specs)?;
     }
+
+    // `update.min_commit_usd_pre_threshold` and
+    // `update.min_commit_usd_post_threshold` are intentionally NOT applied
+    // here. They live on `creator-pool::CommitLimitInfo`, which is
+    // creator-pool-only state — pool-core has no compile-time access to
+    // it. The creator-pool dispatch in `creator-pool::contract.rs::execute`
+    // wraps this handler: it reads the commit-floor fields off `update`,
+    // applies them to `COMMIT_LIMIT_INFO`, and only then delegates to
+    // this function for the shared knobs (lp_fee + min_commit_interval).
+    // Standard-pool's dispatch calls this handler directly and ignores
+    // the commit-floor fields entirely (standard pools have no commit
+    // phase); the factory-side `validate()` rejects standard-pool
+    // proposals carrying those fields at propose time, so a standard-pool
+    // apply that reaches here can only have `None` for both.
 
     // Per-pool `oracle_address` rotation removed (audit fix). The oracle
     // endpoint is pinned at instantiate to the factory address and is

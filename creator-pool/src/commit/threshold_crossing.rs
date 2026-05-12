@@ -42,7 +42,7 @@ use crate::swap_helper::{
 use super::commit_base_attributes;
 
 #[allow(clippy::too_many_arguments)]
-pub(super) fn process_threshold_crossing_with_excess(
+pub(crate) fn process_threshold_crossing_with_excess(
     deps: &mut DepsMut,
     env: Env,
     sender: Addr,
@@ -64,6 +64,18 @@ pub(super) fn process_threshold_crossing_with_excess(
     max_spread: Option<Decimal>,
     analytics: &mut PoolAnalytics,
 ) -> Result<Response, ContractError> {
+    // Defensive entry gate: refuse to re-cross. The dispatcher in
+    // `commit::execute_commit_logic` only routes here when
+    // `IS_THRESHOLD_HIT == false`, but if a future call site (or a storage
+    // corruption desyncing `IS_THRESHOLD_HIT` from `USD_RAISED_FROM_COMMIT`)
+    // ever reached this function with the flag already true, the body
+    // would re-run `trigger_threshold_payout` and re-mint the 1.2T
+    // creator-token splits. Failing closed here keeps the no-double-mint
+    // invariant load-bearing rather than incidental.
+    if IS_THRESHOLD_HIT.may_load(deps.storage)?.unwrap_or(false) {
+        return Err(ContractError::StuckThresholdProcessing);
+    }
+
     // Reuse the rate captured at commit() entry rather than re-querying the
     // oracle. usd_to_bluechip_at_rate is the inverse of the
     // bluechip_to_usd math used to produce usd_value, so thresholding is
@@ -98,7 +110,13 @@ pub(super) fn process_threshold_crossing_with_excess(
             Ok(r.checked_add(threshold_portion_after_fees)?)
         })?;
 
-    IS_THRESHOLD_HIT.save(deps.storage, &true)?;
+    // IS_THRESHOLD_HIT.save(true) MOVED into trigger_threshold_payout
+    // (called below). That function holds the structural no-double-mint
+    // gate: it checks the flag at entry and sets it only after mint +
+    // seed completes. The handler's own entry gate above (line 75)
+    // remains as fail-fast so the COMMIT_LEDGER / USD/NATIVE_RAISED
+    // writes don't run on a re-crossing attempt.
+
     // Arm the post-threshold cooldown. The crosser's own bounded excess
     // swap (capped at 3% of seeded reserve below) executes in this same
     // tx — the gate sits on simple_swap / execute_swap_cw20 /
@@ -128,14 +146,16 @@ pub(super) fn process_threshold_crossing_with_excess(
     messages.extend(payout_msgs.other_msgs);
     let factory_notify = payout_msgs.factory_notify;
 
-    update_commit_info(
-        deps.storage,
-        &sender,
-        &pool_state.pool_contract_address,
-        bluechip_to_threshold,
-        usd_to_threshold,
-        env.block.time,
-    )?;
+    // `update_commit_info` is deferred to a single call at the bottom of
+    // this handler so `Committing.last_payment_bluechip` /
+    // `last_payment_usd` reflect the WHOLE crossing tx, not just the
+    // excess portion. Previously this handler called update_commit_info
+    // twice — once for the threshold portion, once for the excess —
+    // and the second call's overwrite of `last_payment_*` left a
+    // frontend showing "last commit" the excess-only values. Both
+    // values now accumulate into `total_paid_*` and land in
+    // `last_payment_*` in a single write. See the consolidation at the
+    // bottom of this handler.
 
     // Process the excess as a swap, capped at 3% of pool reserves to keep
     // the threshold-crosser from capturing a disproportionate share of the
@@ -246,15 +266,23 @@ pub(super) fn process_threshold_crossing_with_excess(
             )?);
         }
 
-        update_commit_info(
-            deps.storage,
-            &sender,
-            &pool_state.pool_contract_address,
-            bluechip_excess.checked_sub(refunded_excess)?,
-            usd_excess,
-            env.block.time,
-        )?;
     }
+
+    // Single consolidated commit-info update covering BOTH the threshold
+    // portion and the excess portion (if any). Sum the bluechip into one
+    // value and use `usd_value` (= threshold_usd + excess_usd) so
+    // `last_payment_*` reflects the user's full crossing commit rather
+    // than the excess-only snapshot the prior two-call structure left.
+    let bluechip_committed = bluechip_to_threshold
+        .checked_add(bluechip_excess.checked_sub(refunded_excess)?)?;
+    update_commit_info(
+        deps.storage,
+        &sender,
+        &pool_state.pool_contract_address,
+        bluechip_committed,
+        usd_value,
+        env.block.time,
+    )?;
 
     THRESHOLD_PROCESSING.save(deps.storage, &false)?;
 
@@ -316,7 +344,7 @@ pub(super) fn process_threshold_crossing_with_excess(
 /// handlers (`pre_threshold`, `post_threshold`, `threshold_crossing_*`,
 /// distribution batch) now sit at the same module depth.
 #[allow(clippy::too_many_arguments)]
-pub(super) fn process_threshold_hit_exact(
+pub(crate) fn process_threshold_hit_exact(
     deps: &mut DepsMut,
     env: Env,
     sender: Addr,
@@ -333,6 +361,15 @@ pub(super) fn process_threshold_hit_exact(
     mut messages: Vec<CosmosMsg>,
     analytics: &PoolAnalytics,
 ) -> Result<Response, ContractError> {
+    // Defensive entry gate — same rationale as the equivalent check at
+    // the top of `process_threshold_crossing_with_excess`. The dispatcher
+    // upstream already routes only when IS_THRESHOLD_HIT == false; this
+    // belt-and-braces gate keeps the no-double-mint invariant load-bearing
+    // against any future call site or storage-state desync.
+    if IS_THRESHOLD_HIT.may_load(deps.storage)?.unwrap_or(false) {
+        return Err(ContractError::StuckThresholdProcessing);
+    }
+
     COMMIT_LEDGER.update::<_, ContractError>(deps.storage, &sender, |v| {
         Ok(v.unwrap_or_default().checked_add(usd_value)?)
     })?;
@@ -344,7 +381,10 @@ pub(super) fn process_threshold_hit_exact(
     // floors and the recovery formula in `trigger_threshold_payout`.
     NATIVE_RAISED_FROM_COMMIT
         .update::<_, ContractError>(deps.storage, |r| Ok(r.checked_add(amount_after_fees)?))?;
-    IS_THRESHOLD_HIT.save(deps.storage, &true)?;
+    // IS_THRESHOLD_HIT.save(true) MOVED into trigger_threshold_payout
+    // (called below). See the equivalent comment in
+    // `process_threshold_crossing_with_excess` for full rationale.
+
     // Arm the post-threshold cooldown so other actors can't atomically
     // sandwich the freshly-seeded pool in the same block (or the next
     // two). Crossing tx itself is unaffected — the writes here land

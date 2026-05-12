@@ -45,17 +45,6 @@ pub enum ContractError {
     // sites so off-chain consumers can match structurally rather than
     // regex an English message.
     // -----------------------------------------------------------------
-    #[error(
-        "Rate-limited: recipient {recipient} can receive another expansion \
-         payout at {next_allowed} (last payout {last}, cooldown {cooldown_seconds}s)"
-    )]
-    RecipientRateLimited {
-        recipient: String,
-        next_allowed: Timestamp,
-        last: Timestamp,
-        cooldown_seconds: u64,
-    },
-
     #[error("Timelock not expired. Execute after: {ready_at}")]
     TimelockNotExpired { ready_at: Timestamp },
 
@@ -77,6 +66,9 @@ pub enum ContractError {
 
     #[error("A withdrawal is already pending. Cancel it first.")]
     WithdrawalAlreadyPending,
+
+    #[error("Withdrawal amount must be non-zero")]
+    WithdrawalAmountZero,
 
     #[error("No pending config update to execute")]
     NoPendingConfigUpdateToExecute,

@@ -10,9 +10,10 @@
 //! position's `fee_size_multiplier` has been reduced; see
 //! `liquidity_helpers::calc_capped_fees_with_clip` for the math.
 
-use cosmwasm_std::{DepsMut, Env, MessageInfo, Response, Uint128};
+use cosmwasm_std::{DepsMut, Env, MessageInfo, Response, Timestamp, Uint128};
 
 use crate::error::ContractError;
+use crate::generic::enforce_transaction_deadline;
 use crate::liquidity_helpers::{
     build_fee_transfer_msgs, calc_capped_fees_with_clip, sync_position_on_transfer,
     verify_position_ownership,
@@ -27,7 +28,15 @@ pub fn execute_collect_fees(
     env: Env,
     info: MessageInfo,
     position_id: String,
+    transaction_deadline: Option<Timestamp>,
 ) -> Result<Response, ContractError> {
+    // Optional caller-supplied deadline. Fee math grows monotonically, so
+    // a late collect can only return *more* than the caller anticipated —
+    // there's no value-loss vector here. The deadline exists purely so
+    // every LP path has a consistent client-side surface and a mempool
+    // replay long after the caller cancelled their tx is rejected.
+    enforce_transaction_deadline(env.block.time, transaction_deadline)?;
+
     // Reentrancy guard, same shared lock as every other state-mutating
     // entry point. CollectFees emits CW20 Transfer messages; a hostile
     // creator token could otherwise re-enter the pool before the response

@@ -67,6 +67,17 @@ pub enum ExecuteMsg {
     },
     CollectFees {
         position_id: String,
+        /// Optional caller-supplied deadline. Same shape as the
+        /// `transaction_deadline` field on every other liquidity path;
+        /// rejects mempool-replayed collects that land after the caller's
+        /// intended expiry. Pure fee math grows monotonically, so a late
+        /// collect can only return *more* fees — not a security gate
+        /// against value loss, but kept for client-side symmetry so a
+        /// frontend can pass the same deadline to every LP action.
+        /// `#[serde(default)]` keeps pre-this-field clients
+        /// wire-compatible (the field deserializes as `None` when absent).
+        #[serde(default)]
+        transaction_deadline: Option<Timestamp>,
     },
     AddToPosition {
         position_id: String,
@@ -190,6 +201,23 @@ pub enum ExecuteMsg {
     // sends the residual to `bluechip_wallet_address`. One-shot —
     // `residual_swept` flag prevents double-sweeps.
     SweepUnclaimedEmergencyShares {},
+
+    // Factory-only callback invoked once at pool finalize. The factory
+    // dispatches `Cw721ExecuteMsg::TransferOwnership { new_owner: pool }`
+    // to the position-NFT during `finalize_pool`, which only sets
+    // `pending_owner` on the NFT (cw_ownable is two-phase). This handler
+    // is the matching second half: it sends `AcceptOwnership` back to
+    // the NFT contract and flips `pool_state.nft_ownership_accepted` so
+    // the deposit-side lazy fallback in pool-core becomes a no-op.
+    //
+    // Closes the pre-accept window that previously sat between pool
+    // creation and threshold cross — until this handler ran, the
+    // factory remained the NFT contract's actual owner.
+    //
+    // Authorisation: `info.sender` must equal `pool_info.factory_addr`.
+    // Idempotent: returns Ok with no NFT message if the flag is already
+    // set (e.g. the deposit-side fallback fired first in a test fixture).
+    AcceptNftOwnership {},
 }
 
 #[cw_serde]

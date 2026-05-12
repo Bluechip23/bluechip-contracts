@@ -238,6 +238,19 @@ pub fn finalize_pool(
     let ownership_msgs =
         give_pool_ownership_cw20_and_nft(&token_address, &nft_address, &pool_address)?;
 
+    // Symmetric two-phase NFT accept (mirrors `finalize_standard_pool`).
+    // `give_pool_ownership_cw20_and_nft` only emits the CW721
+    // `TransferOwnership` (cw_ownable is two-phase: sets pending_owner,
+    // current owner unchanged). Without this trigger, the factory
+    // remained the NFT contract's actual owner until the lazy
+    // `AcceptOwnership` in `trigger_threshold_payout` fired at threshold
+    // cross — potentially never, for a pool that fails to threshold.
+    // Dispatching `AcceptNftOwnership {}` to the freshly-created pool
+    // here closes that window inside the create tx: the pool's handler
+    // emits the matching `AcceptOwnership` to the NFT and the create tx
+    // ends with the pool as actual owner.
+    let pool_accept_trigger = build_pool_accept_nft_ownership_call(&pool_address)?;
+
     // Creation succeeded end-to-end. The entire creation context
     // (temp + state) is dropped rather than left around with
     // status=Completed, which would accumulate indefinitely.
@@ -248,7 +261,15 @@ pub fn finalize_pool(
     crate::state::register_pool(deps.storage, pool_id, &pool_address, &pool_details)?;
 
     Ok(Response::new()
+        // Order matters: `ownership_msgs` carries the CW721
+        // `TransferOwnership` that sets `pending_owner = pool` on the
+        // NFT. The accept-trigger executes next, and its handler emits
+        // the matching `AcceptOwnership` to the NFT. Reversing the
+        // order would have the pool attempt to accept before being
+        // staged as `pending_owner` and the NFT contract would reject
+        // with `NoPendingOwner`, reverting the entire create tx.
         .add_messages(ownership_msgs)
+        .add_message(pool_accept_trigger)
         .add_attribute("action", "pool_created_successfully")
         .add_attribute("pool_address", pool_address)
         .add_attribute("pool_id", pool_id.to_string()))
@@ -396,25 +417,28 @@ pub fn finalize_standard_pool(
         .add_attribute("creator", ctx.creator.to_string()))
 }
 
-/// Minimal typed mirror of the standard-pool ExecuteMsg variants the
-/// factory ever needs to call back into. Intentionally NOT a re-export
-/// of `standard_pool::msg::ExecuteMsg` — the factory must not take a
-/// circular dep on standard-pool. Wire compatibility is locked in by
-/// the round-trip parse test in factory/testing.
+/// Minimal typed mirror of the pool-side ExecuteMsg variants the factory
+/// ever needs to call back into. Intentionally NOT a re-export of
+/// `standard_pool::msg::ExecuteMsg` / `creator_pool::msg::ExecuteMsg` —
+/// the factory must not take a circular dep on either pool crate. Both
+/// pool kinds expose the same `AcceptNftOwnership {}` variant with the
+/// same snake_case wire shape, so a single helper here serves both
+/// finalize paths. Wire compatibility is locked in by the round-trip
+/// parse tests in each pool crate's testing module.
 #[derive(serde::Serialize)]
 #[serde(rename_all = "snake_case")]
-enum StandardPoolFactoryCallback {
+enum PoolFactoryCallback {
     AcceptNftOwnership {},
 }
 
 /// Builds the `Wasm::Execute { AcceptNftOwnership {} }` call back into
-/// the freshly-created standard pool. Sender on the resulting
-/// transaction is the factory contract, which is exactly what the
-/// pool's `execute_accept_nft_ownership` handler authorises.
+/// a freshly-created pool (either kind). Sender on the resulting
+/// transaction is the factory contract, which is what the pool-side
+/// `execute_accept_nft_ownership` handlers authorise on.
 fn build_pool_accept_nft_ownership_call(pool_addr: &cosmwasm_std::Addr) -> StdResult<CosmosMsg> {
     Ok(WasmMsg::Execute {
         contract_addr: pool_addr.to_string(),
-        msg: to_json_binary(&StandardPoolFactoryCallback::AcceptNftOwnership {})?,
+        msg: to_json_binary(&PoolFactoryCallback::AcceptNftOwnership {})?,
         funds: vec![],
     }
     .into())

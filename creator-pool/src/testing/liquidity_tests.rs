@@ -296,7 +296,7 @@ fn test_collect_fees_with_accrued_fees() {
     let env = mock_env();
     let info = message_info(&Addr::unchecked("fee_collector"), &[]);
 
-    let res = execute_collect_fees(deps.as_mut(), env, info, "1".to_string()).unwrap();
+    let res = execute_collect_fees(deps.as_mut(), env, info, "1".to_string(), None).unwrap();
 
     // Verify fee collection messages (bluechip and CW20)
     assert!(!res.messages.is_empty()); // At least one fee transfer
@@ -700,6 +700,7 @@ fn test_collect_fees_no_fees_accrued() {
     let info = message_info(&Addr::unchecked("fee_collector"), &[]);
     let msg = ExecuteMsg::CollectFees {
         position_id: "1".to_string(),
+        transaction_deadline: None,
     };
 
     let res = execute(deps.as_mut(), env, info, msg).unwrap();
@@ -819,6 +820,8 @@ pub fn setup_pool_storage(deps: &mut OwnedDeps<MockStorage, MockApi, MockQuerier
         commit_amount_for_threshold_usd: Uint128::new(25_000_000_000), // $25k with 6 decimals
         max_bluechip_lock_per_pool: Uint128::new(10_000_000_000),
         creator_excess_liquidity_lock_days: 7,
+        min_commit_usd_pre_threshold: crate::state::DEFAULT_MIN_COMMIT_USD_PRE_THRESHOLD,
+        min_commit_usd_post_threshold: crate::state::DEFAULT_MIN_COMMIT_USD_POST_THRESHOLD,
     };
     COMMIT_LIMIT_INFO
         .save(&mut deps.storage, &commit_config)
@@ -932,7 +935,7 @@ fn test_fee_calculation_after_swap() {
     let info = message_info(&Addr::unchecked("liquidity_provider"), &[]);
 
     // Collect fees
-    let res = execute_collect_fees(deps.as_mut(), env, info, "1".to_string()).unwrap();
+    let res = execute_collect_fees(deps.as_mut(), env, info, "1".to_string(), None).unwrap();
 
     // Verify fees were calculated correctly
     // fees_owed = liquidity * fee_growth_delta * multiplier
@@ -1009,7 +1012,7 @@ fn test_multiple_positions_independent_fee_tracking() {
 
     // User1 collects fees - should get fees from 0 to 200
     let info1 = message_info(&Addr::unchecked("user1"), &[]);
-    let res1 = execute_collect_fees(deps.as_mut(), env.clone(), info1, "1".to_string()).unwrap();
+    let res1 = execute_collect_fees(deps.as_mut(), env.clone(), info1, "1".to_string(), None).unwrap();
     let fees_user1 = Uint128::from_str(
         &res1
             .attributes
@@ -1045,7 +1048,7 @@ fn test_multiple_positions_independent_fee_tracking() {
     });
 
     let info2 = message_info(&Addr::unchecked("user2"), &[]);
-    let res2 = execute_collect_fees(deps.as_mut(), env, info2, "2".to_string()).unwrap();
+    let res2 = execute_collect_fees(deps.as_mut(), env, info2, "2".to_string(), None).unwrap();
     let fees_user2 = Uint128::from_str(
         &res2
             .attributes
@@ -1203,7 +1206,7 @@ fn test_position_ownership_transfer() {
 
     // Original owner can collect fees
     let info = message_info(&Addr::unchecked("original_owner"), &[]);
-    let res = execute_collect_fees(deps.as_mut(), env.clone(), info, "1".to_string());
+    let res = execute_collect_fees(deps.as_mut(), env.clone(), info, "1".to_string(), None);
     assert!(res.is_ok());
 
     // Simulate NFT transfer to new_owner
@@ -1233,12 +1236,12 @@ fn test_position_ownership_transfer() {
     });
 
     let info_orig = message_info(&Addr::unchecked("original_owner"), &[]);
-    let err = execute_collect_fees(deps.as_mut(), env.clone(), info_orig, "1".to_string());
+    let err = execute_collect_fees(deps.as_mut(), env.clone(), info_orig, "1".to_string(), None);
     assert!(err.is_err());
 
     // New owner can now collect fees
     let info_new = message_info(&Addr::unchecked("new_owner"), &[]);
-    let res = execute_collect_fees(deps.as_mut(), env, info_new, "1".to_string());
+    let res = execute_collect_fees(deps.as_mut(), env, info_new, "1".to_string(), None);
     assert!(res.is_ok());
 }
 
@@ -1447,7 +1450,7 @@ fn test_dust_position_low_fees() {
     let env = mock_env();
     let info = message_info(&Addr::unchecked("dust_provider"), &[]);
 
-    let res = execute_collect_fees(deps.as_mut(), env, info, "1".to_string()).unwrap();
+    let res = execute_collect_fees(deps.as_mut(), env, info, "1".to_string(), None).unwrap();
 
     let fees = Uint128::from_str(
         &res.attributes
@@ -2002,6 +2005,7 @@ fn test_fee_distribution_proportional() {
         mock_env(),
         message_info(&Addr::unchecked("lp1"), &[]),
         "2".to_string(),
+        None,
     )
     .unwrap();
 
@@ -2011,6 +2015,7 @@ fn test_fee_distribution_proportional() {
         mock_env(),
         message_info(&Addr::unchecked("lp2"), &[]),
         "3".to_string(),
+        None,
     )
     .unwrap();
 

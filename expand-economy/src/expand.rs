@@ -3,19 +3,17 @@
 //! unit-testable and documents one concern.
 //!
 //! Phase ordering (load-bearing, do not reorder without re-validating
-//! the cap and rate-limit invariants):
+//! the cap invariant):
 //!   1. authorise the caller as the configured factory
 //!   2. cross-validate the factory's `bluechip_denom` against ours
 //!   3. zero-amount short-circuit — dormant economy is success, not failure
 //!   4. validate the recipient address
-//!   5. per-recipient rate-limit gate (cheapest gate, blocks retry storms
-//!      before they touch the cap)
-//!   6. rolling 24h window cap — checked but NOT persisted yet
-//!   7. balance check — graceful skip without burning cap or rate-limit
-//!   8. persist window debit + recipient stamp atomically
-//!   9. dispatch BankMsg
+//!   5. rolling 24h window cap — checked but NOT persisted yet
+//!   6. balance check — graceful skip without burning cap budget
+//!   7. persist window debit
+//!   8. dispatch BankMsg
 //!
-//! Steps 6-8 must stay in this order: persisting before the balance
+//! Steps 5-7 must stay in this order: persisting before the balance
 //! check would burn cap budget on skipped requests; persisting after
 //! dispatch is atomic in CosmWasm but adds no benefit.
 
@@ -27,7 +25,6 @@ use crate::factory_query::cross_validate_factory_denom;
 use crate::msg::ExpandEconomyMsg;
 use crate::state::{
     Config, ExpansionWindow, CONFIG, DAILY_EXPANSION_CAP, DAILY_WINDOW_SECONDS, EXPANSION_WINDOW,
-    LAST_EXPANSION_AT_RECIPIENT, RECIPIENT_EXPANSION_RATE_LIMIT_SECONDS,
 };
 
 /// Top-level entry point. See file-level comment for phase ordering.
@@ -47,7 +44,6 @@ pub fn execute_expand_economy(
     }
 
     let recipient_addr = deps.api.addr_validate(&recipient)?;
-    enforce_recipient_rate_limit(deps.storage, &recipient_addr, env.block.time)?;
 
     let (window, new_spent) =
         check_and_compute_window(deps.storage, env.block.time, amount)?;
@@ -58,7 +54,7 @@ pub fn execute_expand_economy(
         return Ok(skip);
     }
 
-    persist_expansion_state(deps.storage, &recipient_addr, env.block.time, window, new_spent)?;
+    persist_expansion_state(deps.storage, window, new_spent)?;
     Ok(payout_response(&config, &recipient_addr, amount, new_spent))
 }
 
@@ -89,37 +85,7 @@ fn dormant_response() -> Response {
         .add_attribute(attrs::NOTE, attrs::NOTE_ECONOMY_DORMANT)
 }
 
-/// Phase 5: per-recipient rate limit. Defends against
-/// `RetryFactoryNotify` storms compressing many threshold-mint payouts
-/// into a single burst that empties the rolling daily budget.
-/// Per-pool would require including the pool's controlling identity
-/// to be effective, eliminating retry permissionlessness; per-recipient
-/// keeps retry permissionless while bounding the worst-case rate at
-/// one payout per `RECIPIENT_EXPANSION_RATE_LIMIT_SECONDS` to any
-/// single bluechip wallet. Stamped only on the success path in
-/// `persist_expansion_state` below.
-fn enforce_recipient_rate_limit(
-    storage: &dyn Storage,
-    recipient_addr: &Addr,
-    now: Timestamp,
-) -> Result<(), ContractError> {
-    if let Some(last) =
-        LAST_EXPANSION_AT_RECIPIENT.may_load(storage, recipient_addr.as_str())?
-    {
-        let next_allowed = last.plus_seconds(RECIPIENT_EXPANSION_RATE_LIMIT_SECONDS);
-        if now < next_allowed {
-            return Err(ContractError::RecipientRateLimited {
-                recipient: recipient_addr.to_string(),
-                next_allowed,
-                last,
-                cooldown_seconds: RECIPIENT_EXPANSION_RATE_LIMIT_SECONDS,
-            });
-        }
-    }
-    Ok(())
-}
-
-/// Phase 6: rolling 24-hour spend cap. Defense-in-depth against a
+/// Phase 5: rolling 24-hour spend cap. Defense-in-depth against a
 /// compromised factory key forwarding huge `RequestExpansion` calls.
 /// The legitimate threshold-mint schedule is well below
 /// `DAILY_EXPANSION_CAP` per day; an attacker with full factory control
@@ -160,7 +126,7 @@ fn check_and_compute_window(
     Ok((window, new_spent))
 }
 
-/// Phase 7: balance check + graceful skip.
+/// Phase 6: balance check + graceful skip.
 ///
 /// Running out of expand-economy funds is the INTENDED end-state: the
 /// contract is a finite "bluechip mint boost" reservoir that drains as
@@ -199,18 +165,14 @@ fn maybe_skip_for_balance(
     Ok(None)
 }
 
-/// Phase 8: persist the rolling-window debit + the per-recipient
-/// rate-limit timestamp.
+/// Phase 7: persist the rolling-window debit.
 ///
 /// Order matters: skip-for-balance returned earlier without reaching
-/// here, so the recipient is not penalized for outages of the
-/// reservoir. CosmWasm reverts every storage write on Err, so a
-/// downstream failure (e.g. BankMsg dispatch error) atomically rolls
-/// back this stamp along with the window debit.
+/// here, so an empty reservoir does not consume window budget. CosmWasm
+/// reverts every storage write on Err, so a downstream failure (e.g.
+/// BankMsg dispatch error) atomically rolls back this debit.
 fn persist_expansion_state(
     storage: &mut dyn Storage,
-    recipient_addr: &Addr,
-    now: Timestamp,
     window: ExpansionWindow,
     new_spent: Uint128,
 ) -> Result<(), ContractError> {
@@ -221,11 +183,10 @@ fn persist_expansion_state(
             spent_in_window: new_spent,
         },
     )?;
-    LAST_EXPANSION_AT_RECIPIENT.save(storage, recipient_addr.as_str(), &now)?;
     Ok(())
 }
 
-/// Phase 9: build the success response with the BankMsg attached.
+/// Phase 8: build the success response with the BankMsg attached.
 fn payout_response(
     config: &Config,
     recipient_addr: &Addr,

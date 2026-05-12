@@ -296,14 +296,14 @@ pub fn execute_propose_pool_config_update(
 ) -> Result<Response, ContractError> {
     ensure_admin(deps.as_ref(), &info)?;
 
-    // Verify pool exists. `.has()` skips deserializing PoolDetails since
-    // we only need the existence check, not the value.
-    if !POOLS_BY_ID.has(deps.storage, pool_id) {
-        return Err(ContractError::Std(StdError::generic_err(format!(
+    // Verify pool exists. Load PoolDetails once: we need it for the
+    // pool-kind gate below as well as the existence check.
+    let pool_details = POOLS_BY_ID.load(deps.storage, pool_id).map_err(|_| {
+        ContractError::Std(StdError::generic_err(format!(
             "Pool {} not found in registry",
             pool_id
-        ))));
-    }
+        )))
+    })?;
 
     if PENDING_POOL_CONFIG
         .may_load(deps.storage, pool_id)?
@@ -312,6 +312,23 @@ pub fn execute_propose_pool_config_update(
         return Err(ContractError::Std(StdError::generic_err(
             "A pool config update is already pending for this pool. Cancel it first.",
         )));
+    }
+
+    // Per-pool-kind gate. The commit-floor knobs are creator-pool-only
+    // (they live on `CommitLimitInfo`, which standard pools don't carry).
+    // A standard-pool proposal carrying either field would land at apply
+    // time and silently no-op on the pool side; rejecting at propose
+    // makes the misuse loud and saves a 48h timelock cycle.
+    if pool_details.pool_kind == pool_factory_interfaces::PoolKind::Standard
+        && (update_msg.min_commit_usd_pre_threshold.is_some()
+            || update_msg.min_commit_usd_post_threshold.is_some())
+    {
+        return Err(ContractError::Std(StdError::generic_err(format!(
+            "Pool {} is a standard pool — commit-floor knobs \
+             (min_commit_usd_pre_threshold, min_commit_usd_post_threshold) \
+             are creator-pool-only. Drop those fields or target a commit pool.",
+            pool_id
+        ))));
     }
 
     // Propose-time bound check. Mirrors `pool_core`'s apply-time validation

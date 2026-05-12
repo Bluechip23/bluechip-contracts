@@ -425,11 +425,14 @@ pub fn execute(
                 transaction_deadline,
             )
         }
-        ExecuteMsg::CollectFees { position_id } => {
+        ExecuteMsg::CollectFees {
+            position_id,
+            transaction_deadline,
+        } => {
             // Permitted during EmergencyPending so an LP about to remove
             // can sweep their share of fee_reserve before the drain.
             check_pool_writable_for_remove(deps.storage)?;
-            execute_collect_fees(deps, env, info, position_id)
+            execute_collect_fees(deps, env, info, position_id, transaction_deadline)
         }
         ExecuteMsg::RemovePartialLiquidity {
             position_id,

@@ -689,7 +689,24 @@ pub struct PoolUpgrade {
     pub new_code_id: u64,
     pub migrate_msg: Binary,
     pub pools_to_upgrade: Vec<u64>,
+    /// Number of entries from `pools_to_upgrade` for which a first-pass
+    /// decision (migrate-or-defer) has been recorded. Once
+    /// `upgraded_count == pools_to_upgrade.len()`, the first pass is
+    /// complete and subsequent `ContinuePoolUpgrade` calls drain
+    /// `pending_retry` instead.
     pub upgraded_count: u32,
+    /// Pools that were paused on their first-pass turn (or, on a retry
+    /// pass, are still paused / unreachable). Each `ContinuePoolUpgrade`
+    /// after the first pass completes takes up to `batch_size` entries
+    /// from the front, re-queries `IsPaused`, and migrates the ones
+    /// that have unpaused since. Pools still paused stay in the queue;
+    /// the admin can `CancelPoolUpgrade` to abandon any tail that
+    /// remains permanently paused. `#[serde(default)]` lets pre-this-
+    /// field PENDING_POOL_UPGRADE records (there shouldn't be any —
+    /// this is launch v1 — but the default is defensive) deserialize
+    /// cleanly with an empty retry queue.
+    #[serde(default)]
+    pub pending_retry: Vec<u64>,
     pub effective_after: Timestamp,
 }
 

@@ -125,6 +125,23 @@ pub(crate) fn prepare_deposit(
     min_amount0: Option<Uint128>,
     min_amount1: Option<Uint128>,
 ) -> Result<DepositPrep, ContractError> {
+    // RATIO-DRIFT NOTE for callers: when the pool already has reserves,
+    // `calc_liquidity_for_deposit` ratio-matches the smaller side to the
+    // pool's current ratio and refunds the excess on the other side
+    // (Native sides only — CW20 sides simply pull less via TransferFrom).
+    // If the pool ratio shifts between when the caller computed
+    // `amount0`/`amount1` and when this handler runs, the actual consumed
+    // amounts can deviate substantially from what the caller intended.
+    //
+    // Callers that care about the deposit shape MUST pass `min_amount0`
+    // / `min_amount1`. The slippage gates below
+    // (`check_slippage(actual_amount0, min_amount0, ...)`) reject any
+    // ratio drift that would clamp the actual deposit below those floors,
+    // so a mempool-delayed deposit against a now-shifted ratio fails
+    // loudly instead of silently consuming a tiny fraction of the
+    // offered amounts. Calls that omit both `min_amount`s accept arbitrary
+    // ratio drift (used by the threshold-crossing seed and a handful of
+    // test fixtures).
     let pool_info = POOL_INFO.load(deps.storage)?;
 
     // Reject any attached coin whose denom isn't one of the pool's

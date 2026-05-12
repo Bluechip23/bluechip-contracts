@@ -83,6 +83,7 @@ fn collect_fees_emits_transfers_and_debits_reserve() {
         message_info(&addrs.pool_owner, &[]),
         ExecuteMsg::CollectFees {
             position_id: "1".to_string(),
+            transaction_deadline: None,
         },
     )
     .unwrap();
@@ -155,6 +156,7 @@ fn collect_fees_routes_clip_slice_to_creator_pot() {
         message_info(&addrs.pool_owner, &[]),
         ExecuteMsg::CollectFees {
             position_id: "1".to_string(),
+            transaction_deadline: None,
         },
     )
     .unwrap();
@@ -191,6 +193,7 @@ fn collect_fees_rejects_non_owner() {
         message_info(&attacker, &[]),
         ExecuteMsg::CollectFees {
             position_id: "1".to_string(),
+            transaction_deadline: None,
         },
     )
     .unwrap_err();
@@ -210,6 +213,7 @@ fn collect_fees_on_zero_growth_returns_zero_transfers() {
         message_info(&addrs.pool_owner, &[]),
         ExecuteMsg::CollectFees {
             position_id: "1".to_string(),
+            transaction_deadline: None,
         },
     )
     .unwrap();

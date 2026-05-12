@@ -552,7 +552,7 @@ pub fn apply(world: &mut World, action: Action) -> ActionOutcome {
                 attacker,
                 pool.pool_addr.clone(),
                 &creator_pool::msg::ExecuteMsg::UpdateConfigFromFactory {
-                    update: pool_core::msg::PoolConfigUpdate { lp_fee: Some(Decimal::percent(50)), min_commit_interval: Some(0) },
+                    update: pool_core::msg::PoolConfigUpdate { lp_fee: Some(Decimal::percent(50)), min_commit_interval: Some(0), ..Default::default() },
                 },
                 &[],
             );
@@ -892,6 +892,7 @@ pub fn apply(world: &mut World, action: Action) -> ActionOutcome {
             };
             let msg = creator_pool::msg::ExecuteMsg::CollectFees {
                 position_id: first.position_id,
+                transaction_deadline: None,
             };
             let res = world.app.execute_contract(user, pool.pool_addr.clone(), &msg, &[]);
             match res {

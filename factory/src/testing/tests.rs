@@ -838,7 +838,15 @@ fn test_complete_pool_creation_flow() {
         "POOL_CREATION_CONTEXT should be removed after successful creation"
     );
 
-    assert_eq!(res.messages.len(), 2);
+    // finalize_pool now emits three messages:
+    //   1. CW20 UpdateMinter (hand the creator-token's minter to the pool)
+    //   2. CW721 TransferOwnership (stage the pool as pending_owner)
+    //   3. AcceptNftOwnership {} dispatched to the pool itself, mirroring
+    //      the symmetric two-phase NFT-accept flow already in place for
+    //      standard pools. The pool's handler then sends the matching
+    //      AcceptOwnership back to the CW721, closing the
+    //      pending-ownership window inside this create tx.
+    assert_eq!(res.messages.len(), 3);
 }
 
 #[test]

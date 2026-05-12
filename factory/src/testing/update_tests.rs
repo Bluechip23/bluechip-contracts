@@ -142,8 +142,14 @@ fn test_pool_registry_population() {
 
 #[test]
 fn test_upgrade_pools_with_registry() {
-    let mut deps = mock_dependencies();
-    setup_factory(&mut deps);
+    // Uses the custom querier so the IsPaused gate inside
+    // build_upgrade_batch can resolve (default = not paused). The
+    // plain MockQuerier doesn't know how to answer wasm-smart queries,
+    // so under the new M-5 fail-closed semantics it would revert the
+    // apply — which is the correct behaviour, just not what this test
+    // is exercising.
+    let mut deps = mock_dependencies_2(&[]);
+    setup_factory_custom(&mut deps);
 
     for i in 1..=5 {
         let pool_addr = Addr::unchecked(format!("pool_{}", i));
@@ -247,6 +253,7 @@ fn test_update_specific_pool_from_registry() {
     let pool_config = PoolConfigUpdate {
         lp_fee: None,
         min_commit_interval: None,
+        ..Default::default()
     };
 
     let update_msg = ExecuteMsg::ProposePoolConfigUpdate {
@@ -279,8 +286,10 @@ fn test_update_specific_pool_from_registry() {
 }
 #[test]
 fn test_migration_with_large_pool_count() {
-    let mut deps = mock_dependencies();
-    setup_factory(&mut deps);
+    // Custom querier so IsPaused resolves to default=false. Plain
+    // MockQuerier would now fail-closed (M-5).
+    let mut deps = mock_dependencies_2(&[]);
+    setup_factory_custom(&mut deps);
 
     for i in 1..=25 {
         register_test_pool_addr(&mut deps.storage, i, &Addr::unchecked(format!("pool_{}", i)));
@@ -359,10 +368,11 @@ fn test_migration_with_large_pool_count() {
 
 #[test]
 fn test_upgrade_skips_paused_pools() {
-    // Confirms that pools reporting paused=true are skipped during an
-    // upgrade batch. The batch still advances past them (counted as
-    // processed) so the upgrade can finish; skipped pool ids are exposed
-    // via the skipped_paused attribute for the admin to handle manually.
+    // Confirms that pools reporting paused=true are deferred to
+    // `pending_retry` rather than silently counted-and-dropped. The
+    // first pass migrates the unpaused pools and leaves PENDING_POOL_UPGRADE
+    // around (with pool_2 in pending_retry) so a future
+    // ContinuePoolUpgrade can retry it once the admin has unpaused.
     // Uses mock_dependencies_2 so we can mark specific pools as paused
     // on the custom querier.
     let mut deps = mock_dependencies_2(&[]);
@@ -426,23 +436,30 @@ fn test_upgrade_skips_paused_pools() {
         .unwrap_or_default();
     assert_eq!(skipped, "2");
 
-    // Pending state is cleared since all three pools were processed in one batch.
-    assert!(
-        PENDING_POOL_UPGRADE.may_load(&deps.storage).unwrap().is_none()
-    );
+    // Pending state is RETAINED so the admin can retry pool_2 after
+    // unpausing via ContinuePoolUpgrade. pending_retry holds the
+    // skipped id.
+    let pending_after = PENDING_POOL_UPGRADE
+        .may_load(&deps.storage)
+        .unwrap()
+        .expect("PENDING_POOL_UPGRADE should remain while pending_retry is non-empty");
+    assert_eq!(pending_after.pending_retry, vec![2u64]);
+    // First-pass cursor reached the end (all 3 pools decided on).
+    assert_eq!(pending_after.upgraded_count, 3);
+    assert_eq!(pending_after.pools_to_upgrade.len(), 3);
 }
 
 #[test]
-fn test_upgrade_treats_query_failure_as_not_paused() {
-    // The factory uses unwrap_or(IsPausedResponse { paused: false }) so a
-    // broken or unresponsive pool contract doesn't halt the upgrade. This
-    // test pins that behavior: if the IsPaused query errors, the pool is
-    // migrated anyway.
+fn test_upgrade_first_pass_fails_closed_on_query_error() {
+    // M-5 audit fix: on the FIRST pass, an IsPaused query error
+    // propagates and reverts the apply. Treating "query unreachable"
+    // as "not paused" would be a fail-open — we don't know whether
+    // the pool is in a sensitive state, and committing to a Migrate
+    // on that basis is the wrong direction.
     //
-    // Rationale: making a failed query block the migration would give any
-    // pool with a broken query handler veto power over upgrades. Erroring
-    // on the side of attempting migration is the safer default — if the
-    // migration itself fails, the whole tx reverts.
+    // The retry pass tolerates the same error (separate test below)
+    // because we're revisiting pools we already deferred; a single
+    // transiently-broken pool shouldn't veto progress on the others.
     let mut deps = mock_dependencies_2(&[]);
     setup_factory_custom(&mut deps);
 
@@ -450,7 +467,6 @@ fn test_upgrade_treats_query_failure_as_not_paused() {
         register_test_pool_addr(&mut deps.storage, i, &Addr::unchecked(format!("pool_{}", i)));
     }
 
-    // Make pool_1's query error out; pool_2 is normal.
     deps.querier
         .query_error_pools
         .insert("pool_1".to_string());
@@ -474,36 +490,168 @@ fn test_upgrade_treats_query_failure_as_not_paused() {
     let mut later_env = env;
     later_env.block.time = pending.effective_after.plus_seconds(1);
 
-    let res = execute(
+    let err = execute(
         deps.as_mut(),
         later_env,
         admin_info,
         ExecuteMsg::ExecutePoolUpgrade {},
     )
+    .unwrap_err();
+
+    let msg = err.to_string();
+    assert!(
+        msg.contains("IsPaused query failed"),
+        "expected fail-closed error mentioning IsPaused, got: {}",
+        msg
+    );
+
+    // No pool migrated, PENDING_POOL_UPGRADE retained (admin must Cancel
+    // and either fix pool_1 or re-propose without it).
+    let still_pending = PENDING_POOL_UPGRADE.load(&deps.storage).unwrap();
+    assert_eq!(still_pending.upgraded_count, 0);
+    assert!(still_pending.pending_retry.is_empty());
+}
+
+#[test]
+fn test_upgrade_retry_path_migrates_unpaused_pool() {
+    // M-1 audit fix: a pool paused on first pass lands in
+    // pending_retry. Once the admin has unpaused it (test-side: drop
+    // from `paused_pools`), the next ContinuePoolUpgrade migrates it
+    // in-place — no Cancel + re-Propose required.
+    let mut deps = mock_dependencies_2(&[]);
+    setup_factory_custom(&mut deps);
+
+    for i in 1..=3 {
+        register_test_pool_addr(&mut deps.storage, i, &Addr::unchecked(format!("pool_{}", i)));
+    }
+    deps.querier.paused_pools.insert("pool_2".to_string());
+
+    let env = mock_env();
+    let admin_info = message_info(&admin_addr(), &[]);
+
+    execute(
+        deps.as_mut(),
+        env.clone(),
+        admin_info.clone(),
+        ExecuteMsg::UpgradePools {
+            new_code_id: 600,
+            pool_ids: None,
+            migrate_msg: to_json_binary(&Empty {}).unwrap(),
+        },
+    )
+    .unwrap();
+    let pending = PENDING_POOL_UPGRADE.load(&deps.storage).unwrap();
+
+    let mut later_env = env;
+    later_env.block.time = pending.effective_after.plus_seconds(1);
+
+    // First pass: pool_1 and pool_3 migrate, pool_2 lands in pending_retry.
+    let res = execute(
+        deps.as_mut(),
+        later_env.clone(),
+        admin_info.clone(),
+        ExecuteMsg::ExecutePoolUpgrade {},
+    )
+    .unwrap();
+    assert_eq!(res.messages.len(), 2);
+    let mid = PENDING_POOL_UPGRADE.load(&deps.storage).unwrap();
+    assert_eq!(mid.pending_retry, vec![2u64]);
+    assert_eq!(mid.upgraded_count, 3);
+
+    // Admin unpauses pool_2 (test-side: drop from paused set), calls
+    // Continue. Without M-1 fix, this required Cancel + re-Propose
+    // + wait 48h.
+    deps.querier.paused_pools.remove("pool_2");
+
+    let res = execute(
+        deps.as_mut(),
+        later_env,
+        admin_info,
+        ExecuteMsg::ContinuePoolUpgrade {},
+    )
     .unwrap();
 
-    // Both pools should be migrated — broken pool_1 treated as not-paused.
-    assert_eq!(res.messages.len(), 2);
-    let migrated: Vec<String> = res
+    // pool_2 migrated, mode=retry, pending_retry drained, PENDING removed.
+    assert_eq!(res.messages.len(), 1);
+    let migrated_addrs: Vec<String> = res
         .messages
         .iter()
         .filter_map(|sm| match &sm.msg {
-            CosmosMsg::Wasm(WasmMsg::Migrate { contract_addr, .. }) => {
-                Some(contract_addr.clone())
-            }
+            CosmosMsg::Wasm(WasmMsg::Migrate { contract_addr, .. }) => Some(contract_addr.clone()),
             _ => None,
         })
         .collect();
-    assert!(migrated.contains(&"pool_1".to_string()));
-    assert!(migrated.contains(&"pool_2".to_string()));
+    assert_eq!(migrated_addrs, vec!["pool_2".to_string()]);
 
-    let skipped = res
+    let mode = res
         .attributes
         .iter()
-        .find(|a| a.key == "skipped_paused")
+        .find(|a| a.key == "mode")
         .map(|a| a.value.clone())
-        .unwrap_or_default();
-    assert_eq!(skipped, "", "no pools should be marked skipped_paused");
+        .unwrap();
+    assert_eq!(mode, "retry");
+
+    assert!(
+        PENDING_POOL_UPGRADE.may_load(&deps.storage).unwrap().is_none(),
+        "PENDING_POOL_UPGRADE should be cleared once first pass is done AND pending_retry is empty"
+    );
+}
+
+#[test]
+fn test_upgrade_retry_path_keeps_still_paused_pool() {
+    // If a pool remains paused on retry, it stays in pending_retry
+    // for the next Continue call. The admin can Cancel to abandon.
+    let mut deps = mock_dependencies_2(&[]);
+    setup_factory_custom(&mut deps);
+
+    for i in 1..=2 {
+        register_test_pool_addr(&mut deps.storage, i, &Addr::unchecked(format!("pool_{}", i)));
+    }
+    deps.querier.paused_pools.insert("pool_2".to_string());
+
+    let env = mock_env();
+    let admin_info = message_info(&admin_addr(), &[]);
+
+    execute(
+        deps.as_mut(),
+        env.clone(),
+        admin_info.clone(),
+        ExecuteMsg::UpgradePools {
+            new_code_id: 700,
+            pool_ids: None,
+            migrate_msg: to_json_binary(&Empty {}).unwrap(),
+        },
+    )
+    .unwrap();
+    let pending = PENDING_POOL_UPGRADE.load(&deps.storage).unwrap();
+
+    let mut later_env = env;
+    later_env.block.time = pending.effective_after.plus_seconds(1);
+
+    // First pass.
+    execute(
+        deps.as_mut(),
+        later_env.clone(),
+        admin_info.clone(),
+        ExecuteMsg::ExecutePoolUpgrade {},
+    )
+    .unwrap();
+    assert_eq!(
+        PENDING_POOL_UPGRADE.load(&deps.storage).unwrap().pending_retry,
+        vec![2u64]
+    );
+
+    // Retry while pool_2 is still paused: no migrate, pool stays on the queue.
+    let res = execute(
+        deps.as_mut(),
+        later_env,
+        admin_info,
+        ExecuteMsg::ContinuePoolUpgrade {},
+    )
+    .unwrap();
+    assert_eq!(res.messages.len(), 0);
+    let after = PENDING_POOL_UPGRADE.load(&deps.storage).unwrap();
+    assert_eq!(after.pending_retry, vec![2u64]);
 }
 
 #[test]

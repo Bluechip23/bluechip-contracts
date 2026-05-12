@@ -257,6 +257,7 @@ fn test_update_pool_config_sends_message_to_pool() {
     let update = PoolConfigUpdate {
         lp_fee: Some(Decimal::percent(5)),
         min_commit_interval: Some(120),
+        ..Default::default()
     };
 
     // Step 1: Propose — no messages sent yet
@@ -299,6 +300,7 @@ fn test_update_pool_config_unauthorized() {
     let update = PoolConfigUpdate {
         lp_fee: Some(Decimal::percent(5)),
         min_commit_interval: None,
+        ..Default::default()
     };
 
     let msg = ExecuteMsg::ProposePoolConfigUpdate {
@@ -322,6 +324,7 @@ fn test_update_pool_config_nonexistent_pool() {
     let update = PoolConfigUpdate {
         lp_fee: None,
         min_commit_interval: None,
+        ..Default::default()
     };
 
     let msg = ExecuteMsg::ProposePoolConfigUpdate {
@@ -334,6 +337,120 @@ fn test_update_pool_config_nonexistent_pool() {
     assert!(
         err.to_string().contains("not found") || err.to_string().contains("type: cw_storage_plus")
     );
+}
+
+/// M-4 audit fix — propose-time bounds check + standard-pool rejection
+/// for the new `min_commit_usd_pre_threshold` /
+/// `min_commit_usd_post_threshold` knobs.
+#[test]
+fn test_propose_pool_config_commit_floor_bounds_and_kind_gating() {
+    let mut deps = mock_deps_with_querier(&[]);
+    setup_factory(&mut deps);
+    let env = mock_env();
+    let admin_info = message_info(&admin_addr(), &[]);
+
+    // Register one Commit pool (id=1) and one Standard pool (id=2).
+    register_test_pool_addr(&mut deps.storage, 1, &Addr::unchecked("commit_pool_1"));
+    let std_details = PoolDetails {
+        pool_id: 2,
+        pool_token_info: [
+            crate::asset::TokenType::Native {
+                denom: "ubluechip".to_string(),
+            },
+            crate::asset::TokenType::Native {
+                denom: "uatom".to_string(),
+            },
+        ],
+        creator_pool_addr: Addr::unchecked("std_pool_2"),
+        pool_kind: pool_factory_interfaces::PoolKind::Standard,
+        commit_pool_ordinal: 0,
+    };
+    POOLS_BY_ID
+        .save(&mut deps.storage, 2u64, &std_details)
+        .unwrap();
+
+    // Zero floor is rejected.
+    let zero = PoolConfigUpdate {
+        min_commit_usd_pre_threshold: Some(Uint128::zero()),
+        ..Default::default()
+    };
+    let err = execute(
+        deps.as_mut(),
+        env.clone(),
+        admin_info.clone(),
+        ExecuteMsg::ProposePoolConfigUpdate {
+            pool_id: 1,
+            pool_config: zero,
+        },
+    )
+    .unwrap_err();
+    assert!(
+        err.to_string().contains("must be non-zero"),
+        "expected non-zero rejection, got: {}",
+        err
+    );
+
+    // Above-cap floor is rejected.
+    let too_high = PoolConfigUpdate {
+        min_commit_usd_post_threshold: Some(
+            crate::pool_struct::POOL_CONFIG_MAX_MIN_COMMIT_USD + Uint128::new(1),
+        ),
+        ..Default::default()
+    };
+    let err = execute(
+        deps.as_mut(),
+        env.clone(),
+        admin_info.clone(),
+        ExecuteMsg::ProposePoolConfigUpdate {
+            pool_id: 1,
+            pool_config: too_high,
+        },
+    )
+    .unwrap_err();
+    assert!(
+        err.to_string().contains("exceeds maximum"),
+        "expected ceiling rejection, got: {}",
+        err
+    );
+
+    // Standard pool target with commit-floor field set is rejected.
+    let standard_floor = PoolConfigUpdate {
+        min_commit_usd_pre_threshold: Some(Uint128::new(2_000_000)),
+        ..Default::default()
+    };
+    let err = execute(
+        deps.as_mut(),
+        env.clone(),
+        admin_info.clone(),
+        ExecuteMsg::ProposePoolConfigUpdate {
+            pool_id: 2,
+            pool_config: standard_floor,
+        },
+    )
+    .unwrap_err();
+    assert!(
+        err.to_string().contains("standard pool")
+            && err.to_string().contains("commit-floor"),
+        "expected standard-pool rejection, got: {}",
+        err
+    );
+
+    // Same valid floor against the commit pool is accepted.
+    let ok = PoolConfigUpdate {
+        min_commit_usd_pre_threshold: Some(Uint128::new(10_000_000)),
+        min_commit_usd_post_threshold: Some(Uint128::new(2_000_000)),
+        ..Default::default()
+    };
+    execute(
+        deps.as_mut(),
+        env,
+        admin_info,
+        ExecuteMsg::ProposePoolConfigUpdate {
+            pool_id: 1,
+            pool_config: ok,
+        },
+    )
+    .expect("commit pool should accept valid floors");
 }
 
 #[test]
@@ -2997,6 +3114,122 @@ mod oracle_eligibility_tests {
         )
         .unwrap();
         assert!(!ORACLE_ELIGIBLE_POOLS.has(&deps.storage, std_pool));
+    }
+
+    /// A pre-threshold commit pool cannot be allowlisted as an oracle
+    /// source. Pinned at propose time so the admin doesn't burn a 48h
+    /// timelock cycle on a pool that has no real swap activity to
+    /// contribute to the TWAP. Mirrors the same gate the auto-eligible
+    /// source already applies in `get_eligible_creator_pools`.
+    #[test]
+    fn allowlist_rejects_pre_threshold_commit_pool() {
+        use crate::state::{POOLS_BY_ID, POOL_THRESHOLD_MINTED};
+        let mut deps = mock_deps_with_querier(&[]);
+        setup_factory_with_commit_pool(&mut deps, false);
+
+        // Register a SECOND commit pool that has NOT crossed its
+        // threshold. setup_factory_with_commit_pool already created
+        // pool_id 1 with `POOL_THRESHOLD_MINTED = true`; this new
+        // pool deliberately omits that save so it lands as
+        // pre-threshold.
+        let pre_threshold_pool = make_addr("pre_threshold_commit_pool");
+        let pool_details = PoolDetails {
+            pool_id: 2,
+            pool_token_info: [
+                TokenType::Native {
+                    denom: "ubluechip".to_string(),
+                },
+                TokenType::CreatorToken {
+                    contract_addr: Addr::unchecked("creator_token_2"),
+                },
+            ],
+            creator_pool_addr: pre_threshold_pool.clone(),
+            pool_kind: pool_factory_interfaces::PoolKind::Commit,
+            commit_pool_ordinal: 2,
+        };
+        POOLS_BY_ID
+            .save(deps.as_mut().storage, 2, &pool_details)
+            .unwrap();
+        crate::state::POOL_ID_BY_ADDRESS
+            .save(deps.as_mut().storage, pre_threshold_pool.clone(), &2u64)
+            .unwrap();
+        crate::state::POOL_COUNTER
+            .save(deps.as_mut().storage, &2u64)
+            .unwrap();
+        // Crucially: do NOT save POOL_THRESHOLD_MINTED for pool_id 2.
+        // That's what makes this a pre-threshold pool.
+
+        let err = execute(
+            deps.as_mut(),
+            mock_env(),
+            message_info(&admin_addr(), &[]),
+            ExecuteMsg::ProposeAddOracleEligiblePool {
+                pool_addr: pre_threshold_pool.to_string(),
+            },
+        )
+        .unwrap_err();
+
+        assert!(
+            matches!(
+                err,
+                ContractError::OracleEligiblePoolCommitPreThreshold { ref pool_addr }
+                if pool_addr == &pre_threshold_pool.to_string()
+            ),
+            "expected OracleEligiblePoolCommitPreThreshold, got {:?}",
+            err
+        );
+
+        // Defense-in-depth: even if the gate were bypassed at propose,
+        // the apply path re-runs `resolve_pool_for_allowlist` and must
+        // also reject. Simulate by writing the pending entry directly
+        // and calling apply after the timelock.
+        crate::state::PENDING_ORACLE_ELIGIBLE_POOL_ADD
+            .save(
+                deps.as_mut().storage,
+                pre_threshold_pool.clone(),
+                &crate::state::PendingOracleEligiblePoolAdd {
+                    proposed_at: mock_env().block.time,
+                    bluechip_index: 0,
+                },
+            )
+            .unwrap();
+        let mut env = mock_env();
+        env.block.time = env.block.time.plus_seconds(ADMIN_TIMELOCK_SECONDS + 1);
+        let err = execute(
+            deps.as_mut(),
+            env,
+            message_info(&admin_addr(), &[]),
+            ExecuteMsg::ApplyAddOracleEligiblePool {
+                pool_addr: pre_threshold_pool.to_string(),
+            },
+        )
+        .unwrap_err();
+        assert!(
+            matches!(
+                err,
+                ContractError::OracleEligiblePoolCommitPreThreshold { .. }
+            ),
+            "apply must also reject pre-threshold commit pools, got {:?}",
+            err
+        );
+
+        // Once the pool crosses threshold, the same propose call
+        // succeeds — proving the gate is correctly scoped to
+        // pre-threshold state, not to commit pools in general.
+        crate::state::PENDING_ORACLE_ELIGIBLE_POOL_ADD
+            .remove(deps.as_mut().storage, pre_threshold_pool.clone());
+        POOL_THRESHOLD_MINTED
+            .save(deps.as_mut().storage, 2, &true)
+            .unwrap();
+        execute(
+            deps.as_mut(),
+            mock_env(),
+            message_info(&admin_addr(), &[]),
+            ExecuteMsg::ProposeAddOracleEligiblePool {
+                pool_addr: pre_threshold_pool.to_string(),
+            },
+        )
+        .expect("propose should succeed once threshold is minted");
     }
 
     /// Allowlisted standard pool is eligible even when the auto-flag is OFF.

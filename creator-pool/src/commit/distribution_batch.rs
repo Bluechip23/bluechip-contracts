@@ -278,24 +278,30 @@ pub fn process_distribution_batch(
             }
         }
         Err(e) => {
-            dist_state.consecutive_failures += 1;
-
-            if dist_state.consecutive_failures >= MAX_CONSECUTIVE_DISTRIBUTION_FAILURES {
-                dist_state.is_distributing = false;
-                DISTRIBUTION_STATE.save(storage, &dist_state)?;
-
-                return Err(ContractError::DistributionFailedTooManyTimes {
-                    attempts: dist_state.consecutive_failures,
-                    cap: MAX_CONSECUTIVE_DISTRIBUTION_FAILURES,
-                    reason: e.to_string(),
-                });
-            } else {
-                DISTRIBUTION_STATE.save(storage, &dist_state)?;
-                return Err(ContractError::DistributionBatchFailed {
-                    attempt: dist_state.consecutive_failures,
-                    reason: e.to_string(),
-                });
-            }
+            // Genuine `COMMIT_LEDGER.range(...)` failure — only reachable
+            // on storage corruption (deserialization error). The previous
+            // code path bumped `consecutive_failures` and tried to
+            // persist the new state before returning Err, but CosmWasm
+            // reverts every storage write in a handler that returns
+            // `Err`, so neither save persisted — the documented
+            // "stop after MAX_CONSECUTIVE_DISTRIBUTION_FAILURES"
+            // never fired through this branch in practice. Removed the
+            // dead increment + save and surface the corruption as a
+            // typed error so operators investigate root cause directly
+            // rather than relying on a give-up gate that wouldn't
+            // accumulate. The "ledger has more entries but range
+            // returned zero rows" branch above (line ~263) is the only
+            // path where the failure counter actually accumulates,
+            // because that path returns Ok and its save survives.
+            return Err(ContractError::DistributionBatchFailed {
+                attempt: 0,
+                reason: format!(
+                    "ledger range failed (storage corruption?): {}; investigate \
+                     COMMIT_LEDGER state — auto-recovery via \
+                     consecutive_failures counter does not apply on this path",
+                    e
+                ),
+            });
         }
     }
 

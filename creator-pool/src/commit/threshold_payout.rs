@@ -27,9 +27,10 @@ use crate::state::{
     CommitLimitInfo, CreatorExcessLiquidity, DistributionState, PoolFeeState, PoolInfo, PoolState,
     ThresholdPayoutAmounts, COMMIT_LEDGER, CREATOR_EXCESS_POSITION,
     DEFAULT_ESTIMATED_GAS_PER_DISTRIBUTION, DEFAULT_MAX_GAS_PER_TX, DISTRIBUTION_STATE,
-    POOL_FEE_STATE, POOL_STATE, SECONDS_PER_DAY, THRESHOLD_PAYOUT_BLUECHIP_BASE_UNITS,
-    THRESHOLD_PAYOUT_COMMIT_RETURN_BASE_UNITS, THRESHOLD_PAYOUT_CREATOR_BASE_UNITS,
-    THRESHOLD_PAYOUT_POOL_BASE_UNITS, THRESHOLD_PAYOUT_TOTAL_BASE_UNITS,
+    IS_THRESHOLD_HIT, POOL_FEE_STATE, POOL_STATE, SECONDS_PER_DAY,
+    THRESHOLD_PAYOUT_BLUECHIP_BASE_UNITS, THRESHOLD_PAYOUT_COMMIT_RETURN_BASE_UNITS,
+    THRESHOLD_PAYOUT_CREATOR_BASE_UNITS, THRESHOLD_PAYOUT_POOL_BASE_UNITS,
+    THRESHOLD_PAYOUT_TOTAL_BASE_UNITS,
 };
 use pool_core::liquidity_helpers::integer_sqrt;
 
@@ -114,6 +115,33 @@ pub fn trigger_threshold_payout(
     fee_info: &CommitFeeInfo,
     env: &Env,
 ) -> Result<ThresholdPayoutMsgs, ContractError> {
+    // No-double-mint invariant — STRUCTURALLY enforced here.
+    // This function is the single load-bearing path that mints the 1.2T
+    // creator-token splits and seeds the AMM reserves; running it twice
+    // would mint another full set of splits and overwrite the pool
+    // seed against the (already-non-zero) reserves.
+    //
+    // We check the flag at entry (must be false) and set it to true at
+    // the END of this function, after the mint work completes. Net flow
+    // across the two canonical crossing handlers:
+    //   handler entry: IS_THRESHOLD_HIT == false → handler gate passes
+    //   handler runs COMMIT_LEDGER / USD/NATIVE_RAISED writes
+    //   handler calls trigger_threshold_payout
+    //   here entry:    IS_THRESHOLD_HIT == false → gate passes
+    //   trigger_threshold_payout does the mint + seed work
+    //   here exit:     IS_THRESHOLD_HIT.save(true)
+    //   handler returns; subsequent commits route to post-threshold AMM
+    //
+    // The two crossing handlers retain their own fail-fast gates at
+    // entry — they save round-trip writes (COMMIT_LEDGER, USD_RAISED,
+    // NATIVE_RAISED) that would otherwise get reverted alongside the
+    // gate trip — but the LOAD-BEARING gate is the one here. Any
+    // future call site that bypasses the crossing handlers and
+    // invokes this function directly still cannot re-mint.
+    if IS_THRESHOLD_HIT.may_load(storage)?.unwrap_or(false) {
+        return Err(ContractError::StuckThresholdProcessing);
+    }
+
     // Factory notification goes out as a `reply_on_error` SubMsg. If the
     // factory handler fails, the pool's `reply` entrypoint sets
     // PENDING_FACTORY_NOTIFY=true and swallows the error so the commit
@@ -133,18 +161,20 @@ pub fn trigger_threshold_payout(
 
     let mut other_msgs: Vec<CosmosMsg> = Vec::new();
 
-    // Accept the position-NFT ownership at threshold-cross time
-    // rather than lazily on first deposit. Closes the "ownership pending"
-    // window between factory's `TransferOwnership` (at pool finalize)
-    // and the first LP's deposit, during which a (compromised) factory
-    // could theoretically re-route the NFT elsewhere via another
-    // TransferOwnership before the pool ever locks it in. The
-    // `nft_ownership_accepted` flag flips here too so the deposit
-    // handler's lazy check skips the AcceptOwnership emit (avoiding a
-    // double-accept that would error at the CW721 contract).
+    // Backstop NFT-ownership accept. Under the canonical create flow
+    // the factory's `finalize_pool` dispatches `AcceptNftOwnership {}`
+    // to this pool in the same tx as the CW721 `TransferOwnership`, so
+    // `nft_ownership_accepted` is already true by the time threshold
+    // crosses and this branch is a no-op. Retained as defense-in-depth
+    // for the test-fixture path (and any hypothetical future code path
+    // that instantiates a pool directly) where the factory-side
+    // dispatch may not have run; the deposit handler in pool-core
+    // carries the same idempotent fallback.
     //
-    // Idempotent: if the flag is already true (e.g. a hand-rolled
-    // factory dispatch path that pre-accepted), this branch is a no-op.
+    // Idempotent: the `if !nft_ownership_accepted` gate makes a second
+    // accept a no-op — important because the CW721 contract rejects a
+    // duplicate `AcceptOwnership` with `NoPendingOwner` and that error
+    // would revert the entire threshold-cross tx.
     if !pool_state.nft_ownership_accepted {
         other_msgs.push(CosmosMsg::Wasm(WasmMsg::Execute {
             contract_addr: pool_info.position_nft_address.to_string(),
@@ -276,6 +306,17 @@ pub fn trigger_threshold_payout(
 
     POOL_STATE.save(storage, pool_state)?;
     POOL_FEE_STATE.save(storage, pool_fee_state)?;
+
+    // Set IS_THRESHOLD_HIT only after all mint + seed work has
+    // completed. Paired with the entry gate above: the flag is the
+    // structural witness that this function has run successfully for
+    // this pool. Subsequent commits in any future tx load
+    // IS_THRESHOLD_HIT, see true, and route to the post-threshold AMM
+    // swap path instead of re-entering the crossing handlers.
+    // (Within the same tx no second commit fires anyway — one commit
+    // per tx by design — but keeping the save at the tail makes the
+    // invariant a clean "flag flips iff mint completed" statement.)
+    IS_THRESHOLD_HIT.save(storage, &true)?;
 
     Ok(ThresholdPayoutMsgs {
         factory_notify,

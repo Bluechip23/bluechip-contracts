@@ -62,6 +62,13 @@ pub enum ContractError {
     #[error("Fee is too great or too small for this transaction")]
     InvalidFee {},
 
+    #[error("Invalid commit floor for {field}: {got} (must be non-zero and <= {max})")]
+    InvalidCommitFloor {
+        field: &'static str,
+        got: Uint128,
+        max: Uint128,
+    },
+
     #[error("belief_price cannot be zero")]
     InvalidBeliefPrice {},
 
@@ -151,6 +158,14 @@ pub enum ContractError {
 
     #[error("No unclaimed emergency-drain residual to sweep")]
     NoUnclaimedEmergencyResidual,
+
+    #[error(
+        "Emergency-share claims are closed: the post-dormancy residual sweep \
+         has already fired (at drained_at + 1y). Per the documented design, \
+         abandoned funds are gone after a year — passive LPs had the full \
+         window to surface and claim."
+    )]
+    EmergencyClaimsClosedPostSweep,
 
     #[error("Distribution timeout - requires manual recovery")]
     DistributionTimeout,
