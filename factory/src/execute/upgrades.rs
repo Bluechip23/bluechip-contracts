@@ -122,6 +122,7 @@ pub fn execute_propose_pool_upgrade(
             migrate_msg,
             pools_to_upgrade: pools_to_upgrade.clone(),
             upgraded_count: 0,
+            pending_retry: Vec::new(),
             effective_after,
         },
     )?;
@@ -133,31 +134,64 @@ pub fn execute_propose_pool_upgrade(
         .add_attribute("effective_after", effective_after.to_string()))
 }
 
-// Processes a single batch of pools from the pending upgrade. Runs paused
-// pools through a skip path (admin must unpause and re-run) so the upgrade
-// doesn't migrate a pool that is mid-emergency-withdraw or otherwise in a
-// sensitive state. Returns the built messages and records how many pools
-// were processed (skipped + migrated) so the next batch can resume.
-//
-// Anchor exclusion runs here in addition to the propose-time check.
-// `execute_propose_pool_upgrade` snapshots the anchor at propose time, but
-// the pending list can outlive an anchor change (Propose pool upgrade
-// containing pool X -> 48h elapses -> ProposeConfigUpdate that promotes X
-// to anchor -> apply config update -> apply upgrade: X is now the live
-// anchor but is still in the frozen list). Re-resolving the anchor here
-// and hard-failing if it appears in the batch closes that race. We
-// hard-fail rather than silently skip so an operator notices the
-// collision and decides whether to drop X from the upgrade or rotate
-// the anchor first.
+/// Outcome of processing a batch through [`build_upgrade_batch`].
+///
+/// Paused pools land in `skipped_pool_ids` and (for first-pass calls)
+/// flow into `PoolUpgrade.pending_retry` so a later `ContinuePoolUpgrade`
+/// can retry them once the admin has unpaused. Migrated pools are
+/// returned in `migrated_pool_ids` so retry-pass callers know which
+/// entries to drop from the retry queue.
+struct UpgradeBatchOutcome {
+    messages: Vec<CosmosMsg>,
+    skipped_pool_ids: Vec<u64>,
+    migrated_pool_ids: Vec<u64>,
+}
+
+/// Processes a single batch of pools from the pending upgrade.
+///
+/// Anchor exclusion runs here in addition to the propose-time check.
+/// `execute_propose_pool_upgrade` snapshots the anchor at propose time, but
+/// the pending list can outlive an anchor change (Propose pool upgrade
+/// containing pool X -> 48h elapses -> ProposeConfigUpdate that promotes X
+/// to anchor -> apply config update -> apply upgrade: X is now the live
+/// anchor but is still in the frozen list). Re-resolving the anchor here
+/// and hard-failing if it appears in the batch closes that race. We
+/// hard-fail rather than silently skip so an operator notices the
+/// collision and decides whether to drop X from the upgrade or rotate
+/// the anchor first.
+///
+/// Paused pools are skipped (returned in `skipped_pool_ids`) so the
+/// upgrade doesn't migrate a pool that is mid-emergency-withdraw or
+/// otherwise in a sensitive state.
+///
+/// `IsPaused` query error semantics depend on `retry_mode`:
+///
+///   * `retry_mode == false` (first-pass): the query result is
+///     load-bearing — we're about to commit to either migrating or
+///     deferring each pool. A query error means we genuinely don't know
+///     whether the pool is in a sensitive state; treating "unknown" as
+///     "not paused" would be a fail-open that lets a pool with a broken
+///     query path silently get migrated despite possibly being paused.
+///     Instead we propagate the error and the apply reverts. The admin
+///     can then `Cancel` and either drop the unreachable pool from the
+///     batch via a fresh `Propose` or repair the pool first.
+///
+///   * `retry_mode == true` (revisiting `pending_retry`): the pool was
+///     already deferred once; we're seeing if it has become migrate-able.
+///     A query error here is treated as "still not migrate-able" (push
+///     back into `skipped_pool_ids`) rather than reverting the entire
+///     retry batch — that way a single transiently-broken pool can't
+///     veto progress on the other retry candidates.
 fn build_upgrade_batch(
     deps: Deps,
     pool_ids: &[u64],
     new_code_id: u64,
     migrate_msg: &Binary,
-) -> Result<(Vec<CosmosMsg>, Vec<u64>, u32), ContractError> {
+    retry_mode: bool,
+) -> Result<UpgradeBatchOutcome, ContractError> {
     let mut messages: Vec<CosmosMsg> = Vec::new();
     let mut skipped: Vec<u64> = Vec::new();
-    let processed: u32 = pool_ids.len() as u32;
+    let mut migrated: Vec<u64> = Vec::new();
 
     let current_anchor_addr = crate::state::FACTORYINSTANTIATEINFO
         .load(deps.storage)?
@@ -176,17 +210,30 @@ fn build_upgrade_batch(
             ))));
         }
 
-        // Query pause state; if the pool is paused, skip it. A paused pool
-        // may be in the middle of a 24h emergency-withdraw timelock or other
-        // sensitive state, and migrating it would likely break the invariants
-        // the pool code relied on when pausing.
-        let is_paused: pool_factory_interfaces::IsPausedResponse = deps
+        let is_paused: pool_factory_interfaces::IsPausedResponse = match deps
             .querier
             .query_wasm_smart(
                 pool_addr.to_string(),
                 &pool_factory_interfaces::PoolQueryMsg::IsPaused {},
-            )
-            .unwrap_or(pool_factory_interfaces::IsPausedResponse { paused: false });
+            ) {
+            Ok(r) => r,
+            Err(e) => {
+                if retry_mode {
+                    // Keep the pool on the retry queue so the admin can
+                    // try again after addressing whatever is making
+                    // IsPaused unreachable.
+                    skipped.push(*pool_id);
+                    continue;
+                } else {
+                    return Err(ContractError::Std(StdError::generic_err(format!(
+                        "Pool {} ({}) IsPaused query failed: {}. Refusing to \
+                         migrate without confirming pause state — Cancel and \
+                         either fix the pool or re-propose without it.",
+                        pool_id, pool_addr, e
+                    ))));
+                }
+            }
+        };
 
         if is_paused.paused {
             skipped.push(*pool_id);
@@ -198,9 +245,14 @@ fn build_upgrade_batch(
             new_code_id,
             msg: migrate_msg.clone(),
         }));
+        migrated.push(*pool_id);
     }
 
-    Ok((messages, skipped, processed))
+    Ok(UpgradeBatchOutcome {
+        messages,
+        skipped_pool_ids: skipped,
+        migrated_pool_ids: migrated,
+    })
 }
 
 pub fn execute_apply_pool_upgrade(
@@ -232,44 +284,50 @@ pub fn execute_apply_pool_upgrade(
         .take(batch_size)
         .cloned()
         .collect();
+    let first_batch_len = first_batch.len() as u32;
 
-    let (messages, skipped, processed) = build_upgrade_batch(
+    let outcome = build_upgrade_batch(
         deps.as_ref(),
         &first_batch,
         upgrade.new_code_id,
         &upgrade.migrate_msg,
+        false, // first-pass: a query error reverts (M-5 fail-closed)
     )?;
 
     let mut upgrade = upgrade;
-    upgrade.upgraded_count = processed;
+    upgrade.upgraded_count = first_batch_len;
+    // Paused pools land in pending_retry instead of being silently
+    // counted-and-dropped. A later ContinuePoolUpgrade re-checks each
+    // entry and migrates the ones that have unpaused (M-1 in-place
+    // retry). first-pass-only: this list starts empty so we just
+    // assign rather than extend.
+    upgrade.pending_retry = outcome.skipped_pool_ids.clone();
 
-    // If all pools were handled in this single batch, remove the pending
-    // state. Otherwise persist progress and require the admin to call
-    // ContinuePoolUpgrade explicitly — we no longer self-dispatch, which
-    // previously risked blowing through the block gas limit for large pool
-    // counts by chaining recursive execute messages.
     let total = upgrade.pools_to_upgrade.len() as u32;
-    let more_batches = upgrade.upgraded_count < total;
-    if more_batches {
+    let more_first_pass = upgrade.upgraded_count < total;
+    let has_retry_queue = !upgrade.pending_retry.is_empty();
+    if more_first_pass || has_retry_queue {
         PENDING_POOL_UPGRADE.save(deps.storage, &upgrade)?;
     } else {
         PENDING_POOL_UPGRADE.remove(deps.storage);
     }
 
-    let skipped_str = skipped
+    let skipped_str = outcome
+        .skipped_pool_ids
         .iter()
         .map(|id| id.to_string())
         .collect::<Vec<_>>()
         .join(",");
 
     Ok(Response::new()
-        .add_messages(messages)
+        .add_messages(outcome.messages)
         .add_attribute("action", "execute_pool_upgrade")
         .add_attribute("new_code_id", upgrade.new_code_id.to_string())
         .add_attribute("pool_count", total.to_string())
-        .add_attribute("processed_in_batch", processed.to_string())
+        .add_attribute("processed_in_batch", first_batch_len.to_string())
         .add_attribute("skipped_paused", skipped_str)
-        .add_attribute("more_batches", more_batches.to_string()))
+        .add_attribute("more_batches", (more_first_pass || has_retry_queue).to_string())
+        .add_attribute("pending_retry_count", upgrade.pending_retry.len().to_string()))
 }
 
 pub fn execute_cancel_pool_upgrade(
@@ -325,51 +383,95 @@ pub fn execute_continue_pool_upgrade(
         )));
     }
 
-    let remaining_pools: Vec<u64> = upgrade
-        .pools_to_upgrade
-        .iter()
-        .cloned()
-        .skip(upgrade.upgraded_count as usize)
-        .collect();
+    let total = upgrade.pools_to_upgrade.len() as u32;
+    let batch_size: usize = 10;
 
-    if remaining_pools.is_empty() {
+    // Continue has two phases. While the first-pass cursor hasn't
+    // reached the end of `pools_to_upgrade`, each call advances it by
+    // up to `batch_size`. Once the first pass is done, subsequent
+    // calls drain `pending_retry`: re-query IsPaused for each
+    // candidate and migrate the ones that have unpaused since first
+    // pass. The upgrade is complete only when BOTH the first pass is
+    // exhausted AND the retry queue is empty.
+    let (mode, batch, batch_len) = if upgrade.upgraded_count < total {
+        let slice: Vec<u64> = upgrade
+            .pools_to_upgrade
+            .iter()
+            .cloned()
+            .skip(upgrade.upgraded_count as usize)
+            .take(batch_size)
+            .collect();
+        let len = slice.len();
+        ("first_pass", slice, len)
+    } else if !upgrade.pending_retry.is_empty() {
+        let slice: Vec<u64> = upgrade
+            .pending_retry
+            .iter()
+            .cloned()
+            .take(batch_size)
+            .collect();
+        let len = slice.len();
+        ("retry", slice, len)
+    } else {
+        // Nothing left to do; close out the upgrade.
         PENDING_POOL_UPGRADE.remove(deps.storage);
         return Ok(Response::new()
             .add_attribute("action", "upgrade_complete")
             .add_attribute("total_upgraded", upgrade.upgraded_count.to_string()));
-    }
+    };
 
-    let batch_size = 10;
-    let batch: Vec<u64> = remaining_pools.iter().take(batch_size).cloned().collect();
-
-    let (messages, skipped, processed) = build_upgrade_batch(
+    let outcome = build_upgrade_batch(
         deps.as_ref(),
         &batch,
         upgrade.new_code_id,
         &upgrade.migrate_msg,
+        mode == "retry", // retry-mode: tolerate IsPaused query errors (M-5 retry leniency)
     )?;
 
-    upgrade.upgraded_count += processed;
+    if mode == "first_pass" {
+        upgrade.upgraded_count += batch_len as u32;
+        // Pools paused on first pass move into pending_retry for later
+        // revisit. Dedup defensively even though `pools_to_upgrade` is
+        // deduped at propose time.
+        for id in outcome.skipped_pool_ids.iter() {
+            if !upgrade.pending_retry.contains(id) {
+                upgrade.pending_retry.push(*id);
+            }
+        }
+    } else {
+        // Retry pass. Drop the ones we just migrated from pending_retry;
+        // any in `skipped_pool_ids` are still-paused/unreachable and
+        // remain in pending_retry (their position is preserved via the
+        // `retain` below).
+        let migrated_set: std::collections::HashSet<u64> =
+            outcome.migrated_pool_ids.iter().copied().collect();
+        upgrade.pending_retry.retain(|id| !migrated_set.contains(id));
+    }
 
-    let total = upgrade.pools_to_upgrade.len() as u32;
-    let more_batches = upgrade.upgraded_count < total;
+    let more_first_pass = upgrade.upgraded_count < total;
+    let has_retry_queue = !upgrade.pending_retry.is_empty();
+    let more_batches = more_first_pass || has_retry_queue;
     if more_batches {
         PENDING_POOL_UPGRADE.save(deps.storage, &upgrade)?;
     } else {
         PENDING_POOL_UPGRADE.remove(deps.storage);
     }
 
-    let skipped_str = skipped
+    let skipped_str = outcome
+        .skipped_pool_ids
         .iter()
         .map(|id| id.to_string())
         .collect::<Vec<_>>()
         .join(",");
 
     Ok(Response::new()
-        .add_messages(messages)
+        .add_messages(outcome.messages)
         .add_attribute("action", "continue_upgrade")
-        .add_attribute("processed_in_batch", processed.to_string())
-        .add_attribute("total_processed", upgrade.upgraded_count.to_string())
+        .add_attribute("mode", mode)
+        .add_attribute("processed_in_batch", batch_len.to_string())
+        .add_attribute("migrated_in_batch", outcome.migrated_pool_ids.len().to_string())
+        .add_attribute("total_first_pass", upgrade.upgraded_count.to_string())
         .add_attribute("skipped_paused", skipped_str)
+        .add_attribute("pending_retry_count", upgrade.pending_retry.len().to_string())
         .add_attribute("more_batches", more_batches.to_string()))
 }
