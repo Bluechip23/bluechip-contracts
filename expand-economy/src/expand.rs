@@ -24,7 +24,7 @@ use crate::error::ContractError;
 use crate::factory_query::cross_validate_factory_denom;
 use crate::msg::ExpandEconomyMsg;
 use crate::state::{
-    Config, ExpansionWindow, CONFIG, DAILY_EXPANSION_CAP, DAILY_WINDOW_SECONDS, EXPANSION_WINDOW,
+    Config, ExpansionEntry, CONFIG, DAILY_EXPANSION_CAP, DAILY_WINDOW_SECONDS, EXPANSION_LOG,
 };
 
 /// Top-level entry point. See file-level comment for phase ordering.
@@ -45,7 +45,7 @@ pub fn execute_expand_economy(
 
     let recipient_addr = deps.api.addr_validate(&recipient)?;
 
-    let (window, new_spent) =
+    let (pruned_log, new_spent) =
         check_and_compute_window(deps.storage, env.block.time, amount)?;
 
     if let Some(skip) =
@@ -54,7 +54,7 @@ pub fn execute_expand_economy(
         return Ok(skip);
     }
 
-    persist_expansion_state(deps.storage, window, new_spent)?;
+    persist_expansion_state(deps.storage, pruned_log, env.block.time, amount)?;
     Ok(payout_response(&config, &recipient_addr, amount, new_spent))
 }
 
@@ -89,41 +89,44 @@ fn dormant_response() -> Response {
 /// compromised factory key forwarding huge `RequestExpansion` calls.
 /// The legitimate threshold-mint schedule is well below
 /// `DAILY_EXPANSION_CAP` per day; an attacker with full factory control
-/// can extract at most CAP per 24-hour window via this path.
+/// can extract at most CAP per any 24-hour window via this path.
 ///
-/// Window resets opportunistically on the first call after expiry
-/// rather than continuously, which is fine for cap semantics — see
-/// [`crate::state::ExpansionWindow`] doc.
+/// True sliding window: each call prunes entries older than
+/// `DAILY_WINDOW_SECONDS` from the persisted log, then sums the
+/// remaining entries to get the in-window total. Compared to the prior
+/// single-bucket reset, this prevents the boundary-burst case (max
+/// the cap just before the bucket flip, then max the fresh bucket
+/// immediately after — sliding semantics keep both halves visible
+/// in any rolling 24h window across the boundary).
 ///
-/// Returns the window record we'll persist (with the new
-/// `spent_in_window` already computed) plus the new running total so
-/// the response can include it without recomputing.
+/// Returns the pruned log (caller will append the new entry on the
+/// success path) plus the new running total for the response.
 fn check_and_compute_window(
     storage: &dyn Storage,
     now: Timestamp,
     amount: Uint128,
-) -> Result<(ExpansionWindow, Uint128), ContractError> {
-    let window = match EXPANSION_WINDOW.may_load(storage)? {
-        Some(w)
-            if now.seconds().saturating_sub(w.window_start.seconds())
-                < DAILY_WINDOW_SECONDS =>
-        {
-            w
-        }
-        _ => ExpansionWindow {
-            window_start: now,
-            spent_in_window: Uint128::zero(),
-        },
-    };
-    let new_spent = window.spent_in_window.checked_add(amount)?;
+) -> Result<(Vec<ExpansionEntry>, Uint128), ContractError> {
+    let cutoff_secs = now.seconds().saturating_sub(DAILY_WINDOW_SECONDS);
+    let mut log = EXPANSION_LOG.may_load(storage)?.unwrap_or_default();
+    // Drop entries whose timestamp is at-or-below the cutoff. Using `<=`
+    // (i.e. retain `> cutoff_secs`) is intentional: an entry exactly
+    // `DAILY_WINDOW_SECONDS` old is no longer "in the last 24 hours"
+    // and stops counting. Matches the boundary semantics of the prior
+    // single-bucket check (`now - window_start >= 24h` reset).
+    log.retain(|e| e.timestamp.seconds() > cutoff_secs);
+
+    let spent = log.iter().try_fold(Uint128::zero(), |acc, e| {
+        acc.checked_add(e.amount)
+    })?;
+    let new_spent = spent.checked_add(amount)?;
     if new_spent > DAILY_EXPANSION_CAP {
         return Err(ContractError::DailyExpansionCapExceeded {
             requested: amount,
-            spent_in_window: window.spent_in_window,
+            spent_in_window: spent,
             cap: DAILY_EXPANSION_CAP,
         });
     }
-    Ok((window, new_spent))
+    Ok((log, new_spent))
 }
 
 /// Phase 6: balance check + graceful skip.
@@ -167,22 +170,23 @@ fn maybe_skip_for_balance(
 
 /// Phase 7: persist the rolling-window debit.
 ///
-/// Order matters: skip-for-balance returned earlier without reaching
-/// here, so an empty reservoir does not consume window budget. CosmWasm
-/// reverts every storage write on Err, so a downstream failure (e.g.
-/// BankMsg dispatch error) atomically rolls back this debit.
+/// Append the new entry to the already-pruned log produced by
+/// `check_and_compute_window` and save the combined log. Order matters:
+/// skip-for-balance returned earlier without reaching here, so an
+/// empty reservoir does not consume window budget. CosmWasm reverts
+/// every storage write on Err, so a downstream failure (e.g. BankMsg
+/// dispatch error) atomically rolls back this append.
 fn persist_expansion_state(
     storage: &mut dyn Storage,
-    window: ExpansionWindow,
-    new_spent: Uint128,
+    mut pruned_log: Vec<ExpansionEntry>,
+    now: Timestamp,
+    amount: Uint128,
 ) -> Result<(), ContractError> {
-    EXPANSION_WINDOW.save(
-        storage,
-        &ExpansionWindow {
-            window_start: window.window_start,
-            spent_in_window: new_spent,
-        },
-    )?;
+    pruned_log.push(ExpansionEntry {
+        timestamp: now,
+        amount,
+    });
+    EXPANSION_LOG.save(storage, &pruned_log)?;
     Ok(())
 }
 

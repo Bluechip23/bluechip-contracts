@@ -74,8 +74,7 @@ pub fn execute(
     // Every execute path on this contract is non-payable.
     //   - `RequestExpansion` is sent by the factory with funds: vec![];
     //     attaching coins inflates the contract's bank balance without
-    //     updating EXPANSION_WINDOW.spent_in_window, biasing the cap
-    //     accounting.
+    //     adding an entry to EXPANSION_LOG, biasing the cap accounting.
     //   - All Propose / Execute / Cancel timelock arms have no semantic
     //     reason to accept funds; attached funds would be orphaned in
     //     the contract's bank balance until rescued via the 48h

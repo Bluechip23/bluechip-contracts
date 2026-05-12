@@ -855,7 +855,26 @@ mod tests {
     //     payment that never landed).
     //   - Sub-cap requests accumulate correctly across multiple calls.
 
-    use crate::state::{DAILY_EXPANSION_CAP, DAILY_WINDOW_SECONDS, EXPANSION_WINDOW};
+    use crate::state::{DAILY_EXPANSION_CAP, DAILY_WINDOW_SECONDS, EXPANSION_LOG};
+
+    /// Sum of all amounts currently in the expansion log. Tests
+    /// previously asserted `EXPANSION_WINDOW.spent_in_window` directly;
+    /// after the M-3.3 sliding-window refactor the equivalent value
+    /// is "total of every non-pruned entry."
+    fn log_spent(
+        deps: &cosmwasm_std::OwnedDeps<
+            cosmwasm_std::MemoryStorage,
+            cosmwasm_std::testing::MockApi,
+            cosmwasm_std::testing::MockQuerier,
+        >,
+    ) -> Uint128 {
+        EXPANSION_LOG
+            .may_load(&deps.storage)
+            .unwrap()
+            .unwrap_or_default()
+            .iter()
+            .fold(Uint128::zero(), |acc, e| acc + e.amount)
+    }
 
     /// A single request that exceeds the daily cap (fresh window) is
     /// rejected with `DailyExpansionCapExceeded`. The window state is
@@ -894,11 +913,12 @@ mod tests {
             "expected DailyExpansionCapExceeded, got: {}",
             err
         );
-        // Window unaffected by the rejected request.
-        let window = EXPANSION_WINDOW.may_load(&deps.storage).unwrap();
+        // Log unaffected by the rejected request — either absent or
+        // empty. The cap check runs before any storage append.
+        let log = EXPANSION_LOG.may_load(&deps.storage).unwrap();
         assert!(
-            window.is_none() || window.unwrap().spent_in_window.is_zero(),
-            "rejected request must not debit window"
+            log.is_none() || log.unwrap().is_empty(),
+            "rejected request must not debit log"
         );
     }
 
@@ -934,8 +954,7 @@ mod tests {
             }),
         )
         .unwrap();
-        let w = EXPANSION_WINDOW.load(&deps.storage).unwrap();
-        assert_eq!(w.spent_in_window, half_cap);
+        assert_eq!(log_spent(&deps), half_cap);
 
         // Call 2: another (just-under) half — total is still <= cap, lands.
         let just_under_half = half_cap - Uint128::new(1);
@@ -951,12 +970,11 @@ mod tests {
             }),
         )
         .unwrap();
-        let w = EXPANSION_WINDOW.load(&deps.storage).unwrap();
-        assert_eq!(w.spent_in_window, half_cap + just_under_half);
+        assert_eq!(log_spent(&deps), half_cap + just_under_half);
 
         // Call 3: another half — overshoots. Reject with prior debits
         // intact.
-        let pre_call3 = w.spent_in_window;
+        let pre_call3 = log_spent(&deps);
         let mut env_call3 = mock_env();
         env_call3.block.time = env_call3.block.time.plus_seconds(240);
         let err = execute(
@@ -971,11 +989,11 @@ mod tests {
         .unwrap_err();
         assert!(err.to_string().contains("Daily expansion cap exceeded"));
 
-        // Window unchanged by the rejection.
-        let w_after = EXPANSION_WINDOW.load(&deps.storage).unwrap();
+        // Log unchanged by the rejection.
         assert_eq!(
-            w_after.spent_in_window, pre_call3,
-            "rejected request must not mutate spent_in_window"
+            log_spent(&deps),
+            pre_call3,
+            "rejected request must not append to expansion log"
         );
     }
 
@@ -1010,16 +1028,17 @@ mod tests {
             }),
         )
         .unwrap();
-        let w = EXPANSION_WINDOW.load(&deps.storage).unwrap();
-        assert_eq!(w.spent_in_window, half_cap);
-        let day1_window_start = w.window_start;
+        assert_eq!(log_spent(&deps), half_cap);
 
-        // Advance time past DAILY_WINDOW_SECONDS + 1s.
+        // Advance time past DAILY_WINDOW_SECONDS + 1s. The day-1 entry
+        // is now older than the window cutoff and will be pruned on
+        // the next call.
         let mut env_day2 = env_day1.clone();
         env_day2.block.time = env_day1.block.time.plus_seconds(DAILY_WINDOW_SECONDS + 1);
 
-        // Day-2 spend: the full cap. Should succeed because the window
-        // resets on the next call after expiry.
+        // Day-2 spend: the full cap. Should succeed because the day-1
+        // entry ages out of the sliding window before this call's cap
+        // check runs.
         execute(
             deps.as_mut(),
             env_day2.clone(),
@@ -1030,14 +1049,19 @@ mod tests {
             }),
         )
         .unwrap();
-        let w = EXPANSION_WINDOW.load(&deps.storage).unwrap();
+        let log_after = EXPANSION_LOG.load(&deps.storage).unwrap();
         assert_eq!(
-            w.spent_in_window, DAILY_EXPANSION_CAP,
-            "fresh window must accept a full-cap request after rollover"
+            log_after.len(),
+            1,
+            "day-1 entry must be pruned and only the day-2 entry remains"
         );
-        assert_ne!(
-            w.window_start, day1_window_start,
-            "window_start must roll over to the new request's block time"
+        assert_eq!(
+            log_after[0].amount, DAILY_EXPANSION_CAP,
+            "post-rollover log holds the fresh full-cap debit"
+        );
+        assert_eq!(
+            log_after[0].timestamp, env_day2.block.time,
+            "post-rollover entry is timestamped at the day-2 call"
         );
     }
 
@@ -1081,12 +1105,14 @@ mod tests {
             .unwrap();
         assert_eq!(reason.value, "insufficient_balance");
 
-        // Window storage is untouched (no debit).
-        let window = EXPANSION_WINDOW.may_load(&deps.storage).unwrap();
+        // Log storage is untouched (no debit). Persist runs only on
+        // the success path; the balance-skip branch returns Ok before
+        // any append.
+        let log = EXPANSION_LOG.may_load(&deps.storage).unwrap();
         assert!(
-            window.is_none(),
-            "skip path must not write any window state at all; got {:?}",
-            window
+            log.is_none(),
+            "skip path must not write any log entries at all; got {:?}",
+            log
         );
     }
 
@@ -1136,8 +1162,286 @@ mod tests {
             other => panic!("expected BankMsg::Send, got {:?}", other),
         }
 
-        // Window debit equals the request amount.
-        let w = EXPANSION_WINDOW.load(&deps.storage).unwrap();
-        assert_eq!(w.spent_in_window, amount);
+        // Log debit equals the request amount.
+        assert_eq!(log_spent(&deps), amount);
+        let log = EXPANSION_LOG.load(&deps.storage).unwrap();
+        assert_eq!(log.len(), 1, "single success appends a single entry");
+        assert_eq!(log[0].amount, amount);
+    }
+
+    /// M-3.3 boundary-burst protection. The prior single-bucket cap
+    /// allowed an attacker to spend the full cap right before
+    /// `window_start + 24h`, then spend the full cap again 1 second
+    /// after the bucket flipped — 200k bluechip across a single
+    /// rolling 24h window. The sliding window keeps the late-window
+    /// debit visible to any check whose rolling 24h includes it, so
+    /// the post-boundary second drain is rejected.
+    #[test]
+    fn sliding_window_blocks_boundary_burst() {
+        let mut deps = mock_dependencies();
+        setup_contract(&mut deps);
+
+        let factory_addr = MockApi::default().addr_make("factory");
+        let user_addr = MockApi::default().addr_make("user");
+        install_factory_denom_mock(&mut deps, factory_addr.clone(), "ubluechip");
+
+        // Pre-fund well above the cap so the rejection path is the
+        // cap check, not the balance-skip fallback.
+        deps.querier
+            .bank
+            .update_balance(
+                &mock_env().contract.address,
+                coins(DAILY_EXPANSION_CAP.u128() * 4, "ubluechip"),
+            );
+
+        // Phase 1: a small initial debit to anchor the would-be
+        // "window start" timing under the old single-bucket model.
+        let env_t0 = mock_env();
+        let small = Uint128::new(1_000_000);
+        execute(
+            deps.as_mut(),
+            env_t0.clone(),
+            message_info(&factory_addr, &[]),
+            ExecuteMsg::ExpandEconomy(ExpandEconomyMsg::RequestExpansion {
+                recipient: user_addr.to_string(),
+                amount: small,
+            }),
+        )
+        .unwrap();
+
+        // Phase 2: just before the would-be boundary at T0 + 24h - 60s,
+        // spend almost the rest of the cap. Total in-window = ~cap.
+        let mut env_late = env_t0.clone();
+        env_late.block.time = env_t0.block.time.plus_seconds(DAILY_WINDOW_SECONDS - 60);
+        let big = DAILY_EXPANSION_CAP - small;
+        execute(
+            deps.as_mut(),
+            env_late.clone(),
+            message_info(&factory_addr, &[]),
+            ExecuteMsg::ExpandEconomy(ExpandEconomyMsg::RequestExpansion {
+                recipient: user_addr.to_string(),
+                amount: big,
+            }),
+        )
+        .unwrap();
+        assert_eq!(
+            log_spent(&deps),
+            DAILY_EXPANSION_CAP,
+            "phase-2 brings the in-window total to exactly the cap"
+        );
+
+        // Phase 3: cross the would-be single-bucket boundary by 1s
+        // (i.e. T0 + 24h + 1s). The small phase-1 entry ages out
+        // (timestamp T0 < cutoff = T0+1s), but the big phase-2 entry
+        // (timestamp T0+24h-60s > cutoff) is still in the window.
+        // Try to spend the full cap again. Under the OLD single-bucket
+        // model this would succeed because the bucket would have reset;
+        // under the sliding-window model it must reject because the
+        // big phase-2 debit is still visible.
+        let mut env_burst = env_t0.clone();
+        env_burst.block.time = env_t0.block.time.plus_seconds(DAILY_WINDOW_SECONDS + 1);
+        let err = execute(
+            deps.as_mut(),
+            env_burst,
+            message_info(&factory_addr, &[]),
+            ExecuteMsg::ExpandEconomy(ExpandEconomyMsg::RequestExpansion {
+                recipient: user_addr.to_string(),
+                amount: DAILY_EXPANSION_CAP,
+            }),
+        )
+        .unwrap_err();
+        assert!(
+            err.to_string().contains("Daily expansion cap exceeded"),
+            "boundary burst must reject under sliding window; got: {}",
+            err
+        );
+
+        // Rejected calls do NOT persist — the prune that the cap check
+        // ran on the in-memory log is discarded along with the Err
+        // return. So storage retains the exact post-phase-2 shape:
+        // both small and big entries, with the small one eligible to
+        // be pruned on the NEXT successful call. The important
+        // invariant here is the rejection itself (asserted above);
+        // the storage state is incidental.
+        let log = EXPANSION_LOG.load(&deps.storage).unwrap();
+        assert_eq!(log.len(), 2, "phase-1 + phase-2 entries persist; phase-3 was rejected without persist");
+        assert_eq!(log[0].amount, small);
+        assert_eq!(log[1].amount, big);
+    }
+
+    /// M-3.3 sliding-window admit case. Once the prior big debit
+    /// itself ages out (>24h since its timestamp), a fresh full-cap
+    /// debit is admitted.
+    #[test]
+    fn sliding_window_admits_after_oldest_entry_ages_out() {
+        let mut deps = mock_dependencies();
+        setup_contract(&mut deps);
+
+        let factory_addr = MockApi::default().addr_make("factory");
+        let user_addr = MockApi::default().addr_make("user");
+        install_factory_denom_mock(&mut deps, factory_addr.clone(), "ubluechip");
+
+        deps.querier
+            .bank
+            .update_balance(
+                &mock_env().contract.address,
+                coins(DAILY_EXPANSION_CAP.u128() * 4, "ubluechip"),
+            );
+
+        // First debit fills the cap.
+        let env_t0 = mock_env();
+        execute(
+            deps.as_mut(),
+            env_t0.clone(),
+            message_info(&factory_addr, &[]),
+            ExecuteMsg::ExpandEconomy(ExpandEconomyMsg::RequestExpansion {
+                recipient: user_addr.to_string(),
+                amount: DAILY_EXPANSION_CAP,
+            }),
+        )
+        .unwrap();
+
+        // Advance just past the window from the FIRST debit's
+        // timestamp. The prune cutoff is now > T0, so the T0 entry
+        // ages out; the in-window total drops to zero. A full-cap
+        // debit is admitted.
+        let mut env_post = env_t0.clone();
+        env_post.block.time = env_t0.block.time.plus_seconds(DAILY_WINDOW_SECONDS + 1);
+        execute(
+            deps.as_mut(),
+            env_post,
+            message_info(&factory_addr, &[]),
+            ExecuteMsg::ExpandEconomy(ExpandEconomyMsg::RequestExpansion {
+                recipient: user_addr.to_string(),
+                amount: DAILY_EXPANSION_CAP,
+            }),
+        )
+        .expect("fresh window must admit a full-cap debit once the old entry ages out");
+
+        let log = EXPANSION_LOG.load(&deps.storage).unwrap();
+        assert_eq!(log.len(), 1, "old entry pruned, only the new one remains");
+        assert_eq!(log[0].amount, DAILY_EXPANSION_CAP);
+    }
+
+    // ---------------------------------------------------------------
+    // M-3.2 — factory cross-validation failure modes
+    // ---------------------------------------------------------------
+    //
+    // `execute_expand_economy` cross-validates the factory's stored
+    // `bluechip_denom` against this contract's stored denom on every
+    // call. Two distinct failure modes produce typed errors that the
+    // pool-side `RetryFactoryNotify` flow relies on being able to
+    // distinguish from a balance-skip Ok response:
+    //
+    //   - BluechipDenomMismatch — the factory and expand-economy
+    //     disagree on the canonical denom (config drift between the
+    //     two independent 48h timelocks).
+    //   - FactoryQueryFailed — the factory query itself errored
+    //     (factory paused, mid-migrate, RPC blip).
+    //
+    // Both surface as Err so the factory-side `NotifyThresholdCrossed`
+    // tx reverts and the pool can retry. These tests pin that
+    // behaviour.
+
+    /// Denom mismatch between factory and expand-economy returns the
+    /// typed `BluechipDenomMismatch` error with both sides' denoms in
+    /// the message body. Pool-side retry logic can decode and act on
+    /// the structured error.
+    #[test]
+    fn factory_denom_mismatch_returns_typed_error() {
+        let mut deps = mock_dependencies();
+        setup_contract(&mut deps); // expand-economy denom = "ubluechip"
+
+        let factory_addr = MockApi::default().addr_make("factory");
+        let user_addr = MockApi::default().addr_make("user");
+        // Factory advertises a DIFFERENT denom than expand-economy holds.
+        install_factory_denom_mock(&mut deps, factory_addr.clone(), "uother");
+
+        deps.querier
+            .bank
+            .update_balance(
+                &mock_env().contract.address,
+                coins(1_000_000_000, "ubluechip"),
+            );
+
+        let err = execute(
+            deps.as_mut(),
+            mock_env(),
+            message_info(&factory_addr, &[]),
+            ExecuteMsg::ExpandEconomy(ExpandEconomyMsg::RequestExpansion {
+                recipient: user_addr.to_string(),
+                amount: Uint128::new(10_000_000),
+            }),
+        )
+        .unwrap_err();
+
+        let msg = err.to_string();
+        assert!(
+            msg.contains("bluechip_denom mismatch"),
+            "expected denom-mismatch error, got: {}",
+            msg
+        );
+        assert!(
+            msg.contains("\"uother\"") && msg.contains("\"ubluechip\""),
+            "error must surface both sides' denoms for diagnosability; got: {}",
+            msg
+        );
+
+        // No BankMsg sent on the rejection path; no log entry written.
+        let log = EXPANSION_LOG.may_load(&deps.storage).unwrap();
+        assert!(
+            log.is_none() || log.unwrap().is_empty(),
+            "mismatch-rejected request must not debit log"
+        );
+    }
+
+    /// Factory query failure (unreachable / errors) surfaces as
+    /// `FactoryQueryFailed` with the underlying reason. The handler
+    /// fails closed rather than silently treating an unreachable
+    /// factory as "denoms agree."
+    #[test]
+    fn factory_query_failure_returns_typed_error() {
+        let mut deps = mock_dependencies();
+        setup_contract(&mut deps);
+
+        let factory_addr = MockApi::default().addr_make("factory");
+        let user_addr = MockApi::default().addr_make("user");
+
+        // Install a wasm-mock that ERRORS on the factory query — no
+        // call to `install_factory_denom_mock`. The default mock
+        // querier rejects any unmocked smart query, which is exactly
+        // the shape we want to surface as FactoryQueryFailed.
+
+        deps.querier
+            .bank
+            .update_balance(
+                &mock_env().contract.address,
+                coins(1_000_000_000, "ubluechip"),
+            );
+
+        let err = execute(
+            deps.as_mut(),
+            mock_env(),
+            message_info(&factory_addr, &[]),
+            ExecuteMsg::ExpandEconomy(ExpandEconomyMsg::RequestExpansion {
+                recipient: user_addr.to_string(),
+                amount: Uint128::new(10_000_000),
+            }),
+        )
+        .unwrap_err();
+
+        let msg = err.to_string();
+        assert!(
+            msg.contains("Failed to query factory config"),
+            "expected FactoryQueryFailed, got: {}",
+            msg
+        );
+
+        // No log mutation on the rejection path.
+        let log = EXPANSION_LOG.may_load(&deps.storage).unwrap();
+        assert!(
+            log.is_none() || log.unwrap().is_empty(),
+            "factory-query-failed request must not debit log"
+        );
     }
 }
