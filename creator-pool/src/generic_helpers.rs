@@ -24,42 +24,14 @@ pub use crate::commit::threshold_payout::{
 };
 
 use crate::error::ContractError;
-use crate::state::{Committing, COMMIT_INFO, REENTRANCY_LOCK};
-use cosmwasm_std::{Addr, DepsMut, Storage, Timestamp, Uint128};
+use crate::state::{Committing, COMMIT_INFO};
+use cosmwasm_std::{Addr, Storage, Timestamp, Uint128};
 
-/// Run `body` under the contract-wide `REENTRANCY_LOCK`.
-///
-/// Centralizes the load → check → save(true) → run → save(false)
-/// pattern previously open-coded in three places (`commit::commit`,
-/// `liquidity_helpers::execute_claim_creator_fees`,
-/// `liquidity_helpers::execute_claim_creator_excess`).
-///
-/// The guard is cleared **unconditionally** before returning, on both
-/// success and error paths. Production CosmWasm reverts every staged
-/// storage write when a handler returns `Err`, so the explicit
-/// `save(false)` on the error path is redundant in production —
-/// but mock test environments (`mock_dependencies`) do **not** revert,
-/// and a follow-up call in the same `#[test]` would otherwise see
-/// a stuck `REENTRANCY_LOCK = true` from the prior failed attempt.
-/// Always clearing keeps the helper safe under both runtimes.
-pub fn with_reentrancy_guard<F, T>(
-    mut deps: DepsMut,
-    body: F,
-) -> Result<T, ContractError>
-where
-    F: FnOnce(DepsMut) -> Result<T, ContractError>,
-{
-    if REENTRANCY_LOCK.may_load(deps.storage)?.unwrap_or(false) {
-        return Err(ContractError::ReentrancyGuard {});
-    }
-    REENTRANCY_LOCK.save(deps.storage, &true)?;
-    let result = body(deps.branch());
-    // Unconditional clear. See doc-comment above for why this matters
-    // for the test mock-storage path even though production tx
-    // atomicity makes it redundant on the error branch.
-    REENTRANCY_LOCK.save(deps.storage, &false)?;
-    result
-}
+// `with_reentrancy_guard` moved to `pool_core::generic` and reaches
+// existing callers in this crate via the `pub use pool_core::generic::*;`
+// re-export above. The swap path in `pool_core::swap` and any future
+// liquidity / admin caller in either pool crate now share a single
+// implementation rather than each open-coding the load/check/save dance.
 
 pub fn update_commit_info(
     storage: &mut dyn Storage,
