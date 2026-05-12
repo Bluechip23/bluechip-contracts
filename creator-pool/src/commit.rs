@@ -41,7 +41,7 @@ use crate::generic_helpers::{
 use crate::msg::CommitFeeInfo;
 use crate::state::{
     COMMITFEEINFO, COMMIT_LIMIT_INFO, IS_THRESHOLD_HIT, LAST_THRESHOLD_ATTEMPT, POOL_ANALYTICS,
-    POOL_FEE_STATE, POOL_INFO, POOL_SPECS, POOL_STATE, THRESHOLD_PAYOUT_AMOUNTS,
+    POOL_FEE_STATE, POOL_INFO, POOL_PAUSED, POOL_SPECS, POOL_STATE, THRESHOLD_PAYOUT_AMOUNTS,
     THRESHOLD_PROCESSING, USD_RAISED_FROM_COMMIT,
 };
 use crate::swap_helper::get_oracle_conversion_with_staleness;
@@ -96,6 +96,23 @@ pub fn commit(
     max_spread: Option<Decimal>,
 ) -> Result<Response, ContractError> {
     ensure_not_drained(deps.storage)?;
+    // M-4.1 audit fix: admin (or auto-low-liquidity) pause halts ALL
+    // commit branches, not just the post-threshold AMM-swap path.
+    // POOL_PAUSED is true whenever the pool is paused for any reason
+    // (admin Pause, emergency-withdraw Phase 1, or auto-pause from
+    // reserves dipping below MINIMUM_LIQUIDITY); POOL_PAUSED_AUTO is
+    // a discriminator that doesn't matter at the commit gate. Without
+    // this check, a paused pool would continue to bank pre-threshold
+    // funds and to cross the threshold while admin investigates —
+    // a fire-alarm-with-foot-still-on-the-gas failure mode. The
+    // existing redundant check in `process_post_threshold_commit`
+    // is kept as defense-in-depth. Reuses the existing
+    // `PoolPausedLowLiquidity` error variant for consistency with
+    // the swap and post-threshold callers; the name is a residual
+    // from when the only pause path was the auto-low-liquidity one.
+    if POOL_PAUSED.may_load(deps.storage)?.unwrap_or(false) {
+        return Err(ContractError::PoolPausedLowLiquidity {});
+    }
     enforce_transaction_deadline(env.block.time, transaction_deadline)?;
 
     with_reentrancy_guard(deps, |mut deps| {
@@ -124,9 +141,18 @@ fn execute_commit_logic(
     let fee_info = COMMITFEEINFO.load(deps.storage)?;
     let sender = info.sender.clone();
 
-    if !asset.info.equal(&pool_info.pool_info.asset_infos[0])
-        && !asset.info.equal(&pool_info.pool_info.asset_infos[1])
-    {
+    // M-4.3 audit fix: commits flow only in the bluechip direction.
+    // `validate_pool_token_info` pins `asset_infos[0]` to the canonical
+    // bluechip Native denom and `asset_infos[1]` to the creator-token
+    // CW20, so accepting the creator-token side here was dead-code —
+    // the inner `match` below only handles bluechip Native and returns
+    // `AssetMismatch` for everything else. Tighten the outer check to
+    // bluechip-only so a caller passing the creator-token side surfaces
+    // the clearer error earlier and skips the oracle-conversion +
+    // min-commit + analytics work that would otherwise run before the
+    // inner reject. The inner `_ => AssetMismatch` arm is preserved as
+    // defense-in-depth against config corruption.
+    if !asset.info.equal(&pool_info.pool_info.asset_infos[0]) {
         return Err(ContractError::AssetMismatch {});
     }
     if asset.amount.is_zero() {

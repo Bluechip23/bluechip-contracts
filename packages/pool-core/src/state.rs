@@ -375,6 +375,18 @@ pub const DEPOSIT_VERIFY_CTX: Item<DepositVerifyContext> = Item::new("deposit_ve
 pub const DEPOSIT_VERIFY_REPLY_ID: u64 = 0xD550_0000;
 
 /// Per-user timestamp of last commit, used by rate limiting.
+///
+/// Append-only with respect to addresses: every distinct committer that
+/// has ever called `commit` gets one entry, and entries are never
+/// pruned. Long-lived pools accumulate one entry per distinct committer
+/// forever. Storage growth is bounded by the committer population —
+/// typically a few hundred to a few thousand for a healthy commit
+/// pool — and is not on any hot read path, so v1 ships without
+/// pruning. If a deployment ever shows real growth, a pool-side prune
+/// handler mirroring the factory's `PruneRateLimits` (with a
+/// timestamp-secondary-index over this map) is the right shape; the
+/// rate-limit cooldown is short, so any stamp older than ~10× the
+/// `min_commit_interval` is safe to drop.
 pub const USER_LAST_COMMIT: Map<&Addr, u64> = Map::new("user_last_commit");
 
 /// Standard pool writes `true` at instantiate (no threshold gate); creator
