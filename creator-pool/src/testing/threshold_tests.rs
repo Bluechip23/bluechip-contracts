@@ -1497,4 +1497,74 @@ mod native_raised_net_semantics_tests {
             "creator-token side of seed should be the full pool_seed_amount"
         );
     }
+
+    /// §7-M-2 audit fix: the two threshold-crossing handlers
+    /// (`process_threshold_crossing_with_excess` and
+    /// `process_threshold_hit_exact`) refuse to execute when
+    /// `IS_THRESHOLD_HIT == true`. The dispatcher in
+    /// `commit::execute_commit_logic` already routes only when the flag
+    /// is false; this defensive gate at handler entry keeps the
+    /// no-double-mint invariant load-bearing rather than incidental.
+    ///
+    /// This test directly invokes `process_threshold_hit_exact` with the
+    /// flag pre-set to `true`, simulating any future call site (or
+    /// storage-state desync) that bypasses the dispatcher's gate. The
+    /// handler MUST refuse rather than re-running
+    /// `trigger_threshold_payout` and re-minting the 1.2T splits.
+    #[test]
+    fn threshold_hit_exact_rejects_when_flag_already_true() {
+        use crate::commit::threshold_crossing::process_threshold_hit_exact;
+        use crate::msg::CommitFeeInfo;
+        use crate::state::{
+            CommitLimitInfo, IS_THRESHOLD_HIT, PoolAnalytics, PoolInfo, POOL_FEE_STATE,
+            POOL_INFO, POOL_STATE, THRESHOLD_PAYOUT_AMOUNTS,
+        };
+
+        let mut deps = mock_dependencies();
+        setup_pool_storage(&mut deps);
+
+        // Pre-set the flag — the case we want to defend against. Under
+        // normal operation the dispatcher already gates on this, but
+        // a future call site or storage corruption that bypasses the
+        // dispatcher must not be able to re-mint.
+        IS_THRESHOLD_HIT.save(&mut deps.storage, &true).unwrap();
+
+        let pool_info: PoolInfo = POOL_INFO.load(&deps.storage).unwrap();
+        let mut pool_state = POOL_STATE.load(&deps.storage).unwrap();
+        let mut pool_fee_state = POOL_FEE_STATE.load(&deps.storage).unwrap();
+        let commit_config: CommitLimitInfo = COMMIT_LIMIT_INFO.load(&deps.storage).unwrap();
+        let payout = THRESHOLD_PAYOUT_AMOUNTS.load(&deps.storage).unwrap();
+        let fee_info: CommitFeeInfo = COMMITFEEINFO.load(&deps.storage).unwrap();
+
+        let mut deps_mut = deps.as_mut();
+        let err = process_threshold_hit_exact(
+            &mut deps_mut,
+            mock_env(),
+            Addr::unchecked("alice"),
+            &TokenInfo {
+                info: TokenType::Native {
+                    denom: "ubluechip".to_string(),
+                },
+                amount: Uint128::new(1_000_000),
+            },
+            Uint128::new(1_000_000),
+            Uint128::new(5_000_000),
+            commit_config.commit_amount_for_threshold_usd,
+            &mut pool_state,
+            &mut pool_fee_state,
+            &pool_info,
+            &commit_config,
+            &payout,
+            &fee_info,
+            vec![],
+            &PoolAnalytics::default(),
+        )
+        .unwrap_err();
+
+        assert!(
+            matches!(err, ContractError::StuckThresholdProcessing),
+            "expected StuckThresholdProcessing (no-double-mint gate), got: {:?}",
+            err
+        );
+    }
 }

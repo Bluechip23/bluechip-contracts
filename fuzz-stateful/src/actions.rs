@@ -892,6 +892,7 @@ pub fn apply(world: &mut World, action: Action) -> ActionOutcome {
             };
             let msg = creator_pool::msg::ExecuteMsg::CollectFees {
                 position_id: first.position_id,
+                transaction_deadline: None,
             };
             let res = world.app.execute_contract(user, pool.pool_addr.clone(), &msg, &[]);
             match res {

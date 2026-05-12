@@ -159,6 +159,14 @@ pub enum ContractError {
     #[error("No unclaimed emergency-drain residual to sweep")]
     NoUnclaimedEmergencyResidual,
 
+    #[error(
+        "Emergency-share claims are closed: the post-dormancy residual sweep \
+         has already fired (at drained_at + 1y). Per the documented design, \
+         abandoned funds are gone after a year — passive LPs had the full \
+         window to surface and claim."
+    )]
+    EmergencyClaimsClosedPostSweep,
+
     #[error("Distribution timeout - requires manual recovery")]
     DistributionTimeout,
 

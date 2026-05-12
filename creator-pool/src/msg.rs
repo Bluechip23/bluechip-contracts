@@ -67,6 +67,17 @@ pub enum ExecuteMsg {
     },
     CollectFees {
         position_id: String,
+        /// Optional caller-supplied deadline. Same shape as the
+        /// `transaction_deadline` field on every other liquidity path;
+        /// rejects mempool-replayed collects that land after the caller's
+        /// intended expiry. Pure fee math grows monotonically, so a late
+        /// collect can only return *more* fees — not a security gate
+        /// against value loss, but kept for client-side symmetry so a
+        /// frontend can pass the same deadline to every LP action.
+        /// `#[serde(default)]` keeps pre-this-field clients
+        /// wire-compatible (the field deserializes as `None` when absent).
+        #[serde(default)]
+        transaction_deadline: Option<Timestamp>,
     },
     AddToPosition {
         position_id: String,

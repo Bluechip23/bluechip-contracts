@@ -114,6 +114,18 @@ pub fn trigger_threshold_payout(
     fee_info: &CommitFeeInfo,
     env: &Env,
 ) -> Result<ThresholdPayoutMsgs, ContractError> {
+    // No-double-mint invariant. The two crossing handlers
+    // (`process_threshold_crossing_with_excess` and
+    // `process_threshold_hit_exact`) gate on `IS_THRESHOLD_HIT == false`
+    // before any state mutation and then set the flag BEFORE calling
+    // here (so subsequent commits route to the post-threshold AMM-swap
+    // path inside the same block). That means by the time we reach this
+    // function the flag is already `true` on the canonical path —
+    // duplicating the gate here would trip the happy path. The
+    // invariant is therefore enforced by the two upstream entry gates
+    // alone; this comment is a load-bearing pointer for anyone tracing
+    // the no-double-mint argument later.
+
     // Factory notification goes out as a `reply_on_error` SubMsg. If the
     // factory handler fails, the pool's `reply` entrypoint sets
     // PENDING_FACTORY_NOTIFY=true and swallows the error so the commit

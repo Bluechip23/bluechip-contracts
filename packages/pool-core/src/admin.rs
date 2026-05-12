@@ -368,6 +368,18 @@ pub fn execute_claim_emergency_share(
         .may_load(deps.storage)?
         .ok_or(ContractError::NoEmergencyDrainSnapshot)?;
 
+    // Hard-close per-position claims once `SweepUnclaimedEmergencyShares`
+    // has fired. Pre-fix, late claims were tolerated in principle (bank
+    // module would reject if balance insufficient), but the snapshot's
+    // `total_claimed_*` tally would still get bumped, producing an
+    // inconsistent record where cumulative claims exceeded drainable.
+    // Matches the documented design intent ("after 1 year, abandoned
+    // funds are gone") and gives off-chain observers a clean signal
+    // that the claim window has closed.
+    if snapshot.residual_swept {
+        return Err(ContractError::EmergencyClaimsClosedPostSweep);
+    }
+
     // CW721 ownership gate. Mirrors every other position-mutating
     // handler — current NFT holder is the only authorized claimant.
     // sync_position_on_transfer aligns the storage `position.owner`
@@ -501,14 +513,10 @@ pub fn execute_claim_emergency_share(
 ///
 /// `residual_swept` flag prevents double-sweeps; a second call after
 /// the first succeeded fails with `NoUnclaimedEmergencyResidual`.
-/// Late-arriving claims after the sweep are still possible in
-/// principle (the dormancy doesn't auto-disable claims on individual
-/// positions), but their reserve-side share would already have been
-/// swept; only the dust on the snapshot's tally remains. In practice
-/// the design intent is "after 1 year, abandoned funds are gone" —
-/// claimants who show up post-sweep should expect at most the
-/// snapshot's pre-sweep arithmetic to credit them, with the actual
-/// transfer failing if the bank balance is insufficient.
+/// `execute_claim_emergency_share` also gates on the same flag and
+/// rejects with `EmergencyClaimsClosedPostSweep` once it flips — the
+/// claim window is hard-closed at sweep time, matching the documented
+/// "after 1 year, abandoned funds are gone" design intent.
 pub fn execute_sweep_unclaimed_emergency_shares(
     deps: DepsMut,
     env: Env,

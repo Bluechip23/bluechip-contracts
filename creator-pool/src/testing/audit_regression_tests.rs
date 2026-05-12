@@ -3075,6 +3075,7 @@ mod empty_position_persistence_tests {
             mock_env(),
             message_info(&user, &[]),
             "9".to_string(),
+            None,
         )
         .expect("collect_fees on empty position must succeed");
 
@@ -3581,6 +3582,73 @@ mod emergency_claim_escrow_tests {
         )
         .unwrap_err();
         assert!(matches!(err, ContractError::NoUnclaimedEmergencyResidual));
+    }
+
+    /// §6-M-3 audit fix: once `SweepUnclaimedEmergencyShares` has fired,
+    /// per-position claims are hard-closed with
+    /// `EmergencyClaimsClosedPostSweep`. Pre-fix the snapshot's tally
+    /// would still get bumped past `drainable` if late claimants showed
+    /// up. The hard close matches the documented design intent ("after
+    /// 1 year, abandoned funds are gone").
+    #[test]
+    fn claim_after_residual_sweep_rejects() {
+        let mut deps = mock_dependencies();
+        setup_pool_post_threshold(&mut deps);
+        let pi = POOL_INFO.load(&deps.storage).unwrap();
+        let factory = pi.factory_addr.clone();
+
+        let alice_liq = Uint128::new(3_000);
+        let bob_liq = Uint128::new(7_000);
+        let total_liq = alice_liq.checked_add(bob_liq).unwrap();
+        create_test_position(&mut deps, 1, "alice", alice_liq);
+        create_test_position(&mut deps, 2, "bob", bob_liq);
+
+        let env = mock_env();
+        seed_post_drain_state(
+            &mut deps,
+            &env,
+            Uint128::new(1_000_000),
+            Uint128::new(2_000_000),
+            Uint128::zero(),
+            Uint128::zero(),
+            total_liq,
+        );
+
+        // Sweep fires after dormancy without any claims having happened.
+        let mut late_env = env;
+        late_env.block.time = late_env
+            .block
+            .time
+            .plus_seconds(EMERGENCY_CLAIM_DORMANCY_SECONDS + 1);
+
+        execute(
+            deps.as_mut(),
+            late_env.clone(),
+            message_info(&factory, &[]),
+            ExecuteMsg::SweepUnclaimedEmergencyShares {},
+        )
+        .expect("sweep after dormancy must succeed");
+
+        // Now a late claimant tries to claim. Pre-fix this would have
+        // computed a pro-rata share, bumped `total_claimed_*` past
+        // `drainable`, and queued a bank transfer that may or may not
+        // succeed depending on residual balance. Post-fix:
+        // EmergencyClaimsClosedPostSweep.
+        install_owner_querier(&mut deps, "bob");
+        let err = execute(
+            deps.as_mut(),
+            late_env,
+            message_info(&Addr::unchecked("bob"), &[]),
+            ExecuteMsg::ClaimEmergencyShare {
+                position_id: "2".to_string(),
+            },
+        )
+        .unwrap_err();
+        assert!(
+            matches!(err, ContractError::EmergencyClaimsClosedPostSweep),
+            "expected EmergencyClaimsClosedPostSweep, got: {:?}",
+            err
+        );
     }
 
     /// `tap` helper to mutate an Env in a single expression. Local

@@ -92,6 +92,12 @@ pub enum ExecuteMsg {
     },
     CollectFees {
         position_id: String,
+        /// Optional caller-supplied deadline. See the creator-pool
+        /// `CollectFees` variant for the full rationale — client-side
+        /// symmetry with every other LP action; fees grow monotonically
+        /// so a late collect can only return more, not less.
+        #[serde(default)]
+        transaction_deadline: Option<Timestamp>,
     },
     RemovePartialLiquidity {
         position_id: String,
