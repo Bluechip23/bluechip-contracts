@@ -27,9 +27,10 @@ use crate::state::{
     CommitLimitInfo, CreatorExcessLiquidity, DistributionState, PoolFeeState, PoolInfo, PoolState,
     ThresholdPayoutAmounts, COMMIT_LEDGER, CREATOR_EXCESS_POSITION,
     DEFAULT_ESTIMATED_GAS_PER_DISTRIBUTION, DEFAULT_MAX_GAS_PER_TX, DISTRIBUTION_STATE,
-    POOL_FEE_STATE, POOL_STATE, SECONDS_PER_DAY, THRESHOLD_PAYOUT_BLUECHIP_BASE_UNITS,
-    THRESHOLD_PAYOUT_COMMIT_RETURN_BASE_UNITS, THRESHOLD_PAYOUT_CREATOR_BASE_UNITS,
-    THRESHOLD_PAYOUT_POOL_BASE_UNITS, THRESHOLD_PAYOUT_TOTAL_BASE_UNITS,
+    IS_THRESHOLD_HIT, POOL_FEE_STATE, POOL_STATE, SECONDS_PER_DAY,
+    THRESHOLD_PAYOUT_BLUECHIP_BASE_UNITS, THRESHOLD_PAYOUT_COMMIT_RETURN_BASE_UNITS,
+    THRESHOLD_PAYOUT_CREATOR_BASE_UNITS, THRESHOLD_PAYOUT_POOL_BASE_UNITS,
+    THRESHOLD_PAYOUT_TOTAL_BASE_UNITS,
 };
 use pool_core::liquidity_helpers::integer_sqrt;
 
@@ -114,17 +115,32 @@ pub fn trigger_threshold_payout(
     fee_info: &CommitFeeInfo,
     env: &Env,
 ) -> Result<ThresholdPayoutMsgs, ContractError> {
-    // No-double-mint invariant. The two crossing handlers
-    // (`process_threshold_crossing_with_excess` and
-    // `process_threshold_hit_exact`) gate on `IS_THRESHOLD_HIT == false`
-    // before any state mutation and then set the flag BEFORE calling
-    // here (so subsequent commits route to the post-threshold AMM-swap
-    // path inside the same block). That means by the time we reach this
-    // function the flag is already `true` on the canonical path —
-    // duplicating the gate here would trip the happy path. The
-    // invariant is therefore enforced by the two upstream entry gates
-    // alone; this comment is a load-bearing pointer for anyone tracing
-    // the no-double-mint argument later.
+    // No-double-mint invariant — STRUCTURALLY enforced here.
+    // This function is the single load-bearing path that mints the 1.2T
+    // creator-token splits and seeds the AMM reserves; running it twice
+    // would mint another full set of splits and overwrite the pool
+    // seed against the (already-non-zero) reserves.
+    //
+    // We check the flag at entry (must be false) and set it to true at
+    // the END of this function, after the mint work completes. Net flow
+    // across the two canonical crossing handlers:
+    //   handler entry: IS_THRESHOLD_HIT == false → handler gate passes
+    //   handler runs COMMIT_LEDGER / USD/NATIVE_RAISED writes
+    //   handler calls trigger_threshold_payout
+    //   here entry:    IS_THRESHOLD_HIT == false → gate passes
+    //   trigger_threshold_payout does the mint + seed work
+    //   here exit:     IS_THRESHOLD_HIT.save(true)
+    //   handler returns; subsequent commits route to post-threshold AMM
+    //
+    // The two crossing handlers retain their own fail-fast gates at
+    // entry — they save round-trip writes (COMMIT_LEDGER, USD_RAISED,
+    // NATIVE_RAISED) that would otherwise get reverted alongside the
+    // gate trip — but the LOAD-BEARING gate is the one here. Any
+    // future call site that bypasses the crossing handlers and
+    // invokes this function directly still cannot re-mint.
+    if IS_THRESHOLD_HIT.may_load(storage)?.unwrap_or(false) {
+        return Err(ContractError::StuckThresholdProcessing);
+    }
 
     // Factory notification goes out as a `reply_on_error` SubMsg. If the
     // factory handler fails, the pool's `reply` entrypoint sets
@@ -290,6 +306,17 @@ pub fn trigger_threshold_payout(
 
     POOL_STATE.save(storage, pool_state)?;
     POOL_FEE_STATE.save(storage, pool_fee_state)?;
+
+    // Set IS_THRESHOLD_HIT only after all mint + seed work has
+    // completed. Paired with the entry gate above: the flag is the
+    // structural witness that this function has run successfully for
+    // this pool. Subsequent commits in any future tx load
+    // IS_THRESHOLD_HIT, see true, and route to the post-threshold AMM
+    // swap path instead of re-entering the crossing handlers.
+    // (Within the same tx no second commit fires anyway — one commit
+    // per tx by design — but keeping the save at the tail makes the
+    // invariant a clean "flag flips iff mint completed" statement.)
+    IS_THRESHOLD_HIT.save(storage, &true)?;
 
     Ok(ThresholdPayoutMsgs {
         factory_notify,

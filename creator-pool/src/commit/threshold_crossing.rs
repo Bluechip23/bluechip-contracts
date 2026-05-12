@@ -110,7 +110,13 @@ pub(crate) fn process_threshold_crossing_with_excess(
             Ok(r.checked_add(threshold_portion_after_fees)?)
         })?;
 
-    IS_THRESHOLD_HIT.save(deps.storage, &true)?;
+    // IS_THRESHOLD_HIT.save(true) MOVED into trigger_threshold_payout
+    // (called below). That function holds the structural no-double-mint
+    // gate: it checks the flag at entry and sets it only after mint +
+    // seed completes. The handler's own entry gate above (line 75)
+    // remains as fail-fast so the COMMIT_LEDGER / USD/NATIVE_RAISED
+    // writes don't run on a re-crossing attempt.
+
     // Arm the post-threshold cooldown. The crosser's own bounded excess
     // swap (capped at 3% of seeded reserve below) executes in this same
     // tx — the gate sits on simple_swap / execute_swap_cw20 /
@@ -375,7 +381,10 @@ pub(crate) fn process_threshold_hit_exact(
     // floors and the recovery formula in `trigger_threshold_payout`.
     NATIVE_RAISED_FROM_COMMIT
         .update::<_, ContractError>(deps.storage, |r| Ok(r.checked_add(amount_after_fees)?))?;
-    IS_THRESHOLD_HIT.save(deps.storage, &true)?;
+    // IS_THRESHOLD_HIT.save(true) MOVED into trigger_threshold_payout
+    // (called below). See the equivalent comment in
+    // `process_threshold_crossing_with_excess` for full rationale.
+
     // Arm the post-threshold cooldown so other actors can't atomically
     // sandwich the freshly-seeded pool in the same block (or the next
     // two). Crossing tx itself is unaffected — the writes here land
