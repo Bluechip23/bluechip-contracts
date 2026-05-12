@@ -2999,6 +2999,122 @@ mod oracle_eligibility_tests {
         assert!(!ORACLE_ELIGIBLE_POOLS.has(&deps.storage, std_pool));
     }
 
+    /// A pre-threshold commit pool cannot be allowlisted as an oracle
+    /// source. Pinned at propose time so the admin doesn't burn a 48h
+    /// timelock cycle on a pool that has no real swap activity to
+    /// contribute to the TWAP. Mirrors the same gate the auto-eligible
+    /// source already applies in `get_eligible_creator_pools`.
+    #[test]
+    fn allowlist_rejects_pre_threshold_commit_pool() {
+        use crate::state::{POOLS_BY_ID, POOL_THRESHOLD_MINTED};
+        let mut deps = mock_deps_with_querier(&[]);
+        setup_factory_with_commit_pool(&mut deps, false);
+
+        // Register a SECOND commit pool that has NOT crossed its
+        // threshold. setup_factory_with_commit_pool already created
+        // pool_id 1 with `POOL_THRESHOLD_MINTED = true`; this new
+        // pool deliberately omits that save so it lands as
+        // pre-threshold.
+        let pre_threshold_pool = make_addr("pre_threshold_commit_pool");
+        let pool_details = PoolDetails {
+            pool_id: 2,
+            pool_token_info: [
+                TokenType::Native {
+                    denom: "ubluechip".to_string(),
+                },
+                TokenType::CreatorToken {
+                    contract_addr: Addr::unchecked("creator_token_2"),
+                },
+            ],
+            creator_pool_addr: pre_threshold_pool.clone(),
+            pool_kind: pool_factory_interfaces::PoolKind::Commit,
+            commit_pool_ordinal: 2,
+        };
+        POOLS_BY_ID
+            .save(deps.as_mut().storage, 2, &pool_details)
+            .unwrap();
+        crate::state::POOL_ID_BY_ADDRESS
+            .save(deps.as_mut().storage, pre_threshold_pool.clone(), &2u64)
+            .unwrap();
+        crate::state::POOL_COUNTER
+            .save(deps.as_mut().storage, &2u64)
+            .unwrap();
+        // Crucially: do NOT save POOL_THRESHOLD_MINTED for pool_id 2.
+        // That's what makes this a pre-threshold pool.
+
+        let err = execute(
+            deps.as_mut(),
+            mock_env(),
+            message_info(&admin_addr(), &[]),
+            ExecuteMsg::ProposeAddOracleEligiblePool {
+                pool_addr: pre_threshold_pool.to_string(),
+            },
+        )
+        .unwrap_err();
+
+        assert!(
+            matches!(
+                err,
+                ContractError::OracleEligiblePoolCommitPreThreshold { ref pool_addr }
+                if pool_addr == &pre_threshold_pool.to_string()
+            ),
+            "expected OracleEligiblePoolCommitPreThreshold, got {:?}",
+            err
+        );
+
+        // Defense-in-depth: even if the gate were bypassed at propose,
+        // the apply path re-runs `resolve_pool_for_allowlist` and must
+        // also reject. Simulate by writing the pending entry directly
+        // and calling apply after the timelock.
+        crate::state::PENDING_ORACLE_ELIGIBLE_POOL_ADD
+            .save(
+                deps.as_mut().storage,
+                pre_threshold_pool.clone(),
+                &crate::state::PendingOracleEligiblePoolAdd {
+                    proposed_at: mock_env().block.time,
+                    bluechip_index: 0,
+                },
+            )
+            .unwrap();
+        let mut env = mock_env();
+        env.block.time = env.block.time.plus_seconds(ADMIN_TIMELOCK_SECONDS + 1);
+        let err = execute(
+            deps.as_mut(),
+            env,
+            message_info(&admin_addr(), &[]),
+            ExecuteMsg::ApplyAddOracleEligiblePool {
+                pool_addr: pre_threshold_pool.to_string(),
+            },
+        )
+        .unwrap_err();
+        assert!(
+            matches!(
+                err,
+                ContractError::OracleEligiblePoolCommitPreThreshold { .. }
+            ),
+            "apply must also reject pre-threshold commit pools, got {:?}",
+            err
+        );
+
+        // Once the pool crosses threshold, the same propose call
+        // succeeds — proving the gate is correctly scoped to
+        // pre-threshold state, not to commit pools in general.
+        crate::state::PENDING_ORACLE_ELIGIBLE_POOL_ADD
+            .remove(deps.as_mut().storage, pre_threshold_pool.clone());
+        POOL_THRESHOLD_MINTED
+            .save(deps.as_mut().storage, 2, &true)
+            .unwrap();
+        execute(
+            deps.as_mut(),
+            mock_env(),
+            message_info(&admin_addr(), &[]),
+            ExecuteMsg::ProposeAddOracleEligiblePool {
+                pool_addr: pre_threshold_pool.to_string(),
+            },
+        )
+        .expect("propose should succeed once threshold is minted");
+    }
+
     /// Allowlisted standard pool is eligible even when the auto-flag is OFF.
     #[test]
     fn allowlisted_standard_pool_eligible_with_auto_off() {

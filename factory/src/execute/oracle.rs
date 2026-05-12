@@ -530,6 +530,30 @@ fn resolve_pool_for_allowlist(
         .ok_or_else(|| ContractError::OracleEligiblePoolMissingBluechipSide {
             pool_addr: pool_addr.to_string(),
         })? as u8;
+
+    // Commit pools cannot be allowlisted before their threshold has been
+    // crossed. A pre-threshold commit pool has no LP and no real swap
+    // activity, so its cumulative-delta TWAP is either zero (no activity)
+    // or determined entirely by seeded reserves — neither is a
+    // meaningful oracle contributor. The auto-eligible source already
+    // gates on `POOL_THRESHOLD_MINTED` (in
+    // `internal_bluechip_price_oracle::get_eligible_creator_pools`);
+    // mirroring the gate here keeps the admin-curated and auto-eligible
+    // sources from disagreeing on what counts as a valid oracle pool,
+    // and prevents an admin from burning a 48h timelock cycle on a
+    // pool that would fail the same gate at sample time anyway.
+    // Standard pools have no threshold concept and are exempt.
+    if pool_details.pool_kind == pool_factory_interfaces::PoolKind::Commit {
+        let threshold_minted = crate::state::POOL_THRESHOLD_MINTED
+            .may_load(deps.storage, pool_details.pool_id)?
+            .unwrap_or(false);
+        if !threshold_minted {
+            return Err(ContractError::OracleEligiblePoolCommitPreThreshold {
+                pool_addr: pool_addr.to_string(),
+            });
+        }
+    }
+
     Ok((pool_details, bluechip_index))
 }
 

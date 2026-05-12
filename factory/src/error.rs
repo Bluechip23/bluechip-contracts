@@ -99,6 +99,9 @@ pub enum ContractError {
     #[error("Pool {pool_addr} is not in the oracle allowlist")]
     OracleEligiblePoolNotAllowlisted { pool_addr: String },
 
+    #[error("Pool {pool_addr} is a pre-threshold commit pool (no real swap activity yet) — cannot contribute oracle price; allowlist it after its threshold has been crossed")]
+    OracleEligiblePoolCommitPreThreshold { pool_addr: String },
+
     #[error("A commit-pools-auto-eligible flip is already pending. Cancel it first.")]
     CommitPoolsAutoEligibleAlreadyPending,
 
