@@ -24,9 +24,25 @@ pub struct CreatePool {
 }
 
 #[cw_serde]
+#[derive(Default)]
 pub struct PoolConfigUpdate {
     pub lp_fee: Option<Decimal>,
     pub min_commit_interval: Option<u64>,
+    /// Per-pool override for the pre-threshold minimum commit value
+    /// (USD, 6 decimals). Creator-pool only. Standard-pool proposals
+    /// carrying this field are rejected at propose time
+    /// (`execute_propose_pool_config_update` looks up `pool_kind` and
+    /// rejects when `Standard` AND any commit-floor field is `Some`).
+    /// Bounds: `0 < v <= POOL_CONFIG_MAX_MIN_COMMIT_USD`. Mirrors the
+    /// pool-side `PoolConfigUpdate.min_commit_usd_pre_threshold`.
+    /// `#[serde(default)]` keeps pre-this-field clients wire-compatible.
+    #[serde(default)]
+    pub min_commit_usd_pre_threshold: Option<Uint128>,
+    /// Per-pool override for the post-threshold minimum commit value
+    /// (USD, 6 decimals). Creator-pool only. Same shape and bounds as
+    /// `min_commit_usd_pre_threshold` above.
+    #[serde(default)]
+    pub min_commit_usd_post_threshold: Option<Uint128>,
     // `oracle_address` removed (audit fix). Mirrors the same field's
     // removal from `pool_core::msg::PoolConfigUpdate`. Per-pool oracle
     // rotation was an admin-compromise vector — a malicious oracle could
@@ -40,6 +56,13 @@ pub struct PoolConfigUpdate {
 /// side's `86400` cap in `pool_core::admin`. Zero is allowed (disables the
 /// per-address commit cooldown), matching pool-side acceptance.
 pub const POOL_CONFIG_MIN_COMMIT_INTERVAL_MAX_SECONDS: u64 = 86_400;
+
+/// Inclusive upper bound on either commit-floor knob ($1000, 6 decimals).
+/// Mirrors the pool side's `MAX_MIN_COMMIT_USD` in
+/// `creator-pool::state`. Both ends bounds-check; the propose-time
+/// gate exists so an out-of-range value fails fast rather than after
+/// 48h timelock.
+pub const POOL_CONFIG_MAX_MIN_COMMIT_USD: Uint128 = Uint128::new(1_000_000_000);
 
 impl PoolConfigUpdate {
     /// Validate the update at propose time so a misconfigured value fails
@@ -71,6 +94,25 @@ impl PoolConfigUpdate {
                     "min_commit_interval {} exceeds maximum {} seconds; pool will reject at apply time",
                     interval, POOL_CONFIG_MIN_COMMIT_INTERVAL_MAX_SECONDS
                 )));
+            }
+        }
+        for (name, maybe) in [
+            ("min_commit_usd_pre_threshold", self.min_commit_usd_pre_threshold),
+            ("min_commit_usd_post_threshold", self.min_commit_usd_post_threshold),
+        ] {
+            if let Some(v) = maybe {
+                if v.is_zero() {
+                    return Err(StdError::generic_err(format!(
+                        "{} must be non-zero; pool will reject at apply time",
+                        name
+                    )));
+                }
+                if v > POOL_CONFIG_MAX_MIN_COMMIT_USD {
+                    return Err(StdError::generic_err(format!(
+                        "{} {} exceeds maximum {}; pool will reject at apply time",
+                        name, v, POOL_CONFIG_MAX_MIN_COMMIT_USD
+                    )));
+                }
             }
         }
         Ok(())

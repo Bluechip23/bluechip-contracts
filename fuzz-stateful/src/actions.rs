@@ -552,7 +552,7 @@ pub fn apply(world: &mut World, action: Action) -> ActionOutcome {
                 attacker,
                 pool.pool_addr.clone(),
                 &creator_pool::msg::ExecuteMsg::UpdateConfigFromFactory {
-                    update: pool_core::msg::PoolConfigUpdate { lp_fee: Some(Decimal::percent(50)), min_commit_interval: Some(0) },
+                    update: pool_core::msg::PoolConfigUpdate { lp_fee: Some(Decimal::percent(50)), min_commit_interval: Some(0), ..Default::default() },
                 },
                 &[],
             );

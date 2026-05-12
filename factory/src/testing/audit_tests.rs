@@ -257,6 +257,7 @@ fn test_update_pool_config_sends_message_to_pool() {
     let update = PoolConfigUpdate {
         lp_fee: Some(Decimal::percent(5)),
         min_commit_interval: Some(120),
+        ..Default::default()
     };
 
     // Step 1: Propose — no messages sent yet
@@ -299,6 +300,7 @@ fn test_update_pool_config_unauthorized() {
     let update = PoolConfigUpdate {
         lp_fee: Some(Decimal::percent(5)),
         min_commit_interval: None,
+        ..Default::default()
     };
 
     let msg = ExecuteMsg::ProposePoolConfigUpdate {
@@ -322,6 +324,7 @@ fn test_update_pool_config_nonexistent_pool() {
     let update = PoolConfigUpdate {
         lp_fee: None,
         min_commit_interval: None,
+        ..Default::default()
     };
 
     let msg = ExecuteMsg::ProposePoolConfigUpdate {
@@ -334,6 +337,120 @@ fn test_update_pool_config_nonexistent_pool() {
     assert!(
         err.to_string().contains("not found") || err.to_string().contains("type: cw_storage_plus")
     );
+}
+
+/// M-4 audit fix — propose-time bounds check + standard-pool rejection
+/// for the new `min_commit_usd_pre_threshold` /
+/// `min_commit_usd_post_threshold` knobs.
+#[test]
+fn test_propose_pool_config_commit_floor_bounds_and_kind_gating() {
+    let mut deps = mock_deps_with_querier(&[]);
+    setup_factory(&mut deps);
+    let env = mock_env();
+    let admin_info = message_info(&admin_addr(), &[]);
+
+    // Register one Commit pool (id=1) and one Standard pool (id=2).
+    register_test_pool_addr(&mut deps.storage, 1, &Addr::unchecked("commit_pool_1"));
+    let std_details = PoolDetails {
+        pool_id: 2,
+        pool_token_info: [
+            crate::asset::TokenType::Native {
+                denom: "ubluechip".to_string(),
+            },
+            crate::asset::TokenType::Native {
+                denom: "uatom".to_string(),
+            },
+        ],
+        creator_pool_addr: Addr::unchecked("std_pool_2"),
+        pool_kind: pool_factory_interfaces::PoolKind::Standard,
+        commit_pool_ordinal: 0,
+    };
+    POOLS_BY_ID
+        .save(&mut deps.storage, 2u64, &std_details)
+        .unwrap();
+
+    // Zero floor is rejected.
+    let zero = PoolConfigUpdate {
+        min_commit_usd_pre_threshold: Some(Uint128::zero()),
+        ..Default::default()
+    };
+    let err = execute(
+        deps.as_mut(),
+        env.clone(),
+        admin_info.clone(),
+        ExecuteMsg::ProposePoolConfigUpdate {
+            pool_id: 1,
+            pool_config: zero,
+        },
+    )
+    .unwrap_err();
+    assert!(
+        err.to_string().contains("must be non-zero"),
+        "expected non-zero rejection, got: {}",
+        err
+    );
+
+    // Above-cap floor is rejected.
+    let too_high = PoolConfigUpdate {
+        min_commit_usd_post_threshold: Some(
+            crate::pool_struct::POOL_CONFIG_MAX_MIN_COMMIT_USD + Uint128::new(1),
+        ),
+        ..Default::default()
+    };
+    let err = execute(
+        deps.as_mut(),
+        env.clone(),
+        admin_info.clone(),
+        ExecuteMsg::ProposePoolConfigUpdate {
+            pool_id: 1,
+            pool_config: too_high,
+        },
+    )
+    .unwrap_err();
+    assert!(
+        err.to_string().contains("exceeds maximum"),
+        "expected ceiling rejection, got: {}",
+        err
+    );
+
+    // Standard pool target with commit-floor field set is rejected.
+    let standard_floor = PoolConfigUpdate {
+        min_commit_usd_pre_threshold: Some(Uint128::new(2_000_000)),
+        ..Default::default()
+    };
+    let err = execute(
+        deps.as_mut(),
+        env.clone(),
+        admin_info.clone(),
+        ExecuteMsg::ProposePoolConfigUpdate {
+            pool_id: 2,
+            pool_config: standard_floor,
+        },
+    )
+    .unwrap_err();
+    assert!(
+        err.to_string().contains("standard pool")
+            && err.to_string().contains("commit-floor"),
+        "expected standard-pool rejection, got: {}",
+        err
+    );
+
+    // Same valid floor against the commit pool is accepted.
+    let ok = PoolConfigUpdate {
+        min_commit_usd_pre_threshold: Some(Uint128::new(10_000_000)),
+        min_commit_usd_post_threshold: Some(Uint128::new(2_000_000)),
+        ..Default::default()
+    };
+    execute(
+        deps.as_mut(),
+        env,
+        admin_info,
+        ExecuteMsg::ProposePoolConfigUpdate {
+            pool_id: 1,
+            pool_config: ok,
+        },
+    )
+    .expect("commit pool should accept valid floors");
 }
 
 #[test]

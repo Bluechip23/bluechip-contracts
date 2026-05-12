@@ -62,6 +62,13 @@ pub enum ContractError {
     #[error("Fee is too great or too small for this transaction")]
     InvalidFee {},
 
+    #[error("Invalid commit floor for {field}: {got} (must be non-zero and <= {max})")]
+    InvalidCommitFloor {
+        field: &'static str,
+        got: Uint128,
+        max: Uint128,
+    },
+
     #[error("belief_price cannot be zero")]
     InvalidBeliefPrice {},
 

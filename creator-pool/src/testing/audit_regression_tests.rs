@@ -1038,6 +1038,8 @@ fn test_h1_commit_rejects_multi_denom_funds() {
                 commit_amount_for_threshold_usd: Uint128::new(25_000_000_000),
                 max_bluechip_lock_per_pool: Uint128::new(10_000_000_000),
                 creator_excess_liquidity_lock_days: 14,
+                min_commit_usd_pre_threshold: crate::state::DEFAULT_MIN_COMMIT_USD_PRE_THRESHOLD,
+                min_commit_usd_post_threshold: crate::state::DEFAULT_MIN_COMMIT_USD_POST_THRESHOLD,
             },
         )
         .unwrap();
@@ -1527,6 +1529,8 @@ fn test_m7_threshold_payout_emits_accept_ownership() {
         commit_amount_for_threshold_usd: Uint128::new(25_000_000_000),
         max_bluechip_lock_per_pool: Uint128::new(10_000_000_000),
         creator_excess_liquidity_lock_days: 14,
+        min_commit_usd_pre_threshold: crate::state::DEFAULT_MIN_COMMIT_USD_PRE_THRESHOLD,
+        min_commit_usd_post_threshold: crate::state::DEFAULT_MIN_COMMIT_USD_POST_THRESHOLD,
     };
     let payout = ThresholdPayoutAmounts {
         creator_reward_amount: Uint128::new(325_000_000_000),

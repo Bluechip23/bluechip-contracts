@@ -253,6 +253,7 @@ fn test_update_specific_pool_from_registry() {
     let pool_config = PoolConfigUpdate {
         lp_fee: None,
         min_commit_interval: None,
+        ..Default::default()
     };
 
     let update_msg = ExecuteMsg::ProposePoolConfigUpdate {

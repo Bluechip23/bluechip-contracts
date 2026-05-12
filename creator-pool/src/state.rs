@@ -298,6 +298,31 @@ pub struct ThresholdPayoutAmounts {
     pub commit_return_amount: Uint128,
 }
 
+/// Default minimum pre-threshold commit value (USD, 6 decimals). $5.
+/// Used at pool instantiate; admin-tunable per-pool via the standard
+/// 48h `ProposeConfigUpdate` flow on the factory.
+pub const DEFAULT_MIN_COMMIT_USD_PRE_THRESHOLD: Uint128 = Uint128::new(5_000_000);
+/// Default minimum post-threshold commit value (USD, 6 decimals). $1.
+/// Looser than pre-threshold because post-threshold commits are AMM
+/// swaps that don't add to `COMMIT_LEDGER` and therefore can't bloat
+/// the distribution queue; the lower floor preserves UX for small
+/// trades.
+pub const DEFAULT_MIN_COMMIT_USD_POST_THRESHOLD: Uint128 = Uint128::new(1_000_000);
+/// Inclusive upper bound on either commit-floor knob ($1000, 6 decimals).
+/// Sized to be far above any plausible legitimate floor while preventing
+/// an admin (or compromised admin key) from setting the floor so high
+/// that the pool effectively rejects all commits. The factory's
+/// `PoolConfigUpdate::validate()` and the pool's apply path both
+/// enforce this.
+pub const MAX_MIN_COMMIT_USD: Uint128 = Uint128::new(1_000_000_000);
+
+fn default_min_commit_usd_pre_threshold() -> Uint128 {
+    DEFAULT_MIN_COMMIT_USD_PRE_THRESHOLD
+}
+fn default_min_commit_usd_post_threshold() -> Uint128 {
+    DEFAULT_MIN_COMMIT_USD_POST_THRESHOLD
+}
+
 #[cw_serde]
 pub struct CommitLimitInfo {
     /// USD threshold target; once total committed USD reaches this, the pool seeds.
@@ -306,6 +331,18 @@ pub struct CommitLimitInfo {
     pub max_bluechip_lock_per_pool: Uint128,
     /// Lock duration (days) on the creator-excess liquidity position.
     pub creator_excess_liquidity_lock_days: u64,
+    /// Per-pool minimum pre-threshold commit value in USD (6 decimals).
+    /// Initialised to `DEFAULT_MIN_COMMIT_USD_PRE_THRESHOLD` at
+    /// instantiate; tunable through `PoolConfigUpdate.min_commit_usd_pre_threshold`.
+    /// `#[serde(default = ...)]` keeps records written before this field
+    /// existed deserializing as the launch default — v1 has no
+    /// pre-this-field chain state, but the default is defensive.
+    #[serde(default = "default_min_commit_usd_pre_threshold")]
+    pub min_commit_usd_pre_threshold: Uint128,
+    /// Per-pool minimum post-threshold commit value in USD (6 decimals).
+    /// Same shape as `min_commit_usd_pre_threshold`.
+    #[serde(default = "default_min_commit_usd_post_threshold")]
+    pub min_commit_usd_post_threshold: Uint128,
 }
 
 #[cw_serde]

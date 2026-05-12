@@ -50,15 +50,14 @@ use post_threshold::process_post_threshold_commit;
 use pre_threshold::process_pre_threshold_commit;
 use threshold_crossing::{process_threshold_crossing_with_excess, process_threshold_hit_exact};
 
-// Minimum commit value in USD (6 decimals), applied ONLY to pre-threshold
-// commits. $5 = 5_000_000. The floor limits pre-threshold ledger bloat
-// (an attacker can still cross the $25k threshold with their own money, but
-// they can't do it with 25,000 individual $1 entries that balloon the
-// distribution queue). Post-threshold commits are functionally AMM swaps —
-// they don't add to COMMIT_LEDGER and don't feed distribution — so we keep
-// the floor at $1 for them to preserve UX for small-trade users.
-pub const MIN_COMMIT_USD_PRE_THRESHOLD: Uint128 = Uint128::new(5_000_000);
-pub const MIN_COMMIT_USD_POST_THRESHOLD: Uint128 = Uint128::new(1_000_000);
+// Minimum commit-value floors moved to per-pool state. Defaults are
+// `crate::state::DEFAULT_MIN_COMMIT_USD_{PRE,POST}_THRESHOLD` and the
+// active values are stored on `CommitLimitInfo.min_commit_usd_pre_threshold`
+// / `min_commit_usd_post_threshold`. The floor still limits pre-threshold
+// ledger bloat (an attacker can cross the threshold with their own
+// money, but not via thousands of micro-entries that balloon the
+// distribution queue); post-threshold commits stay looser since they're
+// AMM swaps that don't touch COMMIT_LEDGER.
 
 /// Base attribute set shared by every commit response (pre-threshold,
 /// post-threshold, threshold_hit_exact, threshold_crossing). Each caller
@@ -157,9 +156,9 @@ fn execute_commit_logic(
     // `threshold_already_hit`). Previously the load was duplicated.
     let threshold_already_hit = IS_THRESHOLD_HIT.load(deps.storage)?;
     let min_commit = if threshold_already_hit {
-        MIN_COMMIT_USD_POST_THRESHOLD
+        commit_config.min_commit_usd_post_threshold
     } else {
-        MIN_COMMIT_USD_PRE_THRESHOLD
+        commit_config.min_commit_usd_pre_threshold
     };
     if usd_value < min_commit {
         let phase: &'static str = if threshold_already_hit {

@@ -686,6 +686,20 @@ pub fn execute_update_config_from_factory(
         POOL_SPECS.save(deps.storage, &specs)?;
     }
 
+    // `update.min_commit_usd_pre_threshold` and
+    // `update.min_commit_usd_post_threshold` are intentionally NOT applied
+    // here. They live on `creator-pool::CommitLimitInfo`, which is
+    // creator-pool-only state — pool-core has no compile-time access to
+    // it. The creator-pool dispatch in `creator-pool::contract.rs::execute`
+    // wraps this handler: it reads the commit-floor fields off `update`,
+    // applies them to `COMMIT_LIMIT_INFO`, and only then delegates to
+    // this function for the shared knobs (lp_fee + min_commit_interval).
+    // Standard-pool's dispatch calls this handler directly and ignores
+    // the commit-floor fields entirely (standard pools have no commit
+    // phase); the factory-side `validate()` rejects standard-pool
+    // proposals carrying those fields at propose time, so a standard-pool
+    // apply that reaches here can only have `None` for both.
+
     // Per-pool `oracle_address` rotation removed (audit fix). The oracle
     // endpoint is pinned at instantiate to the factory address and is
     // no longer mutable through the per-pool config flow. If the

@@ -27,9 +27,28 @@ pub struct CommitFeeInfo {
 }
 
 #[cw_serde]
+#[derive(Default)]
 pub struct PoolConfigUpdate {
     pub lp_fee: Option<Decimal>,
     pub min_commit_interval: Option<u64>,
+    /// Per-pool override for the pre-threshold minimum commit value
+    /// (in USD, 6 decimals). Creator-pool only; ignored by standard
+    /// pools (which have no commit phase). When `Some(_)` the pool
+    /// updates `CommitLimitInfo.min_commit_usd_pre_threshold` to the
+    /// new value; `None` leaves it unchanged. Bounds enforced by the
+    /// factory at propose time and re-enforced by the pool's wrapper
+    /// dispatch on apply.
+    ///
+    /// `#[serde(default)]` keeps records / clients written before this
+    /// field existed wire-compatible (the field deserializes as `None`
+    /// when absent).
+    #[serde(default)]
+    pub min_commit_usd_pre_threshold: Option<Uint128>,
+    /// Per-pool override for the post-threshold minimum commit value
+    /// (in USD, 6 decimals). Same shape and rules as
+    /// `min_commit_usd_pre_threshold` above.
+    #[serde(default)]
+    pub min_commit_usd_post_threshold: Option<Uint128>,
     // `usd_payment_tolerance_bps` removed — see `PoolSpecs` doc-comment
     // in `pool-core::state` for rationale.
     //
