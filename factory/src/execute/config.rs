@@ -268,6 +268,33 @@ pub fn execute_propose_factory_config_update(
     // should fail loudly now, not then).
     validate_factory_config(deps.as_ref(), &config)?;
 
+    // Pyth smoke-test against the PROPOSED (contract, feed_id) tuple so
+    // an unreachable contract, a wrong feed id, or any other Pyth-side
+    // misconfig (stale publish, conf interval too wide, negative price,
+    // expo out of range) surfaces at propose time rather than after the
+    // 48h timelock elapses. The query is read-only and cheap when the
+    // feed is healthy; on failure the admin can Cancel + Re-Propose
+    // with corrected values immediately, saving a full timelock cycle.
+    //
+    // Gated on `not(test)` because test builds short-circuit the Pyth
+    // path to a mock and don't have `query_pyth_with_feed` available;
+    // propose-flow tests still cover the rest of the handler.
+    #[cfg(not(test))]
+    crate::internal_bluechip_price_oracle::query_pyth_with_feed(
+        deps.as_ref(),
+        &env,
+        config.pyth_contract_addr_for_conversions.as_str(),
+        config.pyth_atom_usd_price_feed_id.as_str(),
+    )
+    .map_err(|e| {
+        ContractError::Std(StdError::generic_err(format!(
+            "Proposed Pyth configuration failed validation (contract={}, feed_id={}): {}",
+            config.pyth_contract_addr_for_conversions,
+            config.pyth_atom_usd_price_feed_id,
+            e
+        )))
+    })?;
+
     let pending = PendingConfig {
         new_config: config,
         effective_after: env.block.time.plus_seconds(ADMIN_TIMELOCK_SECONDS),

@@ -5179,6 +5179,20 @@ mod post_reset_buffer_tests {
             .time
             .plus_seconds(crate::state::BOOTSTRAP_OBSERVATION_SECONDS + 1);
 
+        // Satisfy the MIN_BOOTSTRAP_OBSERVATIONS gate. This test only
+        // drives one buffered round (observation_count = 1) but the
+        // confirm path now also requires evidence-count >= the
+        // post-reset warm-up threshold. Bump the stored count directly
+        // — exercising the gate against fewer real rounds belongs in
+        // its own dedicated test below.
+        let mut bumped = crate::state::PENDING_BOOTSTRAP_PRICE
+            .load(&deps.storage)
+            .expect("pending must exist");
+        bumped.observation_count = crate::state::MIN_BOOTSTRAP_OBSERVATIONS;
+        crate::state::PENDING_BOOTSTRAP_PRICE
+            .save(&mut deps.storage, &bumped)
+            .expect("save bumped pending");
+
         let res = execute(
             deps.as_mut(),
             confirm_env,
