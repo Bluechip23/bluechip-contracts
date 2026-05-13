@@ -17,12 +17,12 @@
 use crate::asset::{TokenInfo, TokenInfoPoolExt, TokenType};
 use crate::error::ContractError;
 use crate::generic::{check_rate_limit, decimal2decimal256, enforce_transaction_deadline,
-    update_pool_fee_growth};
+    update_pool_fee_growth, with_reentrancy_guard};
 use crate::msg::Cw20HookMsg;
 use crate::state::{
     PoolCtx, PoolInfo, PoolState, CREATOR_FEE_POT, IS_THRESHOLD_HIT, MINIMUM_LIQUIDITY,
     POOL_ANALYTICS, POOL_FEE_STATE, POOL_INFO, POOL_PAUSED, POOL_STATE,
-    POST_THRESHOLD_COOLDOWN_UNTIL_BLOCK, REENTRANCY_LOCK,
+    POST_THRESHOLD_COOLDOWN_UNTIL_BLOCK,
 };
 use cosmwasm_std::{
     from_json, Addr, Decimal, Decimal256, DepsMut, Env, Fraction, MessageInfo, Response, StdError,
@@ -300,6 +300,17 @@ pub fn execute_swap_cw20(
             to,
             transaction_deadline,
         }) => {
+            // M-5.3 audit fix: enforce the transaction deadline BEFORE
+            // the M-7 cross-contract balance query. Previously the
+            // deadline was first checked inside `simple_swap` (called
+            // at the very end of this function), so an expired
+            // Receive-hook tx still paid for a `query_token_balance_strict`
+            // round-trip before reverting. Checking here saves one
+            // cross-contract query on the rejected path; `simple_swap`
+            // re-checks the deadline as defense-in-depth so any future
+            // entry point that bypasses this gate still rejects.
+            enforce_transaction_deadline(env.block.time, transaction_deadline)?;
+
             let pool_info: PoolInfo = POOL_INFO.load(deps.storage)?;
             // Authorisation + offer-side lookup in one pass. Folded
             // together (vs. the prior `.any()` boolean) so the M-7 verify
@@ -391,9 +402,9 @@ pub fn execute_swap_cw20(
 
 #[allow(clippy::too_many_arguments)]
 pub fn simple_swap(
-    mut deps: DepsMut,
+    deps: DepsMut,
     env: Env,
-    _info: MessageInfo,
+    info: MessageInfo,
     sender: Addr,
     offer_asset: TokenInfo,
     belief_price: Option<Decimal>,
@@ -404,30 +415,25 @@ pub fn simple_swap(
 ) -> Result<Response, ContractError> {
     enforce_transaction_deadline(env.block.time, transaction_deadline)?;
 
-    let reentrancy_guard = REENTRANCY_LOCK.may_load(deps.storage)?.unwrap_or(false);
-    if reentrancy_guard {
-        return Err(ContractError::ReentrancyGuard {});
-    }
-    REENTRANCY_LOCK.save(deps.storage, &true)?;
-
-    // POOL_SPECS load + rate-limit check moved into `execute_simple_swap`
-    // so they share `PoolCtx::load`'s POOL_SPECS read instead of issuing
-    // their own. On Err the tx reverts and rolls back this REENTRANCY_LOCK
-    // save anyway, so dropping the explicit save-false-on-error path here
-    // is a no-op behaviorally.
-    let result = execute_simple_swap(
-        &mut deps,
-        env,
-        _info,
-        sender,
-        offer_asset,
-        belief_price,
-        max_spread,
-        allow_high_max_spread,
-        to,
-    );
-    REENTRANCY_LOCK.save(deps.storage, &false)?;
-    result
+    // M-5.2 audit fix: use the shared `with_reentrancy_guard` helper
+    // instead of open-coding the load → check → save(true) → run →
+    // save(false) pattern. Same semantics — unconditional clear on both
+    // success and error paths so mock-test storage doesn't leak a
+    // stuck lock across test cases — but the load-bearing invariant
+    // now lives in exactly one place (pool_core::generic).
+    with_reentrancy_guard(deps, move |mut deps| {
+        execute_simple_swap(
+            &mut deps,
+            env,
+            info,
+            sender,
+            offer_asset,
+            belief_price,
+            max_spread,
+            allow_high_max_spread,
+            to,
+        )
+    })
 }
 
 #[allow(clippy::too_many_arguments)]
@@ -442,6 +448,19 @@ pub fn execute_simple_swap(
     allow_high_max_spread: Option<bool>,
     to: Option<Addr>,
 ) -> Result<Response, ContractError> {
+    // M-5.1 audit fix: defense-in-depth threshold gate at the shared
+    // handler. All three current entry points already gate on
+    // IS_THRESHOLD_HIT (creator-pool dispatcher via query_check_commit,
+    // CW20 hook at the top of execute_swap_cw20, standard-pool has the
+    // flag set at instantiate), so this check is idempotent against
+    // existing call sites — standard pools always pass it. The point is
+    // to close the future-regression vector where a new entry point
+    // (router-friendly variant, batch swap, etc.) might forget the
+    // gate; with the check here, the shared handler is self-protecting.
+    if !IS_THRESHOLD_HIT.load(deps.storage)? {
+        return Err(ContractError::ShortOfThreshold {});
+    }
+
     let PoolCtx {
         info: pool_info,
         state: mut pool_state,

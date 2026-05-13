@@ -322,12 +322,27 @@ pub const PENDING_BOOTSTRAP_PRICE: Item<PendingBootstrapPrice> =
 
 /// Minimum observation window between the first bootstrap-candidate
 /// proposal and the earliest moment the admin may call
-/// `ConfirmBootstrapPrice`. 1h forces the admin to watch the
-/// candidate move across at least 12 successful update rounds
-/// (UPDATE_INTERVAL = 300s) before locking it in, which makes a
-/// sustained-manipulation attack noticeably more expensive than a
-/// single-block perturbation.
+/// `ConfirmBootstrapPrice`. 1h is the time-based gate; the
+/// observation-count gate (`MIN_BOOTSTRAP_OBSERVATIONS`) runs in
+/// parallel so a 1h window with sparse anchor swap activity — i.e. only
+/// one or two `update_internal_oracle_price` rounds actually producing
+/// a TWAP — cannot satisfy the time gate alone and lock in a
+/// single-observation candidate.
 pub const BOOTSTRAP_OBSERVATION_SECONDS: u64 = 3600;
+
+/// Minimum number of real (TWAP-producing) update rounds that must have
+/// accumulated on the bootstrap candidate before the admin can call
+/// `ConfirmBootstrapPrice`. Branch (d) of `update_internal_oracle_price`
+/// only fires when the anchor produced a TWAP that round, so this is an
+/// activity floor as well as a time floor: an attacker who manipulates
+/// one observation and then suppresses anchor activity for the rest of
+/// the 1h window can still time-gate through, but cannot satisfy this
+/// count gate without the chain continuing to produce honest swap
+/// activity on the anchor.
+///
+/// 6 mirrors `ANCHOR_CHANGE_WARMUP_OBSERVATIONS` so the launch-day
+/// evidence requirement is symmetric with every later anchor reset.
+pub const MIN_BOOTSTRAP_OBSERVATIONS: u32 = 6;
 
 // One-shot bootstrap flag for the anchor pool. False until the admin
 // invokes `ExecuteMsg::SetAnchorPool { pool_id }` exactly once; flipped

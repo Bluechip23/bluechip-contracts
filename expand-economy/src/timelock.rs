@@ -83,6 +83,7 @@ pub fn execute_apply_config_update(
     info: MessageInfo,
 ) -> Result<Response, ContractError> {
     let mut config = load_config_as_owner(deps.storage, &info.sender)?;
+    let prior_owner = config.owner.clone();
     let pending = load_or_err(
         deps.storage,
         &PENDING_CONFIG_UPDATE,
@@ -107,14 +108,46 @@ pub fn execute_apply_config_update(
         config.bluechip_denom = new_denom;
     }
 
+    let owner_changed = prior_owner != config.owner;
+
     CONFIG.save(deps.storage, &config)?;
     PENDING_CONFIG_UPDATE.remove(deps.storage);
 
-    Ok(Response::new()
+    // M-3.1: when ownership transfers, drop any PENDING_WITHDRAWAL that
+    // the outgoing owner staged. PENDING_WITHDRAWAL.recipient is locked
+    // in at propose time, so without this clear the incoming owner
+    // would inherit an in-flight payout to whichever address the
+    // outgoing owner chose — they can still Cancel, but they have to
+    // know it exists first, and an ownership transfer is exactly the
+    // event where the new owner is most likely to be reviewing a clean
+    // slate. The corresponding PENDING_CONFIG_UPDATE has already been
+    // removed above; there is at most one other timelocked-pending
+    // item on this contract.
+    let cleared_pending_withdrawal = if owner_changed {
+        let had_pending = PENDING_WITHDRAWAL.may_load(deps.storage)?.is_some();
+        if had_pending {
+            PENDING_WITHDRAWAL.remove(deps.storage);
+        }
+        had_pending
+    } else {
+        false
+    };
+
+    let mut response = Response::new()
         .add_attribute(attrs::ACTION, attrs::EXECUTE_CONFIG_UPDATE)
         .add_attribute(attrs::FACTORY, &config.factory_address)
         .add_attribute(attrs::OWNER, &config.owner)
-        .add_attribute(attrs::BLUECHIP_DENOM, &config.bluechip_denom))
+        .add_attribute(attrs::BLUECHIP_DENOM, &config.bluechip_denom);
+    if owner_changed {
+        response = response
+            .add_attribute("owner_rotated", "true")
+            .add_attribute("prior_owner", &prior_owner)
+            .add_attribute(
+                "cleared_pending_withdrawal_on_rotation",
+                cleared_pending_withdrawal.to_string(),
+            );
+    }
+    Ok(response)
 }
 
 pub fn execute_cancel_config_update(

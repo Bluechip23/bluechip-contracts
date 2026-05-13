@@ -3874,6 +3874,10 @@ mod oracle_coverage_backfill {
         // can shortcut: write PENDING_BOOTSTRAP_PRICE directly with a
         // known proposed_at.
         let env_now = mock_env();
+        // Seed observation_count = MIN_BOOTSTRAP_OBSERVATIONS so the
+        // count gate is satisfied; this test pins the time-boundary
+        // accept semantics specifically. The count gate gets its own
+        // dedicated reject test elsewhere.
         crate::state::PENDING_BOOTSTRAP_PRICE
             .save(
                 deps.as_mut().storage,
@@ -3881,7 +3885,7 @@ mod oracle_coverage_backfill {
                     price: Uint128::new(10_000_000),
                     atom_pool_price: Uint128::new(10_000_000),
                     proposed_at: env_now.block.time,
-                    observation_count: 1,
+                    observation_count: crate::state::MIN_BOOTSTRAP_OBSERVATIONS,
                 },
             )
             .unwrap();

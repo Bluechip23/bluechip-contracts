@@ -5,8 +5,8 @@ use cw_storage_plus::Item;
 /// Rolling 24-hour cap on `RequestExpansion` payouts (ubluechip, base
 /// units). Bounds the worst-case daily drain if the configured factory
 /// address is ever compromised: even with full factory control, an
-/// attacker can extract at most this much per day, capped by the
-/// expand-economy's own balance.
+/// attacker can extract at most this much per any 24-hour window via
+/// this path, capped further by the expand-economy's own balance.
 ///
 /// 100_000_000_000 ubluechip = 100,000 bluechip in base-decimal units
 /// (assumes the canonical 6-decimal denom). The factory's
@@ -15,26 +15,49 @@ use cw_storage_plus::Item;
 /// thereafter, so this cap leaves headroom for ~200 early-pool mints
 /// per 24h — well above the natural protocol rate, well below the
 /// "drain-the-reservoir" attack rate.
+///
+/// FUTURE: this constant + the owner/factory single-key trust model
+/// are scheduled to move behind a multisig as part of the operational
+/// hardening roadmap. Until that lands, the cap is the protocol-level
+/// belt against any single-key compromise on the expand-economy axis.
 pub const DAILY_EXPANSION_CAP: Uint128 = Uint128::new(100_000_000_000);
 /// Length of the rolling cap window in seconds (24 hours).
 pub const DAILY_WINDOW_SECONDS: u64 = 86_400;
 
-/// Snapshot of recent RequestExpansion volume for the rolling cap. We
-/// approximate "rolling 24h" with a single-bucket reset: if the saved
-/// `window_start` is older than `DAILY_WINDOW_SECONDS`, treat it as a
-/// fresh window and reset `spent_in_window` to zero. Drift error vs a
-/// proper sliding window is bounded by the bucket size and only ever
-/// LETS more through right after a reset, never less — never blocks a
-/// legitimate payout that should have fit. Storage cost is constant
-/// (one Item) vs O(N) for a true sliding-window log.
+/// One persisted RequestExpansion payout in the rolling-window log.
+/// `timestamp` is the block time the payout was persisted at;
+/// `amount` is the bluechip-denom amount actually committed (i.e. after
+/// the balance-graceful-skip check, so unfulfilled requests are NOT in
+/// the log and don't debit cap budget).
 #[cw_serde]
-pub struct ExpansionWindow {
-    pub window_start: Timestamp,
-    pub spent_in_window: Uint128,
+pub struct ExpansionEntry {
+    pub timestamp: Timestamp,
+    pub amount: Uint128,
 }
 
-/// Persisted rolling-window state for `RequestExpansion` cap accounting.
-pub const EXPANSION_WINDOW: Item<ExpansionWindow> = Item::new("expansion_window");
+/// Sliding-window log backing the daily cap. Each successful
+/// `RequestExpansion` appends one entry; every call prunes entries
+/// older than `DAILY_WINDOW_SECONDS` before summing the in-window
+/// total and checking it against `DAILY_EXPANSION_CAP`.
+///
+/// Compared to the prior single-bucket reset, this prevents the
+/// boundary-burst case where an attacker could max out the cap just
+/// before the bucket flipped at `window_start + 24h` AND immediately
+/// max out the fresh bucket on the other side — sliding semantics
+/// continuously age entries out one at a time, so any rolling 24h
+/// window across the boundary still sees only `DAILY_EXPANSION_CAP`
+/// in aggregate.
+///
+/// Size is bounded in practice: the cap caps total per-window volume,
+/// and per-pool mint amounts have a polynomial decay floor that bounds
+/// "how many distinct mints fit in 100k bluechip." Even worst-case
+/// (tail mints of ~1 bluechip each), the log can hold at most
+/// `cap / min_mint` ≈ 1e5 entries; realistic deployments will see <500
+/// entries. Stored as `Item<Vec<_>>` rather than a `Map` because the
+/// whole log is read on every call (we sum + prune) so the per-call
+/// SerDe cost is the same and the simpler shape avoids a sequence
+/// counter.
+pub const EXPANSION_LOG: Item<Vec<ExpansionEntry>> = Item::new("expansion_log");
 
 #[cw_serde]
 pub struct Config {

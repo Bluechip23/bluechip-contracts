@@ -8,11 +8,44 @@
 //! `validate_pool_threshold_payments` — stay in the creator-pool crate.
 
 use crate::error::ContractError;
-use crate::state::{PoolFeeState, PoolSpecs, PoolState, USER_LAST_COMMIT};
+use crate::state::{PoolFeeState, PoolSpecs, PoolState, REENTRANCY_LOCK, USER_LAST_COMMIT};
 use cosmwasm_std::{
     Addr, BankMsg, Coin, CosmosMsg, Decimal, Decimal256, DepsMut, Env, StdError, StdResult,
     Timestamp, Uint128,
 };
+
+/// Run `body` under the contract-wide `REENTRANCY_LOCK`.
+///
+/// Centralizes the load → check → save(true) → run → save(false)
+/// pattern previously open-coded in multiple call sites. Hoisted from
+/// `creator-pool::generic_helpers` into the shared `pool-core::generic`
+/// module so the swap path in `pool_core::swap` and any future
+/// liquidity / admin caller in either pool crate share a single
+/// implementation.
+///
+/// The guard is cleared **unconditionally** before returning, on both
+/// success and error paths. Production CosmWasm reverts every staged
+/// storage write when a handler returns `Err`, so the explicit
+/// `save(false)` on the error path is redundant in production —
+/// but mock test environments (`mock_dependencies`) do **not** revert,
+/// and a follow-up call in the same `#[test]` would otherwise see
+/// a stuck `REENTRANCY_LOCK = true` from the prior failed attempt.
+/// Always clearing keeps the helper safe under both runtimes.
+pub fn with_reentrancy_guard<F, T>(mut deps: DepsMut, body: F) -> Result<T, ContractError>
+where
+    F: FnOnce(DepsMut) -> Result<T, ContractError>,
+{
+    if REENTRANCY_LOCK.may_load(deps.storage)?.unwrap_or(false) {
+        return Err(ContractError::ReentrancyGuard {});
+    }
+    REENTRANCY_LOCK.save(deps.storage, &true)?;
+    let result = body(deps.branch());
+    // Unconditional clear. See doc-comment above for why this matters
+    // for the test mock-storage path even though production tx
+    // atomicity makes it redundant on the error branch.
+    REENTRANCY_LOCK.save(deps.storage, &false)?;
+    result
+}
 
 /// Update fee growth based on which token was offered.
 pub fn update_pool_fee_growth(

@@ -138,18 +138,44 @@ pub struct TempPoolCreation {
     pub nft_addr: Option<Addr>,
 }
 
-/// Per-pool initial mint splits awarded when a commit pool crosses its
-/// threshold. The four components MUST be non-zero and their sum is the
-/// `total_mint()` consumed by `mint_create_pool` as both the CW20 mint
-/// cap and the threshold-payout payload.
+/// Canonical per-component values for the threshold-payout splits.
 ///
-/// Stored on [`FactoryInstantiate`] so the splits can be tuned through
-/// the standard 48h `ProposeConfigUpdate` flow rather than requiring a
-/// contract migration. In practice these values are not expected to
-/// change post-launch, but routing them through factory config removes
-/// the prior two-source-of-truth footgun where the four amounts were
-/// hardcoded in `mint_create_pool` and then re-validated against a
-/// duplicate `1_200_000_000_000` literal.
+/// These MUST mirror `pool_core::state::THRESHOLD_PAYOUT_*_BASE_UNITS`
+/// exactly. The pool side's `validate_pool_threshold_payments` rejects
+/// any record that doesn't match these constants at pool-instantiate
+/// time (`creator-pool::commit::threshold_payout::validate_pool_threshold_payments`),
+/// so the factory-side validator must enforce the same canonical-only
+/// rule — otherwise a `ProposeConfigUpdate` could install non-canonical
+/// splits that the next commit-pool creation would silently fail to
+/// instantiate against, burning a full 48h timelock cycle on a misconfig
+/// the factory had no way to catch.
+///
+/// The factory crate intentionally has no compile-time dependency on
+/// `pool-core` (they communicate only over wasm message boundaries), so
+/// these are duplicated rather than re-exported. Any future change to
+/// the pool-side constants MUST be mirrored here AND in a coordinated
+/// migration that updates every deployed pool's expected values.
+pub const THRESHOLD_PAYOUT_CREATOR_BASE_UNITS: u128 = 325_000_000_000;
+pub const THRESHOLD_PAYOUT_BLUECHIP_BASE_UNITS: u128 = 25_000_000_000;
+pub const THRESHOLD_PAYOUT_POOL_BASE_UNITS: u128 = 350_000_000_000;
+pub const THRESHOLD_PAYOUT_COMMIT_RETURN_BASE_UNITS: u128 = 500_000_000_000;
+pub const THRESHOLD_PAYOUT_TOTAL_BASE_UNITS: u128 = 1_200_000_000_000;
+
+/// Per-pool initial mint splits awarded when a commit pool crosses its
+/// threshold. The four components MUST match the canonical
+/// `THRESHOLD_PAYOUT_*_BASE_UNITS` constants — `validate()` enforces
+/// exact equality and rejects anything else (M-7.2 audit fix). The sum
+/// is also the `total_mint()` consumed by `mint_create_pool` as both
+/// the CW20 mint cap and the threshold-payout payload.
+///
+/// Stored on [`FactoryInstantiate`] so the field can be re-validated on
+/// the 48h `ProposeConfigUpdate` flow rather than requiring a contract
+/// migration. With the strict-canonical validator the only "config
+/// update" allowed for this field is "set it to the same canonical
+/// values" — admin can still propose a config update touching OTHER
+/// fields and leave this one unchanged. Changing the splits requires a
+/// coordinated migration that updates both crates' constants and every
+/// deployed pool simultaneously.
 #[cw_serde]
 pub struct ThresholdPayoutAmounts {
     pub creator_reward_amount: Uint128,
@@ -161,10 +187,10 @@ pub struct ThresholdPayoutAmounts {
 impl Default for ThresholdPayoutAmounts {
     fn default() -> Self {
         Self {
-            creator_reward_amount: Uint128::new(325_000_000_000),
-            bluechip_reward_amount: Uint128::new(25_000_000_000),
-            pool_seed_amount: Uint128::new(350_000_000_000),
-            commit_return_amount: Uint128::new(500_000_000_000),
+            creator_reward_amount: Uint128::new(THRESHOLD_PAYOUT_CREATOR_BASE_UNITS),
+            bluechip_reward_amount: Uint128::new(THRESHOLD_PAYOUT_BLUECHIP_BASE_UNITS),
+            pool_seed_amount: Uint128::new(THRESHOLD_PAYOUT_POOL_BASE_UNITS),
+            commit_return_amount: Uint128::new(THRESHOLD_PAYOUT_COMMIT_RETURN_BASE_UNITS),
         }
     }
 }
@@ -227,21 +253,185 @@ impl ThresholdPayoutAmounts {
             .map_err(|e| StdError::generic_err(format!("threshold payout total overflow: {}", e)))
     }
 
-    /// Validates that every component is non-zero and the sum does not
-    /// overflow. A zero component would silently zero out one side of
-    /// the threshold-payout (creator gets nothing, pool unfunded, etc.),
-    /// so the propose-time gate rejects it explicitly.
+    /// Validates that every component matches its canonical
+    /// `THRESHOLD_PAYOUT_*_BASE_UNITS` value exactly AND that the sum
+    /// equals `THRESHOLD_PAYOUT_TOTAL_BASE_UNITS` (M-7.2 audit fix).
+    ///
+    /// Mirrors the pool-side `validate_pool_threshold_payments` in
+    /// `creator-pool::commit::threshold_payout`. Previously this
+    /// validator only checked "every component non-zero + no overflow"
+    /// — which let `ProposeConfigUpdate` install non-canonical splits
+    /// that the pool-side validator would then silently reject at the
+    /// next commit-pool instantiate, burning a 48h timelock cycle on a
+    /// misconfig the factory should have caught at propose time. The
+    /// strict-canonical gate keeps the two sides in lockstep.
+    ///
+    /// Changing the canonical values requires updating BOTH
+    /// `factory::pool_struct::THRESHOLD_PAYOUT_*_BASE_UNITS` AND
+    /// `pool_core::state::THRESHOLD_PAYOUT_*_BASE_UNITS` in a
+    /// coordinated migration that also touches every deployed pool;
+    /// there is no admin-tunable path for these splits today.
     pub fn validate(&self) -> StdResult<()> {
-        if self.creator_reward_amount.is_zero()
-            || self.bluechip_reward_amount.is_zero()
-            || self.pool_seed_amount.is_zero()
-            || self.commit_return_amount.is_zero()
-        {
-            return Err(StdError::generic_err(
-                "ThresholdPayoutAmounts: every component must be non-zero",
-            ));
+        if self.creator_reward_amount != Uint128::new(THRESHOLD_PAYOUT_CREATOR_BASE_UNITS) {
+            return Err(StdError::generic_err(format!(
+                "ThresholdPayoutAmounts.creator_reward_amount must be the canonical {} \
+                 (got {}). Splits are protocol-canonical; changing them requires a \
+                 coordinated migration of both factory and pool crates.",
+                THRESHOLD_PAYOUT_CREATOR_BASE_UNITS, self.creator_reward_amount
+            )));
         }
-        let _ = self.total_mint()?;
+        if self.bluechip_reward_amount != Uint128::new(THRESHOLD_PAYOUT_BLUECHIP_BASE_UNITS) {
+            return Err(StdError::generic_err(format!(
+                "ThresholdPayoutAmounts.bluechip_reward_amount must be the canonical {} \
+                 (got {}).",
+                THRESHOLD_PAYOUT_BLUECHIP_BASE_UNITS, self.bluechip_reward_amount
+            )));
+        }
+        if self.pool_seed_amount != Uint128::new(THRESHOLD_PAYOUT_POOL_BASE_UNITS) {
+            return Err(StdError::generic_err(format!(
+                "ThresholdPayoutAmounts.pool_seed_amount must be the canonical {} \
+                 (got {}).",
+                THRESHOLD_PAYOUT_POOL_BASE_UNITS, self.pool_seed_amount
+            )));
+        }
+        if self.commit_return_amount != Uint128::new(THRESHOLD_PAYOUT_COMMIT_RETURN_BASE_UNITS) {
+            return Err(StdError::generic_err(format!(
+                "ThresholdPayoutAmounts.commit_return_amount must be the canonical {} \
+                 (got {}).",
+                THRESHOLD_PAYOUT_COMMIT_RETURN_BASE_UNITS, self.commit_return_amount
+            )));
+        }
+        // Defense-in-depth: re-check the total matches the canonical
+        // sum. With the four equality checks above the sum is
+        // structurally fixed at THRESHOLD_PAYOUT_TOTAL_BASE_UNITS; this
+        // line just locks the constant in case a future edit drifts
+        // either the per-component or total values.
+        let total = self.total_mint()?;
+        if total != Uint128::new(THRESHOLD_PAYOUT_TOTAL_BASE_UNITS) {
+            return Err(StdError::generic_err(format!(
+                "ThresholdPayoutAmounts total must equal {} (got {}); the per-component \
+                 constants drifted from the total.",
+                THRESHOLD_PAYOUT_TOTAL_BASE_UNITS, total
+            )));
+        }
         Ok(())
+    }
+}
+
+#[cfg(test)]
+mod threshold_payout_validate_tests {
+    //! M-7.2 audit-fix coverage: every non-canonical perturbation of the
+    //! four threshold-payout components is rejected with an error message
+    //! that names the offending field. The canonical Default() must pass.
+    //! Closes the C-3 test-coverage gap from the meta-audit.
+    use super::*;
+
+    /// The canonical splits round-trip validate cleanly.
+    #[test]
+    fn canonical_default_passes() {
+        let payout = ThresholdPayoutAmounts::default();
+        assert!(payout.validate().is_ok(), "canonical default must pass validate");
+    }
+
+    /// Off-by-one on the creator share is rejected with the creator field
+    /// named. Exercises the first per-component equality branch and pins
+    /// the operator-facing error message to the canonical-value mismatch
+    /// language so an off-chain dashboard parsing the message can extract
+    /// which knob drifted.
+    #[test]
+    fn rejects_creator_reward_drift() {
+        let mut payout = ThresholdPayoutAmounts::default();
+        payout.creator_reward_amount = payout
+            .creator_reward_amount
+            .checked_add(Uint128::new(1))
+            .unwrap();
+        let err = payout.validate().expect_err("non-canonical creator must reject");
+        let msg = err.to_string();
+        assert!(
+            msg.contains("creator_reward_amount"),
+            "error must name the creator field; got: {}",
+            msg
+        );
+        assert!(
+            msg.contains(&THRESHOLD_PAYOUT_CREATOR_BASE_UNITS.to_string()),
+            "error must include the canonical creator value; got: {}",
+            msg
+        );
+    }
+
+    #[test]
+    fn rejects_bluechip_reward_drift() {
+        let mut payout = ThresholdPayoutAmounts::default();
+        payout.bluechip_reward_amount = Uint128::new(1);
+        let err = payout.validate().expect_err("non-canonical bluechip must reject");
+        let msg = err.to_string();
+        assert!(
+            msg.contains("bluechip_reward_amount"),
+            "error must name the bluechip field; got: {}",
+            msg
+        );
+    }
+
+    #[test]
+    fn rejects_pool_seed_drift() {
+        let mut payout = ThresholdPayoutAmounts::default();
+        payout.pool_seed_amount = payout
+            .pool_seed_amount
+            .checked_sub(Uint128::new(1))
+            .unwrap();
+        let err = payout.validate().expect_err("non-canonical pool_seed must reject");
+        let msg = err.to_string();
+        assert!(
+            msg.contains("pool_seed_amount"),
+            "error must name the pool_seed field; got: {}",
+            msg
+        );
+    }
+
+    #[test]
+    fn rejects_commit_return_drift() {
+        let mut payout = ThresholdPayoutAmounts::default();
+        payout.commit_return_amount = Uint128::zero();
+        let err = payout
+            .validate()
+            .expect_err("non-canonical commit_return must reject");
+        let msg = err.to_string();
+        assert!(
+            msg.contains("commit_return_amount"),
+            "error must name the commit_return field; got: {}",
+            msg
+        );
+    }
+
+    /// All-zero payload — pre-audit validator accepted this if every
+    /// component happened to be zero (the old non-zero check) but now
+    /// rejects on the first per-component equality. Pins the regression
+    /// vector: a misconfig that sets every component to zero (e.g., a
+    /// silent serde default at the wrong layer) is caught at propose
+    /// time rather than landing as a no-op mint at threshold-cross.
+    #[test]
+    fn rejects_all_zero_payload() {
+        let payout = ThresholdPayoutAmounts {
+            creator_reward_amount: Uint128::zero(),
+            bluechip_reward_amount: Uint128::zero(),
+            pool_seed_amount: Uint128::zero(),
+            commit_return_amount: Uint128::zero(),
+        };
+        assert!(payout.validate().is_err(), "all-zero payload must reject");
+    }
+
+    /// Sanity: `total_mint()` on the canonical default matches the
+    /// total constant exactly. Ties the per-component constants to the
+    /// total so a future edit that drifts one side without the other
+    /// is caught here.
+    #[test]
+    fn canonical_total_matches_total_constant() {
+        let payout = ThresholdPayoutAmounts::default();
+        let total = payout.total_mint().expect("total_mint must succeed on canonical");
+        assert_eq!(
+            total,
+            Uint128::new(THRESHOLD_PAYOUT_TOTAL_BASE_UNITS),
+            "canonical per-component constants must sum to THRESHOLD_PAYOUT_TOTAL_BASE_UNITS"
+        );
     }
 }

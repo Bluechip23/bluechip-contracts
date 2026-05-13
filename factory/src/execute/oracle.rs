@@ -400,14 +400,48 @@ pub(crate) fn lookup_pool_by_addr(
     {
         return Ok(Some(POOLS_BY_ID.load(deps.storage, pool_id)?));
     }
-    use cosmwasm_std::Order;
-    for entry in POOLS_BY_ID.range(deps.storage, None, None, Order::Ascending) {
-        let (_id, details) = entry?;
-        if &details.creator_pool_addr == pool_addr {
-            return Ok(Some(details));
+    // POOL_ID_BY_ADDRESS missed. Distinguish "address is not a pool"
+    // from "registry inconsistency":
+    //
+    //   - In prod, every pool created via the live reply chain runs
+    //     through `state::register_pool`, which writes
+    //     POOL_ID_BY_ADDRESS and POOLS_BY_CONTRACT_ADDRESS atomically.
+    //     A miss in POOL_ID_BY_ADDRESS but a hit in
+    //     POOLS_BY_CONTRACT_ADDRESS means a write bypassed
+    //     register_pool — a real bug. Surface it loudly rather than
+    //     paper over it with an O(N) POOLS_BY_ID scan that silently
+    //     succeeds.
+    //
+    //   - In tests, legacy fixtures may write POOLS_BY_ID directly.
+    //     Keep the linear-scan fallback there so existing fixtures
+    //     keep resolving without rewrites.
+    #[cfg(not(test))]
+    {
+        if crate::state::POOLS_BY_CONTRACT_ADDRESS
+            .has(deps.storage, pool_addr.clone())
+        {
+            return Err(cosmwasm_std::StdError::generic_err(format!(
+                "Registry inconsistency: pool {} exists in POOLS_BY_CONTRACT_ADDRESS \
+                 but not in POOL_ID_BY_ADDRESS reverse index. Every pool created via \
+                 the reply chain populates both atomically via state::register_pool; \
+                 reaching this branch means a write bypassed that helper. Investigate \
+                 before retrying.",
+                pool_addr
+            )));
         }
+        Ok(None)
     }
-    Ok(None)
+    #[cfg(test)]
+    {
+        use cosmwasm_std::Order;
+        for entry in POOLS_BY_ID.range(deps.storage, None, None, Order::Ascending) {
+            let (_id, details) = entry?;
+            if &details.creator_pool_addr == pool_addr {
+                return Ok(Some(details));
+            }
+        }
+        Ok(None)
+    }
 }
 
 /// Refresh `INTERNAL_ORACLE` after the anchor pool has changed. Mirrors

@@ -21,7 +21,7 @@ use pool_factory_interfaces::cw721_msgs::{Action, Cw721ExecuteMsg};
 
 use crate::asset::TokenType;
 use crate::error::ContractError;
-use crate::generic::{check_rate_limit, enforce_transaction_deadline};
+use crate::generic::{check_rate_limit, enforce_transaction_deadline, with_reentrancy_guard};
 use crate::liquidity_helpers::{
     calc_liquidity_for_deposit, calculate_fee_size_multiplier, check_slippage,
 };
@@ -29,7 +29,7 @@ use crate::state::{
     DepositVerifyContext, PoolInfo, PoolSpecs, Position, TokenMetadata, DEPOSIT_VERIFY_CTX,
     DEPOSIT_VERIFY_REPLY_ID, LIQUIDITY_POSITIONS, MINIMUM_LIQUIDITY, NEXT_POSITION_ID,
     OWNER_POSITIONS, POOL_ANALYTICS, POOL_FEE_STATE, POOL_INFO, POOL_PAUSED, POOL_PAUSED_AUTO,
-    POOL_SPECS, POOL_STATE, REENTRANCY_LOCK,
+    POOL_SPECS, POOL_STATE,
 };
 use crate::swap::update_price_accumulator;
 
@@ -279,7 +279,7 @@ pub fn execute_deposit_liquidity_with_verify(
 
 #[allow(clippy::too_many_arguments)]
 fn execute_deposit_liquidity_dispatch(
-    mut deps: DepsMut,
+    deps: DepsMut,
     env: Env,
     info: MessageInfo,
     user: Addr,
@@ -292,39 +292,34 @@ fn execute_deposit_liquidity_dispatch(
 ) -> Result<Response, ContractError> {
     enforce_transaction_deadline(env.block.time, transaction_deadline)?;
 
-    // Reentrancy guard. Hostile CW20 contracts (only a concern on standard
-    // pools that wrap third-party tokens, never on commit pools where the
-    // factory mints its own CW20) could otherwise re-enter the pool during
-    // an outgoing TransferFrom call and observe / mutate stale state.
-    // Shared `REENTRANCY_LOCK` across commit + swap + every liquidity path
-    // makes any cross-handler reentrancy attempt fail fast.
-    if REENTRANCY_LOCK.may_load(deps.storage)?.unwrap_or(false) {
-        return Err(ContractError::ReentrancyGuard {});
-    }
-    REENTRANCY_LOCK.save(deps.storage, &true)?;
-
-    // Per-user rate limit; matches `add_to_position` / `remove_*` paths.
-    // Without it, a user can open unlimited Position NFTs in one block
-    // (NFT-id namespace bloat + extra surface for atomic-exploit chains).
-    let pool_specs: PoolSpecs = POOL_SPECS.load(deps.storage)?;
-    if let Err(e) = check_rate_limit(&mut deps, &env, &pool_specs, &info.sender) {
-        REENTRANCY_LOCK.save(deps.storage, &false)?;
-        return Err(e);
-    }
-
-    let result = execute_deposit_liquidity_inner(
-        deps.branch(),
-        env,
-        info,
-        user,
-        amount0,
-        amount1,
-        min_amount0,
-        min_amount1,
-        verify_balances,
-    );
-    REENTRANCY_LOCK.save(deps.storage, &false)?;
-    result
+    // Shared reentrancy guard across commit + swap + every liquidity
+    // path. Hostile CW20 contracts (only a concern on standard pools
+    // that wrap third-party tokens, never on commit pools where the
+    // factory mints its own CW20) could otherwise re-enter the pool
+    // during an outgoing TransferFrom call and observe / mutate stale
+    // state. Routed through the `with_reentrancy_guard` helper for the
+    // same lock-clear-on-both-paths invariant the other entry points
+    // use.
+    with_reentrancy_guard(deps, move |mut deps| {
+        // Per-user rate limit; matches `add_to_position` / `remove_*`
+        // paths. Without it, a user can open unlimited Position NFTs in
+        // one block (NFT-id namespace bloat + extra surface for
+        // atomic-exploit chains). Rate-limit Err propagates out of the
+        // closure; the helper still clears the lock on the way back.
+        let pool_specs: PoolSpecs = POOL_SPECS.load(deps.storage)?;
+        check_rate_limit(&mut deps, &env, &pool_specs, &info.sender)?;
+        execute_deposit_liquidity_inner(
+            deps,
+            env,
+            info,
+            user,
+            amount0,
+            amount1,
+            min_amount0,
+            min_amount1,
+            verify_balances,
+        )
+    })
 }
 
 #[allow(clippy::too_many_arguments)]

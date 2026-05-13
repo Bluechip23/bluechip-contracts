@@ -13,7 +13,7 @@
 use cosmwasm_std::{DepsMut, Env, MessageInfo, Response, StdError, Timestamp, Uint128};
 
 use crate::error::ContractError;
-use crate::generic::{check_rate_limit, enforce_transaction_deadline};
+use crate::generic::{check_rate_limit, enforce_transaction_deadline, with_reentrancy_guard};
 use crate::liquidity_helpers::{
     build_fee_transfer_msgs, calc_capped_fees_with_clip, calculate_fee_size_multiplier,
     calculate_fees_owed_split_pair, check_ratio_deviation, check_slippage,
@@ -21,7 +21,7 @@ use crate::liquidity_helpers::{
 };
 use crate::state::{
     maybe_auto_pause_on_low_liquidity, PoolSpecs, CREATOR_FEE_POT, LIQUIDITY_POSITIONS,
-    POOL_ANALYTICS, POOL_FEE_STATE, POOL_INFO, POOL_SPECS, POOL_STATE, REENTRANCY_LOCK,
+    POOL_ANALYTICS, POOL_FEE_STATE, POOL_INFO, POOL_SPECS, POOL_STATE,
 };
 use crate::swap::update_price_accumulator;
 
@@ -400,7 +400,7 @@ pub fn remove_partial_liquidity(
 
 #[allow(clippy::too_many_arguments)]
 pub fn execute_remove_all_liquidity(
-    mut deps: DepsMut,
+    deps: DepsMut,
     env: Env,
     info: MessageInfo,
     position_id: String,
@@ -411,33 +411,25 @@ pub fn execute_remove_all_liquidity(
 ) -> Result<Response, ContractError> {
     enforce_transaction_deadline(env.block.time, transaction_deadline)?;
 
-    if REENTRANCY_LOCK.may_load(deps.storage)?.unwrap_or(false) {
-        return Err(ContractError::ReentrancyGuard {});
-    }
-    REENTRANCY_LOCK.save(deps.storage, &true)?;
-
-    let pool_specs: PoolSpecs = POOL_SPECS.load(deps.storage)?;
-    let sender = info.sender.clone();
-    if let Err(e) = check_rate_limit(&mut deps, &env, &pool_specs, &sender) {
-        REENTRANCY_LOCK.save(deps.storage, &false)?;
-        return Err(e);
-    }
-    let result = remove_all_liquidity(
-        &mut deps,
-        env,
-        info.clone(),
-        position_id,
-        min_amount0,
-        min_amount1,
-        max_ratio_deviation_bps,
-    );
-    REENTRANCY_LOCK.save(deps.storage, &false)?;
-    result
+    with_reentrancy_guard(deps, move |mut deps| {
+        let pool_specs: PoolSpecs = POOL_SPECS.load(deps.storage)?;
+        let sender = info.sender.clone();
+        check_rate_limit(&mut deps, &env, &pool_specs, &sender)?;
+        remove_all_liquidity(
+            &mut deps,
+            env,
+            info,
+            position_id,
+            min_amount0,
+            min_amount1,
+            max_ratio_deviation_bps,
+        )
+    })
 }
 
 #[allow(clippy::too_many_arguments)]
 pub fn execute_remove_partial_liquidity(
-    mut deps: DepsMut,
+    deps: DepsMut,
     env: Env,
     info: MessageInfo,
     position_id: String,
@@ -449,31 +441,22 @@ pub fn execute_remove_partial_liquidity(
 ) -> Result<Response, ContractError> {
     enforce_transaction_deadline(env.block.time, transaction_deadline)?;
 
-    if REENTRANCY_LOCK.may_load(deps.storage)?.unwrap_or(false) {
-        return Err(ContractError::ReentrancyGuard {});
-    }
-    REENTRANCY_LOCK.save(deps.storage, &true)?;
-
-    let pool_specs: PoolSpecs = POOL_SPECS.load(deps.storage)?;
-    let sender = info.sender.clone();
-
-    if let Err(e) = check_rate_limit(&mut deps, &env, &pool_specs, &sender) {
-        REENTRANCY_LOCK.save(deps.storage, &false)?;
-        return Err(e);
-    }
-    let result = remove_partial_liquidity(
-        &mut deps,
-        env,
-        info.clone(),
-        position_id,
-        liquidity_to_remove,
-        transaction_deadline,
-        min_amount0,
-        min_amount1,
-        max_ratio_deviation_bps,
-    );
-    REENTRANCY_LOCK.save(deps.storage, &false)?;
-    result
+    with_reentrancy_guard(deps, move |mut deps| {
+        let pool_specs: PoolSpecs = POOL_SPECS.load(deps.storage)?;
+        let sender = info.sender.clone();
+        check_rate_limit(&mut deps, &env, &pool_specs, &sender)?;
+        remove_partial_liquidity(
+            &mut deps,
+            env,
+            info,
+            position_id,
+            liquidity_to_remove,
+            transaction_deadline,
+            min_amount0,
+            min_amount1,
+            max_ratio_deviation_bps,
+        )
+    })
 }
 
 #[allow(clippy::too_many_arguments)]

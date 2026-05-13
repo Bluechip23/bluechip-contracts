@@ -158,6 +158,45 @@ pub(crate) fn execute_create_creator_pool(
     let factory_cw20 = FACTORYINSTANTIATEINFO.load(deps.storage)?;
     validate_pool_token_info(&pool_msg.pool_token_info, &factory_cw20.bluechip_denom)?;
 
+    // Per-address rate limit. Reject if `info.sender` already
+    // created a commit pool within the last
+    // COMMIT_POOL_CREATE_RATE_LIMIT_SECONDS. Stamps the new timestamp
+    // before any SubMsg dispatch, so a failed reply chain (which
+    // reverts the whole tx atomically) also reverts the stamp —
+    // no permanent rate-limit state leaks from failed creates.
+    //
+    // Runs BEFORE the fee oracle / funds check so a rate-limited
+    // caller sees the rate-limit error directly rather than a
+    // misleading "insufficient fee" error (when the actual block
+    // is the cooldown, not the fee).
+    let now = env.block.time;
+    let prior_stamp =
+        LAST_COMMIT_POOL_CREATE_AT.may_load(deps.storage, info.sender.clone())?;
+    if let Some(last) = prior_stamp {
+        let next_allowed = last.plus_seconds(COMMIT_POOL_CREATE_RATE_LIMIT_SECONDS);
+        if now < next_allowed {
+            return Err(ContractError::Std(StdError::generic_err(format!(
+                "Rate-limited: this address can create another commit pool after {} \
+                 (last create at {}, cooldown {}s)",
+                next_allowed, last, COMMIT_POOL_CREATE_RATE_LIMIT_SECONDS
+            ))));
+        }
+    }
+    LAST_COMMIT_POOL_CREATE_AT.save(deps.storage, info.sender.clone(), &now)?;
+    // Sync the timestamp-ordered secondary index used by PruneRateLimits.
+    // Remove the prior (old_ts, addr) entry first so the index stays
+    // single-entry-per-address; the index is keyed by timestamp so an
+    // un-removed prior would persist as a stale ghost.
+    if let Some(prior) = prior_stamp {
+        crate::state::COMMIT_POOL_CREATE_TS_INDEX
+            .remove(deps.storage, (prior.seconds(), info.sender.clone()));
+    }
+    crate::state::COMMIT_POOL_CREATE_TS_INDEX.save(
+        deps.storage,
+        (now.seconds(), info.sender.clone()),
+        &(),
+    )?;
+
     // Charge a USD-denominated creation fee (paid in canonical bluechip)
     // for commit-pool creation as anti-spam friction. Reuses the same
     // fee knob as standard pools so deployments can enable/disable from
@@ -255,40 +294,6 @@ pub(crate) fn execute_create_creator_pool(
             amount: refund_extras,
         }));
     }
-
-    // Per-address rate limit. Reject if `info.sender` already
-    // created a commit pool within the last
-    // COMMIT_POOL_CREATE_RATE_LIMIT_SECONDS. Stamps the new timestamp
-    // before any SubMsg dispatch, so a failed reply chain (which
-    // reverts the whole tx atomically) also reverts the stamp —
-    // no permanent rate-limit state leaks from failed creates.
-    let now = env.block.time;
-    let prior_stamp =
-        LAST_COMMIT_POOL_CREATE_AT.may_load(deps.storage, info.sender.clone())?;
-    if let Some(last) = prior_stamp {
-        let next_allowed = last.plus_seconds(COMMIT_POOL_CREATE_RATE_LIMIT_SECONDS);
-        if now < next_allowed {
-            return Err(ContractError::Std(StdError::generic_err(format!(
-                "Rate-limited: this address can create another commit pool after {} \
-                 (last create at {}, cooldown {}s)",
-                next_allowed, last, COMMIT_POOL_CREATE_RATE_LIMIT_SECONDS
-            ))));
-        }
-    }
-    LAST_COMMIT_POOL_CREATE_AT.save(deps.storage, info.sender.clone(), &now)?;
-    // Sync the timestamp-ordered secondary index used by PruneRateLimits.
-    // Remove the prior (old_ts, addr) entry first so the index stays
-    // single-entry-per-address; the index is keyed by timestamp so an
-    // un-removed prior would persist as a stale ghost.
-    if let Some(prior) = prior_stamp {
-        crate::state::COMMIT_POOL_CREATE_TS_INDEX
-            .remove(deps.storage, (prior.seconds(), info.sender.clone()));
-    }
-    crate::state::COMMIT_POOL_CREATE_TS_INDEX.save(
-        deps.storage,
-        (now.seconds(), info.sender.clone()),
-        &(),
-    )?;
 
     let creator_attr = info.sender.to_string();
     let pool_counter = POOL_COUNTER.may_load(deps.storage)?.unwrap_or(0);

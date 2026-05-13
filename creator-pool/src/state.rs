@@ -276,11 +276,34 @@ pub struct Committing {
     pub committer: Addr,
     /// Cumulative USD value committed by this address.
     pub total_paid_usd: Uint128,
-    /// Cumulative native bluechip committed by this address.
+    /// Cumulative GROSS-of-fees native bluechip committed by this
+    /// address — i.e. the `asset.amount` from each commit before the
+    /// commit-fee bluechip + creator splits are taken out. This is the
+    /// committer's-perspective spend, not the pool-seed-perspective
+    /// receipt. The two perspectives diverge by the commit-fee total
+    /// per commit:
+    ///
+    ///   - `Committing.total_paid_bluechip` (this field): user spent X
+    ///     (matches user wallet outflow, what a frontend should show
+    ///     under "your contribution").
+    ///   - `NATIVE_RAISED_FROM_COMMIT` (pool-level): pool received
+    ///     `X * (1 - bluechip_fee - creator_fee)` (matches the bluechip
+    ///     side of the eventual AMM seed; what `trigger_threshold_payout`
+    ///     consumes).
+    ///
+    /// Both views are correct from their own perspectives. The pool-level
+    /// "raised toward threshold" total emitted in commit response
+    /// attributes (`total_bluechip_raised_after`) reports the NET value
+    /// — so a $25,000 threshold pool actually shows ~$23,500 of bluechip
+    /// "raised toward goal" at threshold-cross. Per-user `total_paid_*`
+    /// reflects gross spend so the user-facing accounting stays
+    /// consistent with their wallet.
     pub total_paid_bluechip: Uint128,
     /// Block time of the most recent commit by this address.
     pub last_committed: Timestamp,
     /// Native bluechip on the most recent commit (for rate-limiting/UX).
+    /// GROSS, matching `total_paid_bluechip` — see that field's doc for
+    /// the gross-vs-net distinction.
     pub last_payment_bluechip: Uint128,
     /// USD value on the most recent commit.
     pub last_payment_usd: Uint128,

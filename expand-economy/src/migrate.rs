@@ -56,6 +56,22 @@ pub fn migrate(
 
     set_contract_version(deps.storage, CONTRACT_NAME, CONTRACT_VERSION)?;
 
+    // M-3.3 migration shim: convert any prior single-bucket
+    // EXPANSION_WINDOW Item ("expansion_window") into a one-entry
+    // sliding-window EXPANSION_LOG. The legacy bucket carried
+    // `(window_start, spent_in_window)`; the equivalent log shape is
+    // a single entry timestamped at `window_start` with `amount =
+    // spent_in_window`. Subsequent expansion calls naturally age it
+    // out once `window_start + DAILY_WINDOW_SECONDS` passes.
+    //
+    // Read raw via a private alias to avoid keeping the old type in
+    // `crate::state`. Idempotent: if EXPANSION_LOG is already
+    // populated (re-run migrate or fresh deploy), the old bucket
+    // simply doesn't exist and we skip; if the old bucket exists
+    // with zero spent, we still clear it so the storage slot
+    // doesn't linger.
+    migrate_expansion_window_to_log(deps.storage)?;
+
     match msg {
         MigrateMsg::UpdateVersion {} => Ok(Response::new()
             .add_attribute(attrs::ACTION, attrs::MIGRATE)
@@ -63,4 +79,46 @@ pub fn migrate(
             .add_attribute(attrs::CONTRACT_NAME, CONTRACT_NAME)
             .add_attribute(attrs::CONTRACT_VERSION, CONTRACT_VERSION)),
     }
+}
+
+/// Convert the legacy `EXPANSION_WINDOW` single-bucket Item into the
+/// new sliding-window `EXPANSION_LOG`. Idempotent: a missing legacy
+/// slot is a no-op; a present-but-zero slot is cleared without
+/// writing a log entry; a present-with-spend slot becomes a single
+/// log entry preserving the original `window_start` timestamp so it
+/// ages out correctly under the new sliding cap arithmetic.
+fn migrate_expansion_window_to_log(
+    storage: &mut dyn cosmwasm_std::Storage,
+) -> Result<(), crate::error::ContractError> {
+    use cosmwasm_schema::cw_serde;
+    use cosmwasm_std::{Timestamp, Uint128};
+    use cw_storage_plus::Item;
+
+    #[cw_serde]
+    struct LegacyExpansionWindow {
+        window_start: Timestamp,
+        spent_in_window: Uint128,
+    }
+    let legacy: Item<LegacyExpansionWindow> = Item::new("expansion_window");
+
+    if let Some(old) = legacy.may_load(storage)? {
+        if !old.spent_in_window.is_zero() {
+            // Only seed the log if the new slot is empty; if migrate
+            // is re-run, don't double-credit by appending a duplicate.
+            if crate::state::EXPANSION_LOG
+                .may_load(storage)?
+                .is_none()
+            {
+                crate::state::EXPANSION_LOG.save(
+                    storage,
+                    &vec![crate::state::ExpansionEntry {
+                        timestamp: old.window_start,
+                        amount: old.spent_in_window,
+                    }],
+                )?;
+            }
+        }
+        legacy.remove(storage);
+    }
+    Ok(())
 }

@@ -406,14 +406,21 @@ pub struct BlueChipPriceInternalOracle {
     pub post_reset_consecutive_failures: u32,
 }
 
-/// Number of successful price-publishing oracle updates required after the
-/// price cache is reset (anchor change) before downstream conversions
-/// resume. With UPDATE_INTERVAL = 300s, this is 6 × 5min = 30 min of
-/// real cumulative-delta evidence before any commit/swap can be priced
-/// against the new anchor. Sized so a sustained ~30-min spot perturbation
-/// would be required to bias the warm-up TWAP — a much larger commitment
-/// than the prior single-block manipulation window.
-pub const ANCHOR_CHANGE_WARMUP_OBSERVATIONS: u32 = 6;
+/// Warm-up budget: the gate decrements once per published price after a
+/// reset. The post-reset sequence is:
+///   - Round 1: branch (b) buffers the first observation; no decrement.
+///   - Round 2: branch (c-success) publishes the median; one decrement
+///     (`warmup_remaining`: 5 → 4).
+///   - Rounds 3..=6: branch (a) publishes; one decrement each
+///     (`warmup_remaining`: 4 → 3 → 2 → 1 → 0).
+/// So at `ANCHOR_CHANGE_WARMUP_OBSERVATIONS = 5` the gate clears after
+/// 6 update rounds × 300s `UPDATE_INTERVAL` = 30 min of real
+/// cumulative-delta evidence before any strict commit/swap caller can
+/// be priced against the new anchor. Sized so a sustained ~30-min
+/// spot perturbation would be required to bias the warm-up TWAP — a
+/// much larger commitment than the prior single-block manipulation
+/// window.
+pub const ANCHOR_CHANGE_WARMUP_OBSERVATIONS: u32 = 5;
 
 /// Maximum consecutive post-reset (c)-failure rounds — i.e. rounds where
 /// the new observation drifts more than `MAX_TWAP_DRIFT_BPS` from the
@@ -1839,61 +1846,114 @@ pub fn query_pyth_atom_usd_price_with_conf(
     #[cfg(not(test))]
     {
         let factory = FACTORYINSTANTIATEINFO.load(deps.storage)?;
+        query_pyth_with_feed(
+            deps,
+            env,
+            factory.pyth_contract_addr_for_conversions.as_str(),
+            factory.pyth_atom_usd_price_feed_id.as_str(),
+        )
+    }
+    #[cfg(test)]
+    {
+        let _ = env;
+        // Simulate a Pyth outage so tests can exercise the cache-fallback
+        // path of get_bluechip_usd_price. Tests set this flag then clear it.
+        if MOCK_PYTH_SHOULD_FAIL
+            .may_load(deps.storage)?
+            .unwrap_or(false)
+        {
+            return Err(StdError::generic_err("mock: pyth query failed"));
+        }
+        let mock_price = MOCK_PYTH_PRICE
+            .may_load(deps.storage)?
+            .unwrap_or(Uint128::new(10_000_000)); // Default $10
+        // Mock conf = 0 so cache-fallback re-validation always passes
+        // in tests; production-only behaviour is exercised in the
+        // `not(test)` branch above.
+        Ok((mock_price, 0u64))
+    }
+}
 
-        // Partial-move feed id and pyth contract address out of factory:
-        // both are used at most twice (once for the standard query, once
-        // again only on the mock-oracle fallback path) and both consumers
-        // need owned `String`. Owning them locally lets the fallback
-        // branch reuse them by move instead of cloning a second time.
-        let feed_id = factory.pyth_atom_usd_price_feed_id;
-        let pyth_addr = factory.pyth_contract_addr_for_conversions;
+/// Live Pyth ATOM/USD read against an explicit `(pyth_addr, feed_id)`
+/// pair. Same validation pipeline as `query_pyth_atom_usd_price_with_conf`
+/// — staleness, future-skew, positive-price, expo range, conf bps gate —
+/// but with the (contract, feed) supplied by the caller rather than read
+/// from `FACTORYINSTANTIATEINFO`. Two call sites:
+///
+///   - `query_pyth_atom_usd_price_with_conf` (steady-state read) loads
+///     the factory config and forwards both fields.
+///   - `execute_propose_factory_config_update` (propose-time smoke test)
+///     forwards the PROPOSED `(contract, feed_id)` so a misconfig surfaces
+///     at propose rather than after the 48h timelock has elapsed.
+///
+/// Gated on `not(test)` because the test branch returns a mock price
+/// directly without crossing the wasm querier; the propose-time call
+/// site is also `not(test)`-gated in factory tests for the same reason.
+#[cfg(not(test))]
+pub fn query_pyth_with_feed(
+    deps: Deps,
+    env: &Env,
+    pyth_addr: &str,
+    feed_id: &str,
+) -> StdResult<(Uint128, u64)> {
+    let query_msg = PythQueryMsg::PriceFeed {
+        id: feed_id.to_string(),
+    };
 
-        let query_msg = PythQueryMsg::PriceFeed {
-            id: feed_id.clone(),
+    // The `GetPrice` fallback is only meaningful for the mock
+    // oracle (selected via the `mock` cargo feature). In production
+    // a Pyth query failure must surface as `Err` so the
+    // cache-fallback path inside `get_bluechip_usd_price_with_meta`
+    // can decide whether to bridge the outage from the cached price
+    // or refuse to serve. Without the cfg-gate, an operator who
+    // accidentally pointed `pyth_contract_addr_for_conversions` at
+    // a mock-flavoured oracle in production would silently receive
+    // mock prices.
+    //
+    // Behaviour by build flavour:
+    //   - prod (default): error propagates → caller's cache
+    //     fallback fires.
+    //   - `mock` feature: keep the GetPrice fallback so the test
+    //     mockoracle keeps working.
+    #[cfg(not(feature = "mock"))]
+    let response: PriceFeedResponse =
+        deps.querier.query_wasm_smart(pyth_addr, &query_msg)?;
+    #[cfg(feature = "mock")]
+    let response: PriceFeedResponse =
+        match deps.querier.query_wasm_smart(pyth_addr, &query_msg) {
+            Ok(res) => res,
+            Err(_) => {
+                let fallback_msg = PythQueryMsg::GetPrice {
+                    price_id: feed_id.to_string(),
+                };
+                deps.querier.query_wasm_smart(pyth_addr, &fallback_msg)?
+            }
         };
 
-        // The `GetPrice` fallback is only meaningful for the mock
-        // oracle (selected via the `mock` cargo feature). In production
-        // a Pyth query failure must surface as `Err` so the
-        // cache-fallback path inside `get_bluechip_usd_price_with_meta`
-        // can decide whether to bridge the outage from the cached price
-        // or refuse to serve. Without the cfg-gate, an operator who
-        // accidentally pointed `pyth_contract_addr_for_conversions` at
-        // a mock-flavoured oracle in production would silently receive
-        // mock prices.
-        //
-        // Behaviour by build flavour:
-        //   - prod (default): error propagates → caller's cache
-        //     fallback fires.
-        //   - `mock` feature: keep the GetPrice fallback so the test
-        //     mockoracle keeps working.
-        #[cfg(not(feature = "mock"))]
-        let response: PriceFeedResponse = {
-            let _ = feed_id; // silence unused-variable in prod build
-            deps.querier.query_wasm_smart(pyth_addr, &query_msg)?
-        };
-        #[cfg(feature = "mock")]
-        let response: PriceFeedResponse =
-            match deps.querier.query_wasm_smart(pyth_addr.clone(), &query_msg) {
-                Ok(res) => res,
-                Err(_) => {
-                    let fallback_msg = PythQueryMsg::GetPrice { price_id: feed_id };
-                    deps.querier.query_wasm_smart(pyth_addr, &fallback_msg)?
-                }
-            };
+    let current_time = env.block.time.seconds();
 
-        let current_time = env.block.time.seconds();
-
-        // Extract price data from either standard Pyth response or Mock Oracle response
-        let price_data = if let Some(feed) = response.price_feed {
-            feed.price
-        } else if let Some(price) = response.price {
-            price
-        } else {
-            return Err(StdError::generic_err(
-                "Invalid oracle response: missing price data",
-            ));
-        };
+    // Extract price data, verifying the response's feed id matches the
+    // one we asked for. Defense in depth: Pyth's own contract dispatch
+    // should already guarantee this, but the factory shouldn't have to
+    // trust that. A mismatch here means the configured Pyth contract
+    // returned a different feed's price than the one identified by
+    // `pyth_atom_usd_price_feed_id`; refuse rather than serve a price
+    // tied to an unrelated symbol.
+    let price_data = if let Some(feed) = response.price_feed {
+        if feed.id != feed_id {
+            return Err(StdError::generic_err(format!(
+                "Pyth response feed_id mismatch: requested {}, got {}",
+                feed_id, feed.id
+            )));
+        }
+        feed.price
+    } else if let Some(price) = response.price {
+        price
+    } else {
+        return Err(StdError::generic_err(
+            "Invalid oracle response: missing price data",
+        ));
+    };
 
         // Reject negative publish_time. Honest Pyth feeds always emit a
         // positive Unix timestamp; a negative value indicates a malformed
@@ -2013,27 +2073,7 @@ pub fn query_pyth_atom_usd_price_with_conf(
         // future change that would relax that gate.
         let normalized_conf_u64 = normalized_conf_u128.min(u64::MAX as u128) as u64;
 
-        Ok((normalized_price, normalized_conf_u64))
-    }
-    #[cfg(test)]
-    {
-        let _ = env;
-        // Simulate a Pyth outage so tests can exercise the cache-fallback
-        // path of get_bluechip_usd_price. Tests set this flag then clear it.
-        if MOCK_PYTH_SHOULD_FAIL
-            .may_load(deps.storage)?
-            .unwrap_or(false)
-        {
-            return Err(StdError::generic_err("mock: pyth query failed"));
-        }
-        let mock_price = MOCK_PYTH_PRICE
-            .may_load(deps.storage)?
-            .unwrap_or(Uint128::new(10_000_000)); // Default $10
-        // Mock conf = 0 so cache-fallback re-validation always passes
-        // in tests; production-only behaviour is exercised in the
-        // `not(test)` branch above.
-        Ok((mock_price, 0u64))
-    }
+    Ok((normalized_price, normalized_conf_u64))
 }
 
 /// Internal: returns the bluechip USD price together with the oracle's
@@ -2571,6 +2611,25 @@ pub fn execute_confirm_bootstrap_price(
             earliest_confirm,
             pending.proposed_at,
             crate::state::BOOTSTRAP_OBSERVATION_SECONDS
+        ))));
+    }
+
+    // Observation-count gate. Branch (d) only fires on rounds that
+    // produced a TWAP (i.e. real anchor swap activity), so this is an
+    // activity floor — not just a time floor. An attacker who
+    // manipulates a single observation and then suppresses anchor
+    // swap activity for the rest of the 1h window can satisfy the
+    // time gate above, but cannot satisfy this count gate without
+    // honest chain activity continuing to produce candidates. Sized
+    // to match the post-reset warm-up budget so the launch-day
+    // evidence requirement is symmetric with every later anchor reset.
+    if pending.observation_count < crate::state::MIN_BOOTSTRAP_OBSERVATIONS {
+        return Err(ContractError::Std(StdError::generic_err(format!(
+            "Bootstrap-price observation count {} below required minimum {}; \
+             additional successful UpdateOraclePrice rounds must produce a TWAP \
+             on the anchor before this candidate can be confirmed",
+            pending.observation_count,
+            crate::state::MIN_BOOTSTRAP_OBSERVATIONS
         ))));
     }
 
