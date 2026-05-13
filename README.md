@@ -122,6 +122,8 @@ Creators launch their own token pool by calling the factory's `Create`. Only the
 }
 ```
 
+**Funds attached:** Same `must_pay` shape as `CreateStandardPool` — exactly one coin entry of the canonical bluechip denom, amount ≥ the required USD-denominated creation fee. Multi-denom or wrong-denom payloads error at the boundary; surplus is refunded.
+
 Each creator pool receives:
 - A unique CW20 token for the creator (mint cap: 1,500,000)
 - A CW721 NFT contract for liquidity positions
@@ -145,6 +147,8 @@ Anyone can create a plain xyk pool around two pre-existing assets via `CreateSta
   }
 }
 ```
+
+**Funds attached:** Exactly one coin entry of the canonical bluechip denom (e.g. `ubluechip`), amount ≥ the required USD-denominated fee. The handler uses `cw_utils::must_pay` — any other shape (multi-denom, wrong denom, no funds when fee is enabled) errors at the boundary and the tx reverts; the bank module auto-returns all attached funds on revert, so no in-tx refund path is needed. Surplus over the required amount is refunded to the caller in the same tx.
 
 Standard pools:
 - Are immediately tradeable / depositable at creation (no threshold)
@@ -361,29 +365,32 @@ Bluechip uses an internal oracle to price the native bluechip token in USD.
                               ▼
 ┌─────────────────────────────────────────────────────────────┐
 │               INTERNAL ORACLE (FACTORY)                      │
-│  - Weighted average from multiple pools                      │
-│  - TWAP for manipulation resistance                          │
+│  - Anchor-only TWAP in v1 (basket aggregation disabled)      │
 │  - Warm-up gate after anchor change / force-rotate           │
 │  - Per-update circuit breaker (30% drift cap)                │
-│  - Random pool rotation for security                         │
+│  - Bifurcated strict vs. best-effort price reads             │
 └─────────────────────────────────────────────────────────────┘
 ```
 
+See `docs/ORACLE_CONSTANTS.md` for the full rationale on every hardcoded constant in the oracle and the path to make any of them governance-tunable.
+
 ### Price Calculation
 
-1. **ATOM/bluechip** price from the primary liquidity pool
+1. **ATOM/bluechip** price from the anchor pool (TWAP over `TWAP_WINDOW = 3600s`)
 2. **ATOM/USD** price from Pyth Network oracle
 3. **bluechip/USD** = ATOM/USD × ATOM/bluechip
 
+### Anchor-only mode (v1)
+
+`ORACLE_BASKET_ENABLED = false` in v1. The anchor pool is the sole price source; basket aggregation across multiple pools is gated off until per-pool USD normalization is wired in. The eligible-pool curation, sampling, and rotation logic is present in code but does not influence `last_price` while the basket gate is off.
+
 ### Manipulation Resistance
 
-- **TWAP (Time-Weighted Average Price)**: Smooths out temporary price spikes
-- **Pool Rotation**: Randomly selects pools (every `ROTATION_INTERVAL = 3600s`) to prevent targeted manipulation
-- **Liquidity Weighting**: Higher liquidity pools have more influence
-- **TWAP Circuit Breaker**: Each update is rejected if it deviates by more than `MAX_TWAP_DRIFT_BPS = 30%` from the prior published price (the very first update bypasses the breaker by definition)
-- **Warm-Up Gate**: After bootstrap, an admin-driven anchor change, or `ForceRotateOraclePools`, the oracle requires `ANCHOR_CHANGE_WARMUP_OBSERVATIONS = 6` successive successful TWAP rounds before downstream USD conversions resume — preventing the very first post-reset observation from being locked in by an attacker who briefly perturbed the new anchor's reserves
-- **Stale-Price Rejection**: Pyth prices older than `MAX_PRICE_AGE_SECONDS_BEFORE_STALE = 90s` are rejected
-- **Cached Eligible-Pool Snapshot**: O(N) scan of `POOLS_BY_ID` is amortised across `ELIGIBLE_POOL_REFRESH_BLOCKS = 72,000` (~5 days at 6s blocks); per-update gas is O(sample_size) regardless of total pool count
+- **Anchor-only TWAP**: time-weighted price over the 1h `TWAP_WINDOW`, sampled at `UPDATE_INTERVAL = 300s` minimum cadence.
+- **TWAP Circuit Breaker**: Each update is rejected if it deviates by more than `MAX_TWAP_DRIFT_BPS = 30%` from the prior published price (the very first update bypasses the breaker by definition).
+- **Warm-Up Gate**: After bootstrap, an admin-driven anchor change, or `ForceRotateOraclePools`, the oracle requires `ANCHOR_CHANGE_WARMUP_OBSERVATIONS = 5` successive successful TWAP rounds before downstream USD conversions resume — preventing the very first post-reset observation from being locked in by an attacker who briefly perturbed the new anchor's reserves. Strict callers (commit valuation) hard-fail during warm-up; best-effort callers (CreateStandardPool fee, distribution bounty) fall back to `pre_reset_last_price` when available.
+- **Stale-Price Rejection**: Pyth prices older than `MAX_PRICE_AGE_SECONDS_BEFORE_STALE = 300s` are rejected. The staleness check uses `u64` saturating subtraction and rejects negative `publish_time` plus any timestamp more than 5 seconds in the future, so a buggy publisher cannot wrap signed-`i64` arithmetic to pass the cap vacuously.
+- **Pool-side staleness window**: pool-level `MAX_ORACLE_STALENESS_SECONDS = 360s` (matches `UPDATE_INTERVAL + 60s grace`) gates commit acceptance against cache freshness; the boundary is `>` (strict), so exactly `ts + 360s` accepts.
 
 ### Force-Rotate (Admin)
 
@@ -531,12 +538,11 @@ The standard-pool reply handler will reject the transaction if the CW20 has a tr
 - State updates occur before external calls.
 
 ### Oracle Security
-- TWAP smoothing across multiple sampled pools.
-- Warm-up gate (6 successive observations) re-arms after every bootstrap, anchor change, and admin-triggered force-rotate, preventing first-observation-after-reset from being locked in.
+- Anchor-only TWAP in v1 (`ORACLE_BASKET_ENABLED = false`); basket aggregation gated off until per-pool USD normalization is wired in.
+- Warm-up gate (5 successive observations) re-arms after every bootstrap, anchor change, and admin-triggered force-rotate, preventing first-observation-after-reset from being locked in. Bifurcated: strict callers hard-fail during warm-up; best-effort callers fall back to `pre_reset_last_price` when available.
 - Per-update TWAP circuit breaker (30% max drift) rejects out-of-band price moves on every update after the first.
-- Random pool rotation every 3600 seconds.
-- Stale-price rejection at 90 seconds (Pyth). The staleness check uses `u64` saturating subtraction and explicitly rejects negative `publish_time` values plus any `publish_time` more than 5 seconds in the future, so a buggy or malicious Pyth publisher cannot wrap signed-`i64` arithmetic in release wasm to make a far-past or far-future timestamp pass the cap vacuously.
-- Oracle update interval rate-limit (300 seconds) bounds bounty drain.
+- Stale-price rejection at 300 seconds (Pyth). The staleness check uses `u64` saturating subtraction and explicitly rejects negative `publish_time` values plus any `publish_time` more than 5 seconds in the future, so a buggy or malicious Pyth publisher cannot wrap signed-`i64` arithmetic in release wasm to make a far-past or far-future timestamp pass the cap vacuously.
+- Pool-side staleness window (360s) matches the 300s update cadence plus a 60s keeper-jitter grace; boundary is strict (`>`), so exactly `ts + 360s` accepts.
 - Keeper bounty USD-denominated and hard-capped at $0.10 — caps yearly drain at ~$10.5k worst-case if admin is compromised.
 
 ### Threshold Mechanics
@@ -567,15 +573,15 @@ The standard-pool reply handler will reject the transaction if the CW20 has a tr
 ### Swap Validation
 - Zero-amount CW20 swaps are rejected.
 - Creator tokens are enforced to use 6 decimals to match hardcoded payout amounts.
-- `usd_payment_tolerance_bps` was removed during audit (the field was unused dead code; the relevant invariants are enforced elsewhere).
 
 ### Commit Rate Limiting
 - Minimum 13 seconds between commits per wallet.
 - Oracle rate is captured once at commit entry and threaded through every conversion in the handler — no mid-tx drift between the USD valuation and the threshold check.
 
 ### Threshold Crossing Protection
-- Excess swap at threshold crossing is capped at 20% of pool reserves, preventing a single large committer from dominating the first trade.
+- Excess swap at threshold crossing is capped at 3% of pool reserves, preventing a single large committer from dominating the first trade.
 - Any excess beyond the cap is refunded to the committer.
+- The factory-notify SubMsg is `reply_on_error`: a notify failure does NOT revert the crossing tx — it sets `PENDING_FACTORY_NOTIFY` so `RetryFactoryNotify` (permissionless) can re-send. The reply handler is a surgical mutator of that flag alone — no crossing-side storage is touched on the retry path.
 
 ### Payout Integrity Validation
 - All threshold payout components validated (no zero amounts).
@@ -655,10 +661,6 @@ Where:
 ### Daily Expansion Cap
 
 `DAILY_EXPANSION_CAP = 100,000,000,000 ubluechip` (= 100,000 bluechip) bounds the worst-case daily drain if the configured factory address is ever compromised. The window is a single bucket that resets opportunistically on the first call after `DAILY_WINDOW_SECONDS = 86,400` has elapsed since the bucket's start. Skipped requests (insufficient balance, dormant decay) do not burn cap budget.
-
-### Per-Recipient Rate Limit
-
-Every successful `RequestExpansion` payout stamps the recipient address with the block time and rejects any subsequent payout to the same recipient within `RECIPIENT_EXPANSION_RATE_LIMIT_SECONDS = 60`. Defends against `RetryFactoryNotify` storms (the pool-side retry path is permissionless by design) compressing many threshold-mint payouts into a single burst that empties the rolling daily budget. A per-pool limit would have required including the pool's controlling identity to be effective, eliminating retry permissionlessness; per-recipient keeps retry permissionless while bounding the worst-case rate to one payout per 60 seconds per any single bluechip wallet. Skipped requests (insufficient balance, dormant decay) do not stamp the timestamp, so a recipient is not penalized for outages of the reservoir.
 
 ### Cross-Validation
 
@@ -848,7 +850,7 @@ Every contract (factory, creator-pool, standard-pool, expand-economy) exports a 
 | Commit fee (protocol) | 1% | Sent to Bluechip wallet |
 | Commit fee (creator) | 5% | Sent to creator wallet |
 | LP swap fee | 0.3% | Distributed to liquidity providers |
-| Max excess swap at threshold | 20% of pool reserves | Caps single-committer dominance of the first trade |
+| Max excess swap at threshold | 3% of pool reserves | Caps single-committer dominance of the first trade |
 | Creator token decimals | 6 | Enforced to match hardcoded payout amounts |
 | Min commit interval | 13 seconds | Per-wallet commit rate limit |
 | First-depositor lock | 1000 LP | `MINIMUM_LIQUIDITY` locked into first deposit |
@@ -863,18 +865,18 @@ Every contract (factory, creator-pool, standard-pool, expand-economy) exports a 
 | Admin timelock (expand-economy) | 172,800 s (48h) | Config update + withdrawal |
 | Oracle TWAP window | 3600 seconds | Time-weighted price window |
 | Oracle update interval | 300 seconds | Min between price updates |
-| Oracle stale-price max age | 90 seconds | Pyth price max age |
-| Oracle rotation interval | 3600 seconds | Random pool re-selection |
-| Oracle warm-up observations | 6 | Required after anchor change / rotate |
+| Oracle stale-price max age (Pyth) | 300 seconds | Live Pyth + cached-Pyth max age |
+| Oracle stale-price max age (pool-side) | 360 seconds | Pool-side acceptance window for `ConversionResponse` |
+| Oracle rotation interval | 3600 seconds | Sample re-selection cadence (basket disabled in v1) |
+| Oracle warm-up observations | 5 | Required after anchor change / rotate |
 | Oracle TWAP drift cap | 30% (3000 bps) | Per-update circuit breaker |
-| Min eligible pools for TWAP | 3 | Below this the oracle returns InsufficientData |
-| Min pool liquidity (oracle eligibility) | 10,000,000,000 | Per-pool gate for TWAP sampling |
+| Min eligible pools for TWAP | 3 | Below this the oracle falls back to anchor-only |
+| Min pool liquidity (oracle eligibility) | $5,000 USD | Per-side bluechip-denominated floor (USD-converted) |
 | Eligible-pool refresh window | 72,000 blocks (~5d) | Snapshot rebuild cadence |
 | Oracle update bounty cap | $0.10 USD (6 dec) | Per successful update |
 | Distribution batch bounty cap | $0.10 USD (6 dec) | Per successful batch |
 | Expand-economy daily cap | 100,000,000,000 ubluechip | Rolling 24h cap on `RequestExpansion` |
 | Expand-economy window | 86,400 seconds | Single-bucket reset interval |
-| Expand-economy per-recipient rate limit | 60 seconds | Min interval between payouts to the same recipient |
 | Pyth `publish_time` future-skew tolerance | 5 seconds | Max allowed clock skew between Pyth publishers and chain block time |
 
 ---
@@ -901,10 +903,10 @@ cargo test --workspace --lib
 ```
 
 The workspace ships with extensive coverage:
-- factory: 130 tests
-- creator-pool: 165 tests
+- factory: 226 tests
+- creator-pool: 217 tests
 - standard-pool: 65 tests
-- expand-economy: 29 tests
+- expand-economy: 39 tests
 - pool-core: 25 tests
 
 ### Repository Layout
@@ -927,7 +929,7 @@ bluechip-contracts/
 └── frontend/                         # Reference UI
 ```
 
-See `FUZZING.md` for the fuzz harness layout and `FUZZ_REVIEW.md` for the latest coverage audit.
+See `FUZZING.md` for the fuzz harness layout and `FUZZ_REVIEW.md` for the latest coverage review.
 
 ### Deployment Order
 
@@ -938,7 +940,7 @@ See `FUZZING.md` for the fuzz harness layout and `FUZZ_REVIEW.md` for the latest
 5. Use `CreateStandardPool` to create the ATOM/bluechip anchor pool first
 6. Call `SetAnchorPool { pool_id }` on the factory (one-shot bootstrap, must match `atom_denom`)
 7. Initialize the internal oracle (first `UpdateOraclePrice` call seeds snapshots)
-8. Wait for the oracle warm-up gate to clear (6 successful TWAP rounds)
+8. Wait for the oracle warm-up gate to clear (5 successful TWAP rounds)
 9. Creators can now create commit pools; anyone can create additional standard pools
 
 ### Local / Mock-Oracle Deployment

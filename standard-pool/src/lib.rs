@@ -6,17 +6,17 @@
 //! ECONOMIC SCOPE.
 //! Standard pools are completely OUTSIDE the bluechip
 //! expand-economy / mint-decay flow:
-//!   - They never cross a commit threshold (there is no `Commit`
-//!     ExecuteMsg variant on this contract).
-//!   - They never call `NotifyThresholdCrossed` on the factory.
-//!   - The factory rejects `NotifyThresholdCrossed` from any pool
-//!     with `pool_kind == Standard` (defense-in-depth in
-//!     `execute_notify_threshold_crossed`).
-//!   - `factory::calculate_and_mint_bluechip` carries an
-//!     additional hard guard that rejects standard-pool inputs.
-//!   - `commit_pool_ordinal` is set to 0 in `PoolDetails` for every
-//!     standard pool, isolating them from the mint-decay polynomial's
-//!     `x` term (which is fed exclusively from commit-pool ordinals).
+//! - They never cross a commit threshold (there is no `Commit`
+//! ExecuteMsg variant on this contract).
+//! - They never call `NotifyThresholdCrossed` on the factory.
+//! - The factory rejects `NotifyThresholdCrossed` from any pool
+//! with `pool_kind == Standard` (defense-in-depth in
+//! `execute_notify_threshold_crossed`).
+//! - `factory::calculate_and_mint_bluechip` carries an
+//! additional hard guard that rejects standard-pool inputs.
+//! - `commit_pool_ordinal` is set to 0 in `PoolDetails` for every
+//! standard pool, isolating them from the mint-decay polynomial's
+//! `x` term (which is fed exclusively from commit-pool ordinals).
 //!
 //! The arbitrary-asset shape standard pools allow (any tokenfactory
 //! denom, any third-party CW20 paired against bluechip) is also why

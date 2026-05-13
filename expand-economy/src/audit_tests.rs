@@ -843,17 +843,17 @@ mod tests {
     // The daily cap is the primary defense against admin-compromise drain
     // through the `RequestExpansion` path. These tests pin the contract's
     // documented invariants:
-    //   - Total expansions in a 24h rolling window cannot exceed
-    //     DAILY_EXPANSION_CAP.
-    //   - The window is single-bucket-reset: when more than
-    //     DAILY_WINDOW_SECONDS elapses since `window_start`, the next
-    //     request resets `spent_in_window` to zero (acknowledged drift
-    //     vs a true sliding window — only LETS more through, never
-    //     blocks legitimately).
-    //   - Insufficient-balance graceful skip does NOT debit cap budget
-    //     (so a refund-then-retry doesn't permanently burn quota on a
-    //     payment that never landed).
-    //   - Sub-cap requests accumulate correctly across multiple calls.
+    // - Total expansions in a 24h rolling window cannot exceed
+    // DAILY_EXPANSION_CAP.
+    // - The window is single-bucket-reset: when more than
+    // DAILY_WINDOW_SECONDS elapses since `window_start`, the next
+    // request resets `spent_in_window` to zero (acknowledged drift
+    // vs a true sliding window — only LETS more through, never
+    // blocks legitimately).
+    // - Insufficient-balance graceful skip does NOT debit cap budget
+    // (so a refund-then-retry doesn't permanently burn quota on a
+    // payment that never landed).
+    // - Sub-cap requests accumulate correctly across multiple calls.
 
     use crate::state::{DAILY_EXPANSION_CAP, DAILY_WINDOW_SECONDS, EXPANSION_LOG};
 
@@ -1333,11 +1333,11 @@ mod tests {
     // pool-side `RetryFactoryNotify` flow relies on being able to
     // distinguish from a balance-skip Ok response:
     //
-    //   - BluechipDenomMismatch — the factory and expand-economy
-    //     disagree on the canonical denom (config drift between the
-    //     two independent 48h timelocks).
-    //   - FactoryQueryFailed — the factory query itself errored
-    //     (factory paused, mid-migrate, RPC blip).
+    // - BluechipDenomMismatch — the factory and expand-economy
+    // disagree on the canonical denom (config drift between the
+    // two independent 48h timelocks).
+    // - FactoryQueryFailed — the factory query itself errored
+    // (factory paused, mid-migrate, RPC blip).
     //
     // Both surface as Err so the factory-side `NotifyThresholdCrossed`
     // tx reverts and the pool can retry. These tests pin that

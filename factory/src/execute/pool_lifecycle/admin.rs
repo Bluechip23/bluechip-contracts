@@ -30,7 +30,7 @@ enum PoolAdminMsg {
     EmergencyWithdraw {},
     CancelEmergencyWithdraw {},
     RecoverStuckStates { recovery_type: crate::pool_struct::RecoveryType },
-    /// H-NFT-4 audit fix: post-1y-dormancy sweep of the unclaimed
+    /// post-1y-dormancy sweep of the unclaimed
     /// emergency-drain residual. Factory forwards; the pool's handler
     /// verifies dormancy elapsed and `info.sender == factory_addr`
     /// before sending the residual to the bluechip wallet.
@@ -125,7 +125,7 @@ pub fn execute_recover_pool_stuck_states(
     )
 }
 
-/// H-NFT-4 audit fix: factory-only entry point that forwards a
+/// factory-only entry point that forwards a
 /// `SweepUnclaimedEmergencyShares` to a pool whose 1-year claim
 /// dormancy has elapsed. The pool itself enforces both the dormancy
 /// gate AND the `info.sender == factory_addr` auth check; this

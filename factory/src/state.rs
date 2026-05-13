@@ -7,14 +7,14 @@
 // key would orphan existing chain state. Add a row here when introducing
 // a new drift, or removing one (which is a breaking migration in itself).
 //
-//   Const                          Storage key                     Reason
-//   ------------------------------ ------------------------------- -------------------------------------------------
-//   FIRST_THRESHOLD_TIMESTAMP      "first_pool_timestamp"          Renamed from FIRST_POOL_TIMESTAMP; key preserved.
-//   POOL_CREATION_CONTEXT          "pool_creation_ctx_v3"          v3 schema; v1/v2 predate the unified Temp+State context.
-//   COMMIT_POOL_COUNTER            "commit_pool_counter"           Matches.
-//   POOLS_BY_CONTRACT_ADDRESS      "pools_by_contract_address"     Matches.
-//   STANDARD_POOL_CREATION_CONTEXT "std_pool_ctx"                  Shorter key chosen to keep prefix bytes small.
-//   LAST_STANDARD_POOL_CREATE_AT   "last_std_pool_create_at"       Shorter key (per above).
+// Const                          Storage key                     Reason
+// ------------------------------ ------------------------------- -------------------------------------------------
+// FIRST_THRESHOLD_TIMESTAMP      "first_pool_timestamp"          Renamed from FIRST_POOL_TIMESTAMP; key preserved.
+// POOL_CREATION_CONTEXT          "pool_creation_ctx_v3"          v3 schema; v1/v2 predate the unified Temp+State context.
+// COMMIT_POOL_COUNTER            "commit_pool_counter"           Matches.
+// POOLS_BY_CONTRACT_ADDRESS      "pools_by_contract_address"     Matches.
+// STANDARD_POOL_CREATION_CONTEXT "std_pool_ctx"                  Shorter key chosen to keep prefix bytes small.
+// LAST_STANDARD_POOL_CREATE_AT   "last_std_pool_create_at"       Shorter key (per above).
 //
 // Unlisted Items/Maps follow the convention "key == lowercase(IDENT)";
 // any future addition that diverges should be appended here.
@@ -54,16 +54,16 @@ pub const COMMIT_POOL_COUNTER: Item<u64> = Item::new("commit_pool_counter");
 // Three coupled pool-registry maps. They MUST stay in sync — every pool
 // that exists must appear in all three. Always go through `register_pool`
 // rather than touching them individually.
-//   - POOLS_BY_ID:               pool_id  -> PoolDetails (token info, addresses)
-//   - POOLS_BY_CONTRACT_ADDRESS: pool addr -> snapshot used by oracle / queries
-//   - PAIRS:                     canonical (asset_a, asset_b) key -> pool_id.
-//     Single-pool-per-pair guard. The Uniswap-style invariant: at most one
-//     pool exists per (asset_a, asset_b) tuple. Without it, any sender can
-//     register an arbitrary number of identical pairs (each from a different
-//     `info.sender` to bypass the per-address rate limit), bloating the
-//     registry, fragmenting LP, and — most concretely — letting attackers
-//     spawn thin "anchor candidate" duplicates that the oracle's snapshot
-//     refresh may sample. See `canonical_pair_key` for the encoding.
+// - POOLS_BY_ID:               pool_id  -> PoolDetails (token info, addresses)
+// - POOLS_BY_CONTRACT_ADDRESS: pool addr -> snapshot used by oracle / queries
+// - PAIRS:                     canonical (asset_a, asset_b) key -> pool_id.
+// Single-pool-per-pair guard. The Uniswap-style invariant: at most one
+// pool exists per (asset_a, asset_b) tuple. Without it, any sender can
+// register an arbitrary number of identical pairs (each from a different
+// `info.sender` to bypass the per-address rate limit), bloating the
+// registry, fragmenting LP, and — most concretely — letting attackers
+// spawn thin "anchor candidate" duplicates that the oracle's snapshot
+// refresh may sample. See `canonical_pair_key` for the encoding.
 pub const POOLS_BY_ID: Map<u64, PoolDetails> = Map::new("pools_by_id");
 pub const POOLS_BY_CONTRACT_ADDRESS: Map<Addr, PoolStateResponseForFactory> =
     Map::new("pools_by_contract_address");
@@ -106,7 +106,7 @@ pub const MAX_PRICE_AGE_SECONDS_BEFORE_STALE: u64 = 300;
 pub const PYTH_CONF_THRESHOLD_BPS: Item<u16> = Item::new("pyth_conf_threshold_bps");
 
 /// Default conf gate (bps). Tightened from the previous hardcoded
-/// 500 bps (5%) audit fix. 200 bps = 2% is well inside what a healthy
+/// 500 bps (5%) . 200 bps = 2% is well inside what a healthy
 /// Pyth ATOM/USD feed reports during steady state.
 pub const PYTH_CONF_THRESHOLD_BPS_DEFAULT: u16 = 200;
 
@@ -281,7 +281,7 @@ pub const MAX_DISTRIBUTION_BOUNTY_USD: Uint128 = Uint128::new(100_000);
 // community to notice and respond.
 pub const PENDING_ORACLE_ROTATION: Item<Timestamp> = Item::new("pending_oracle_rotation");
 
-/// Bootstrap price candidate (HIGH-4 audit fix). At true bootstrap
+/// Bootstrap price candidate. At true bootstrap
 /// (`prior == 0 && pre_reset == 0 && pending_first_price == None`), the
 /// oracle's first published TWAP previously landed in `last_price`
 /// directly with no circuit-breaker protection — a single-block
@@ -581,23 +581,23 @@ pub const ELIGIBLE_POOL_SNAPSHOT: Item<EligiblePoolSnapshot> =
 pub const ELIGIBLE_POOL_REFRESH_BLOCKS: u64 = 72_000;
 
 // ---------------------------------------------------------------------------
-// Oracle-eligible pool curation (audit M-3)
+// Oracle-eligible pool curation
 // ---------------------------------------------------------------------------
 //
 // Two parallel inputs feed `get_eligible_creator_pools`:
 //
-//   1. `ORACLE_ELIGIBLE_POOLS` — admin-curated allowlist. Any pool kind
-//      (Standard or Commit). Required for the early-stage roadmap where
-//      bluechip/IBC standard pools are the only externally-priced sources.
-//      Add: 48h timelock via `PENDING_ORACLE_ELIGIBLE_POOL_ADD`. Remove:
-//      immediate (always safe to drop a contributor).
+// 1. `ORACLE_ELIGIBLE_POOLS` — admin-curated allowlist. Any pool kind
+// (Standard or Commit). Required for the early-stage roadmap where
+// bluechip/IBC standard pools are the only externally-priced sources.
+// Add: 48h timelock via `PENDING_ORACLE_ELIGIBLE_POOL_ADD`. Remove:
+// immediate (always safe to drop a contributor).
 //
-//   2. `COMMIT_POOLS_AUTO_ELIGIBLE` — global flag. When true, every
-//      threshold-crossed `PoolKind::Commit` pool also flows in
-//      automatically (legacy behaviour, programmatic gate). Default
-//      false on fresh deployments; the migrate handler sets it true
-//      to preserve current-behaviour for existing chains. Flip:
-//      48h timelock via `PENDING_COMMIT_POOLS_AUTO_ELIGIBLE`.
+// 2. `COMMIT_POOLS_AUTO_ELIGIBLE` — global flag. When true, every
+// threshold-crossed `PoolKind::Commit` pool also flows in
+// automatically (legacy behaviour, programmatic gate). Default
+// false on fresh deployments; the migrate handler sets it true
+// to preserve current-behaviour for existing chains. Flip:
+// 48h timelock via `PENDING_COMMIT_POOLS_AUTO_ELIGIBLE`.
 //
 // Snapshot rebuild reads both, dedupes, runs the cross-contract
 // liquidity / bluechip-side check, and writes `ELIGIBLE_POOL_SNAPSHOT`.
@@ -648,12 +648,12 @@ pub const PENDING_ORACLE_ELIGIBLE_POOL_ADD: Map<Addr, PendingOracleEligiblePoolA
 /// the curated allowlist).
 ///
 /// Default behaviour:
-///   - Fresh instantiate: flag missing → treated as `false`. Admin
-///     must explicitly opt in to auto-include commit pools (matches
-///     stages 1–3 of the roadmap where curation is manual).
-///   - Migrate from pre-flag versions: handler explicitly sets `true`
-///     to preserve the legacy "commits auto-eligible on threshold
-///     cross" behaviour for existing deployments.
+/// - Fresh instantiate: flag missing → treated as `false`. Admin
+/// must explicitly opt in to auto-include commit pools (matches
+/// stages 1–3 of the roadmap where curation is manual).
+/// - Migrate from pre-flag versions: handler explicitly sets `true`
+/// to preserve the legacy "commits auto-eligible on threshold
+/// cross" behaviour for existing deployments.
 ///
 /// Flipping the flag goes through the standard 48h timelock (both
 /// directions — turning OFF deserves observability so creators

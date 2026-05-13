@@ -86,7 +86,7 @@ fn cw20_hook_swap_dispatches_via_receive() {
     // the callback); cw20_msg.sender is the original caller.
     let trader = cosmwasm_std::testing::MockApi::default().addr_make("trader");
 
-    // M-7 audit: the swap path's synchronous CW20 balance verify checks
+    // audit: the swap path's synchronous CW20 balance verify checks
     // that the pool's actual CW20 balance covers
     // `reserve1 + fee_reserve_1 + creator_pot.amount_1 + cw20_msg.amount`.
     // The default fixture mock returns zero for every Cw20Balance query

@@ -1,10 +1,10 @@
 //! Commit-only creator claim handlers:
-//!   - `execute_claim_creator_fees` — creator sweeps CREATOR_FEE_POT
-//!     (the clip-slice accumulated from fee_size_multiplier penalties
-//!     on small LP positions).
-//!   - `execute_retry_factory_notify` — re-sends NotifyThresholdCrossed
-//!     to the factory when the initial submsg's reply_on_error handler
-//!     set PENDING_FACTORY_NOTIFY=true.
+//! - `execute_claim_creator_fees` — creator sweeps CREATOR_FEE_POT
+//! (the clip-slice accumulated from fee_size_multiplier penalties
+//! on small LP positions).
+//! - `execute_retry_factory_notify` — re-sends NotifyThresholdCrossed
+//! to the factory when the initial submsg's reply_on_error handler
+//! set PENDING_FACTORY_NOTIFY=true.
 
 use cosmwasm_std::testing::{message_info, mock_dependencies, mock_env};
 use cosmwasm_std::{Addr, CosmosMsg, SubMsg, Uint128, WasmMsg};
@@ -236,13 +236,13 @@ fn retry_factory_notify_rejects_when_flag_false() {
 // -- reply handler -------------------------------------------------------
 //
 // The pool's `reply` entry point handles two reply IDs:
-//   - REPLY_ID_FACTORY_NOTIFY_INITIAL (reply_on_error from
-//     trigger_threshold_payout): on Err, sets PENDING_FACTORY_NOTIFY
-//     so RetryFactoryNotify can be invoked later. On Ok, no-op
-//     (reply_on_error shouldn't fire on success but defensive).
-//   - REPLY_ID_FACTORY_NOTIFY_RETRY (reply_always from
-//     execute_retry_factory_notify): on Ok, clears PENDING_FACTORY_NOTIFY.
-//     On Err, keeps the flag set so another retry can be attempted.
+// - REPLY_ID_FACTORY_NOTIFY_INITIAL (reply_on_error from
+// trigger_threshold_payout): on Err, sets PENDING_FACTORY_NOTIFY
+// so RetryFactoryNotify can be invoked later. On Ok, no-op
+// (reply_on_error shouldn't fire on success but defensive).
+// - REPLY_ID_FACTORY_NOTIFY_RETRY (reply_always from
+// execute_retry_factory_notify): on Ok, clears PENDING_FACTORY_NOTIFY.
+// On Err, keeps the flag set so another retry can be attempted.
 //
 // These tests build a synthetic Reply and invoke the handler directly,
 // exercising every branch of the matrix.

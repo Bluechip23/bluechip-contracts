@@ -124,13 +124,13 @@ pub fn trigger_threshold_payout(
     // We check the flag at entry (must be false) and set it to true at
     // the END of this function, after the mint work completes. Net flow
     // across the two canonical crossing handlers:
-    //   handler entry: IS_THRESHOLD_HIT == false → handler gate passes
-    //   handler runs COMMIT_LEDGER / USD/NATIVE_RAISED writes
-    //   handler calls trigger_threshold_payout
-    //   here entry:    IS_THRESHOLD_HIT == false → gate passes
-    //   trigger_threshold_payout does the mint + seed work
-    //   here exit:     IS_THRESHOLD_HIT.save(true)
-    //   handler returns; subsequent commits route to post-threshold AMM
+    // handler entry: IS_THRESHOLD_HIT == false → handler gate passes
+    // handler runs COMMIT_LEDGER / USD/NATIVE_RAISED writes
+    // handler calls trigger_threshold_payout
+    // here entry:    IS_THRESHOLD_HIT == false → gate passes
+    // trigger_threshold_payout does the mint + seed work
+    // here exit:     IS_THRESHOLD_HIT.save(true)
+    // handler returns; subsequent commits route to post-threshold AMM
     //
     // The two crossing handlers retain their own fail-fast gates at
     // entry — they save round-trip writes (COMMIT_LEDGER, USD_RAISED,

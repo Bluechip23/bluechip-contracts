@@ -61,12 +61,12 @@ pub(crate) struct DepositPrep {
 
 /// For a single asset position, emit the CosmosMsgs needed to pull
 /// `amount` into the pool contract and return the over-payment refund:
-///   - `Native`: verify `info.funds` covers at least `amount` of the
-///     denom; emit a BankMsg refund for the overpayment (if any) back
-///     to the sender; returns the refunded amount.
-///   - `CreatorToken`: emit a `Cw20ExecuteMsg::TransferFrom` so the pool
-///     pulls exactly `amount` from the sender (requires prior allowance);
-///     always returns 0 (no refund concept for CW20 TransferFrom).
+/// - `Native`: verify `info.funds` covers at least `amount` of the
+/// denom; emit a BankMsg refund for the overpayment (if any) back
+/// to the sender; returns the refunded amount.
+/// - `CreatorToken`: emit a `Cw20ExecuteMsg::TransferFrom` so the pool
+/// pulls exactly `amount` from the sender (requires prior allowance);
+/// always returns 0 (no refund concept for CW20 TransferFrom).
 fn collect_deposit_side(
     asset_info: &TokenType,
     amount: Uint128,
@@ -570,14 +570,14 @@ pub(crate) fn snapshot_pool_cw20_balances(
 /// `add_messages` — no SubMsgs, no transient state, no behavior change.
 ///
 /// When `pre_snapshot.is_some()` AND at least one side is CW20:
-///   - Saves a `DepositVerifyContext` with the pre-balances + the
-///     credited amounts (`actual_amount0`/`1`).
-///   - Converts the LAST entry of `messages` from a fire-and-forget
-///     `CosmosMsg` into a `SubMsg::reply_on_success(.., DEPOSIT_VERIFY_REPLY_ID)`.
-///     CosmWasm dispatches the reply after every other message in the
-///     response has processed, so by the time it fires, all
-///     TransferFroms have already settled and the post-balance query
-///     reflects the actual delta.
+/// - Saves a `DepositVerifyContext` with the pre-balances + the
+/// credited amounts (`actual_amount0`/`1`).
+/// - Converts the LAST entry of `messages` from a fire-and-forget
+/// `CosmosMsg` into a `SubMsg::reply_on_success(.., DEPOSIT_VERIFY_REPLY_ID)`.
+/// CosmWasm dispatches the reply after every other message in the
+/// response has processed, so by the time it fires, all
+/// TransferFroms have already settled and the post-balance query
+/// reflects the actual delta.
 ///
 /// When `pre_snapshot.is_some()` BUT every side is Native (e.g. the
 /// ATOM/bluechip anchor pool shape): same as the verify=false path —

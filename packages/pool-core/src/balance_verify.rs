@@ -14,15 +14,15 @@
 //! back into the chain-level failure that triggers full state rollback.
 //!
 //! Why a strict equality check (delta == expected) rather than `>=`:
-//!   - Inflation: a CW20 that mints to the pool mid-transfer would
-//!     produce delta > expected. Crediting the full delta would let an
-//!     attacker grow the pool's reserve without paying for it. Rejecting
-//!     it forces the deposit to revert; the attacker can re-deposit
-//!     with the inflated amount intentionally.
-//!   - Shortfall: fee-on-transfer / negative-rebase. delta < expected.
-//!     Crediting the requested amount would let the pool's reserve
-//!     accounting drift above its actual balance — a swap-then-drain
-//!     vector. Reject and revert.
+//! - Inflation: a CW20 that mints to the pool mid-transfer would
+//! produce delta > expected. Crediting the full delta would let an
+//! attacker grow the pool's reserve without paying for it. Rejecting
+//! it forces the deposit to revert; the attacker can re-deposit
+//! with the inflated amount intentionally.
+//! - Shortfall: fee-on-transfer / negative-rebase. delta < expected.
+//! Crediting the requested amount would let the pool's reserve
+//! accounting drift above its actual balance — a swap-then-drain
+//! vector. Reject and revert.
 //!
 //! Both directions reduce to a clean equality assert.
 

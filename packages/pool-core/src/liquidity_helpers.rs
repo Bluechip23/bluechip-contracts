@@ -140,10 +140,10 @@ pub fn calc_capped_fees(
 ///
 /// - `capped_fees.0/1`: what the LP actually receives (clamped to fee_reserve).
 /// - `clipped_fees.0/1`: slice the multiplier removed, to be routed to the
-///   creator fee pot.
+/// creator fee pot.
 /// - `raw_fees` (internal): the uncapped total before the fee_reserve clamp;
-///   exposed so callers can decide how to split the clamp between LP and pot
-///   when `capped < raw`.
+/// exposed so callers can decide how to split the clamp between LP and pot
+/// when `capped < raw`.
 ///
 /// Returning both lets the fee-collection callers debit fee_reserve for
 /// both portions and credit the clipped slice to `CREATOR_FEE_POT` in one

@@ -339,7 +339,7 @@ fn test_update_pool_config_nonexistent_pool() {
     );
 }
 
-/// M-4 audit fix — propose-time bounds check + standard-pool rejection
+/// — propose-time bounds check + standard-pool rejection
 /// for the new `min_commit_usd_pre_threshold` /
 /// `min_commit_usd_post_threshold` knobs.
 #[test]
@@ -672,8 +672,8 @@ fn test_h3_anchor_no_cumulative_delta_returns_none_price() {
 #[test]
 fn test_m_new_4_confidence_interval_threshold_arithmetic() {
     // The check in query_pyth_atom_usd_price is:
-    //   let conf_threshold = (price_data.price as u64) / 20; // 5%
-    //   if price_data.conf > conf_threshold { return Err(...) }
+    // let conf_threshold = (price_data.price as u64) / 20; // 5%
+    // if price_data.conf > conf_threshold { return Err(...) }
 
     // Case 1: price = 1000, conf = 49 (4.9%) -> should PASS
     let price: i64 = 1000;
@@ -1127,8 +1127,7 @@ fn test_pay_distribution_bounty_rejects_standard_pool() {
 
 // ---------------------------------------------------------------------------
 // Commit-pool create must REJECT non-bluechip funds and multi-denom
-// payloads (audit hardening: `must_pay`-style exact-denom validation
-// replaces the prior loose `.find()` + refund-extras pattern). On reject
+// payloads` + refund-extras pattern). On reject
 // the tx reverts and the bank module auto-returns all attached funds to
 // the caller, so orphaning is impossible regardless of denom shape.
 //
@@ -1321,12 +1320,12 @@ fn test_h2_warmup_only_decrements_on_price_publishing_updates() {
 // Warm-up gate must bifurcate strict vs. best-effort callers (audit
 // hardening property test). During the warm-up window
 // (`warmup_remaining > 0`) immediately after an anchor reset:
-//   - `get_bluechip_usd_price` (strict, used by commits) MUST always err
-//     regardless of `pre_reset_last_price`.
-//   - `usd_to_bluechip_best_effort` (used by CreateStandardPool fee and
-//     PayDistributionBounty) MUST succeed when `pre_reset_last_price`
-//     is non-zero (falling back to the pre-reset rate), and err when
-//     it is zero (true bootstrap, no fallback available).
+// - `get_bluechip_usd_price` (strict, used by commits) MUST always err
+// regardless of `pre_reset_last_price`.
+// - `usd_to_bluechip_best_effort` (used by CreateStandardPool fee and
+// PayDistributionBounty) MUST succeed when `pre_reset_last_price`
+// is non-zero (falling back to the pre-reset rate), and err when
+// it is zero (true bootstrap, no fallback available).
 // ---------------------------------------------------------------------------
 #[test]
 fn test_warmup_strict_vs_best_effort_bifurcation() {
@@ -2109,11 +2108,11 @@ mod standard_pool_rate_limit_tests {
 //
 // Coverage for the new `BlueChipPriceInternalOracle.anchor_bluechip_index`
 // field across the three places production code populates / preserves it:
-//   - `execute_set_anchor_pool` (one-shot bootstrap path)
-//   - `refresh_internal_oracle_for_anchor_change` (timelocked anchor
-//     change via `UpdateConfig`; also called by the one-shot above)
-//   - `execute_force_rotate_pools` (anchor itself unchanged → index
-//     must be preserved, not zeroed)
+// - `execute_set_anchor_pool` (one-shot bootstrap path)
+// - `refresh_internal_oracle_for_anchor_change` (timelocked anchor
+// change via `UpdateConfig`; also called by the one-shot above)
+// - `execute_force_rotate_pools` (anchor itself unchanged → index
+// must be preserved, not zeroed)
 mod anchor_bluechip_index_cache_tests {
     use super::*;
     use crate::internal_bluechip_price_oracle::INTERNAL_ORACLE;
@@ -2358,7 +2357,7 @@ mod anchor_bluechip_index_cache_tests {
 
 // ---------------------------------------------------------------------------
 // Fix 5: tier the warm-up gate (best-effort fallback for non-critical
-//                               USD-denominated callers)
+// USD-denominated callers)
 // ---------------------------------------------------------------------------
 //
 // Strict callers (`bluechip_to_usd` / `usd_to_bluechip`) hard-fail during
@@ -2511,17 +2510,17 @@ mod warmup_best_effort_tests {
 
 // ---------------------------------------------------------------------------
 // Pool-admin forwarder tests (PausePool / UnpausePool / EmergencyWithdraw /
-//                             CancelEmergencyWithdraw / RecoverStuckStates)
+// CancelEmergencyWithdraw / RecoverStuckStates)
 // ---------------------------------------------------------------------------
 //
 // These factory handlers forward an admin-issued message to the target pool
 // contract via WasmMsg::Execute. The pool itself rejects anything not from
 // `pool_info.factory_addr`, so the factory is the only entity that can issue
 // these. Tests here verify:
-//   - Auth gate: non-admin sender → Unauthorized.
-//   - Pool registry gate: unknown pool_id → "not found in registry".
-//   - Forwarding shape: admin sender → exactly one WasmMsg::Execute targeting
-//     the registered pool address with the right inner message.
+// - Auth gate: non-admin sender → Unauthorized.
+// - Pool registry gate: unknown pool_id → "not found in registry".
+// - Forwarding shape: admin sender → exactly one WasmMsg::Execute targeting
+// the registered pool address with the right inner message.
 mod pool_admin_forwarder_tests {
     use super::*;
     use cosmwasm_std::{from_json, CosmosMsg, WasmMsg};
@@ -2736,7 +2735,7 @@ mod pool_admin_forwarder_tests {
 //
 // `validate_anchor_pool_choice` enforces the strict shape an anchor pool
 // must have: PoolKind::Standard, Native+Native pair of exactly
-// (bluechip_denom, atom_denom) in either order. The audit-fix
+// (bluechip_denom, atom_denom) in either order. The fix
 // `anchor_bluechip_index_cache_tests` exercises the happy paths through
 // `SetAnchorPool`. These tests cover the rejection paths — the failure
 // modes that prevent a hostile or misconfigured anchor from being set.
@@ -3688,13 +3687,13 @@ mod oracle_eligibility_tests {
 // (which conflated units across asymmetric pairs) with a single
 // `pool_meets_liquidity_floor` helper:
 //
-//   - When the oracle cache has a non-zero `last_price`, the helper
-//     converts MIN_POOL_LIQUIDITY_USD ($5,000 default) to bluechip via
-//     the cache and requires bluechip-side >= floor / 2.
-//   - When the cache is zero (bootstrap, breaker tripped, post-warmup),
-//     it falls back to MIN_POOL_LIQUIDITY_FALLBACK_BLUECHIP_PER_SIDE
-//     (5_000 BC) so the gate stays meaningful before the oracle has
-//     produced a usable USD price.
+// - When the oracle cache has a non-zero `last_price`, the helper
+// converts MIN_POOL_LIQUIDITY_USD ($5,000 default) to bluechip via
+// the cache and requires bluechip-side >= floor / 2.
+// - When the cache is zero (bootstrap, breaker tripped, post-warmup),
+// it falls back to MIN_POOL_LIQUIDITY_FALLBACK_BLUECHIP_PER_SIDE
+// (5_000 BC) so the gate stays meaningful before the oracle has
+// produced a usable USD price.
 // ===========================================================================
 mod liquidity_floor_tests {
     use super::*;
@@ -3815,8 +3814,8 @@ mod liquidity_floor_tests {
         seed_oracle_price(&mut deps, 1_000_000);
         let pool = make_addr("usd_floor_exact");
         // floor_per_side = MIN_POOL_LIQUIDITY_USD * 1_000_000 / last_price / 2
-        //                = 5_000_000_000 * 1_000_000 / 1_000_000 / 2
-        //                = 2_500_000_000 ubluechip
+        // = 5_000_000_000 * 1_000_000 / 1_000_000 / 2
+        // = 2_500_000_000 ubluechip
         let floor_per_side = MIN_POOL_LIQUIDITY_USD.u128() / 2;
         let state = pool_with_reserves(&pool, floor_per_side, floor_per_side);
         let ok = pool_meets_liquidity_floor(&deps.storage, &state, 0).unwrap();
@@ -3933,7 +3932,7 @@ mod oracle_coverage_backfill {
     }
 
     // -----------------------------------------------------------------------
-    // drift_bps_saturating: pure-function unit tests (audit P2).
+    // drift_bps_saturating: pure-function unit tests.
     //
     // The breaker's correctness pivots on this helper. Saturating
     // arithmetic is invisible at integration-test scale because real
@@ -4023,7 +4022,7 @@ mod oracle_coverage_backfill {
     }
 
     // -----------------------------------------------------------------------
-    // Bootstrap-confirm exact-boundary timestamp (audit P2).
+    // Bootstrap-confirm exact-boundary timestamp.
     //
     // Existing tests cover `< window` (rejected) and `> window`
     // (accepted) but not `== window`. The handler uses `<` so equality
@@ -4136,9 +4135,9 @@ mod oracle_coverage_backfill {
     // CreateStandardPool fee + PayDistributionBounty paths functional
     // through anchor-rotation warmup windows. Three corners matter:
     //
-    //   (a) warmup_remaining > 0, pre_reset > 0: use pre_reset (fall back)
-    //   (b) warmup_remaining > 0, pre_reset == 0: error (no fallback signal)
-    //   (c) warmup_remaining == 0, last_price > 0: use last_price (steady state)
+    // (a) warmup_remaining > 0, pre_reset > 0: use pre_reset (fall back)
+    // (b) warmup_remaining > 0, pre_reset == 0: error (no fallback signal)
+    // (c) warmup_remaining == 0, last_price > 0: use last_price (steady state)
     //
     // Existing tests touch (c) implicitly. (a) and (b) are unwitnessed
     // and would only surface during a real testnet anchor rotation.
@@ -4152,7 +4151,7 @@ mod oracle_coverage_backfill {
     /// `bluechip_price_cache.last_price`, which is bluechip-per-atom in
     /// `PRICE_PRECISION` (1e6) scaling — NOT USD-per-bluechip directly.
     /// The full USD price is derived as
-    ///   `bluechip_usd = atom_usd * PRICE_PRECISION / bluechip_per_atom`
+    /// `bluechip_usd = atom_usd * PRICE_PRECISION / bluechip_per_atom`
     /// using the live (or mock-default $10) Pyth ATOM/USD reading.
     /// With `pre_reset = 1_000_000` (= 1 BC/ATOM) and atom_usd_price
     /// = $10, the derived bluechip price is $10/BC, so
@@ -4212,9 +4211,9 @@ mod oracle_coverage_backfill {
         // oracle module) that can succeed even with both prices zero,
         // IF the anchor produces a usable atom_usd × bluechip_per_atom.
         // The contract here is:
-        //   - either Ok with a non-zero amount derived from anchor
-        //     spot + Pyth; OR
-        //   - Err with a clear message.
+        // - either Ok with a non-zero amount derived from anchor
+        // spot + Pyth; OR
+        // - Err with a clear message.
         // Whatever the branch returns, it MUST NOT panic, and the
         // amount (if Ok) must be non-zero (zero would be a silent
         // mispricing).
@@ -4376,12 +4375,12 @@ mod cross_pool_integration_tests {
         // staying in sync — without them the test helper diverges from
         // the live invariant.
         //
-        //   - `POOL_ID_BY_ADDRESS` (audit L-2): reverse address->id index
-        //     consulted by `lookup_pool_by_addr`.
-        //   - `POOL_COUNTER` upper bound (audit M-5): the auto-eligible
-        //     random-sampling loop in `get_eligible_creator_pools` ranges
-        //     `[1, POOL_COUNTER]`; without the bump, the loop never picks
-        //     these test fixtures.
+        // - `POOL_ID_BY_ADDRESS`: reverse address->id index
+        // consulted by `lookup_pool_by_addr`.
+        // - `POOL_COUNTER` upper bound: the auto-eligible
+        // random-sampling loop in `get_eligible_creator_pools` ranges
+        // `[1, POOL_COUNTER]`; without the bump, the loop never picks
+        // these test fixtures.
         crate::state::POOL_ID_BY_ADDRESS
             .save(deps.as_mut().storage, addr.clone(), &pool_id)
             .unwrap();
@@ -4546,8 +4545,8 @@ mod cross_pool_integration_tests {
         // PRICE_PRECISION). This gives `bluechip_usd ≈ atom_usd` →
         // i.e., 1 BC ≈ $atom_usd in dollar terms.
         // floor_per_side = MIN_POOL_LIQUIDITY_USD * 1e6 / 1_000_000 / 2
-        //                = MIN_POOL_LIQUIDITY_USD / 2
-        //                = 2_500_000_000 ubluechip ($2_500 each side)
+        // = MIN_POOL_LIQUIDITY_USD / 2
+        // = 2_500_000_000 ubluechip ($2_500 each side)
         crate::internal_bluechip_price_oracle::INTERNAL_ORACLE
             .update(deps.as_mut().storage, |mut o| -> StdResult<_> {
                 o.bluechip_price_cache.last_price = Uint128::new(1_000_000);
@@ -4638,7 +4637,7 @@ mod cross_pool_integration_tests {
         );
     }
 
-    /// M-3 dedup integration. A pool that's both allowlisted AND
+    /// dedup integration. A pool that's both allowlisted AND
     /// threshold-crossed-commit (auto-flag ON) must appear exactly once
     /// in the eligible set, with the allowlist's recorded
     /// `bluechip_index` taking precedence.
@@ -4887,24 +4886,24 @@ mod cross_pool_integration_tests {
 }
 
 // ---------------------------------------------------------------------------
-// H3 audit fix: pair-uniqueness invariant
+// pair-uniqueness invariant
 // ---------------------------------------------------------------------------
 //
 // Single-pool-per-pair guard. Sister tests for:
-//   - `canonical_pair_key`: order-independence and namespace separation
-//     between native denoms and CW20 contract addresses.
-//   - `register_pool`: canonical guard that rejects a second registration
-//     of an already-recorded pair regardless of which entry point called
-//     it. This is the load-bearing check.
-//   - `execute_create_standard_pool`: entry-time pre-check that rejects
-//     a duplicate before charging the creation fee, so a sybil-style
-//     "spawn N duplicates from N different addresses to bypass the
-//     per-address rate limit" attack fails fast on the second attempt
-//     onward.
-//   - `migrate`: back-fills `PAIRS` from existing `POOLS_BY_ID` entries
-//     so chains migrating from a pre-uniqueness build land with the
-//     invariant intact (FIRST pool seen wins; legacy duplicates remain
-//     queryable but no further duplicates can be created).
+// - `canonical_pair_key`: order-independence and namespace separation
+// between native denoms and CW20 contract addresses.
+// - `register_pool`: canonical guard that rejects a second registration
+// of an already-recorded pair regardless of which entry point called
+// it. This is the load-bearing check.
+// - `execute_create_standard_pool`: entry-time pre-check that rejects
+// a duplicate before charging the creation fee, so a sybil-style
+// "spawn N duplicates from N different addresses to bypass the
+// per-address rate limit" attack fails fast on the second attempt
+// onward.
+// - `migrate`: back-fills `PAIRS` from existing `POOLS_BY_ID` entries
+// so chains migrating from a pre-uniqueness build land with the
+// invariant intact (FIRST pool seen wins; legacy duplicates remain
+// queryable but no further duplicates can be created).
 mod pair_uniqueness_tests {
     use super::*;
     use crate::state::{

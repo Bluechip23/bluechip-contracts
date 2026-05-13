@@ -3,8 +3,8 @@
 //! threshold-crossed callback).
 //!
 //! Split into two files:
-//!   - `create`  — creation entry points + input validators
-//!   - `admin`   — post-creation state transitions
+//! - `create`  — creation entry points + input validators
+//! - `admin`   — post-creation state transitions
 //!
 //! Submodules are exposed directly (`pool_lifecycle::admin`,
 //! `pool_lifecycle::create`) rather than glob-re-exported here, so the

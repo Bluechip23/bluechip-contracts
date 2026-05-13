@@ -38,12 +38,12 @@ pub fn extract_contract_address(
     // CosmWasm 2.0 deprecated `SubMsgResponse.data` in favour of
     // `msg_responses`, but `data` is still populated on chains running
     // pre-CosmWasm-2.0 wasmd. Resolution order:
-    //   1. `msg_responses` entry whose `type_url` matches the
-    //      MsgInstantiateContractResponse proto path (CW2 chains).
-    //   2. `data` field (older chains; deprecation suppressed for the
-    //      explicit-fallback use only).
-    //   3. events scan (last-ditch fallback for environments that emit
-    //      neither — none we ship on, kept for forward-compat).
+    // 1. `msg_responses` entry whose `type_url` matches the
+    // MsgInstantiateContractResponse proto path (CW2 chains).
+    // 2. `data` field (older chains; deprecation suppressed for the
+    // explicit-fallback use only).
+    // 3. events scan (last-ditch fallback for environments that emit
+    // neither — none we ship on, kept for forward-compat).
     let payload: Option<Vec<u8>> = result
         .msg_responses
         .iter()

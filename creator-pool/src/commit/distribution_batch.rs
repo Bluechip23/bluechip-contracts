@@ -133,15 +133,15 @@ pub fn process_distribution_batch(
         // staged storage write when a handler returns Err, so any save
         // immediately before this return would be discarded along with
         // the tx. Operators detect stalls via:
-        //   1. The QueryMsg::DistributionState query, which exposes a
-        //      computed `is_stalled` flag against this same threshold.
-        //   2. The error text below in failed-tx receipts.
-        //   3. `recover_distribution` (admin.rs) which gates on
-        //      `time_since_update >= STUCK_DISTRIBUTION_RECOVERY_WINDOW_SECONDS`
-        //      independently of any marker.
-        //   4. Permissionless `SelfRecoverDistribution` after
-        //      `PUBLIC_DISTRIBUTION_RECOVERY_WINDOW_SECONDS` so the
-        //      admin path is not the only liveness escape.
+        // 1. The QueryMsg::DistributionState query, which exposes a
+        // computed `is_stalled` flag against this same threshold.
+        // 2. The error text below in failed-tx receipts.
+        // 3. `recover_distribution` (admin.rs) which gates on
+        // `time_since_update >= STUCK_DISTRIBUTION_RECOVERY_WINDOW_SECONDS`
+        // independently of any marker.
+        // 4. Permissionless `SelfRecoverDistribution` after
+        // `PUBLIC_DISTRIBUTION_RECOVERY_WINDOW_SECONDS` so the
+        // admin path is not the only liveness escape.
         return Err(ContractError::DistributionTimeout);
     }
     let start_after = dist_state.last_processed_key.as_ref().map(Bound::exclusive);

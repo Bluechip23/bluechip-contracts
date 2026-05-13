@@ -79,7 +79,7 @@ pub enum ContractError {
     NoPendingBootstrapPriceToCancel,
 
     // ---------------------------------------------------------------------
-    // Oracle-eligibility curation (M-3).
+    // Oracle-eligibility curation.
     // ---------------------------------------------------------------------
     #[error("Pool {pool_addr} is already in the oracle allowlist")]
     OracleEligiblePoolAlreadyAdded { pool_addr: String },

@@ -1,13 +1,13 @@
 //! Shared wire-format types used by both creator-pool and standard-pool.
 //!
 //! Split boundary:
-//!   - Shared (this module): CommitFeeInfo, PoolConfigUpdate, Cw20HookMsg,
-//!     CommitStatus, and every response struct returned by a query
-//!     handler that lives in `pool_core::query`.
-//!   - Per-contract (in creator-pool / standard-pool): ExecuteMsg,
-//!     QueryMsg, MigrateMsg, PoolInstantiateMsg / CommitPoolInstantiateMsg,
-//!     and commit-only response types (FactoryNotifyStatusResponse,
-//!     PoolCommitResponse, CommitterInfo, LastCommittedResponse).
+//! - Shared (this module): CommitFeeInfo, PoolConfigUpdate, Cw20HookMsg,
+//! CommitStatus, and every response struct returned by a query
+//! handler that lives in `pool_core::query`.
+//! - Per-contract (in creator-pool / standard-pool): ExecuteMsg,
+//! QueryMsg, MigrateMsg, PoolInstantiateMsg / CommitPoolInstantiateMsg,
+//! and commit-only response types (FactoryNotifyStatusResponse,
+//! PoolCommitResponse, CommitterInfo, LastCommittedResponse).
 //!
 //! Wire format is preserved — every struct moves with its `#[cw_serde]`
 //! attribute intact, so JSON shapes (field names, nested layouts) are
@@ -52,7 +52,7 @@ pub struct PoolConfigUpdate {
     // `usd_payment_tolerance_bps` removed — see `PoolSpecs` doc-comment
     // in `pool-core::state` for rationale.
     //
-    // `oracle_address` removed (audit fix). Per-pool oracle rotation is a
+    // `oracle_address` removed. Per-pool oracle rotation is a
     // documented admin-compromise vector: a malicious oracle can return
     // arbitrary `ConversionResponse.amount`, letting a $5 commit register
     // as a $25k threshold-cross and capturing the full pool seed +

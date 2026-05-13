@@ -1501,7 +1501,7 @@ fn test_m7_threshold_payout_emits_accept_ownership() {
     let mut deps = mock_dependencies();
     setup_pool_storage(&mut deps);
 
-    // Seed NATIVE_RAISED_FROM_COMMIT directly. After the audit-fix
+    // Seed NATIVE_RAISED_FROM_COMMIT directly. After the fix
     // gross→net refactor this value is interpreted as the post-fee
     // total that has actually entered the pool's bank balance —
     // `trigger_threshold_payout` reads it directly as
@@ -1593,25 +1593,25 @@ fn test_m7_threshold_payout_emits_accept_ownership() {
 }
 
 // ---------------------------------------------------------------------------
-// H6 audit fix: distribution liveness primitives
+// distribution liveness primitives
 // ---------------------------------------------------------------------------
 //
 // Coverage for the four-part fix (per-mint reply isolation, skip
 // primitive, self-recover, claim entry):
 //
-//   - Per-mint isolation: a single failing recipient lands in
-//     `FAILED_MINTS` rather than reverting the whole batch tx; the
-//     other rows in the batch still mint, the cursor advances.
-//   - SkipDistributionUser: factory-only escape hatch removes a row
-//     from COMMIT_LEDGER, credits the user's pro-rata reward into
-//     FAILED_MINTS, resets failure counters, re-enables distribution.
-//   - SelfRecoverDistribution: permissionless after the 7-day
-//     `PUBLIC_DISTRIBUTION_RECOVERY_WINDOW_SECONDS` window; rejected
-//     before the window, accepted after.
-//   - ClaimFailedDistribution: committer (or anyone with their key)
-//     pulls a previously-failed mint out of FAILED_MINTS, optionally
-//     redirected to a fresh wallet. Re-failures recurse cleanly back
-//     into FAILED_MINTS via the same reply-isolation harness.
+// - Per-mint isolation: a single failing recipient lands in
+// `FAILED_MINTS` rather than reverting the whole batch tx; the
+// other rows in the batch still mint, the cursor advances.
+// - SkipDistributionUser: factory-only escape hatch removes a row
+// from COMMIT_LEDGER, credits the user's pro-rata reward into
+// FAILED_MINTS, resets failure counters, re-enables distribution.
+// - SelfRecoverDistribution: permissionless after the 7-day
+// `PUBLIC_DISTRIBUTION_RECOVERY_WINDOW_SECONDS` window; rejected
+// before the window, accepted after.
+// - ClaimFailedDistribution: committer (or anyone with their key)
+// pulls a previously-failed mint out of FAILED_MINTS, optionally
+// redirected to a fresh wallet. Re-failures recurse cleanly back
+// into FAILED_MINTS via the same reply-isolation harness.
 mod distribution_liveness_tests {
     use super::*;
     use crate::contract::reply;
@@ -1676,10 +1676,10 @@ mod distribution_liveness_tests {
     /// Per-mint isolation: when `process_distribution_batch` dispatches
     /// a per-user mint as a `reply_always` SubMsg and the mint fails,
     /// the contract's reply handler must
-    ///   (a) NOT propagate the error,
-    ///   (b) clear the PENDING_MINT_REPLIES stash for that id,
-    ///   (c) accumulate the failed amount under the user in FAILED_MINTS,
-    ///   (d) emit `distribution_mint_isolated_failure` action.
+    /// (a) NOT propagate the error,
+    /// (b) clear the PENDING_MINT_REPLIES stash for that id,
+    /// (c) accumulate the failed amount under the user in FAILED_MINTS,
+    /// (d) emit `distribution_mint_isolated_failure` action.
     /// This is the load-bearing liveness invariant — without it, a
     /// single rejecting recipient reverts the batch tx and stalls
     /// distribution for every committer.
@@ -2313,7 +2313,7 @@ mod distribution_liveness_tests {
 }
 
 // ---------------------------------------------------------------------------
-// H1 audit fix: creator-pool deposit balance verification
+// creator-pool deposit balance verification
 // ---------------------------------------------------------------------------
 //
 // The creator-pool dispatcher used to call the no-verify deposit /
@@ -2331,10 +2331,10 @@ mod distribution_liveness_tests {
 //
 // Tests in this module confirm that production deposits routed through
 // `ExecuteMsg::DepositLiquidity` / `ExecuteMsg::AddToPosition` now:
-//   - emit a final SubMsg tagged `reply_on_success` with the verify
-//     reply id (the anchor the reply handler hooks onto), and
-//   - persist `DEPOSIT_VERIFY_CTX` carrying the pre-balance snapshot
-//     and credited delta for the reply to consume.
+// - emit a final SubMsg tagged `reply_on_success` with the verify
+// reply id (the anchor the reply handler hooks onto), and
+// - persist `DEPOSIT_VERIFY_CTX` carrying the pre-balance snapshot
+// and credited delta for the reply to consume.
 mod deposit_verify_tests {
     use super::*;
     use crate::contract::reply;
@@ -2751,7 +2751,7 @@ mod deposit_verify_tests {
 }
 
 // ---------------------------------------------------------------------------
-// H-NFT-1 audit fix: empty-position persistence on full removal
+// empty-position persistence on full removal
 // ---------------------------------------------------------------------------
 //
 // Pre-fix, `RemoveAllLiquidity` on a non-first-depositor position
@@ -2768,13 +2768,13 @@ mod deposit_verify_tests {
 // empty-position model.
 //
 // Tests in this module confirm:
-//   - The row persists with `liquidity == 0` after full removal.
-//   - OWNER_POSITIONS index entry persists so frontends can still list
-//     the empty NFT under "your positions."
-//   - AddToPosition successfully rehydrates the empty position.
-//   - CollectFees on an empty position is a clean no-op (no double-debit).
-//   - First-depositor positions still drop to `locked_liquidity` rather
-//     than zero (the locked-floor invariant is preserved).
+// - The row persists with `liquidity == 0` after full removal.
+// - OWNER_POSITIONS index entry persists so frontends can still list
+// the empty NFT under "your positions."
+// - AddToPosition successfully rehydrates the empty position.
+// - CollectFees on an empty position is a clean no-op (no double-debit).
+// - First-depositor positions still drop to `locked_liquidity` rather
+// than zero (the locked-floor invariant is preserved).
 mod empty_position_persistence_tests {
     use super::*;
     use crate::testing::liquidity_tests::{create_test_position, setup_pool_post_threshold};
@@ -3095,7 +3095,7 @@ mod empty_position_persistence_tests {
 }
 
 // ---------------------------------------------------------------------------
-// H-NFT-4 audit fix: per-position emergency-claim escrow
+// per-position emergency-claim escrow
 // ---------------------------------------------------------------------------
 //
 // Pre-fix, Phase-2 emergency-drain swept ALL pool funds (including
@@ -3584,7 +3584,7 @@ mod emergency_claim_escrow_tests {
         assert!(matches!(err, ContractError::NoUnclaimedEmergencyResidual));
     }
 
-    /// §6-M-3 audit fix: once `SweepUnclaimedEmergencyShares` has fired,
+    /// once `SweepUnclaimedEmergencyShares` has fired,
     /// per-position claims are hard-closed with
     /// `EmergencyClaimsClosedPostSweep`. Pre-fix the snapshot's tally
     /// would still get bumped past `drainable` if late claimants showed

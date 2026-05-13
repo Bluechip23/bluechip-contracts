@@ -2,17 +2,17 @@
 //! the pool over its `commit_amount_for_threshold_usd` target.
 //!
 //! Responsibilities (in order):
-//!   1. Split the incoming commit into a threshold portion (up to the
-//!      remaining target) and an excess portion.
-//!   2. Credit the threshold portion to `COMMIT_LEDGER` +
-//!      `USD_RAISED_FROM_COMMIT` / `NATIVE_RAISED_FROM_COMMIT`, flip
-//!      `IS_THRESHOLD_HIT`, and run the payout (seeds LP reserves, sends
-//!      creator tokens, schedules the factory notify SubMsg).
-//!   3. Swap the excess through the freshly-seeded pool, capped at 3% of
-//!      the new bluechip reserve to prevent the crosser from capturing a
-//!      structural MEV trade. Whatever is above the cap is refunded.
-//!   4. Update commit analytics and clear `THRESHOLD_PROCESSING` so the
-//!      next commit can proceed.
+//! 1. Split the incoming commit into a threshold portion (up to the
+//! remaining target) and an excess portion.
+//! 2. Credit the threshold portion to `COMMIT_LEDGER` +
+//! `USD_RAISED_FROM_COMMIT` / `NATIVE_RAISED_FROM_COMMIT`, flip
+//! `IS_THRESHOLD_HIT`, and run the payout (seeds LP reserves, sends
+//! creator tokens, schedules the factory notify SubMsg).
+//! 3. Swap the excess through the freshly-seeded pool, capped at 3% of
+//! the new bluechip reserve to prevent the crosser from capturing a
+//! structural MEV trade. Whatever is above the cap is refunded.
+//! 4. Update commit analytics and clear `THRESHOLD_PROCESSING` so the
+//! next commit can proceed.
 //!
 //! The factory-notify message is attached as a SubMsg (not a plain
 //! CosmosMsg) so a failure on the factory side is recoverable via
@@ -376,7 +376,7 @@ pub(crate) fn process_threshold_hit_exact(
     let final_usd = new_total.min(commit_config.commit_amount_for_threshold_usd);
     USD_RAISED_FROM_COMMIT.save(deps.storage, &final_usd)?;
     // Store the net-of-fees bluechip that actually enters the contract's
-    // bank balance (audit fix; see pre_threshold.rs comment block).
+    // bank balance (; see pre_threshold.rs comment block).
     // Eliminates the dust-stranding mismatch between per-commit fee
     // floors and the recovery formula in `trigger_threshold_payout`.
     NATIVE_RAISED_FROM_COMMIT

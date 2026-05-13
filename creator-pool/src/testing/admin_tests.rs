@@ -44,7 +44,7 @@ fn install_factory_emergency_delay_mock(
 fn mock_instantiate_msg() -> PoolInstantiateMsg {
     // Both the CreatorToken entry and `token_address` must be bech32-valid
     // (cosmwasm's mock API rejects raw strings via addr_validate) AND must
-    // equal each other (post-audit pair-shape invariant). Using the same
+    // equal each other. Using the same
     // MockApi-derived address for both satisfies both.
     let api = MockApi::default();
     let token_addr = api.addr_make("creator_token");
@@ -215,7 +215,7 @@ fn test_emergency_withdraw() {
         .unwrap();
     assert_eq!(action.value, "emergency_withdraw");
 
-    // H-NFT-4 audit fix: LP-owned funds (reserve0=1000, reserve1=2000) are
+    // LP-owned funds (reserve0=1000, reserve1=2000) are
     // now escrowed for per-position claims via ClaimEmergencyShare rather
     // than swept to the bluechip wallet. The response's `amount0/amount1`
     // attributes report ONLY the funds actually swept (CREATOR_FEE_POT +
@@ -341,7 +341,7 @@ fn test_update_config_all() {
     assert_eq!(specs.lp_fee, Decimal::percent(5));
     assert_eq!(specs.min_commit_interval, 60);
 
-    // `oracle_address` field on PoolConfigUpdate was removed (audit fix);
+    // `oracle_address` field on PoolConfigUpdate was removed;
     // the per-pool oracle endpoint is pinned at instantiate to the
     // factory address and no longer rotatable via this path. The
     // separate ORACLE_INFO state item still exists and is set at

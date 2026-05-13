@@ -4,14 +4,14 @@
 //!
 //! Phase ordering (load-bearing, do not reorder without re-validating
 //! the cap invariant):
-//!   1. authorise the caller as the configured factory
-//!   2. cross-validate the factory's `bluechip_denom` against ours
-//!   3. zero-amount short-circuit — dormant economy is success, not failure
-//!   4. validate the recipient address
-//!   5. rolling 24h window cap — checked but NOT persisted yet
-//!   6. balance check — graceful skip without burning cap budget
-//!   7. persist window debit
-//!   8. dispatch BankMsg
+//! 1. authorise the caller as the configured factory
+//! 2. cross-validate the factory's `bluechip_denom` against ours
+//! 3. zero-amount short-circuit — dormant economy is success, not failure
+//! 4. validate the recipient address
+//! 5. rolling 24h window cap — checked but NOT persisted yet
+//! 6. balance check — graceful skip without burning cap budget
+//! 7. persist window debit
+//! 8. dispatch BankMsg
 //!
 //! Steps 5-7 must stay in this order: persisting before the balance
 //! check would burn cap budget on skipped requests; persisting after

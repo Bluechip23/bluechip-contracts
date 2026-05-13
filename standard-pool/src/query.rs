@@ -17,22 +17,22 @@ use pool_factory_interfaces::PoolQueryMsg;
 ///
 /// Three rough variant groups:
 ///
-///   - **LP / SDK shapes**: `Pair`, `Config`, `Simulation`,
-///     `ReverseSimulation`, `CumulativePrices`, `FeeInfo`, `PoolState`,
-///     `FeeState`, `Position*`, `PoolInfo`, `Analytics`. Each
-///     forwards to a shared `pool_core::query::*` handler. The
-///     `PoolState {}` shape (`PoolStateResponse`) is the LP-side type;
-///     `GetPoolState {}` below is a different shape for factory use.
+/// - **LP / SDK shapes**: `Pair`, `Config`, `Simulation`,
+/// `ReverseSimulation`, `CumulativePrices`, `FeeInfo`, `PoolState`,
+/// `FeeState`, `Position*`, `PoolInfo`, `Analytics`. Each
+/// forwards to a shared `pool_core::query::*` handler. The
+/// `PoolState {}` shape (`PoolStateResponse`) is the LP-side type;
+/// `GetPoolState {}` below is a different shape for factory use.
 ///
-///   - **Factory-facing shapes**: `GetPoolState`, `GetAllPools`,
-///     `IsPaused`. These return types defined in
-///     `pool_factory_interfaces` and are routed through
-///     `query_for_factory`. Frontends should use the LP-shape variants
-///     above instead.
+/// - **Factory-facing shapes**: `GetPoolState`, `GetAllPools`,
+/// `IsPaused`. These return types defined in
+/// `pool_factory_interfaces` and are routed through
+/// `query_for_factory`. Frontends should use the LP-shape variants
+/// above instead.
 ///
-///   - **Standard-pool-only**: `Analytics`. Standard pools have no
-///     commit ledger, so `query_analytics` always reports
-///     `FullyCommitted` with zero raised on both sides.
+/// - **Standard-pool-only**: `Analytics`. Standard pools have no
+/// commit ledger, so `query_analytics` always reports
+/// `FullyCommitted` with zero raised on both sides.
 #[cfg_attr(not(feature = "library"), entry_point)]
 pub fn query(deps: Deps, env: Env, msg: QueryMsg) -> StdResult<Binary> {
     match msg {

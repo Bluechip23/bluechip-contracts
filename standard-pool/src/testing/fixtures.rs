@@ -43,10 +43,10 @@ pub fn fixture_addrs() -> FixtureAddrs {
 }
 
 /// Returns a fresh `OwnedDeps` wired up so:
-///   - the position-NFT contract answers `OwnerOf { .. }` with the
-///     supplied `owner` (used by `verify_position_ownership`),
-///   - any CW20 contract answers `Balance { .. }` with `Uint128::zero()`
-///     (used by the verify path's pre-balance snapshot).
+/// - the position-NFT contract answers `OwnerOf { .. }` with the
+/// supplied `owner` (used by `verify_position_ownership`),
+/// - any CW20 contract answers `Balance { .. }` with `Uint128::zero()`
+/// (used by the verify path's pre-balance snapshot).
 ///
 /// In unit tests the deposit's verify SubMsg never fires (mock_deps
 /// doesn't dispatch SubMsg replies); the snapshot happens in the

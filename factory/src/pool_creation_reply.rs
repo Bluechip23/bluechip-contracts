@@ -280,11 +280,11 @@ pub fn finalize_pool(
 // ---------------------------------------------------------------------------
 //
 // Standard pools have a 2-step reply chain (vs the commit-pool's 3 steps):
-//   1. CW721 NFT instantiate (kicked off by `execute_create_standard_pool`)
-//        -> reply lands in `mint_standard_nft`
-//   2. Pool wasm instantiate (kicked off by `mint_standard_nft`)
-//        -> reply lands in `finalize_standard_pool` which transfers NFT
-//           ownership to the new pool and registers it.
+// 1. CW721 NFT instantiate (kicked off by `execute_create_standard_pool`)
+// -> reply lands in `mint_standard_nft`
+// 2. Pool wasm instantiate (kicked off by `mint_standard_nft`)
+// -> reply lands in `finalize_standard_pool` which transfers NFT
+// ownership to the new pool and registers it.
 //
 // No CW20 instantiate step — standard pools wrap pre-existing tokens.
 // No CW20 ownership transfer at finalize — there's nothing to transfer.

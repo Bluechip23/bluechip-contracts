@@ -120,7 +120,7 @@ pub fn remove_all_liquidity(
     // reserves above MIN auto-clears both flags.
     let auto_paused_now = maybe_auto_pause_on_low_liquidity(deps.storage, &pool_state)?;
 
-    // H-NFT-1 audit fix: both exit cases keep the LIQUIDITY_POSITIONS
+    // both exit cases keep the LIQUIDITY_POSITIONS
     // row alive. The prior behaviour deleted the row on a standard exit
     // (locked_liquidity == 0), leaving the user's CW721 NFT as a
     // tombstone — it still existed on-chain (no BurnNft is ever

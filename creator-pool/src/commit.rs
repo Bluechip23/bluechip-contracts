@@ -4,16 +4,16 @@
 //! The four handler bodies — pre-threshold funding, post-threshold AMM
 //! swap, threshold-crossing split, and distribution batch processing —
 //! live in submodules:
-//!   - [`pre_threshold`]       — commits while the pool is still funding
-//!   - [`post_threshold`]      — commits after the pool is fully funded
-//!   - [`threshold_crossing`]  — the commit that carries the pool across
-//!   - [`distribution`]        — post-threshold keeper-driven payout batches
+//! - [`pre_threshold`]       — commits while the pool is still funding
+//! - [`post_threshold`]      — commits after the pool is fully funded
+//! - [`threshold_crossing`]  — the commit that carries the pool across
+//! - [`distribution`]        — post-threshold keeper-driven payout batches
 //!
 //! This file keeps:
-//!   - `commit` / `execute_commit_logic` — the entry point + dispatcher
-//!   - `commit_base_attributes`          — shared by all four response paths
-//!   - `calculate_commit_fees` / `build_fee_messages`
-//!   - `MIN_COMMIT_USD_*` constants
+//! - `commit` / `execute_commit_logic` — the entry point + dispatcher
+//! - `commit_base_attributes`          — shared by all four response paths
+//! - `calculate_commit_fees` / `build_fee_messages`
+//! - `MIN_COMMIT_USD_*` constants
 //!
 //! and re-exports `execute_continue_distribution` so the pool's entry
 //! points don't need to know about the submodule structure.
@@ -96,7 +96,7 @@ pub fn commit(
     max_spread: Option<Decimal>,
 ) -> Result<Response, ContractError> {
     ensure_not_drained(deps.storage)?;
-    // M-4.1 audit fix: admin (or auto-low-liquidity) pause halts ALL
+    // admin (or auto-low-liquidity) pause halts ALL
     // commit branches, not just the post-threshold AMM-swap path.
     // POOL_PAUSED is true whenever the pool is paused for any reason
     // (admin Pause, emergency-withdraw Phase 1, or auto-pause from
@@ -141,7 +141,7 @@ fn execute_commit_logic(
     let fee_info = COMMITFEEINFO.load(deps.storage)?;
     let sender = info.sender.clone();
 
-    // M-4.3 audit fix: commits flow only in the bluechip direction.
+    // commits flow only in the bluechip direction.
     // `validate_pool_token_info` pins `asset_infos[0]` to the canonical
     // bluechip Native denom and `asset_infos[1]` to the creator-token
     // CW20, so accepting the creator-token side here was dead-code —
@@ -206,13 +206,13 @@ fn execute_commit_logic(
             // Strict exact-match on attached funds via `cw_utils::must_pay`.
             //
             // `must_pay` enforces:
-            //   1. Funds list must be exactly one coin (rejects multi-denom).
-            //      An attacker (or careless frontend) attaching
-            //      `[ubluechip: amount, ibc/...: Y]` would otherwise have the
-            //      IBC denom silently absorbed into the pool's bank balance
-            //      with no recovery path.
-            //   2. Coin amount must be non-zero.
-            //   3. Coin denom must match the canonical bluechip denom.
+            // 1. Funds list must be exactly one coin (rejects multi-denom).
+            // An attacker (or careless frontend) attaching
+            // `[ubluechip: amount, ibc/...: Y]` would otherwise have the
+            // IBC denom silently absorbed into the pool's bank balance
+            // with no recovery path.
+            // 2. Coin amount must be non-zero.
+            // 3. Coin denom must match the canonical bluechip denom.
             //
             // The post-condition `sent == amount` then catches under/
             // overpayment in the bluechip side, preserving the

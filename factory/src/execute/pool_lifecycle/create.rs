@@ -33,10 +33,10 @@ use super::super::{encode_reply_id, MINT_STANDARD_NFT, SET_TOKENS};
 pub const CREATOR_TOKEN_SENTINEL: &str = "WILL_BE_CREATED_BY_FACTORY";
 
 /// Validates the pair shape supplied by the commit-pool creator:
-///   - exactly one Bluechip entry whose denom equals the factory's canonical
-///     `bluechip_denom` (prevents attackers from registering pools under a
-///     fake native denom they control via tokenfactory or similar)
-///   - exactly one CreatorToken entry whose contract_addr equals the sentinel
+/// - exactly one Bluechip entry whose denom equals the factory's canonical
+/// `bluechip_denom` (prevents attackers from registering pools under a
+/// fake native denom they control via tokenfactory or similar)
+/// - exactly one CreatorToken entry whose contract_addr equals the sentinel
 ///
 /// Anything else (duplicate Bluechips with different denoms, two CreatorTokens,
 /// a CreatorToken pointing at some pre-existing CW20, a Bluechip with a wrong
@@ -203,21 +203,21 @@ pub(crate) fn execute_create_creator_pool(
     // fee knob as standard pools so deployments can enable/disable from
     // a single config value.
     //
-    // Fallback policy (HIGH-3 audit fix):
-    //   - oracle returns a non-zero amount (steady state OR best-effort
-    //     warm-up backed by `pre_reset_last_price`): use the conversion.
-    //   - oracle unavailable AND `INITIAL_ANCHOR_SET == false`: this is
-    //     the true bootstrap window before the anchor pool exists, so
-    //     fall back to the hardcoded `STANDARD_POOL_CREATION_FEE_FALLBACK_BLUECHIP`.
-    //     Reachable for at most the first standard-pool creation (which
-    //     becomes the anchor) — bounded one-shot.
-    //   - oracle unavailable AND `INITIAL_ANCHOR_SET == true`: refuse
-    //     creation with `OracleUnavailable`. Without this gate, an
-    //     attacker who waited for an oracle outage could pay the flat
-    //     hardcoded amount regardless of the bluechip USD price (could
-    //     be 100× too cheap if bluechip moons, or 100× too expensive
-    //     if it crashes). Refusing converts an attack window into a
-    //     temporary creation freeze, which is safer than mispricing.
+    // Fallback policy:
+    // - oracle returns a non-zero amount (steady state OR best-effort
+    // warm-up backed by `pre_reset_last_price`): use the conversion.
+    // - oracle unavailable AND `INITIAL_ANCHOR_SET == false`: this is
+    // the true bootstrap window before the anchor pool exists, so
+    // fall back to the hardcoded `STANDARD_POOL_CREATION_FEE_FALLBACK_BLUECHIP`.
+    // Reachable for at most the first standard-pool creation (which
+    // becomes the anchor) — bounded one-shot.
+    // - oracle unavailable AND `INITIAL_ANCHOR_SET == true`: refuse
+    // creation with `OracleUnavailable`. Without this gate, an
+    // attacker who waited for an oracle outage could pay the flat
+    // hardcoded amount regardless of the bluechip USD price (could
+    // be 100× too cheap if bluechip moons, or 100× too expensive
+    // if it crashes). Refusing converts an attack window into a
+    // temporary creation freeze, which is safer than mispricing.
     let usd_fee = factory_cw20.standard_pool_creation_fee_usd;
     let (required_bluechip, fee_source) = if usd_fee.is_zero() {
         (Uint128::zero(), "disabled")
@@ -250,8 +250,7 @@ pub(crate) fn execute_create_creator_pool(
             }
         }
     };
-    // Strict single-denom funds validation (audit hardening: replace the
-    // prior best-effort `.find()` + refund-extras pattern with `must_pay`).
+    // Strict single-denom funds validation` + refund-extras pattern with `must_pay`).
     // `must_pay` enforces that `info.funds` contains exactly one Coin
     // entry whose denom equals `bluechip_denom` and whose amount is
     // non-zero; any other shape (multi-denom, wrong denom, empty, zero
@@ -261,15 +260,15 @@ pub(crate) fn execute_create_creator_pool(
     // "extra-funds-attached" griefing vector.
     //
     // Two-mode behavior keyed off the live fee:
-    //   - Fee enabled (`required_bluechip > 0`): use `must_pay`. Surplus
-    //     over `required_bluechip` is refunded in the same tx, since
-    //     callers can't predict the exact oracle-converted amount
-    //     between quoting and submission.
-    //   - Fee disabled (`required_bluechip == 0`): no funds are expected
-    //     and none are accepted. Any attached funds (even bluechip)
-    //     error out — callers who paid by mistake get everything back on
-    //     revert. This is intentional: a disabled fee shouldn't quietly
-    //     accept then refund payments, because that masks frontend bugs.
+    // - Fee enabled (`required_bluechip > 0`): use `must_pay`. Surplus
+    // over `required_bluechip` is refunded in the same tx, since
+    // callers can't predict the exact oracle-converted amount
+    // between quoting and submission.
+    // - Fee disabled (`required_bluechip == 0`): no funds are expected
+    // and none are accepted. Any attached funds (even bluechip)
+    // error out — callers who paid by mistake get everything back on
+    // revert. This is intentional: a disabled fee shouldn't quietly
+    // accept then refund payments, because that masks frontend bugs.
     let paid_bluechip = if required_bluechip.is_zero() {
         if !info.funds.is_empty() {
             return Err(ContractError::Std(StdError::generic_err(
@@ -407,18 +406,18 @@ pub(crate) fn execute_create_creator_pool(
 /// because standard pools can hold canonical-bluechip/native, canonical-
 /// bluechip/CW20, or mixed-native pairs as long as the canonical bluechip is
 /// present on one side):
-///   - No self-pair: the two entries must differ. Same denom on both sides
-///     (`Bluechip("uatom")` + `Bluechip("uatom")`) or same address on both
-///     sides (`CreatorToken("cosmos1...")` ×2) is rejected.
-///   - `Bluechip { denom }`: each native denom must be non-empty.
-///   - Canonical inclusion: at least one leg must equal the factory's
-///     canonical `bluechip_denom`. This keeps standard pools anchored to
-///     protocol bluechip liquidity while still allowing a second native
-///     denom (e.g. ATOM) or a CW20 leg.
-///   - `CreatorToken { contract_addr }`: address must bech32-validate, AND
-///     the address must answer a `Cw20QueryMsg::TokenInfo {}` query (so we
-///     reject typos and non-CW20 contracts at creation rather than at first
-///     deposit).
+/// - No self-pair: the two entries must differ. Same denom on both sides
+/// (`Bluechip("uatom")` + `Bluechip("uatom")`) or same address on both
+/// sides (`CreatorToken("cosmos1...")` ×2) is rejected.
+/// - `Bluechip { denom }`: each native denom must be non-empty.
+/// - Canonical inclusion: at least one leg must equal the factory's
+/// canonical `bluechip_denom`. This keeps standard pools anchored to
+/// protocol bluechip liquidity while still allowing a second native
+/// denom (e.g. ATOM) or a CW20 leg.
+/// - `CreatorToken { contract_addr }`: address must bech32-validate, AND
+/// the address must answer a `Cw20QueryMsg::TokenInfo {}` query (so we
+/// reject typos and non-CW20 contracts at creation rather than at first
+/// deposit).
 fn validate_standard_pool_token_info(
     deps: Deps,
     canonical_bluechip_denom: &str,
@@ -541,7 +540,7 @@ pub(crate) fn execute_create_standard_pool(
         });
     }
 
-    // Per-address rate limit on standard-pool creation (audit fix). Mirror
+    // Per-address rate limit on standard-pool creation. Mirror
     // of the commit-pool rate-limit at `execute_create_creator_pool`.
     // Stamps the new timestamp before any further state writes — a
     // failed downstream step (insufficient funds, fee-forward revert,
@@ -606,7 +605,7 @@ pub(crate) fn execute_create_standard_pool(
         // through anchor rotations rather than forcing every standard-
         // pool creator to wait ~30 min after every rotation.
         //
-        // Hardcoded-fallback policy (HIGH-3 audit fix): if even
+        // Hardcoded-fallback policy: if even
         // best-effort returns nothing, only fall back when this is the
         // true pre-anchor bootstrap window (`INITIAL_ANCHOR_SET == false`,
         // meaning no anchor pool exists yet — this is the very first
@@ -642,14 +641,13 @@ pub(crate) fn execute_create_standard_pool(
         }
     };
 
-    // Strict single-denom funds validation (audit hardening: replace the
-    // prior best-effort `.find()` + refund-extras pattern with `must_pay`).
+    // Strict single-denom funds validation` + refund-extras pattern with `must_pay`).
     // See the equivalent block in `execute_create_commit_pool` for the
     // full rationale. Summary:
-    //   - Fee enabled: `must_pay` requires exactly one Coin entry of
-    //     `bluechip_denom`, non-zero. Any other shape errors and reverts;
-    //     bank-module revert auto-returns the caller's funds.
-    //   - Fee disabled: no funds expected, none accepted.
+    // - Fee enabled: `must_pay` requires exactly one Coin entry of
+    // `bluechip_denom`, non-zero. Any other shape errors and reverts;
+    // bank-module revert auto-returns the caller's funds.
+    // - Fee disabled: no funds expected, none accepted.
     let paid_bluechip = if required_bluechip.is_zero() {
         if !info.funds.is_empty() {
             return Err(ContractError::Std(StdError::generic_err(

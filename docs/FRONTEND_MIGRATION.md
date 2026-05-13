@@ -1121,7 +1121,11 @@ The factory exposes two distinct creation paths. Pick one based on what you want
 
 > **Wire-format note:** The `pool_msg` body now carries **only** `pool_token_info`. Every other dial — commit threshold, fee splits, threshold-payout amounts, lock caps, oracle config — is sourced from the factory's stored config and silently overwrites anything a caller tries to send. Older guides that included `threshold_payout`, `commit_fee_info`, `cw20_token_contract_id`, `factory_to_create_pool_addr`, `pyth_*`, `max_bluechip_lock_per_pool`, `creator_excess_liquidity_lock_days`, or `is_standard_pool` are stale; the factory ignores those fields.
 
-> **Creation fee:** Both paths charge a USD-denominated creation fee paid in canonical bluechip. Attach the funds to the call (7th argument to `execute`); the factory verifies the amount, forwards the fee to the bluechip wallet, and refunds any surplus on-chain in the same tx.
+> **Creation fee:** Both paths charge a USD-denominated creation fee paid in canonical bluechip. Attach the funds to the call (7th argument to `execute`); the factory verifies the amount via `cw_utils::must_pay`, forwards the fee to the bluechip wallet, and refunds any surplus on-chain in the same tx.
+>
+> **Strict single-denom requirement:** The handler accepts **exactly one** coin entry of the canonical bluechip denom. Attaching any other denom alongside (an IBC-wrapped denom, a tokenfactory token, a stray `uatom`) causes the tx to **error at the boundary** rather than silently refund the extras. On error, the bank module auto-returns all attached funds — but the create call fails. Make sure your `funds` array contains only `ubluechip` (or your chain's canonical bluechip denom).
+>
+> **Fee-disabled case:** If the factory is configured with `standard_pool_creation_fee_usd = 0`, pass an empty `funds` array. Attaching any funds when the fee is disabled also errors.
 
 > **Validation bounds (commit pools):** Token name must be 3–50 printable ASCII characters; symbol must be 3–12 chars (A–Z, 0–9) with at least one letter; decimals are pinned to 6 (the threshold-payout amounts and CW20 mint cap are calibrated for this exact value).
 
@@ -1204,7 +1208,7 @@ The factory exposes two distinct creation paths. Pick one based on what you want
     <input id="pool-creation-fee" type="number" placeholder="micro-units of bluechip"
            style="width:100%;padding:10px;font-size:14px;border:1px solid #ccc;
                   border-radius:6px;box-sizing:border-box;margin-bottom:4px;" />
-    <small style="color:#666;display:block;margin-bottom:12px;">USD-denominated; attach the canonical-bluechip equivalent. The factory refunds any surplus on-chain.</small>
+    <small style="color:#666;display:block;margin-bottom:12px;">USD-denominated; attach the canonical-bluechip equivalent ONLY (no extra denoms). The factory uses <code>must_pay</code> strict-denom validation; surplus is refunded on-chain, but extras error the tx.</small>
 
     <div style="padding:12px;background:#e3f2fd;border:1px solid #90caf9;border-radius:8px;
                 margin-bottom:16px;font-size:13px;">
@@ -1654,6 +1658,9 @@ Here's a complete, self-contained HTML page you can save and use. It includes wa
 | **"Failed to connect"** | Make sure you've approved the BlueChip chain in Keplr. Try disconnecting and reconnecting |
 | **"out of gas"** | Increase the gas limit in the `execute()` call (e.g., change `"500000"` to `"800000"`) |
 | **"insufficient funds"** | You need more BLUECHIP tokens. Check your balance in Keplr |
+| **"Invalid creation funds: ... Send exactly one denom"** | Create-pool requires exactly one coin entry of the canonical bluechip denom. Remove any IBC / tokenfactory / stray denoms from the `funds` array before re-broadcasting |
+| **"Insufficient commit-pool creation fee" / "Insufficient creation fee"** | The attached bluechip amount is below the oracle-derived USD fee. Re-query the required amount (it changes with bluechip's USD price) and re-attach |
+| **"creation fee is disabled; do not attach any funds"** | The factory currently has the creation fee set to zero. Pass an empty `funds` array on these calls |
 | **"rate limited"** | Commits have a 13-second cooldown per wallet. Wait and try again |
 | **"Pool is not fully committed"** | Buy/Sell only work after the pool crosses the $25,000 threshold. Use Subscribe instead |
 | **"You do not own this position"** | Double-check your Position ID. Query `positions_by_owner` to find your positions |

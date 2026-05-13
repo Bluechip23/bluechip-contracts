@@ -1,14 +1,14 @@
 //! Pool wasm upgrade proposal + batched migrate apply.
 //!
 //! Two-phase flow:
-//!   - `ExecuteMsg::UpgradePools` → `execute_propose_pool_upgrade`
-//!     (registers a `PENDING_POOL_UPGRADE`, starts the 48h timelock)
-//!   - `ExecuteMsg::ExecutePoolUpgrade` → `execute_apply_pool_upgrade`
-//!     (runs the FIRST batch of 10 migrates once the timelock elapses)
-//!   - `ExecuteMsg::ContinuePoolUpgrade` → `execute_continue_pool_upgrade`
-//!     (runs each subsequent batch; admin must call once per batch because
-//!     self-dispatch would risk blowing through block gas limits)
-//!   - `ExecuteMsg::CancelPoolUpgrade` → `execute_cancel_pool_upgrade`
+//! - `ExecuteMsg::UpgradePools` → `execute_propose_pool_upgrade`
+//! (registers a `PENDING_POOL_UPGRADE`, starts the 48h timelock)
+//! - `ExecuteMsg::ExecutePoolUpgrade` → `execute_apply_pool_upgrade`
+//! (runs the FIRST batch of 10 migrates once the timelock elapses)
+//! - `ExecuteMsg::ContinuePoolUpgrade` → `execute_continue_pool_upgrade`
+//! (runs each subsequent batch; admin must call once per batch because
+//! self-dispatch would risk blowing through block gas limits)
+//! - `ExecuteMsg::CancelPoolUpgrade` → `execute_cancel_pool_upgrade`
 //!
 //! Paused pools are skipped rather than migrated — the admin must unpause
 //! and re-run to include them.
@@ -47,23 +47,23 @@ pub fn execute_propose_pool_upgrade(
     // rather than 48h later at apply (where the failure cascades into
     // "cancel + re-propose + wait 48h again"):
     //
-    //   1. Caller-supplied IDs are deduplicated. Duplicates would emit
-    //      two `WasmMsg::Migrate` to the same pool — the first migrates,
-    //      the second runs the migrate handler against the already-new
-    //      code with the same migrate_msg, producing whatever the new
-    //      code's handler does on a second invocation (probably
-    //      undefined behaviour, certainly not what the admin intended).
-    //   2. Every supplied ID must reference a registered pool. An
-    //      invalid ID would error inside `build_upgrade_batch` at apply
-    //      time and revert the entire batch.
-    //   3. The anchor pool is rejected. Migrating it mid-flight
-    //      would leave the oracle querying `GetPoolState` against
-    //      possibly-mid-migration storage; if the migrate changes
-    //      the reserve representation the cumulative-delta math
-    //      breaks silently. Operators must propose a new anchor first
-    //      (CreateStandardPool + 48h ProposeConfigUpdate / one-shot
-    //      SetAnchorPool semantics), repoint the factory at it, then
-    //      migrate the old anchor in a dedicated cycle.
+    // 1. Caller-supplied IDs are deduplicated. Duplicates would emit
+    // two `WasmMsg::Migrate` to the same pool — the first migrates,
+    // the second runs the migrate handler against the already-new
+    // code with the same migrate_msg, producing whatever the new
+    // code's handler does on a second invocation (probably
+    // undefined behaviour, certainly not what the admin intended).
+    // 2. Every supplied ID must reference a registered pool. An
+    // invalid ID would error inside `build_upgrade_batch` at apply
+    // time and revert the entire batch.
+    // 3. The anchor pool is rejected. Migrating it mid-flight
+    // would leave the oracle querying `GetPoolState` against
+    // possibly-mid-migration storage; if the migrate changes
+    // the reserve representation the cumulative-delta math
+    // breaks silently. Operators must propose a new anchor first
+    // (CreateStandardPool + 48h ProposeConfigUpdate / one-shot
+    // SetAnchorPool semantics), repoint the factory at it, then
+    // migrate the old anchor in a dedicated cycle.
     //
     // None means "all pools" — same dedup/existence is implicit
     // (POOLS_BY_ID.keys already returns unique, registered IDs) but
@@ -166,22 +166,22 @@ struct UpgradeBatchOutcome {
 ///
 /// `IsPaused` query error semantics depend on `retry_mode`:
 ///
-///   * `retry_mode == false` (first-pass): the query result is
-///     load-bearing — we're about to commit to either migrating or
-///     deferring each pool. A query error means we genuinely don't know
-///     whether the pool is in a sensitive state; treating "unknown" as
-///     "not paused" would be a fail-open that lets a pool with a broken
-///     query path silently get migrated despite possibly being paused.
-///     Instead we propagate the error and the apply reverts. The admin
-///     can then `Cancel` and either drop the unreachable pool from the
-///     batch via a fresh `Propose` or repair the pool first.
+/// * `retry_mode == false` (first-pass): the query result is
+/// load-bearing — we're about to commit to either migrating or
+/// deferring each pool. A query error means we genuinely don't know
+/// whether the pool is in a sensitive state; treating "unknown" as
+/// "not paused" would be a fail-open that lets a pool with a broken
+/// query path silently get migrated despite possibly being paused.
+/// Instead we propagate the error and the apply reverts. The admin
+/// can then `Cancel` and either drop the unreachable pool from the
+/// batch via a fresh `Propose` or repair the pool first.
 ///
-///   * `retry_mode == true` (revisiting `pending_retry`): the pool was
-///     already deferred once; we're seeing if it has become migrate-able.
-///     A query error here is treated as "still not migrate-able" (push
-///     back into `skipped_pool_ids`) rather than reverting the entire
-///     retry batch — that way a single transiently-broken pool can't
-///     veto progress on the other retry candidates.
+/// * `retry_mode == true` (revisiting `pending_retry`): the pool was
+/// already deferred once; we're seeing if it has become migrate-able.
+/// A query error here is treated as "still not migrate-able" (push
+/// back into `skipped_pool_ids`) rather than reverting the entire
+/// retry batch — that way a single transiently-broken pool can't
+/// veto progress on the other retry candidates.
 fn build_upgrade_batch(
     deps: Deps,
     pool_ids: &[u64],
@@ -291,14 +291,14 @@ pub fn execute_apply_pool_upgrade(
         &first_batch,
         upgrade.new_code_id,
         &upgrade.migrate_msg,
-        false, // first-pass: a query error reverts (M-5 fail-closed)
+        false, // first-pass: a query error reverts
     )?;
 
     let mut upgrade = upgrade;
     upgrade.upgraded_count = first_batch_len;
     // Paused pools land in pending_retry instead of being silently
     // counted-and-dropped. A later ContinuePoolUpgrade re-checks each
-    // entry and migrates the ones that have unpaused (M-1 in-place
+    // entry and migrates the ones that have unpaused (in-place
     // retry). first-pass-only: this list starts empty so we just
     // assign rather than extend.
     upgrade.pending_retry = outcome.skipped_pool_ids.clone();
@@ -425,7 +425,7 @@ pub fn execute_continue_pool_upgrade(
         &batch,
         upgrade.new_code_id,
         &upgrade.migrate_msg,
-        mode == "retry", // retry-mode: tolerate IsPaused query errors (M-5 retry leniency)
+        mode == "retry", // retry-mode: tolerate IsPaused query errors
     )?;
 
     if mode == "first_pass" {

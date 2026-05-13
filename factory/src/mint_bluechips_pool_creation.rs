@@ -4,16 +4,16 @@ use crate::{
 };
 use cosmwasm_std::{BankMsg, Coin, CosmosMsg, DepsMut, Env, StdError, StdResult, Uint128};
 
-/// Saturating cap on the mint-decay polynomial input (MEDIUM-4 audit
+/// Saturating cap on the mint-decay polynomial input (audit
 /// fix). Two concentric bounds are at play:
 ///
-///   1. **Polynomial-is-zero bound (≈ 33,300):** `(5x²+x) / (s/6 + 333x)`
-///      crosses the 500e6 base around `x ≈ 33,300` at s == 0, so the
-///      polynomial output is structurally zero for any larger ordinal.
-///      Any cap above this is purely conservative.
+/// 1. **Polynomial-is-zero bound (≈ 33,300):** `(5x²+x) / (s/6 + 333x)`
+/// crosses the 500e6 base around `x ≈ 33,300` at s == 0, so the
+/// polynomial output is structurally zero for any larger ordinal.
+/// Any cap above this is purely conservative.
 ///
-///   2. **u128 overflow bound (≈ 8 × 10^18):** the inner `5 * x * x`
-///      overflows u128 around `x ≈ sqrt(2^128 / 5) ≈ 8 × 10^18`.
+/// 2. **u128 overflow bound (≈ 8 × 10^18):** the inner `5 * x * x`
+/// overflows u128 around `x ≈ sqrt(2^128 / 5) ≈ 8 × 10^18`.
 ///
 /// `MAX_DECAY_X = 1_000_000_000` sits comfortably between the two —
 /// well above any realistic ordinal an honest deployment will ever
@@ -26,7 +26,7 @@ const MAX_DECAY_X: u128 = 1_000_000_000;
 
 pub fn calculate_mint_amount(seconds_elapsed: u64, pools_created: u64) -> StdResult<Uint128> {
     // Formula (with `x = pools_created`, `s = seconds_elapsed`):
-    //   500 - ((5x^2 + x) / ((s/6) + 333x))
+    // 500 - ((5x^2 + x) / ((s/6) + 333x))
     let pools_created = pools_created as u128;
     let seconds_elapsed = seconds_elapsed as u128;
 

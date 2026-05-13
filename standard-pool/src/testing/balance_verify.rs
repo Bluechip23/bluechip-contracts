@@ -12,14 +12,14 @@
 //! update, and so on).
 //!
 //! This file covers:
-//!   - The deposit/add response carries a `reply_on_success` SubMsg
-//!     with the right reply id.
-//!   - DEPOSIT_VERIFY_CTX persists the pre-balance + credited delta
-//!     for the reply to consume.
-//!   - The reply succeeds when the post-balance matches.
-//!   - The reply rejects shortfall (fee-on-transfer / rebase down).
-//!   - The reply rejects overage (inflation / rebase up).
-//!   - Unknown reply ids and missing context both error.
+//! - The deposit/add response carries a `reply_on_success` SubMsg
+//! with the right reply id.
+//! - DEPOSIT_VERIFY_CTX persists the pre-balance + credited delta
+//! for the reply to consume.
+//! - The reply succeeds when the post-balance matches.
+//! - The reply rejects shortfall (fee-on-transfer / rebase down).
+//! - The reply rejects overage (inflation / rebase up).
+//! - Unknown reply ids and missing context both error.
 
 use cosmwasm_std::testing::{message_info, mock_env, MockApi};
 use cosmwasm_std::{

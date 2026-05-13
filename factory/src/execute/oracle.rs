@@ -145,9 +145,9 @@ pub fn execute_set_distribution_bounty(
 /// infrastructure.
 ///
 /// Skips gracefully (returns Ok with an attribute) when:
-///   - the bounty is disabled (USD value is zero)
-///   - the oracle conversion fails (Pyth + cache both unavailable)
-///   - the factory's native balance is below the converted amount
+/// - the bounty is disabled (USD value is zero)
+/// - the oracle conversion fails (Pyth + cache both unavailable)
+/// - the factory's native balance is below the converted amount
 /// Skipping rather than erroring means the pool's distribution tx never
 /// reverts because of bounty payout state.
 pub fn execute_pay_distribution_bounty(
@@ -185,7 +185,7 @@ pub fn execute_pay_distribution_bounty(
     let bounty_usd_attr = Attribute::new("bounty_configured_usd", bounty_usd.to_string());
 
     // Convert USD -> bluechip via the internal oracle. Best-effort path
-    // (audit fix): during the post-reset warm-up window the strict path
+    //: during the post-reset warm-up window the strict path
     // would Err and we'd skip every distribution-bounty payment for
     // ~30 min. The bounty itself is capped at $0.10 per call and the
     // pre-reset price is bounded by the 30% TWAP breaker, so falling
@@ -253,10 +253,10 @@ pub fn execute_pay_distribution_bounty(
 /// `ProposeConfigUpdate` flow.
 ///
 /// Validates that the chosen pool:
-///   - exists in the registry
-///   - is a `PoolKind::Standard` pool
-///   - includes the canonical bluechip denom on at least one side
-///     (so the anchor is actually priceable in bluechip terms)
+/// - exists in the registry
+/// - is a `PoolKind::Standard` pool
+/// - includes the canonical bluechip denom on at least one side
+/// (so the anchor is actually priceable in bluechip terms)
 ///
 /// On success, also rotates the oracle's `selected_pools` to include the
 /// new anchor immediately and clears the price cache so downstream reads
@@ -403,18 +403,18 @@ pub(crate) fn lookup_pool_by_addr(
     // POOL_ID_BY_ADDRESS missed. Distinguish "address is not a pool"
     // from "registry inconsistency":
     //
-    //   - In prod, every pool created via the live reply chain runs
-    //     through `state::register_pool`, which writes
-    //     POOL_ID_BY_ADDRESS and POOLS_BY_CONTRACT_ADDRESS atomically.
-    //     A miss in POOL_ID_BY_ADDRESS but a hit in
-    //     POOLS_BY_CONTRACT_ADDRESS means a write bypassed
-    //     register_pool — a real bug. Surface it loudly rather than
-    //     paper over it with an O(N) POOLS_BY_ID scan that silently
-    //     succeeds.
+    // - In prod, every pool created via the live reply chain runs
+    // through `state::register_pool`, which writes
+    // POOL_ID_BY_ADDRESS and POOLS_BY_CONTRACT_ADDRESS atomically.
+    // A miss in POOL_ID_BY_ADDRESS but a hit in
+    // POOLS_BY_CONTRACT_ADDRESS means a write bypassed
+    // register_pool — a real bug. Surface it loudly rather than
+    // paper over it with an O(N) POOLS_BY_ID scan that silently
+    // succeeds.
     //
-    //   - In tests, legacy fixtures may write POOLS_BY_ID directly.
-    //     Keep the linear-scan fallback there so existing fixtures
-    //     keep resolving without rewrites.
+    // - In tests, legacy fixtures may write POOLS_BY_ID directly.
+    // Keep the linear-scan fallback there so existing fixtures
+    // keep resolving without rewrites.
     #[cfg(not(test))]
     {
         if crate::state::POOLS_BY_CONTRACT_ADDRESS
@@ -490,7 +490,7 @@ pub(crate) fn refresh_internal_oracle_for_anchor_change(
     oracle.atom_pool_contract_address = new_anchor_addr.clone();
     oracle.last_rotation = env.block.time.seconds();
     oracle.pool_cumulative_snapshots.clear();
-    // Snapshot the pre-reset price for best-effort callers (audit fix).
+    // Snapshot the pre-reset price for best-effort callers.
     // The strict commit path never reads this; only `bluechip_to_usd_best_effort`
     // / `usd_to_bluechip_best_effort` (CreateStandardPool fee + bounty
     // payout) consult it during the warm-up window so the protocol
@@ -499,7 +499,7 @@ pub(crate) fn refresh_internal_oracle_for_anchor_change(
     oracle.bluechip_price_cache.last_price = Uint128::zero();
     oracle.bluechip_price_cache.last_update = 0;
     oracle.bluechip_price_cache.twap_observations.clear();
-    // Cache the anchor's bluechip-side index (audit fix). Replaces the
+    // Cache the anchor's bluechip-side index. Replaces the
     // O(N) fallback scan over POOLS_BY_ID that previously fired once per
     // oracle update for the anchor pool.
     oracle.anchor_bluechip_index = anchor_bluechip_index;
@@ -519,7 +519,7 @@ pub(crate) fn refresh_internal_oracle_for_anchor_change(
     oracle.warmup_remaining =
         crate::internal_bluechip_price_oracle::ANCHOR_CHANGE_WARMUP_OBSERVATIONS;
     crate::internal_bluechip_price_oracle::INTERNAL_ORACLE.save(deps.storage, &oracle)?;
-    // H-2 audit fix: clear any pre-confirm bootstrap candidate so an
+    // clear any pre-confirm bootstrap candidate so an
     // anchor change before the first `ConfirmBootstrapPrice` does not
     // leave a stale candidate with its old `proposed_at` lying around
     // for branch (d) of update_internal_oracle_price to pick back up.
@@ -528,13 +528,13 @@ pub(crate) fn refresh_internal_oracle_for_anchor_change(
 }
 
 // ===========================================================================
-// Oracle eligibility curation (M-3 audit fix).
+// Oracle eligibility curation.
 //
 // Two parallel inputs feed the snapshot rebuild:
-//   - `ORACLE_ELIGIBLE_POOLS` — admin-curated allowlist (any pool kind).
-//     Add: 48h timelock. Remove: immediate.
-//   - `COMMIT_POOLS_AUTO_ELIGIBLE` — global flag; when true, threshold-
-//     crossed `PoolKind::Commit` pools also flow in. Flip: 48h timelock.
+// - `ORACLE_ELIGIBLE_POOLS` — admin-curated allowlist (any pool kind).
+// Add: 48h timelock. Remove: immediate.
+// - `COMMIT_POOLS_AUTO_ELIGIBLE` — global flag; when true, threshold-
+// crossed `PoolKind::Commit` pools also flow in. Flip: 48h timelock.
 //
 // All admin handlers reuse `ADMIN_TIMELOCK_SECONDS` (48h) so the
 // observability window matches the rest of the factory's mutation paths.

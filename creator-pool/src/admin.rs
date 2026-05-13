@@ -6,14 +6,14 @@
 //! `use crate::admin::X;` imports resolve unchanged.
 //!
 //! The creator-pool crate keeps:
-//!   - `execute_emergency_withdraw` — a wrapper around pool-core's
-//!     two-phase initiate/core_drain that adds the commit-only
-//!     pre-threshold rejection, CREATOR_EXCESS_POSITION sweep, and
-//!     DISTRIBUTION_STATE halt.
-//!   - `execute_recover_stuck_states` + private recovery helpers —
-//!     all three failure modes (stuck threshold, stalled distribution,
-//!     jammed reentrancy guard) only ever occur inside the commit
-//!     flow, so standard-pool doesn't need them.
+//! - `execute_emergency_withdraw` — a wrapper around pool-core's
+//! two-phase initiate/core_drain that adds the commit-only
+//! pre-threshold rejection, CREATOR_EXCESS_POSITION sweep, and
+//! DISTRIBUTION_STATE halt.
+//! - `execute_recover_stuck_states` + private recovery helpers —
+//! all three failure modes (stuck threshold, stalled distribution,
+//! jammed reentrancy guard) only ever occur inside the commit
+//! flow, so standard-pool doesn't need them.
 
 pub use pool_core::admin::{
     ensure_not_drained, execute_cancel_emergency_withdraw,
@@ -43,13 +43,13 @@ use cosmwasm_std::{
 
 /// Wraps pool-core's two-phase emergency withdraw with commit-only
 /// bookkeeping:
-///   - Pre-threshold rejection (committed funds are untracked in
-///     reserves; draining would strand them).
-///   - CREATOR_EXCESS_POSITION sweep on Phase 2 — fold its amounts into
-///     `accumulation_drain_{0,1}` so pool-core's single audit record
-///     captures the grand total and the two transfer messages carry it.
-///   - DISTRIBUTION_STATE halt on Phase 2 so future
-///     ContinueDistribution calls reject cleanly.
+/// - Pre-threshold rejection (committed funds are untracked in
+/// reserves; draining would strand them).
+/// - CREATOR_EXCESS_POSITION sweep on Phase 2 — fold its amounts into
+/// `accumulation_drain_{0,1}` so pool-core's single audit record
+/// captures the grand total and the two transfer messages carry it.
+/// - DISTRIBUTION_STATE halt on Phase 2 so future
+/// ContinueDistribution calls reject cleanly.
 ///
 /// Phase 1/2 dispatch matches pre-split behavior: if
 /// `PENDING_EMERGENCY_WITHDRAW` is unset we run Phase 1 (pause + set
@@ -277,15 +277,15 @@ fn recover_reentrancy_guard(
 }
 
 // ---------------------------------------------------------------------------
-// H6 audit fix: distribution liveness primitives
+// distribution liveness primitives
 // ---------------------------------------------------------------------------
 //
 // `SkipDistributionUser`        — factory-only escape hatch.
 // `SelfRecoverDistribution`     — permissionless restart after 7d stall.
 // `ClaimFailedDistribution`     — committer-side claim of an isolated
-//                                 mint failure (lives in commit module
-//                                 alongside the distribution batch
-//                                 builder; see commit/distribution.rs).
+// mint failure (lives in commit module
+// alongside the distribution batch
+// builder; see commit/distribution.rs).
 //
 // Together these make distribution live-or-die independent of any
 // single committer (per-mint reply isolation does the heavy lifting),
@@ -329,11 +329,11 @@ fn compute_committer_reward(
 /// batch processor.
 ///
 /// Side effects:
-///   - Resets `consecutive_failures` and re-enables `is_distributing` so
-///     the next `ContinueDistribution` call resumes work without a
-///     separate `RecoverPoolStuckStates` invocation.
-///   - Advances `last_processed_key` only if the cursor was pointing at
-///     (or past) the skipped user — never rewinds the cursor.
+/// - Resets `consecutive_failures` and re-enables `is_distributing` so
+/// the next `ContinueDistribution` call resumes work without a
+/// separate `RecoverPoolStuckStates` invocation.
+/// - Advances `last_processed_key` only if the cursor was pointing at
+/// (or past) the skipped user — never rewinds the cursor.
 pub fn execute_skip_distribution_user(
     deps: DepsMut,
     env: Env,

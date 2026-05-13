@@ -23,10 +23,10 @@ use crate::msg::SimulateMultiHopResponse;
 ///
 /// For each hop the simulation
 /// 1. queries `IsFullyCommited` and rejects if the pool is still in its
-///    pre-threshold commit phase, so frontends never render a silent
-///    zero result for a route that cannot yet execute, and
+/// pre-threshold commit phase, so frontends never render a silent
+/// zero result for a route that cannot yet execute, and
 /// 2. queries the pool's `Simulation` with the current chained input
-///    and uses the returned amount as the next hop's input.
+/// and uses the returned amount as the next hop's input.
 ///
 /// Price impact is reported as `1 - product(per_hop_survival)` where
 /// `per_hop_survival = return_amount / (return_amount + spread_amount)`.

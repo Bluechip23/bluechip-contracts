@@ -715,7 +715,7 @@ fn test_adaptive_batch_sizing_with_history() {
     // but ledger sums to 2_000, so per-user floor(100 * 1_000_000 /
     // 1_000_000) = 100; 20 * 100 = 2_000 vs total_to_distribute =
     // 1_000_000, leaving a 998_000-base-unit residual that the final
-    // batch settles to the creator wallet (audit fix H2).
+    // batch settles to the creator wallet ( H2).
     assert_eq!(
         res.messages.len(),
         actually_processed + 2,
@@ -883,7 +883,7 @@ fn test_final_batch_completes_distribution() {
     // factory bounty WasmMsg. With 3 committers each paying 100 USD
     // and total_to_distribute = 1_000_000, per-user reward floors to
     // 333_333; 3 * 333_333 = 999_999, leaving 1 base unit of dust the
-    // final batch settles to the creator wallet (audit fix H2).
+    // final batch settles to the creator wallet ( H2).
     assert_eq!(
         res.messages.len(),
         5,
@@ -1162,7 +1162,7 @@ fn test_swap_cw20_via_hook() {
     assert!(pool_state.reserve1 > Uint128::new(350_000_000_000)); // CW20 increased
 }
 
-/// M-7 audit: a hostile CW20 cannot dispatch a Receive hook with a
+/// audit: a hostile CW20 cannot dispatch a Receive hook with a
 /// fabricated `amount` and drain the opposite reserve. The pool
 /// queries the CW20's balance, compares to `reserve + fee_reserve +
 /// creator_pot + claimed_amount`, and rejects on shortfall.
@@ -2404,7 +2404,7 @@ fn test_concurrent_commits_both_recorded() {
         // `Commit` doesn't expose `allow_high_max_spread`; the
         // post-threshold AMM swap path passes None to assert_max_spread,
         // so the hard cap on Bob's max_spread is 5% (the default-cap
-        // ceiling). 10% (pre-audit) is now rejected.
+        // ceiling). 10% is now rejected.
         max_spread: Some(Decimal::percent(5)),
     };
 
@@ -2569,7 +2569,7 @@ fn test_swap_fails_when_reserves_below_pause_threshold() {
     // Setup pool with reserves just below pause threshold
     setup_pool_with_reserves(&mut deps, Uint128::new(9), Uint128::new(100_000));
     // execute_simple_swap now gates on IS_THRESHOLD_HIT as defense-in-depth
-    // (M-5.1 audit fix). The setup helper seeds the flag as false (pre-
+    //. The setup helper seeds the flag as false (pre-
     // threshold default); these direct-handler-call tests exercise
     // post-threshold AMM mechanics, so flip it on explicitly.
     IS_THRESHOLD_HIT.save(&mut deps.storage, &true).unwrap();
@@ -2610,7 +2610,7 @@ fn test_swap_fails_when_reserves_below_pause_threshold() {
 fn test_swap_fails_when_pool_already_paused() {
     let mut deps = mock_dependencies();
     setup_pool_with_reserves(&mut deps, Uint128::new(50_000), Uint128::new(50_000));
-    // M-5.1 audit fix: execute_simple_swap gates on IS_THRESHOLD_HIT.
+    // execute_simple_swap gates on IS_THRESHOLD_HIT.
     IS_THRESHOLD_HIT.save(&mut deps.storage, &true).unwrap();
 
     // Manually pause the pool
@@ -2649,7 +2649,7 @@ fn test_swap_prevented_if_would_deplete_below_minimum() {
         Uint128::new(10000), // Well above SWAP_PAUSE_THRESHOLD
         Uint128::new(1100),  // Just above MINIMUM_LIQUIDITY
     );
-    // M-5.1 audit fix: execute_simple_swap gates on IS_THRESHOLD_HIT.
+    // execute_simple_swap gates on IS_THRESHOLD_HIT.
     IS_THRESHOLD_HIT.save(&mut deps.storage, &true).unwrap();
 
     let swap_amount = Uint128::new(2000);
@@ -2706,7 +2706,7 @@ fn test_swap_triggers_pause_at_threshold() {
         Uint128::new(99), // Below MINIMUM_LIQUIDITY
         Uint128::new(10000),
     );
-    // M-5.1 audit fix: execute_simple_swap gates on IS_THRESHOLD_HIT.
+    // execute_simple_swap gates on IS_THRESHOLD_HIT.
     IS_THRESHOLD_HIT.save(&mut deps.storage, &true).unwrap();
 
     let swap_amount = Uint128::new(10);
@@ -2840,7 +2840,7 @@ fn test_both_reserves_checked() {
 
     // Test with low reserve0
     setup_pool_with_reserves(&mut deps, Uint128::new(9999), Uint128::new(10));
-    // M-5.1 audit fix: execute_simple_swap gates on IS_THRESHOLD_HIT.
+    // execute_simple_swap gates on IS_THRESHOLD_HIT.
     IS_THRESHOLD_HIT.save(&mut deps.storage, &true).unwrap();
 
     let result1 = execute_simple_swap(
@@ -2871,7 +2871,7 @@ fn test_both_reserves_checked() {
     // otherwise reject the same-sender second call with TooFrequentCommits
     // before reaching the reserve guard this test exercises.
     setup_pool_with_reserves(&mut deps, Uint128::new(10), Uint128::new(9999));
-    // M-5.1 audit fix: setup_pool_with_reserves resets IS_THRESHOLD_HIT
+    // setup_pool_with_reserves resets IS_THRESHOLD_HIT
     // to false, so re-flip it for this second post-threshold scenario.
     IS_THRESHOLD_HIT.save(&mut deps.storage, &true).unwrap();
     POOL_PAUSED.remove(&mut deps.storage); // Reset pause state
@@ -2907,7 +2907,7 @@ fn test_pause_state_persistence() {
     // with InsufficientReserves, NOT the PoolPausedLowLiquidity branch.
     let mut deps = mock_dependencies();
     setup_pool_with_reserves(&mut deps, Uint128::new(15), Uint128::new(15));
-    // M-5.1 audit fix: execute_simple_swap gates on IS_THRESHOLD_HIT.
+    // execute_simple_swap gates on IS_THRESHOLD_HIT.
     IS_THRESHOLD_HIT.save(&mut deps.storage, &true).unwrap();
 
     let first = execute_simple_swap(

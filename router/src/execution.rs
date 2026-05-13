@@ -9,16 +9,16 @@
 //! are a sequence of self-calls:
 //!
 //! 1. One [`crate::msg::ExecuteMsg::ExecuteSwapOperation`] per hop, in
-//!    order. Hops 0..N-1 send their output back to the router; hop N
-//!    sends its output directly to the recipient. Each is wrapped in a
-//!    `SubMsg::reply_on_error` so the [`handle_reply`] handler can
-//!    re-raise raw pool errors as [`crate::error::RouterError::HopFailed`]
-//!    with hop context preserved through the submsg payload.
+//! order. Hops 0..N-1 send their output back to the router; hop N
+//! sends its output directly to the recipient. Each is wrapped in a
+//! `SubMsg::reply_on_error` so the [`handle_reply`] handler can
+//! re-raise raw pool errors as [`crate::error::RouterError::HopFailed`]
+//! with hop context preserved through the submsg payload.
 //!
 //! 2. One trailing [`crate::msg::ExecuteMsg::AssertReceived`] self-call
-//!    that compares the recipient's post-route balance to the captured
-//!    pre-route balance and rejects if the delta is below
-//!    `minimum_receive`.
+//! that compares the recipient's post-route balance to the captured
+//! pre-route balance and rejects if the delta is below
+//! `minimum_receive`.
 //!
 //! Atomicity comes for free: every message in a `Response` runs in
 //! sequence within a single transaction; any error reverts everything.
@@ -174,7 +174,7 @@ fn start_multi_hop(
     };
 
     let final_ask = operations.last().unwrap().ask_asset_info.clone();
-    // Strict query (audit fix R1): on a CW20 final-ask, a swallowed
+    // Strict query ( R1): on a CW20 final-ask, a swallowed
     // pre-balance query would silently report zero and let the recipient's
     // pre-existing CW20 holdings count toward the post-route "received"
     // total — eroding slippage protection by up to that amount. The strict
@@ -265,7 +265,7 @@ pub fn execute_swap_operation(
     }
     let to_addr = deps.api.addr_validate(&to)?;
 
-    // Strict query (audit fix R1). The router's own balance is what
+    // Strict query ( R1). The router's own balance is what
     // becomes the swap input for this hop; if a CW20 balance query
     // silently returns zero on error we'd dispatch a zero-amount swap
     // and the explicit zero-check below would mask the underlying
@@ -306,7 +306,7 @@ pub fn execute_assert_received(
         return Err(RouterError::Unauthorized);
     }
     let recipient_addr = deps.api.addr_validate(&recipient)?;
-    // Strict query (audit fix R1). Symmetric with the pre-route read in
+    // Strict query ( R1). Symmetric with the pre-route read in
     // `start_multi_hop` — both must use the same strict variant so a
     // CW20 query failure fails the assertion closed.
     let current_balance =

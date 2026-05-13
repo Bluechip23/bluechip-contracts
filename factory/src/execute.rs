@@ -3,19 +3,19 @@
 //! The bulk of the handler logic has been split into four submodules
 //! by message family:
 //!
-//!   - [`config`]         — propose / apply / cancel for both factory
-//!                          config and per-pool config (48h timelock on
-//!                          every propose/apply pair).
-//!   - [`pool_lifecycle`] — create (commit + standard), pause, unpause,
-//!                          emergency withdraw (+ cancel), stuck-state
-//!                          recovery, and the threshold-crossed
-//!                          callback from pools.
-//!   - [`oracle`]         — keeper bounty caps, the pay-distribution-
-//!                          bounty forward, and the one-shot anchor
-//!                          pool set. The TWAP math itself lives in
-//!                          [`crate::internal_bluechip_price_oracle`].
-//!   - [`upgrades`]       — pool wasm upgrade proposal + batched migrate
-//!                          apply.
+//! - [`config`]         — propose / apply / cancel for both factory
+//! config and per-pool config (48h timelock on
+//! every propose/apply pair).
+//! - [`pool_lifecycle`] — create (commit + standard), pause, unpause,
+//! emergency withdraw (+ cancel), stuck-state
+//! recovery, and the threshold-crossed
+//! callback from pools.
+//! - [`oracle`]         — keeper bounty caps, the pay-distribution-
+//! bounty forward, and the one-shot anchor
+//! pool set. The TWAP math itself lives in
+//! [`crate::internal_bluechip_price_oracle`].
+//! - [`upgrades`]       — pool wasm upgrade proposal + batched migrate
+//! apply.
 //!
 //! This file keeps the `#[entry_point]` exports (`instantiate`,
 //! `execute`, `reply`), the cross-module helpers (`ensure_admin`,
@@ -250,7 +250,7 @@ pub fn execute(
     }
 }
 
-/// Permissionless storage hygiene (MEDIUM-2 audit fix). Iterates the
+/// Permissionless storage hygiene. Iterates the
 /// per-address rate-limit maps and removes entries older than 10× the
 /// per-map cooldown window.
 ///

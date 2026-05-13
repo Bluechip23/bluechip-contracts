@@ -245,7 +245,7 @@ pub enum ContractError {
     )]
     InvalidCommitFunds { reason: String },
 
-    /// M-7 audit fix. CW20-side swap entry (`execute_swap_cw20`) verifies
+    /// CW20-side swap entry (`execute_swap_cw20`) verifies
     /// that the CW20's claimed transfer actually landed on the pool by
     /// comparing the pool's current CW20 balance to the pre-Receive
     /// invariant `reserve + fee_reserve + creator_pot` plus the
