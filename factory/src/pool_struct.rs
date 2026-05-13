@@ -317,3 +317,121 @@ impl ThresholdPayoutAmounts {
         Ok(())
     }
 }
+
+#[cfg(test)]
+mod threshold_payout_validate_tests {
+    //! M-7.2 audit-fix coverage: every non-canonical perturbation of the
+    //! four threshold-payout components is rejected with an error message
+    //! that names the offending field. The canonical Default() must pass.
+    //! Closes the C-3 test-coverage gap from the meta-audit.
+    use super::*;
+
+    /// The canonical splits round-trip validate cleanly.
+    #[test]
+    fn canonical_default_passes() {
+        let payout = ThresholdPayoutAmounts::default();
+        assert!(payout.validate().is_ok(), "canonical default must pass validate");
+    }
+
+    /// Off-by-one on the creator share is rejected with the creator field
+    /// named. Exercises the first per-component equality branch and pins
+    /// the operator-facing error message to the canonical-value mismatch
+    /// language so an off-chain dashboard parsing the message can extract
+    /// which knob drifted.
+    #[test]
+    fn rejects_creator_reward_drift() {
+        let mut payout = ThresholdPayoutAmounts::default();
+        payout.creator_reward_amount = payout
+            .creator_reward_amount
+            .checked_add(Uint128::new(1))
+            .unwrap();
+        let err = payout.validate().expect_err("non-canonical creator must reject");
+        let msg = err.to_string();
+        assert!(
+            msg.contains("creator_reward_amount"),
+            "error must name the creator field; got: {}",
+            msg
+        );
+        assert!(
+            msg.contains(&THRESHOLD_PAYOUT_CREATOR_BASE_UNITS.to_string()),
+            "error must include the canonical creator value; got: {}",
+            msg
+        );
+    }
+
+    #[test]
+    fn rejects_bluechip_reward_drift() {
+        let mut payout = ThresholdPayoutAmounts::default();
+        payout.bluechip_reward_amount = Uint128::new(1);
+        let err = payout.validate().expect_err("non-canonical bluechip must reject");
+        let msg = err.to_string();
+        assert!(
+            msg.contains("bluechip_reward_amount"),
+            "error must name the bluechip field; got: {}",
+            msg
+        );
+    }
+
+    #[test]
+    fn rejects_pool_seed_drift() {
+        let mut payout = ThresholdPayoutAmounts::default();
+        payout.pool_seed_amount = payout
+            .pool_seed_amount
+            .checked_sub(Uint128::new(1))
+            .unwrap();
+        let err = payout.validate().expect_err("non-canonical pool_seed must reject");
+        let msg = err.to_string();
+        assert!(
+            msg.contains("pool_seed_amount"),
+            "error must name the pool_seed field; got: {}",
+            msg
+        );
+    }
+
+    #[test]
+    fn rejects_commit_return_drift() {
+        let mut payout = ThresholdPayoutAmounts::default();
+        payout.commit_return_amount = Uint128::zero();
+        let err = payout
+            .validate()
+            .expect_err("non-canonical commit_return must reject");
+        let msg = err.to_string();
+        assert!(
+            msg.contains("commit_return_amount"),
+            "error must name the commit_return field; got: {}",
+            msg
+        );
+    }
+
+    /// All-zero payload — pre-audit validator accepted this if every
+    /// component happened to be zero (the old non-zero check) but now
+    /// rejects on the first per-component equality. Pins the regression
+    /// vector: a misconfig that sets every component to zero (e.g., a
+    /// silent serde default at the wrong layer) is caught at propose
+    /// time rather than landing as a no-op mint at threshold-cross.
+    #[test]
+    fn rejects_all_zero_payload() {
+        let payout = ThresholdPayoutAmounts {
+            creator_reward_amount: Uint128::zero(),
+            bluechip_reward_amount: Uint128::zero(),
+            pool_seed_amount: Uint128::zero(),
+            commit_return_amount: Uint128::zero(),
+        };
+        assert!(payout.validate().is_err(), "all-zero payload must reject");
+    }
+
+    /// Sanity: `total_mint()` on the canonical default matches the
+    /// total constant exactly. Ties the per-component constants to the
+    /// total so a future edit that drifts one side without the other
+    /// is caught here.
+    #[test]
+    fn canonical_total_matches_total_constant() {
+        let payout = ThresholdPayoutAmounts::default();
+        let total = payout.total_mint().expect("total_mint must succeed on canonical");
+        assert_eq!(
+            total,
+            Uint128::new(THRESHOLD_PAYOUT_TOTAL_BASE_UNITS),
+            "canonical per-component constants must sum to THRESHOLD_PAYOUT_TOTAL_BASE_UNITS"
+        );
+    }
+}
