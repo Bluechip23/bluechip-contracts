@@ -11,6 +11,7 @@ use cosmwasm_std::{
     Uint128, WasmMsg,
 };
 use cw20::MinterResponse;
+use cw_utils::{must_pay, PaymentError};
 
 use crate::error::ContractError;
 use crate::msg::{CreatorTokenInfo, TokenInstantiateMsg};
@@ -249,12 +250,50 @@ pub(crate) fn execute_create_creator_pool(
             }
         }
     };
-    let paid_bluechip = info
-        .funds
-        .iter()
-        .find(|c| c.denom == factory_cw20.bluechip_denom)
-        .map(|c| c.amount)
-        .unwrap_or_default();
+    // Strict single-denom funds validation (audit hardening: replace the
+    // prior best-effort `.find()` + refund-extras pattern with `must_pay`).
+    // `must_pay` enforces that `info.funds` contains exactly one Coin
+    // entry whose denom equals `bluechip_denom` and whose amount is
+    // non-zero; any other shape (multi-denom, wrong denom, empty, zero
+    // amount) errors out and the tx reverts. On revert the bank module
+    // auto-returns all attached funds to the caller — no in-tx refund
+    // path required for non-bluechip denoms, which closes the
+    // "extra-funds-attached" griefing vector.
+    //
+    // Two-mode behavior keyed off the live fee:
+    //   - Fee enabled (`required_bluechip > 0`): use `must_pay`. Surplus
+    //     over `required_bluechip` is refunded in the same tx, since
+    //     callers can't predict the exact oracle-converted amount
+    //     between quoting and submission.
+    //   - Fee disabled (`required_bluechip == 0`): no funds are expected
+    //     and none are accepted. Any attached funds (even bluechip)
+    //     error out — callers who paid by mistake get everything back on
+    //     revert. This is intentional: a disabled fee shouldn't quietly
+    //     accept then refund payments, because that masks frontend bugs.
+    let paid_bluechip = if required_bluechip.is_zero() {
+        if !info.funds.is_empty() {
+            return Err(ContractError::Std(StdError::generic_err(
+                "Commit-pool creation fee is disabled; do not attach any funds.",
+            )));
+        }
+        Uint128::zero()
+    } else {
+        match must_pay(&info, &factory_cw20.bluechip_denom) {
+            Ok(amount) => amount,
+            Err(PaymentError::NoFunds {}) | Err(PaymentError::MissingDenom(_)) => {
+                return Err(ContractError::Std(StdError::generic_err(format!(
+                    "Insufficient commit-pool creation fee: required {} {}, paid 0 {}",
+                    required_bluechip, factory_cw20.bluechip_denom, factory_cw20.bluechip_denom
+                ))));
+            }
+            Err(e) => {
+                return Err(ContractError::Std(StdError::generic_err(format!(
+                    "Invalid commit-pool creation funds: {}. Send exactly one denom ({}).",
+                    e, factory_cw20.bluechip_denom
+                ))));
+            }
+        }
+    };
     if paid_bluechip < required_bluechip {
         return Err(ContractError::Std(StdError::generic_err(format!(
             "Insufficient commit-pool creation fee: required {} {}, paid {} {}",
@@ -279,19 +318,6 @@ pub(crate) fn execute_create_creator_pool(
                 denom: factory_cw20.bluechip_denom.clone(),
                 amount: surplus,
             }],
-        }));
-    }
-    let mut refund_extras: Vec<cosmwasm_std::Coin> = info
-        .funds
-        .iter()
-        .filter(|c| c.denom != factory_cw20.bluechip_denom && !c.amount.is_zero())
-        .cloned()
-        .collect();
-    refund_extras.sort_by(|a, b| a.denom.cmp(&b.denom));
-    if !refund_extras.is_empty() {
-        fee_messages.push(CosmosMsg::Bank(cosmwasm_std::BankMsg::Send {
-            to_address: info.sender.to_string(),
-            amount: refund_extras,
         }));
     }
 
@@ -616,16 +642,38 @@ pub(crate) fn execute_create_standard_pool(
         }
     };
 
-    // Caller must supply at least the required amount in the canonical
-    // bluechip denom. Overpayment is refunded to the caller in the same
-    // tx (atomic with pool creation — if any reply-chain step fails, the
-    // whole tx reverts and the caller's funds are untouched).
-    let paid_bluechip = info
-        .funds
-        .iter()
-        .find(|c| c.denom == factory_config.bluechip_denom)
-        .map(|c| c.amount)
-        .unwrap_or_default();
+    // Strict single-denom funds validation (audit hardening: replace the
+    // prior best-effort `.find()` + refund-extras pattern with `must_pay`).
+    // See the equivalent block in `execute_create_commit_pool` for the
+    // full rationale. Summary:
+    //   - Fee enabled: `must_pay` requires exactly one Coin entry of
+    //     `bluechip_denom`, non-zero. Any other shape errors and reverts;
+    //     bank-module revert auto-returns the caller's funds.
+    //   - Fee disabled: no funds expected, none accepted.
+    let paid_bluechip = if required_bluechip.is_zero() {
+        if !info.funds.is_empty() {
+            return Err(ContractError::Std(StdError::generic_err(
+                "Standard-pool creation fee is disabled; do not attach any funds.",
+            )));
+        }
+        Uint128::zero()
+    } else {
+        match must_pay(&info, &factory_config.bluechip_denom) {
+            Ok(amount) => amount,
+            Err(PaymentError::NoFunds {}) | Err(PaymentError::MissingDenom(_)) => {
+                return Err(ContractError::Std(StdError::generic_err(format!(
+                    "Insufficient creation fee: required {} {}, paid 0 {}",
+                    required_bluechip, factory_config.bluechip_denom, factory_config.bluechip_denom
+                ))));
+            }
+            Err(e) => {
+                return Err(ContractError::Std(StdError::generic_err(format!(
+                    "Invalid creation funds: {}. Send exactly one denom ({}).",
+                    e, factory_config.bluechip_denom
+                ))));
+            }
+        }
+    };
     if paid_bluechip < required_bluechip {
         return Err(ContractError::Std(StdError::generic_err(format!(
             "Insufficient creation fee: required {} {}, paid {} {}",
@@ -676,27 +724,6 @@ pub(crate) fn execute_create_standard_pool(
                 denom: bluechip_denom.clone(),
                 amount: surplus,
             }],
-        }));
-    }
-
-    // Refund any non-bluechip funds the caller attached. The fee path only
-    // consumes `bluechip_denom`; without this loop, anything else
-    // (`uatom`, IBC-wrapped denoms, tokenfactory tokens accidentally
-    // included by a frontend) would be deposited into the factory's bank
-    // balance with no withdrawal mechanism — orphaned forever on success.
-    // Failure is already safe via reply_on_success atomic revert; this
-    // covers the success path.
-    let mut refund_extras: Vec<cosmwasm_std::Coin> = info
-        .funds
-        .iter()
-        .filter(|c| c.denom != bluechip_denom && !c.amount.is_zero())
-        .cloned()
-        .collect();
-    refund_extras.sort_by(|a, b| a.denom.cmp(&b.denom));
-    if !refund_extras.is_empty() {
-        messages.push(CosmosMsg::Bank(cosmwasm_std::BankMsg::Send {
-            to_address: info.sender.to_string(),
-            amount: refund_extras,
         }));
     }
 

@@ -394,4 +394,230 @@ mod reply_handler_tests {
         // canonical phrase for off-chain log scrapers.
         assert!(err.to_string().contains("unknown reply id"));
     }
+
+    // -- Cross-storage atomicity ------------------------------------------
+    //
+    // The audit flagged threshold-crossing state-coupling as the main
+    // residual maintenance risk: the crossing flow mutates COMMIT_LEDGER,
+    // raised totals, pool state, fee growth, cooldown, payout/notify in a
+    // single path, and a factory-notify failure leaves all those writes
+    // committed while only the notify must be retried.
+    //
+    // These tests pin the invariant that the reply handler is a
+    // surgical mutator of `PENDING_FACTORY_NOTIFY` ALONE — it must never
+    // touch the crossing-side state that was already committed by the
+    // parent commit tx. Any future change that bundles extra storage
+    // writes into the reply (defensible-sounding additions like
+    // resetting cooldown on retry, etc.) gets caught here.
+    //
+    // The reply handler logically operates as if running atop a frozen
+    // snapshot of "what threshold crossing already wrote." We seed that
+    // snapshot with non-default values, snapshot every storage we care
+    // about, fire the reply, and re-snapshot. Only PENDING_FACTORY_NOTIFY
+    // is allowed to differ.
+
+    /// State-snapshot atomicity: after `REPLY_ID_FACTORY_NOTIFY_INITIAL`
+    /// fires with Err, only PENDING_FACTORY_NOTIFY may differ. Every
+    /// other crossing-mutated storage must be byte-identical.
+    #[test]
+    fn reply_initial_notify_err_does_not_touch_crossing_state() {
+        use crate::state::{
+            IS_THRESHOLD_HIT, NATIVE_RAISED_FROM_COMMIT, POOL_FEE_STATE, POOL_STATE,
+            USD_RAISED_FROM_COMMIT,
+        };
+        use crate::testing::liquidity_tests::setup_pool_post_threshold;
+        use cosmwasm_std::Decimal;
+        use pool_core::state::PoolFeeState;
+
+        let mut deps = mock_dependencies();
+        // setup_pool_post_threshold seeds IS_THRESHOLD_HIT=true and a
+        // non-zero pool state — matching the production state at the
+        // exact moment the factory_notify SubMsg would fire.
+        setup_pool_post_threshold(&mut deps);
+
+        // Seed NATIVE_RAISED_FROM_COMMIT to a distinguishing non-zero
+        // (setup_pool_post_threshold only sets USD_RAISED_FROM_COMMIT)
+        // so a regression that touched it would be caught.
+        NATIVE_RAISED_FROM_COMMIT
+            .save(&mut deps.storage, &Uint128::new(123_456_789))
+            .unwrap();
+
+        // Also seed POOL_FEE_STATE to non-zero fee growth so a regression
+        // resetting fee state would be caught.
+        POOL_FEE_STATE
+            .save(
+                &mut deps.storage,
+                &PoolFeeState {
+                    fee_growth_global_0: Decimal::raw(1_111_111_111_111),
+                    fee_growth_global_1: Decimal::raw(2_222_222_222_222),
+                    total_fees_collected_0: Uint128::new(33_333),
+                    total_fees_collected_1: Uint128::new(44_444),
+                    fee_reserve_0: Uint128::new(555),
+                    fee_reserve_1: Uint128::new(666),
+                },
+            )
+            .unwrap();
+
+        // Pre-snapshot every storage the audit called out for crossing.
+        let snap_pool_state = POOL_STATE.load(&deps.storage).unwrap();
+        let snap_pool_fee_state = POOL_FEE_STATE.load(&deps.storage).unwrap();
+        let snap_is_threshold_hit = IS_THRESHOLD_HIT.load(&deps.storage).unwrap();
+        let snap_usd_raised = USD_RAISED_FROM_COMMIT.load(&deps.storage).unwrap();
+        let snap_native_raised = NATIVE_RAISED_FROM_COMMIT.load(&deps.storage).unwrap();
+        // PENDING_FACTORY_NOTIFY pre-reply must be false / unset.
+        assert!(!PENDING_FACTORY_NOTIFY
+            .may_load(&deps.storage)
+            .unwrap()
+            .unwrap_or(false));
+
+        // Fire the initial reply with Err — simulates factory rejecting
+        // the NotifyThresholdCrossed message (paused, pool not registered,
+        // double-mint guard tripped, whatever).
+        let r = synthetic_reply(
+            REPLY_ID_FACTORY_NOTIFY_INITIAL,
+            false,
+            Some("simulated factory rejection"),
+        );
+        reply(deps.as_mut(), mock_env(), r).expect("reply must Ok on Err result");
+
+        // ONLY PENDING_FACTORY_NOTIFY may have moved.
+        assert!(
+            PENDING_FACTORY_NOTIFY.load(&deps.storage).unwrap(),
+            "PENDING_FACTORY_NOTIFY must be armed after notify failure"
+        );
+
+        // Every other storage must be byte-identical.
+        assert_eq!(
+            POOL_STATE.load(&deps.storage).unwrap(),
+            snap_pool_state,
+            "reply handler must not touch POOL_STATE"
+        );
+        assert_eq!(
+            POOL_FEE_STATE.load(&deps.storage).unwrap(),
+            snap_pool_fee_state,
+            "reply handler must not touch POOL_FEE_STATE"
+        );
+        assert_eq!(
+            IS_THRESHOLD_HIT.load(&deps.storage).unwrap(),
+            snap_is_threshold_hit,
+            "reply handler must not touch IS_THRESHOLD_HIT — the crossing already \
+             committed; a flip back to false would let a second crossing re-run"
+        );
+        assert_eq!(
+            USD_RAISED_FROM_COMMIT.load(&deps.storage).unwrap(),
+            snap_usd_raised,
+            "reply handler must not touch USD_RAISED_FROM_COMMIT"
+        );
+        assert_eq!(
+            NATIVE_RAISED_FROM_COMMIT.load(&deps.storage).unwrap(),
+            snap_native_raised,
+            "reply handler must not touch NATIVE_RAISED_FROM_COMMIT"
+        );
+    }
+
+    /// Same atomicity invariant on the RETRY-failure path. A failed
+    /// retry must keep the pending flag set (already covered) AND must
+    /// not touch any other state.
+    #[test]
+    fn reply_retry_err_does_not_touch_crossing_state() {
+        use crate::state::{
+            IS_THRESHOLD_HIT, NATIVE_RAISED_FROM_COMMIT, POOL_FEE_STATE, POOL_STATE,
+            USD_RAISED_FROM_COMMIT,
+        };
+        use crate::testing::liquidity_tests::setup_pool_post_threshold;
+
+        let mut deps = mock_dependencies();
+        setup_pool_post_threshold(&mut deps);
+        NATIVE_RAISED_FROM_COMMIT
+            .save(&mut deps.storage, &Uint128::new(123_456_789))
+            .unwrap();
+        // Pending must already be set — retry only runs after an
+        // initial failure armed the flag.
+        PENDING_FACTORY_NOTIFY
+            .save(&mut deps.storage, &true)
+            .unwrap();
+
+        let snap_pool_state = POOL_STATE.load(&deps.storage).unwrap();
+        let snap_pool_fee_state = POOL_FEE_STATE.load(&deps.storage).unwrap();
+        let snap_is_threshold_hit = IS_THRESHOLD_HIT.load(&deps.storage).unwrap();
+        let snap_usd_raised = USD_RAISED_FROM_COMMIT.load(&deps.storage).unwrap();
+        let snap_native_raised = NATIVE_RAISED_FROM_COMMIT.load(&deps.storage).unwrap();
+
+        let r = synthetic_reply(REPLY_ID_FACTORY_NOTIFY_RETRY, false, Some("still failing"));
+        reply(deps.as_mut(), mock_env(), r)
+            .expect("retry failure must NOT propagate — gas-trap risk");
+
+        // Pending flag preserved.
+        assert!(PENDING_FACTORY_NOTIFY.load(&deps.storage).unwrap());
+        // Every other storage byte-identical.
+        assert_eq!(POOL_STATE.load(&deps.storage).unwrap(), snap_pool_state);
+        assert_eq!(
+            POOL_FEE_STATE.load(&deps.storage).unwrap(),
+            snap_pool_fee_state
+        );
+        assert_eq!(
+            IS_THRESHOLD_HIT.load(&deps.storage).unwrap(),
+            snap_is_threshold_hit
+        );
+        assert_eq!(
+            USD_RAISED_FROM_COMMIT.load(&deps.storage).unwrap(),
+            snap_usd_raised
+        );
+        assert_eq!(
+            NATIVE_RAISED_FROM_COMMIT.load(&deps.storage).unwrap(),
+            snap_native_raised
+        );
+    }
+
+    /// And the success path of RETRY: clearing PENDING_FACTORY_NOTIFY
+    /// must not touch any other state either. Asymmetric writes between
+    /// the success and failure paths (e.g., success accidentally
+    /// resetting cooldown or zeroing a counter) would be caught here.
+    #[test]
+    fn reply_retry_ok_does_not_touch_crossing_state() {
+        use crate::state::{
+            IS_THRESHOLD_HIT, NATIVE_RAISED_FROM_COMMIT, POOL_FEE_STATE, POOL_STATE,
+            USD_RAISED_FROM_COMMIT,
+        };
+        use crate::testing::liquidity_tests::setup_pool_post_threshold;
+
+        let mut deps = mock_dependencies();
+        setup_pool_post_threshold(&mut deps);
+        NATIVE_RAISED_FROM_COMMIT
+            .save(&mut deps.storage, &Uint128::new(123_456_789))
+            .unwrap();
+        PENDING_FACTORY_NOTIFY
+            .save(&mut deps.storage, &true)
+            .unwrap();
+
+        let snap_pool_state = POOL_STATE.load(&deps.storage).unwrap();
+        let snap_pool_fee_state = POOL_FEE_STATE.load(&deps.storage).unwrap();
+        let snap_is_threshold_hit = IS_THRESHOLD_HIT.load(&deps.storage).unwrap();
+        let snap_usd_raised = USD_RAISED_FROM_COMMIT.load(&deps.storage).unwrap();
+        let snap_native_raised = NATIVE_RAISED_FROM_COMMIT.load(&deps.storage).unwrap();
+
+        let r = synthetic_reply(REPLY_ID_FACTORY_NOTIFY_RETRY, true, None);
+        reply(deps.as_mut(), mock_env(), r).expect("retry success must Ok");
+
+        // Pending flag cleared.
+        assert!(!PENDING_FACTORY_NOTIFY.load(&deps.storage).unwrap());
+        // Every other storage byte-identical.
+        assert_eq!(POOL_STATE.load(&deps.storage).unwrap(), snap_pool_state);
+        assert_eq!(
+            POOL_FEE_STATE.load(&deps.storage).unwrap(),
+            snap_pool_fee_state
+        );
+        assert_eq!(
+            IS_THRESHOLD_HIT.load(&deps.storage).unwrap(),
+            snap_is_threshold_hit
+        );
+        assert_eq!(
+            USD_RAISED_FROM_COMMIT.load(&deps.storage).unwrap(),
+            snap_usd_raised
+        );
+        assert_eq!(
+            NATIVE_RAISED_FROM_COMMIT.load(&deps.storage).unwrap(),
+            snap_native_raised
+        );
+    }
 }

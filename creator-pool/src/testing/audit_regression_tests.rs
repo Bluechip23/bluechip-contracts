@@ -3663,3 +3663,160 @@ mod emergency_claim_escrow_tests {
         }
     }
 }
+
+/// Pool-side oracle staleness boundary tests. The audit flagged
+/// `MAX_ORACLE_STALENESS_SECONDS = 360s` as a "watch item" (DoS-by-policy
+/// if keeper cadence drifts). These pin the boundary semantics so a
+/// constant change can't silently flip strict ≤ → strict < or vice
+/// versa, and prove the staleness gate triggers exactly where intended.
+#[cfg(test)]
+mod oracle_staleness_boundary_tests {
+    use crate::swap_helper::{get_oracle_conversion_with_staleness, MAX_ORACLE_STALENESS_SECONDS};
+    use crate::testing::liquidity_tests::setup_pool_storage;
+    use cosmwasm_std::testing::{mock_dependencies, mock_env};
+    use cosmwasm_std::{
+        to_json_binary, Binary, ContractResult, SystemError, SystemResult, Uint128, WasmQuery,
+    };
+    use pool_factory_interfaces::ConversionResponse;
+
+    fn make_conversion(timestamp: u64) -> ConversionResponse {
+        ConversionResponse {
+            amount: Uint128::new(1_000_000),
+            rate_used: Uint128::new(1_000_000),
+            timestamp,
+        }
+    }
+
+    /// `current_block_time == response.timestamp + MAX_ORACLE_STALENESS_SECONDS`
+    /// must be ACCEPTED. The handler uses `>` (strict), so equality
+    /// passes — pinning this guards against a refactor flipping to `>=`
+    /// which would silently shorten the window by 1s.
+    #[test]
+    fn staleness_at_exact_boundary_accepts() {
+        let mut deps = mock_dependencies();
+        setup_pool_storage(&mut deps);
+
+        let oracle_ts: u64 = 1_000_000;
+        deps.querier.update_wasm(move |query| match query {
+            WasmQuery::Smart { .. } => SystemResult::Ok(ContractResult::Ok(
+                to_json_binary(&make_conversion(oracle_ts)).unwrap(),
+            )),
+            _ => SystemResult::Err(SystemError::InvalidRequest {
+                error: "unhandled query".to_string(),
+                request: Binary::default(),
+            }),
+        });
+
+        // Exact boundary: current_time = oracle_ts + window.
+        let current_time = oracle_ts + MAX_ORACLE_STALENESS_SECONDS;
+        let res = get_oracle_conversion_with_staleness(
+            deps.as_ref(),
+            Uint128::new(1_000),
+            current_time,
+        );
+        assert!(
+            res.is_ok(),
+            "current_time == ts + max_age must be accepted (`>` is strict); got: {:?}",
+            res.err()
+        );
+    }
+
+    /// One second past the boundary must REJECT. Symmetric pin to the
+    /// accept-at-boundary test above.
+    #[test]
+    fn staleness_one_second_past_boundary_rejects() {
+        let mut deps = mock_dependencies();
+        setup_pool_storage(&mut deps);
+
+        let oracle_ts: u64 = 1_000_000;
+        deps.querier.update_wasm(move |query| match query {
+            WasmQuery::Smart { .. } => SystemResult::Ok(ContractResult::Ok(
+                to_json_binary(&make_conversion(oracle_ts)).unwrap(),
+            )),
+            _ => SystemResult::Err(SystemError::InvalidRequest {
+                error: "unhandled query".to_string(),
+                request: Binary::default(),
+            }),
+        });
+
+        let current_time = oracle_ts + MAX_ORACLE_STALENESS_SECONDS + 1;
+        let err = get_oracle_conversion_with_staleness(
+            deps.as_ref(),
+            Uint128::new(1_000),
+            current_time,
+        )
+        .expect_err("ts + max_age + 1s must be rejected as stale");
+        assert!(
+            err.to_string().contains("Oracle price is stale"),
+            "expected staleness error, got: {}",
+            err
+        );
+    }
+
+    /// A fresh response (current_time barely past oracle_ts) must accept.
+    /// Sanity baseline — without this, a regression that always rejects
+    /// would still pass the boundary tests above if both flipped together.
+    #[test]
+    fn staleness_well_within_window_accepts() {
+        let mut deps = mock_dependencies();
+        setup_pool_storage(&mut deps);
+
+        let env_now = mock_env().block.time.seconds();
+        // Oracle published 30s ago, current time = env_now. Well inside
+        // the 360s window.
+        let oracle_ts = env_now.saturating_sub(30);
+        deps.querier.update_wasm(move |query| match query {
+            WasmQuery::Smart { .. } => SystemResult::Ok(ContractResult::Ok(
+                to_json_binary(&make_conversion(oracle_ts)).unwrap(),
+            )),
+            _ => SystemResult::Err(SystemError::InvalidRequest {
+                error: "unhandled query".to_string(),
+                request: Binary::default(),
+            }),
+        });
+
+        let res = get_oracle_conversion_with_staleness(
+            deps.as_ref(),
+            Uint128::new(1_000),
+            env_now,
+        );
+        assert!(
+            res.is_ok(),
+            "30s-old conversion must be accepted (< 360s window); got: {:?}",
+            res.err()
+        );
+    }
+
+    /// Oracle timestamp of zero (pre-update sentinel) must NOT trigger
+    /// the staleness check. The handler guards on `timestamp > 0`; without
+    /// that guard, `current_time > 0 + max_age` would always be true and
+    /// every fresh deployment's first conversion would error.
+    #[test]
+    fn staleness_zero_timestamp_bypasses_check() {
+        let mut deps = mock_dependencies();
+        setup_pool_storage(&mut deps);
+
+        deps.querier.update_wasm(move |query| match query {
+            WasmQuery::Smart { .. } => SystemResult::Ok(ContractResult::Ok(
+                to_json_binary(&make_conversion(0)).unwrap(),
+            )),
+            _ => SystemResult::Err(SystemError::InvalidRequest {
+                error: "unhandled query".to_string(),
+                request: Binary::default(),
+            }),
+        });
+
+        // current_time arbitrarily far in the future; ts == 0 must
+        // bypass the stale check.
+        let res = get_oracle_conversion_with_staleness(
+            deps.as_ref(),
+            Uint128::new(1_000),
+            1_000_000_000,
+        );
+        assert!(
+            res.is_ok(),
+            "ts == 0 (pre-update sentinel) must bypass the staleness check; got: {:?}",
+            res.err()
+        );
+    }
+}
