@@ -395,9 +395,39 @@ pub const USER_LAST_COMMIT: Map<&Addr, u64> = Map::new("user_last_commit");
 pub const IS_THRESHOLD_HIT: Item<bool> = Item::new("threshold_hit");
 
 /// Creator-claimable pot that receives the portion of LP fees "clipped"
-/// away from small positions by `calculate_fee_size_multiplier`. Standard
-/// pool's stays empty; emergency_withdraw sweeps it unconditionally.
+/// away from small positions by `calculate_fee_size_multiplier` on
+/// **creator pools**. On standard pools the multiplier is bypassed
+/// (every position uses `Decimal::one()`) so no clip is ever produced and
+/// this pot stays empty during normal operation — dust-griefing
+/// protection on standard pools is enforced via the
+/// `MIN_STANDARD_POOL_POSITION_LIQUIDITY` deposit/add floor instead. The
+/// `emergency_withdraw_core_drain` sweep still reads this Item
+/// unconditionally as defense-in-depth (handles pre-fix records / future
+/// drift); on a healthy standard pool the swept amount is zero.
 pub const CREATOR_FEE_POT: Item<CreatorFeePot> = Item::new("creator_fee_pot");
+
+/// When `true` (default-on-load via `.unwrap_or(true)` for backwards
+/// compatibility with pre-flag fixtures), the deposit / add / remove
+/// paths route each position's `fee_size_multiplier` through
+/// `calculate_fee_size_multiplier(liquidity)` — the dust-griefing
+/// penalty originally designed for creator pools, whose clipped slice
+/// flows to `CREATOR_FEE_POT` for the creator wallet to claim.
+///
+/// When `false` (set explicitly at standard-pool instantiate), every
+/// position is created with `fee_size_multiplier = Decimal::one()` and
+/// neither add nor remove recomputes it. Standard pools have no creator
+/// wallet, so the multiplier's clipped slice would accumulate in
+/// `CREATOR_FEE_POT` with no normal-operation claim path; bypassing
+/// the multiplier eliminates that value-drain.
+///
+/// Dust-griefing protection on standard pools is preserved by the
+/// `MIN_STANDARD_POOL_POSITION_LIQUIDITY` floor enforced inside the
+/// deposit / add handlers when this flag is `false`.
+///
+/// Always read via `effective_fee_size_multiplier` (in
+/// `liquidity_helpers.rs`) — never `calculate_fee_size_multiplier`
+/// directly — so the flag is honored uniformly.
+pub const APPLY_DUST_MULTIPLIER: Item<bool> = Item::new("apply_dust_multiplier");
 
 /// emergency_withdraw reads `bluechip_wallet_address` for the drain
 /// recipient; standard pool instantiate saves a zero-valued placeholder.

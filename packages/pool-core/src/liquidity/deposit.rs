@@ -23,7 +23,8 @@ use crate::asset::TokenType;
 use crate::error::ContractError;
 use crate::generic::{check_rate_limit, enforce_transaction_deadline, with_reentrancy_guard};
 use crate::liquidity_helpers::{
-    calc_liquidity_for_deposit, calculate_fee_size_multiplier, check_slippage,
+    calc_liquidity_for_deposit, check_slippage, effective_fee_size_multiplier,
+    enforce_standard_pool_min_position,
 };
 use crate::state::{
     DepositVerifyContext, PoolInfo, PoolSpecs, Position, TokenMetadata, DEPOSIT_VERIFY_CTX,
@@ -343,6 +344,12 @@ fn execute_deposit_liquidity_inner(
         min_amount1,
     )?;
 
+    // Standard-pool dust-floor: reject deposits whose produced LP units
+    // are below `MIN_STANDARD_POOL_POSITION_LIQUIDITY`. No-op on creator
+    // pools (gated by APPLY_DUST_MULTIPLIER inside the helper). See the
+    // helper's doc-comment for rationale.
+    enforce_standard_pool_min_position(deps.storage, prep.liquidity)?;
+
     // Snapshot the pool's current CW20 balance on every CW20 side
     // BEFORE the TransferFrom messages dispatch. The reply handler will
     // diff post-balance against this snapshot and reject any shortfall
@@ -424,7 +431,7 @@ fn execute_deposit_liquidity_inner(
         funds: vec![],
     };
     messages.push(CosmosMsg::Wasm(mint_liquidity_nft));
-    let fee_size_multiplier = calculate_fee_size_multiplier(prep.liquidity);
+    let fee_size_multiplier = effective_fee_size_multiplier(deps.storage, prep.liquidity)?;
     let position = Position {
         liquidity: prep.liquidity,
         owner: user.clone(),

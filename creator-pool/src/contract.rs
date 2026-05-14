@@ -197,6 +197,12 @@ pub fn instantiate(
     // gate on this until `process_threshold_crossing_with_excess` flips
     // it to `true` during the threshold-crossing commit.
     IS_THRESHOLD_HIT.save(deps.storage, &false)?;
+    // Creator pools use the legacy `fee_size_multiplier` dust-griefing
+    // deterrent — small positions accrue with a clipped multiplier whose
+    // clipped slice flows to CREATOR_FEE_POT, claimable by the creator.
+    // Standard pools instantiate with this flag set to `false`; see the
+    // doc-comment on `APPLY_DUST_MULTIPLIER` in pool-core::state.
+    pool_core::state::APPLY_DUST_MULTIPLIER.save(deps.storage, &true)?;
     NEXT_POSITION_ID.save(deps.storage, &0u64)?;
     POOL_INFO.save(deps.storage, &pool_info)?;
     POOL_FEE_STATE.save(deps.storage, &pool_fee_state)?;

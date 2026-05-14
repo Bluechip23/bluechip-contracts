@@ -120,32 +120,44 @@ fn collect_fees_emits_transfers_and_debits_reserve() {
     assert!(fees_after.fee_reserve_1 < Uint128::new(10_000_000));
 }
 
+/// Standard pools bypass the `fee_size_multiplier` dust-griefing
+/// penalty (the multiplier is pinned at `Decimal::one()` at deposit /
+/// add / remove time on standard pools via `APPLY_DUST_MULTIPLIER ==
+/// false`). The clipped-slice flow that would otherwise route fees to
+/// the inaccessible-on-standard `CREATOR_FEE_POT` does NOT fire.
+///
+/// Dust-griefing protection on standard pools is enforced by the
+/// `MIN_STANDARD_POOL_POSITION_LIQUIDITY` deposit floor — verified
+/// below.
 #[test]
-fn collect_fees_routes_clip_slice_to_creator_pot() {
+fn standard_pool_collect_fees_does_not_clip_to_creator_pot() {
     let (mut deps, addrs) = instantiate_default_pool();
 
-    // Deposit a small amount — liquidity below OPTIMAL_LIQUIDITY (1M)
-    // triggers the fee-size multiplier, clipping part of the earned
-    // fees into CREATOR_FEE_POT.
+    // Deposit JUST above the dust floor. `sqrt(amount0 * amount1)`
+    // produces the LP units; we need ≥ 100_000 LP units after the
+    // first-deposit lock of 1000. amount0 = amount1 = 200_000 gives
+    // sqrt = 200_000 — well above the floor and well below the legacy
+    // OPTIMAL_LIQUIDITY = 1_000_000 (which is where the old multiplier
+    // would have hit 100%). Pre-fix this would have clipped most of
+    // the fees to CREATOR_FEE_POT; post-fix the multiplier stays at
+    // 1.0 and no clip happens.
     execute(
         deps.as_mut(),
         mock_env(),
-        message_info(&addrs.pool_owner, &[Coin::new(1000u128, BLUECHIP_DENOM)]),
+        message_info(&addrs.pool_owner, &[Coin::new(200_000u128, BLUECHIP_DENOM)]),
         ExecuteMsg::DepositLiquidity {
-            amount0: Uint128::new(1000),
-            amount1: Uint128::new(2000),
+            amount0: Uint128::new(200_000),
+            amount1: Uint128::new(200_000),
             min_amount0: None,
             min_amount1: None,
             transaction_deadline: None,
         },
     )
     .unwrap();
-    // Liquidity for this deposit is ~sqrt(1000 * 2000) - 1000 ≈ 414.
-    // calculate_fee_size_multiplier maps 414 → ~10.04% (near MIN).
 
     seed_fees(
         &mut deps,
-        Decimal::permille(10),       // large growth so rounding matters less
+        Decimal::permille(10),
         Uint128::new(100_000),
         Uint128::new(100_000),
     );
@@ -161,15 +173,58 @@ fn collect_fees_routes_clip_slice_to_creator_pot() {
     )
     .unwrap();
 
-    // Creator pot accumulates the clipped slice.
+    // With multiplier pinned at 1.0, no clip slice is produced. Pot
+    // stays empty (or unset) regardless of position size.
     let pot = CREATOR_FEE_POT
         .may_load(&deps.storage)
         .unwrap()
         .unwrap_or_else(CreatorFeePot::default);
-    assert!(
-        !pot.amount_0.is_zero() || !pot.amount_1.is_zero(),
-        "fee_size_multiplier < 1.0 should route some to CREATOR_FEE_POT"
+    assert_eq!(
+        pot.amount_0,
+        Uint128::zero(),
+        "standard pool collect_fees must not credit CREATOR_FEE_POT side 0"
     );
+    assert_eq!(
+        pot.amount_1,
+        Uint128::zero(),
+        "standard pool collect_fees must not credit CREATOR_FEE_POT side 1"
+    );
+}
+
+/// Standard-pool dust-griefing protection: a deposit whose produced LP
+/// units fall below `MIN_STANDARD_POOL_POSITION_LIQUIDITY` is rejected
+/// with `DustStandardPoolDeposit`. Replaces the multiplier-based
+/// deterrent that pre-fix routed small-position fees to an
+/// inaccessible CREATOR_FEE_POT.
+#[test]
+fn standard_pool_rejects_dust_deposit() {
+    let (mut deps, addrs) = instantiate_default_pool();
+
+    // sqrt(1000 * 2000) ≈ 1414 LP units — far below the 100_000 floor.
+    let err = execute(
+        deps.as_mut(),
+        mock_env(),
+        message_info(&addrs.pool_owner, &[Coin::new(1000u128, BLUECHIP_DENOM)]),
+        ExecuteMsg::DepositLiquidity {
+            amount0: Uint128::new(1000),
+            amount1: Uint128::new(2000),
+            min_amount0: None,
+            min_amount1: None,
+            transaction_deadline: None,
+        },
+    )
+    .unwrap_err();
+    match err {
+        ContractError::DustStandardPoolDeposit { liquidity, minimum } => {
+            assert!(liquidity < minimum, "error should report sub-floor liquidity");
+            assert_eq!(
+                minimum,
+                pool_core::liquidity_helpers::MIN_STANDARD_POOL_POSITION_LIQUIDITY,
+                "error should report the canonical floor",
+            );
+        }
+        other => panic!("expected DustStandardPoolDeposit, got: {:?}", other),
+    }
 }
 
 #[test]

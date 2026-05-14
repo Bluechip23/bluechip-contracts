@@ -128,6 +128,13 @@ pub fn instantiate(
     // liquidity handlers gate on IS_THRESHOLD_HIT so this flips it open
     // for the first caller.
     IS_THRESHOLD_HIT.save(deps.storage, &true)?;
+    // Standard pools bypass the `fee_size_multiplier` dust-griefing
+    // deterrent: there is no creator wallet, so the multiplier's clipped
+    // slice would accumulate in CREATOR_FEE_POT with no normal-operation
+    // claim path. Dust-griefing protection is enforced via the
+    // `MIN_STANDARD_POOL_POSITION_LIQUIDITY` deposit/add floor instead.
+    // See the doc-comment on `APPLY_DUST_MULTIPLIER` in pool-core::state.
+    pool_core::state::APPLY_DUST_MULTIPLIER.save(deps.storage, &false)?;
     NEXT_POSITION_ID.save(deps.storage, &0u64)?;
     POOL_INFO.save(deps.storage, &pool_info)?;
     POOL_FEE_STATE.save(deps.storage, &pool_fee_state)?;
