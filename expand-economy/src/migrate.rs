@@ -17,12 +17,12 @@ use crate::{CONTRACT_NAME, CONTRACT_VERSION};
 /// being initialised at instantiate time. Mirrors the downgrade
 /// guard the pool / factory contracts already use:
 ///
-///   - parse the cw2-stored version + the compile-time `CONTRACT_VERSION`
-///     as semver; reject any migrate where stored > current
-///   - tolerate a missing cw2 entry (legacy / test fixtures), skipping
-///     the comparison rather than erroring
-///   - bump the cw2 record on success so subsequent migrates see the
-///     new version
+/// - parse the cw2-stored version + the compile-time `CONTRACT_VERSION`
+/// as semver; reject any migrate where stored > current
+/// - tolerate a missing cw2 entry (legacy / test fixtures), skipping
+/// the comparison rather than erroring
+/// - bump the cw2 record on success so subsequent migrates see the
+/// new version
 ///
 /// `MigrateMsg::UpdateVersion {}` is the no-op variant — it exists so
 /// operators have an explicit "just bump the version, no other state

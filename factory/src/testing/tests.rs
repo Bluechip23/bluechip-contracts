@@ -157,7 +157,7 @@ pub fn setup_atom_pool(deps: &mut OwnedDeps<MockStorage, MockApi, WasmMockQuerie
         .unwrap();
 
     // Mirror the migrate-time default for `COMMIT_POOLS_AUTO_ELIGIBLE`
-    // (M-3 audit fix). Tests written before this flag existed assume
+    //. Tests written before this flag existed assume
     // "every threshold-crossed commit pool is automatically eligible";
     // setting the flag true here preserves that assumption without
     // every test having to call the timelocked propose/apply flow.
@@ -205,14 +205,14 @@ pub fn tick_anchor_pool(
 /// snapshots so the second call can compute a TWAP. Most existing tests
 /// want "first update produces a price"; this helper makes that work by:
 ///
-///   1. Advancing the anchor pool's `block_time_last` and bumping
-///      `price1_cumulative_last` to a value consistent with its 10:1
-///      reserve ratio (so a TWAP from a zero-baseline yields 10_000_000).
-///   2. Pre-seeding `oracle.pool_cumulative_snapshots` with a zero-baseline
-///      entry for the anchor, so on the next `UpdateOraclePrice` call the
-///      diff is `(1000 - 0) / (100 - 0) = 10_000_000` (in 1e6 precision).
-///   3. Clearing `warmup_remaining` so downstream price queries served
-///      from the test-seeded `last_price` aren't blocked by the warm-up gate.
+/// 1. Advancing the anchor pool's `block_time_last` and bumping
+/// `price1_cumulative_last` to a value consistent with its 10:1
+/// reserve ratio (so a TWAP from a zero-baseline yields 10_000_000).
+/// 2. Pre-seeding `oracle.pool_cumulative_snapshots` with a zero-baseline
+/// entry for the anchor, so on the next `UpdateOraclePrice` call the
+/// diff is `(1000 - 0) / (100 - 0) = 10_000_000` (in 1e6 precision).
+/// 3. Clearing `warmup_remaining` so downstream price queries served
+/// from the test-seeded `last_price` aren't blocked by the warm-up gate.
 ///
 /// Call AFTER `instantiate(...)` (the helper assumes INTERNAL_ORACLE
 /// already exists). Tests that explicitly want to exercise the
@@ -242,7 +242,7 @@ pub fn prime_oracle_for_first_update(
         block_time: 0,
     }];
     oracle.warmup_remaining = 0;
-    // HIGH-4 audit fix: branch (d) now buffers the first publish to
+    // branch (d) now buffers the first publish to
     // PENDING_BOOTSTRAP_PRICE rather than committing it to last_price.
     // Tests that use this helper want the FIRST UpdateOraclePrice to
     // route through the steady-state branch (a) — i.e. drift-check + publish
@@ -839,13 +839,13 @@ fn test_complete_pool_creation_flow() {
     );
 
     // finalize_pool now emits three messages:
-    //   1. CW20 UpdateMinter (hand the creator-token's minter to the pool)
-    //   2. CW721 TransferOwnership (stage the pool as pending_owner)
-    //   3. AcceptNftOwnership {} dispatched to the pool itself, mirroring
-    //      the symmetric two-phase NFT-accept flow already in place for
-    //      standard pools. The pool's handler then sends the matching
-    //      AcceptOwnership back to the CW721, closing the
-    //      pending-ownership window inside this create tx.
+    // 1. CW20 UpdateMinter (hand the creator-token's minter to the pool)
+    // 2. CW721 TransferOwnership (stage the pool as pending_owner)
+    // 3. AcceptNftOwnership {} dispatched to the pool itself, mirroring
+    // the symmetric two-phase NFT-accept flow already in place for
+    // standard pools. The pool's handler then sends the matching
+    // AcceptOwnership back to the CW721, closing the
+    // pending-ownership window inside this create tx.
     assert_eq!(res.messages.len(), 3);
 }
 
@@ -1518,7 +1518,7 @@ fn test_oracle_twap_with_volatile_prices() {
     );
 }
 
-/// Anchor-only mode (audit C-1): even when multiple threshold-crossed
+/// Anchor-only mode: even when multiple threshold-crossed
 /// commit pools exist in the registry, the oracle's `selected_pools`
 /// must contain only the anchor, and `last_price` must equal the
 /// anchor's TWAP. The cross-pool aggregation path is gated by
@@ -1667,8 +1667,8 @@ fn test_oracle_anchor_only_when_basket_disabled() {
     // (`get_oracle_conversion_with_staleness` → factory's
     // `ConvertBluechipToUsd` → `convert_with_oracle` →
     // `get_bluechip_usd_price_with_meta`). With:
-    //   - mock Pyth ATOM/USD = $10 (default 10_000_000 in 6-dec)
-    //   - anchor TWAP ~ 10 bluechip per ATOM (10_000_000 in 6-dec)
+    // - mock Pyth ATOM/USD = $10 (default 10_000_000 in 6-dec)
+    // - anchor TWAP ~ 10 bluechip per ATOM (10_000_000 in 6-dec)
     // the derived bluechip USD price is `10 / 10 = $1` → 1_000_000 in
     // 6-dec. Converting 1 bluechip (1_000_000 base units) yields $1
     // (1_000_000) +/- a couple base units of integer rounding.
@@ -4429,7 +4429,7 @@ fn test_distribution_bounty_skips_when_oracle_unavailable() {
     // Deliberately do NOT seed oracle price — last_price stays zero so
     // get_bluechip_usd_price errors with "TWAP price is zero".
     // (Override the seed introduced into prime_oracle_for_first_update by
-    // the HIGH-4 audit fix; this test specifically wants the oracle to
+    // the ; this test specifically wants the oracle to
     // appear unavailable.)
     {
         let mut oracle = INTERNAL_ORACLE.load(&deps.storage).unwrap();
@@ -4646,17 +4646,17 @@ mod validate_pool_token_info_tests {
 }
 
 // ---------------------------------------------------------------------------
-// Post-reset breaker-buffer tests (audit fix)
+// Post-reset breaker-buffer tests
 // ---------------------------------------------------------------------------
 //
 // Coverage for the four branches added to `update_internal_oracle_price`'s
 // circuit-breaker block:
 //
-//   (b) first_post_reset_observation_buffered — `pre_reset > 0`, no candidate
-//   (c)-success — second observation drifts within 30%, median lands
-//   (c)-failure — second observation drifts > 30%, candidate replaced
-//   force-accept — after MAX_POST_RESET_CONSECUTIVE_FAILURES failures,
-//                  median is force-published as a liveness escape valve
+// (b) first_post_reset_observation_buffered — `pre_reset > 0`, no candidate
+// (c)-success — second observation drifts within 30%, median lands
+// (c)-failure — second observation drifts > 30%, candidate replaced
+// force-accept — after MAX_POST_RESET_CONSECUTIVE_FAILURES failures,
+// median is force-published as a liveness escape valve
 //
 // All four manipulate INTERNAL_ORACLE state directly to simulate the
 // post-reset condition and drive the anchor pool's cumulative-delta
@@ -5087,7 +5087,7 @@ mod post_reset_buffer_tests {
         );
     }
 
-    /// Bootstrap (branch d) — HIGH-4 audit fix.
+    /// Bootstrap (branch d) — .
     ///
     /// Before the fix: the very first oracle update published directly to
     /// `last_price` with no circuit-breaker protection, letting a single-
@@ -5148,7 +5148,7 @@ mod post_reset_buffer_tests {
         assert_eq!(pending.observation_count, 1);
     }
 
-    /// HIGH-4 confirm path: after the 1h observation window elapses,
+    /// confirm path: after the 1h observation window elapses,
     /// admin can publish the buffered candidate and warmup decrements.
     #[test]
     fn confirm_bootstrap_price_publishes_after_observation_window() {
@@ -5226,7 +5226,7 @@ mod post_reset_buffer_tests {
         );
     }
 
-    /// HIGH-4 timelock: confirm before the 1h observation window has
+    /// timelock: confirm before the 1h observation window has
     /// elapsed must reject. This is the main defense against an admin
     /// (or compromised admin key) who tries to lock in a manipulated
     /// first observation immediately.
@@ -5271,7 +5271,7 @@ mod post_reset_buffer_tests {
         assert!(oracle.bluechip_price_cache.last_price.is_zero());
     }
 
-    /// HIGH-4 auth: only the factory admin can confirm. A non-admin
+    /// auth: only the factory admin can confirm. A non-admin
     /// caller — even one who's been watching the candidate stabilize
     /// for hours — cannot publish it.
     #[test]
@@ -5306,7 +5306,7 @@ mod post_reset_buffer_tests {
         assert!(matches!(err, ContractError::Unauthorized {}));
     }
 
-    /// HIGH-4 cancel: admin can discard the candidate, forcing the
+    /// cancel: admin can discard the candidate, forcing the
     /// next round to start the observation window over from scratch.
     #[test]
     fn cancel_bootstrap_price_clears_pending_and_resets_window() {

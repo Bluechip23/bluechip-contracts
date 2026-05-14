@@ -43,7 +43,7 @@ pub struct PoolConfigUpdate {
     /// `min_commit_usd_pre_threshold` above.
     #[serde(default)]
     pub min_commit_usd_post_threshold: Option<Uint128>,
-    // `oracle_address` removed (audit fix). Mirrors the same field's
+    // `oracle_address` removed. Mirrors the same field's
     // removal from `pool_core::msg::PoolConfigUpdate`. Per-pool oracle
     // rotation was an admin-compromise vector — a malicious oracle could
     // return arbitrary USD valuations, letting a tiny commit register
@@ -72,8 +72,8 @@ impl PoolConfigUpdate {
     /// cycle for the admin — surfacing the same error here saves 48h.
     ///
     /// Bounds mirror `pool_core`:
-    ///   - `lp_fee`     : `MIN_LP_FEE` (0.1%) ..= `MAX_LP_FEE` (10%)
-    ///   - `min_commit_interval` : 0 ..= 86400 seconds
+    /// - `lp_fee`     : `MIN_LP_FEE` (0.1%) ..= `MAX_LP_FEE` (10%)
+    /// - `min_commit_interval` : 0 ..= 86400 seconds
     /// Constants are duplicated rather than imported from `pool-core` to keep
     /// the factory crate free of a `pool-core` dependency (pool-core already
     /// depends on the factory-interfaces crate).
@@ -164,7 +164,7 @@ pub const THRESHOLD_PAYOUT_TOTAL_BASE_UNITS: u128 = 1_200_000_000_000;
 /// Per-pool initial mint splits awarded when a commit pool crosses its
 /// threshold. The four components MUST match the canonical
 /// `THRESHOLD_PAYOUT_*_BASE_UNITS` constants — `validate()` enforces
-/// exact equality and rejects anything else (M-7.2 audit fix). The sum
+/// exact equality and rejects anything else. The sum
 /// is also the `total_mint()` consumed by `mint_create_pool` as both
 /// the CW20 mint cap and the threshold-payout payload.
 ///
@@ -255,7 +255,7 @@ impl ThresholdPayoutAmounts {
 
     /// Validates that every component matches its canonical
     /// `THRESHOLD_PAYOUT_*_BASE_UNITS` value exactly AND that the sum
-    /// equals `THRESHOLD_PAYOUT_TOTAL_BASE_UNITS` (M-7.2 audit fix).
+    /// equals `THRESHOLD_PAYOUT_TOTAL_BASE_UNITS`.
     ///
     /// Mirrors the pool-side `validate_pool_threshold_payments` in
     /// `creator-pool::commit::threshold_payout`. Previously this
@@ -320,7 +320,7 @@ impl ThresholdPayoutAmounts {
 
 #[cfg(test)]
 mod threshold_payout_validate_tests {
-    //! M-7.2 audit-fix coverage: every non-canonical perturbation of the
+    //! coverage: every non-canonical perturbation of the
     //! four threshold-payout components is rejected with an error message
     //! that names the offending field. The canonical Default() must pass.
     //! Closes the C-3 test-coverage gap from the meta-audit.

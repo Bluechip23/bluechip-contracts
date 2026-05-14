@@ -88,7 +88,7 @@ pub enum ExecuteMsg {
     CancelEmergencyWithdrawPool {
         pool_id: u64,
     },
-    /// H-NFT-4 audit fix: forwards `SweepUnclaimedEmergencyShares {}`
+    /// forwards `SweepUnclaimedEmergencyShares {}`
     /// to a pool whose 1-year claim dormancy has elapsed. Admin-only;
     /// the pool itself verifies both the dormancy and the
     /// factory-as-sender invariants before sweeping its unclaimed
@@ -166,7 +166,7 @@ pub enum ExecuteMsg {
     SetAnchorPool {
         pool_id: u64,
     },
-    // HIGH-4 audit fix: bootstrap-price candidate confirmation. Branch (d)
+    // bootstrap-price candidate confirmation. Branch (d)
     // of `update_internal_oracle_price` writes the very-first published
     // TWAP to a pending candidate slot rather than directly into
     // `last_price`. The admin observes the candidate stabilize (≥ 1h
@@ -176,7 +176,7 @@ pub enum ExecuteMsg {
     // for branch (a) to a chosen value.
     ConfirmBootstrapPrice {},
     CancelBootstrapPrice {},
-    // MEDIUM-2 audit fix: permissionless storage hygiene. Iterates the
+    // permissionless storage hygiene. Iterates the
     // per-address rate-limit maps (commit-pool create, standard-pool
     // create) and removes entries older than 10× the cooldown window.
     // `batch_size` caps work per call so large maps don't exceed gas
@@ -187,16 +187,16 @@ pub enum ExecuteMsg {
         batch_size: Option<u32>,
     },
 
-    // ---- Oracle eligibility curation (M-3 audit fix) ----
+    // ---- Oracle eligibility curation ----
     //
     // Two parallel inputs feed the oracle's eligible-pool set: an
     // admin-curated allowlist (`ORACLE_ELIGIBLE_POOLS`, any pool kind)
     // and a global flag that, when true, also auto-includes every
     // threshold-crossed `PoolKind::Commit` pool. The roadmap is:
-    //   - Stage 1–3: admin curates the allowlist (anchor + a few
-    //     bluechip/IBC standard pools); auto-eligible flag is OFF.
-    //   - Stage 4+: admin flips the flag to ON; threshold-crossed
-    //     creator pools flow in automatically.
+    // - Stage 1–3: admin curates the allowlist (anchor + a few
+    // bluechip/IBC standard pools); auto-eligible flag is OFF.
+    // - Stage 4+: admin flips the flag to ON; threshold-crossed
+    // creator pools flow in automatically.
     // Add: 48h timelock. Remove: immediate. Flag flip: 48h timelock.
 
     /// Admin-only. Stage a pool address for inclusion in the oracle

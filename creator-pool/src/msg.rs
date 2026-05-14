@@ -174,7 +174,7 @@ pub enum ExecuteMsg {
         recipient: Option<String>,
     },
 
-    // H-NFT-4 audit fix: per-position claim against the post-emergency
+    // per-position claim against the post-emergency
     // -drain escrow. Caller must own (CW721) the position NFT — the
     // handler checks `verify_position_ownership` against the stored NFT
     // contract. Each position can be claimed exactly once; a successful
@@ -194,7 +194,7 @@ pub enum ExecuteMsg {
         position_id: String,
     },
 
-    // H-NFT-4 audit fix: factory-only sweep of the unclaimed residual
+    // factory-only sweep of the unclaimed residual
     // after the dormancy window expires. `info.sender` must equal the
     // pool's `factory_addr`; the handler verifies
     // `env.block.time >= dormancy_expires_at` (1 year post-drain) and

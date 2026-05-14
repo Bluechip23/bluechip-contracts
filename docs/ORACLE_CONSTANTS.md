@@ -4,11 +4,6 @@ This document explains the hardcoded oracle constants in the factory and
 creator-pool crates: why each value was chosen, what assumptions it
 encodes, and what would need to change to retune it.
 
-The 2026-05 audit flagged these constants as a potential "watch item":
-they are mis-sizable for different deployment chains, and currently
-have no governance-tunable path. This document is the explicit
-chain-specific tuning record the audit recommended.
-
 If a future deployment needs different values, the **only supported
 mechanism** is a coordinated `UpgradePools` migration that ships new
 constants in code. There is no runtime `Config` plumbing for these

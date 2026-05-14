@@ -1183,7 +1183,7 @@ fn test_unpaused_pool_accepts_commit_after_previously_paused() {
 }
 
 // ===========================================================================
-// Fix 6 (audit): NATIVE_RAISED_FROM_COMMIT stores net-of-fees, not gross
+// Fix 6: NATIVE_RAISED_FROM_COMMIT stores net-of-fees, not gross
 // ===========================================================================
 //
 // Coverage for the gross→net refactor in commit handlers + the matching
@@ -1191,13 +1191,13 @@ fn test_unpaused_pool_accepts_commit_after_previously_paused() {
 // branches stores a different "what actually entered the pool's bank
 // balance" value:
 //
-//   - pre_threshold:           amount_after_fees
-//   - exact-threshold-hit:     amount_after_fees
-//   - threshold_crossing:      threshold_portion_after_fees only
-//                              (excess routes through the inline AMM swap)
+// - pre_threshold:           amount_after_fees
+// - exact-threshold-hit:     amount_after_fees
+// - threshold_crossing:      threshold_portion_after_fees only
+// (excess routes through the inline AMM swap)
 //
 // The matching read at threshold-cross time:
-//   pools_bluechip_seed = NATIVE_RAISED_FROM_COMMIT.load(...)   // direct
+// pools_bluechip_seed = NATIVE_RAISED_FROM_COMMIT.load(...)   // direct
 //
 // (no `* (1 - fee_rate)` multiply — the per-commit fee floor is the only
 // floor applied end-to-end).
@@ -1396,15 +1396,15 @@ mod native_raised_net_semantics_tests {
         assert_eq!(phase.value, "threshold_crossing");
 
         // Compute expected NET threshold portion. The handler computes:
-        //   amount_after_fees = amount - total_fees
-        //                     = 10_000_000 - (1% + 5%) * 10_000_000
-        //                     = 10_000_000 - 600_000 = 9_400_000.
-        //   bluechip_to_threshold = usd_to_bluechip_at_rate(usd_to_threshold=$5,
-        //                                                   rate=1_000_000)
-        //                         = $5 * 1e6 / 1_000_000 = 5_000_000 ubluechip.
-        //   threshold_portion_after_fees =
-        //       amount_after_fees * bluechip_to_threshold / amount
-        //     = 9_400_000 * 5_000_000 / 10_000_000 = 4_700_000.
+        // amount_after_fees = amount - total_fees
+        // = 10_000_000 - (1% + 5%) * 10_000_000
+        // = 10_000_000 - 600_000 = 9_400_000.
+        // bluechip_to_threshold = usd_to_bluechip_at_rate(usd_to_threshold=$5,
+        // rate=1_000_000)
+        // = $5 * 1e6 / 1_000_000 = 5_000_000 ubluechip.
+        // threshold_portion_after_fees =
+        // amount_after_fees * bluechip_to_threshold / amount
+        // = 9_400_000 * 5_000_000 / 10_000_000 = 4_700_000.
         // NATIVE_RAISED = 24_995_000_000 + 4_700_000 = 24_999_700_000.
         let total = NATIVE_RAISED_FROM_COMMIT.load(&deps.storage).unwrap();
         assert_eq!(
@@ -1498,7 +1498,7 @@ mod native_raised_net_semantics_tests {
         );
     }
 
-    /// §7-M-2 audit fix: the two threshold-crossing handlers
+    /// the two threshold-crossing handlers
     /// (`process_threshold_crossing_with_excess` and
     /// `process_threshold_hit_exact`) refuse to execute when
     /// `IS_THRESHOLD_HIT == true`. The dispatcher in
@@ -1568,7 +1568,7 @@ mod native_raised_net_semantics_tests {
         );
     }
 
-    /// §7-M-2 follow-up: structural gate moved INTO trigger_threshold_payout.
+    /// structural gate moved INTO trigger_threshold_payout.
     /// Bypasses the crossing handlers entirely and invokes the load-bearing
     /// mint function directly with `IS_THRESHOLD_HIT == true`. The gate
     /// must fire here too — any future caller that skips the handler-level
@@ -1620,7 +1620,7 @@ mod native_raised_net_semantics_tests {
         );
     }
 
-    /// §7-M-2 follow-up: confirm the structural gate also sets
+    /// confirm the structural gate also sets
     /// IS_THRESHOLD_HIT at the END of a successful trigger run. Pre-fix
     /// the caller set the flag before calling; now the function itself
     /// is the single witness to "mint completed".

@@ -51,7 +51,7 @@ pub const ORACLE_PRICE_PRECISION: u128 = 1_000_000;
 /// Reads the oracle endpoint from `ORACLE_INFO.oracle_addr`, which is
 /// pinned at instantiate to the factory address (the factory hosts the
 /// internal price oracle today). The runtime `UpdateConfigFromFactory
-/// { oracle_address }` rotation knob was removed (audit fix) because a
+/// { oracle_address }` rotation knob was removed because a
 /// per-pool oracle rotation is an admin-compromise vector — a malicious
 /// oracle can return arbitrary `ConversionResponse.amount`, letting a
 /// trivial commit register as a full threshold cross. If the protocol

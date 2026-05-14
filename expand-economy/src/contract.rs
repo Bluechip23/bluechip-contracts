@@ -1,15 +1,15 @@
 //! CosmWasm entry points + dispatcher. The bulk of the handler logic
 //! lives in topic-aligned submodules:
 //!
-//!   - [`crate::expand`]        — the `RequestExpansion` flow, decomposed
-//!                                into one helper per phase.
-//!   - [`crate::timelock`]      — propose / apply / cancel for both
-//!                                config and withdrawal (48h timelock).
-//!   - [`crate::migrate`]       — migrate handler + downgrade guard.
-//!   - [`crate::denom`]         — cosmos-sdk denom format validator.
-//!   - [`crate::factory_query`] — wire types + cross-validation helper.
-//!   - [`crate::helpers`]       — shared owner-gating + storage helpers.
-//!   - [`crate::attrs`]         — every attribute key / action value.
+//! - [`crate::expand`]        — the `RequestExpansion` flow, decomposed
+//! into one helper per phase.
+//! - [`crate::timelock`]      — propose / apply / cancel for both
+//! config and withdrawal (48h timelock).
+//! - [`crate::migrate`]       — migrate handler + downgrade guard.
+//! - [`crate::denom`]         — cosmos-sdk denom format validator.
+//! - [`crate::factory_query`] — wire types + cross-validation helper.
+//! - [`crate::helpers`]       — shared owner-gating + storage helpers.
+//! - [`crate::attrs`]         — every attribute key / action value.
 
 #[cfg(not(feature = "library"))]
 use cosmwasm_std::entry_point;
@@ -72,13 +72,13 @@ pub fn execute(
     msg: ExecuteMsg,
 ) -> Result<Response, ContractError> {
     // Every execute path on this contract is non-payable.
-    //   - `RequestExpansion` is sent by the factory with funds: vec![];
-    //     attaching coins inflates the contract's bank balance without
-    //     adding an entry to EXPANSION_LOG, biasing the cap accounting.
-    //   - All Propose / Execute / Cancel timelock arms have no semantic
-    //     reason to accept funds; attached funds would be orphaned in
-    //     the contract's bank balance until rescued via the 48h
-    //     ProposeWithdrawal flow.
+    // - `RequestExpansion` is sent by the factory with funds: vec![];
+    // attaching coins inflates the contract's bank balance without
+    // adding an entry to EXPANSION_LOG, biasing the cap accounting.
+    // - All Propose / Execute / Cancel timelock arms have no semantic
+    // reason to accept funds; attached funds would be orphaned in
+    // the contract's bank balance until rescued via the 48h
+    // ProposeWithdrawal flow.
     //
     // Centralised at the dispatch top so every existing AND every
     // future variant inherits the guard without per-arm boilerplate.

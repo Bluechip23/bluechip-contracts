@@ -3,13 +3,13 @@
 //! The router exposes:
 //! - `InstantiateMsg` for setup
 //! - `ExecuteMsg::ExecuteMultiHop` for native-offered routes (the user
-//!   attaches bluechip funds with the call)
+//! attaches bluechip funds with the call)
 //! - `ExecuteMsg::Receive` for CW20-offered routes (the user calls
-//!   `cw20::Send` and the router decodes [`Cw20HookMsg`] from the body)
+//! `cw20::Send` and the router decodes [`Cw20HookMsg`] from the body)
 //! - `ExecuteMsg::UpdateConfig` for admin rotation
 //! - Two internal variants (`ExecuteSwapOperation`, `AssertReceived`)
-//!   that the router invokes on itself; both reject any caller other
-//!   than the router contract address
+//! that the router invokes on itself; both reject any caller other
+//! than the router contract address
 //! - `QueryMsg::SimulateMultiHop` for pre-trade UX
 //! - `QueryMsg::Config` for config reads
 

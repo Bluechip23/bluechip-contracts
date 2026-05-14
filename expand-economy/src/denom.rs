@@ -13,17 +13,17 @@ use crate::error::{ContractError, InvalidDenomReason};
 /// denom and every subsequent `RequestExpansion` reverts inside the
 /// bank module with an error nobody is watching for. Examples this
 /// catches that the previous "non-empty after trim" check missed:
-///   - `"Bluechip"`           (capital first letter — bank rejects)
-///   - `"u bluechip"`         (whitespace inside)
-///   - `"u"` or `"ub"`        (length < 3)
-///   - `"1ubluechip"`         (digit prefix)
-///   - `"ubluechip!"`         (punctuation outside the allowed set)
+/// - `"Bluechip"`           (capital first letter — bank rejects)
+/// - `"u bluechip"`         (whitespace inside)
+/// - `"u"` or `"ub"`        (length < 3)
+/// - `"1ubluechip"`         (digit prefix)
+/// - `"ubluechip!"`         (punctuation outside the allowed set)
 ///
 /// Accepts all the cosmos-sdk shapes this contract actually wants:
-///   - `"ubluechip"`          (canonical native denom)
-///   - `"ucustom"`            (test fixture)
-///   - `"ibc/27394FB..."`     (IBC-wrapped — slashes + hex)
-///   - `"factory/cosmos1.../tokenname"` (tokenfactory shape)
+/// - `"ubluechip"`          (canonical native denom)
+/// - `"ucustom"`            (test fixture)
+/// - `"ibc/27394FB..."`     (IBC-wrapped — slashes + hex)
+/// - `"factory/cosmos1.../tokenname"` (tokenfactory shape)
 pub fn validate_native_denom(denom: &str) -> Result<(), ContractError> {
     let len = denom.len();
     if !(3..=128).contains(&len) {

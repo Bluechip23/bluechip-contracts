@@ -170,11 +170,11 @@ fn build_sentinel_position(env: &Env) -> Position {
 }
 
 /// Zero-valued fee placeholder. Two reasons we save it:
-///   - `emergency_withdraw_core_drain` reads `bluechip_wallet_address`
-///     as the drain recipient. It MUST be a wallet (not the factory
-///     contract) — the factory has no withdrawal path, so funds sent
-///     there are permanently locked.
-///   - `query_fee_info` dereferences `COMMITFEEINFO` unconditionally.
+/// - `emergency_withdraw_core_drain` reads `bluechip_wallet_address`
+/// as the drain recipient. It MUST be a wallet (not the factory
+/// contract) — the factory has no withdrawal path, so funds sent
+/// there are permanently locked.
+/// - `query_fee_info` dereferences `COMMITFEEINFO` unconditionally.
 /// The fee rates are zero on a standard pool, so the creator wallet
 /// is never paid out in normal flow; we still store the factory's
 /// configured bluechip wallet there as a safe placeholder.
@@ -232,15 +232,15 @@ fn build_zero_pool_fee_state() -> PoolFeeState {
 /// migration. We pick a placeholder value with care:
 ///
 /// - If any side is a `CreatorToken`, use that side's CW20 address
-///   (matches creator-pool's convention; off-chain indexers that
-///   historically read this field still resolve to a real CW20 on
-///   `Native+CW20` standard pools).
+/// (matches creator-pool's convention; off-chain indexers that
+/// historically read this field still resolve to a real CW20 on
+/// `Native+CW20` standard pools).
 /// - Otherwise (`Native+Native` shapes — e.g. the ATOM/bluechip anchor
-///   pool), use the pool's own contract address. The pool's address
-///   is always valid bech32, can never be confused with a creator
-///   CW20 (it isn't one), and is self-referential enough to make
-///   "this field is a placeholder, not a token address" obvious to
-///   any future reader.
+/// pool), use the pool's own contract address. The pool's address
+/// is always valid bech32, can never be confused with a creator
+/// CW20 (it isn't one), and is self-referential enough to make
+/// "this field is a placeholder, not a token address" obvious to
+/// any future reader.
 fn derive_legacy_token_address_placeholder(
     pool_token_info: &[TokenType; 2],
     self_addr: &Addr,
@@ -282,7 +282,7 @@ fn check_pool_writable_for_deposit(storage: &dyn Storage) -> Result<(), Contract
 /// rejects.
 ///
 /// Allowing exits during EmergencyPending closes the LP-trap window
-/// surfaced by the audit (HIGH-1): without this, LPs whose pool gets
+/// surfaced: without this, LPs whose pool gets
 /// emergency-withdrawn cannot withdraw their principal during the 24h
 /// timelock and lose 100% on Phase-2 drain.
 fn check_pool_writable_for_remove(storage: &dyn Storage) -> Result<(), ContractError> {
@@ -303,14 +303,14 @@ fn check_pool_writable_for_remove(storage: &dyn Storage) -> Result<(), ContractE
 /// Pause-gating is enforced per-arm rather than at the top of this
 /// function because the desired gate differs by intent:
 ///
-///   - `check_pool_writable_for_deposit` accepts auto-pause
-///     (so a fresh deposit can restore reserves above MIN) but
-///     rejects EmergencyPending / Hard.
-///   - `check_pool_writable_for_remove` accepts EmergencyPending
-///     (so LPs can race the 24h drain timelock) but rejects
-///     auto-pause / Hard.
-///   - `SimpleSwap` runs no pause check here — `pool_core::swap`
-///     enforces the post-threshold cooldown + reserve checks itself.
+/// - `check_pool_writable_for_deposit` accepts auto-pause
+/// (so a fresh deposit can restore reserves above MIN) but
+/// rejects EmergencyPending / Hard.
+/// - `check_pool_writable_for_remove` accepts EmergencyPending
+/// (so LPs can race the 24h drain timelock) but rejects
+/// auto-pause / Hard.
+/// - `SimpleSwap` runs no pause check here — `pool_core::swap`
+/// enforces the post-threshold cooldown + reserve checks itself.
 ///
 /// `confirm_sent_native_balance` runs in the `SimpleSwap` arm only;
 /// the deposit / add-to-position arms route through the SubMsg-based
@@ -499,13 +499,13 @@ pub fn execute(
                 max_ratio_deviation_bps,
             )
         }
-        // H-NFT-4 audit fix: per-position post-emergency-drain claim
+        // per-position post-emergency-drain claim
         // escrow. CW721-ownership gated; available immediately after
         // Phase-2 drain through the 1-year dormancy window.
         ExecuteMsg::ClaimEmergencyShare { position_id } => {
             execute_claim_emergency_share(deps, env, info, position_id)
         }
-        // H-NFT-4 audit fix: factory-only post-1y-dormancy sweep.
+        // factory-only post-1y-dormancy sweep.
         ExecuteMsg::SweepUnclaimedEmergencyShares {} => {
             execute_sweep_unclaimed_emergency_shares(deps, env, info)
         }
@@ -632,12 +632,12 @@ pub fn reply(
 /// `migrate` entry point. Performs the cw2 downgrade guard
 /// unconditionally (regardless of variant), then dispatches per-variant:
 ///
-///   - `UpdateFees { new_fees }`: tunes `PoolSpecs.lp_fee` between
-///     `MIN_LP_FEE` (0.1%) and `MAX_LP_FEE` (10%) inclusive. Out-of-range
-///     values are rejected with `ContractError::LpFeeOutOfRange`.
-///   - `UpdateVersion {}`: no per-variant work; the unconditional
-///     `set_contract_version` below bumps the cw2 stored version. Use
-///     this when the only change between releases is the wasm code id.
+/// - `UpdateFees { new_fees }`: tunes `PoolSpecs.lp_fee` between
+/// `MIN_LP_FEE` (0.1%) and `MAX_LP_FEE` (10%) inclusive. Out-of-range
+/// values are rejected with `ContractError::LpFeeOutOfRange`.
+/// - `UpdateVersion {}`: no per-variant work; the unconditional
+/// `set_contract_version` below bumps the cw2 stored version. Use
+/// this when the only change between releases is the wasm code id.
 ///
 /// Both variants flow through `set_contract_version` after the match,
 /// so the cw2 stored version always lands at the new release on a

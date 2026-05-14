@@ -1,8 +1,8 @@
 //! Owner-gated timelock flows for both `Config` updates and
 //! one-shot `Withdrawal`s. Each flow follows the same shape:
-//!   propose  → validate inputs, write pending, emit `unlocks_at`
-//!   execute  → load pending, require timelock expired, apply
-//!   cancel   → load pending, drop it
+//! propose  → validate inputs, write pending, emit `unlocks_at`
+//! execute  → load pending, require timelock expired, apply
+//! cancel   → load pending, drop it
 //!
 //! The cancel arms share an `owner_gated_cancel` helper in
 //! `crate::helpers`; propose/apply have flow-specific bodies but use

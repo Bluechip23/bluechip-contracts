@@ -145,7 +145,7 @@ fn test_upgrade_pools_with_registry() {
     // Uses the custom querier so the IsPaused gate inside
     // build_upgrade_batch can resolve (default = not paused). The
     // plain MockQuerier doesn't know how to answer wasm-smart queries,
-    // so under the new M-5 fail-closed semantics it would revert the
+    // so under the new fail-closed semantics it would revert the
     // apply — which is the correct behaviour, just not what this test
     // is exercising.
     let mut deps = mock_dependencies_2(&[]);
@@ -287,7 +287,7 @@ fn test_update_specific_pool_from_registry() {
 #[test]
 fn test_migration_with_large_pool_count() {
     // Custom querier so IsPaused resolves to default=false. Plain
-    // MockQuerier would now fail-closed (M-5).
+    // MockQuerier would now fail-closed.
     let mut deps = mock_dependencies_2(&[]);
     setup_factory_custom(&mut deps);
 
@@ -451,7 +451,7 @@ fn test_upgrade_skips_paused_pools() {
 
 #[test]
 fn test_upgrade_first_pass_fails_closed_on_query_error() {
-    // M-5 audit fix: on the FIRST pass, an IsPaused query error
+    // on the FIRST pass, an IsPaused query error
     // propagates and reverts the apply. Treating "query unreachable"
     // as "not paused" would be a fail-open — we don't know whether
     // the pool is in a sensitive state, and committing to a Migrate
@@ -514,7 +514,7 @@ fn test_upgrade_first_pass_fails_closed_on_query_error() {
 
 #[test]
 fn test_upgrade_retry_path_migrates_unpaused_pool() {
-    // M-1 audit fix: a pool paused on first pass lands in
+    // a pool paused on first pass lands in
     // pending_retry. Once the admin has unpaused it (test-side: drop
     // from `paused_pools`), the next ContinuePoolUpgrade migrates it
     // in-place — no Cancel + re-Propose required.
@@ -559,7 +559,7 @@ fn test_upgrade_retry_path_migrates_unpaused_pool() {
     assert_eq!(mid.upgraded_count, 3);
 
     // Admin unpauses pool_2 (test-side: drop from paused set), calls
-    // Continue. Without M-1 fix, this required Cancel + re-Propose
+    // Continue. Without fix, this required Cancel + re-Propose
     // + wait 48h.
     deps.querier.paused_pools.remove("pool_2");
 

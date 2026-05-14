@@ -155,24 +155,24 @@ pub fn execute_emergency_withdraw_initiate(
 // ---------------------------------------------------------------------------
 
 /// Drains the pool-held balances that this module can see, splitting
-/// the funds into two streams (H-NFT-4 audit fix):
+/// the funds into two streams:
 ///
-///   - **LP-owned funds** (`pool_state.reserve0/1` + `fee_reserve_0/1`):
-///     stay in the pool's bank balance under an
-///     `EMERGENCY_DRAIN_SNAPSHOT` escrow. Each LP position can call
-///     `ClaimEmergencyShare` for its pro-rata portion at any time
-///     during the `EMERGENCY_CLAIM_DORMANCY_SECONDS` (1-year) window.
-///     After the window, the unclaimed remainder is sweepable to the
-///     bluechip wallet by the factory admin via
-///     `SweepUnclaimedEmergencyShares`.
+/// - **LP-owned funds** (`pool_state.reserve0/1` + `fee_reserve_0/1`):
+/// stay in the pool's bank balance under an
+/// `EMERGENCY_DRAIN_SNAPSHOT` escrow. Each LP position can call
+/// `ClaimEmergencyShare` for its pro-rata portion at any time
+/// during the `EMERGENCY_CLAIM_DORMANCY_SECONDS` (1-year) window.
+/// After the window, the unclaimed remainder is sweepable to the
+/// bluechip wallet by the factory admin via
+/// `SweepUnclaimedEmergencyShares`.
 ///
-///   - **Non-LP funds** (`CREATOR_FEE_POT` + caller-supplied
-///     `accumulation_drain_*`): swept to the bluechip wallet
-///     immediately, matching the pre-fix economics for those buckets.
-///     `CREATOR_FEE_POT` and `accumulation_drain_*` are not part of
-///     any LP's claim — `accumulation_drain_*` is the creator-pool's
-///     `CREATOR_EXCESS_POSITION` (creator-owned), and
-///     `CREATOR_FEE_POT` is the protocol's clip-slice accumulator.
+/// - **Non-LP funds** (`CREATOR_FEE_POT` + caller-supplied
+/// `accumulation_drain_*`): swept to the bluechip wallet
+/// immediately, matching the pre-fix economics for those buckets.
+/// `CREATOR_FEE_POT` and `accumulation_drain_*` are not part of
+/// any LP's claim — `accumulation_drain_*` is the creator-pool's
+/// `CREATOR_EXCESS_POSITION` (creator-owned), and
+/// `CREATOR_FEE_POT` is the protocol's clip-slice accumulator.
 ///
 /// Pre-fix, the function swept ALL pool funds (including LP reserves
 /// and pending fees) to `bluechip_wallet_address` after a 24-hour
@@ -245,7 +245,7 @@ pub fn execute_emergency_withdraw_core_drain(
     // Audit record reflects ONLY the funds actually swept to the
     // bluechip wallet at drain time. LP-claimable shares are recorded
     // separately on the EMERGENCY_DRAIN_SNAPSHOT and are NOT counted
-    // here — that's the load-bearing semantic of the H-NFT-4 fix.
+    // here — that's the load-bearing semantic of the fix.
     let withdrawal_info = EmergencyWithdrawalInfo {
         withdrawn_at: env.block.time.seconds(),
         recipient: recipient.clone(),
@@ -317,7 +317,7 @@ pub fn execute_emergency_withdraw_core_drain(
 }
 
 // ---------------------------------------------------------------------------
-// Emergency Withdraw — per-position claim escrow (H-NFT-4 audit fix)
+// Emergency Withdraw — per-position claim escrow
 // ---------------------------------------------------------------------------
 
 /// Per-position pro-rata claim against the post-drain
@@ -344,7 +344,7 @@ pub fn execute_emergency_withdraw_core_drain(
 /// `position.liquidity = 0` and zeroes `unclaimed_fees_*`. A second
 /// claim attempt computes `share = 0 × X / total_liquidity = 0` and
 /// rejects with `NoClaimableEmergencyShare`. Storage row stays alive
-/// (consistent with H-NFT-1 empty-position semantics) but is
+/// (consistent with empty-position semantics) but is
 /// economically spent.
 pub fn execute_claim_emergency_share(
     deps: DepsMut,
@@ -437,7 +437,7 @@ pub fn execute_claim_emergency_share(
     }
 
     // Mark position as economically spent. Storage row stays so the
-    // H-NFT-1 empty-position invariant holds; subsequent claims see
+    // empty-position invariant holds; subsequent claims see
     // `position.liquidity == 0` and reject.
     let claimed_liquidity = position.liquidity;
     position.liquidity = Uint128::zero();
@@ -708,7 +708,7 @@ pub fn execute_update_config_from_factory(
     // proposals carrying those fields at propose time, so a standard-pool
     // apply that reaches here can only have `None` for both.
 
-    // Per-pool `oracle_address` rotation removed (audit fix). The oracle
+    // Per-pool `oracle_address` rotation removed. The oracle
     // endpoint is pinned at instantiate to the factory address and is
     // no longer mutable through the per-pool config flow. If the
     // protocol ever splits the oracle off the factory, the rerouting

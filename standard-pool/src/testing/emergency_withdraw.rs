@@ -101,7 +101,7 @@ fn phase2_before_timelock_rejects() {
 
 #[test]
 fn phase2_escrows_lp_funds_and_records_snapshot() {
-    // H-NFT-4 audit fix: Phase 2 no longer sweeps LP-owned reserves +
+    // Phase 2 no longer sweeps LP-owned reserves +
     // pending fees to the bluechip wallet. They're escrowed in
     // EMERGENCY_DRAIN_SNAPSHOT for per-position claims via
     // ClaimEmergencyShare. Only non-LP buckets (CREATOR_FEE_POT +

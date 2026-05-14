@@ -2,8 +2,8 @@
 //!
 //! An LP-position owner calls `collect_fees` to sweep the fees accrued
 //! against their position since the last collection. This routes:
-//!   - owed-and-uncapped fees   → LP's wallet (per asset side)
-//!   - clipped-by-multiplier    → `CREATOR_FEE_POT` (per asset side)
+//! - owed-and-uncapped fees   → LP's wallet (per asset side)
+//! - clipped-by-multiplier    → `CREATOR_FEE_POT` (per asset side)
 //!
 //! The fee-size-multiplier clipping is the mechanism that caps how much
 //! of a single deposit's accrued fees the LP can take home if the

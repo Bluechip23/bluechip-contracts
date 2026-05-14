@@ -239,10 +239,10 @@ fn check_pool_not_paused(storage: &dyn Storage) -> Result<(), ContractError> {
 /// Used by the creator-only claim paths (`ClaimCreatorExcessLiquidity`,
 /// `ClaimCreatorFees`). LP-mutating paths use the more permissive
 /// gates instead:
-///   - `check_pool_writable_for_remove` permits LP exits during the
-///     emergency-withdraw timelock window so LPs can race the drain.
-///   - `check_pool_writable_for_deposit` permits deposits during
-///     auto-pause so reserves can be restored.
+/// - `check_pool_writable_for_remove` permits LP exits during the
+/// emergency-withdraw timelock window so LPs can race the drain.
+/// - `check_pool_writable_for_deposit` permits deposits during
+/// auto-pause so reserves can be restored.
 ///
 /// Creator claims do not benefit from those relaxations: the creator
 /// excess + fee pot are admin-controlled fund flows, and the safer
@@ -261,14 +261,14 @@ fn check_pool_writable(storage: &dyn Storage) -> Result<(), ContractError> {
 /// liquidity.
 ///
 /// Auto-pause vs. hard pause distinction:
-///   - `PauseKind::AutoLowLiquidity`: this gate accepts. The deposit's
-///     post-state branch in `execute_deposit_liquidity_inner` clears the
-///     flags if reserves recover.
-///   - `PauseKind::EmergencyPending` / `PauseKind::Hard`: rejected —
-///     emergency-pending pool must wait for the 24h timelock or admin
-///     cancel; admin-paused pool must wait for explicit Unpause.
-///     Letting fresh capital into a pool that is about to be drained
-///     would funnel new deposits into the emergency-drain recipient.
+/// - `PauseKind::AutoLowLiquidity`: this gate accepts. The deposit's
+/// post-state branch in `execute_deposit_liquidity_inner` clears the
+/// flags if reserves recover.
+/// - `PauseKind::EmergencyPending` / `PauseKind::Hard`: rejected —
+/// emergency-pending pool must wait for the 24h timelock or admin
+/// cancel; admin-paused pool must wait for explicit Unpause.
+/// Letting fresh capital into a pool that is about to be drained
+/// would funnel new deposits into the emergency-drain recipient.
 fn check_pool_writable_for_deposit(storage: &dyn Storage) -> Result<(), ContractError> {
     use crate::state::{pause_kind, PauseKind};
     ensure_not_drained(storage)?;
@@ -286,7 +286,7 @@ fn check_pool_writable_for_deposit(storage: &dyn Storage) -> Result<(), Contract
 /// admin Hard pause still reject — same rationale as standard-pool's
 /// equivalent helper.
 ///
-/// Closes the LP-trap window surfaced by the audit (HIGH-1): without
+/// Closes the LP-trap window surfaced: without
 /// this, post-threshold LPs whose pool is emergency-withdrawn cannot
 /// exit during the timelock and lose their entire principal on the
 /// Phase-2 drain.
@@ -404,7 +404,7 @@ pub fn execute(
                 return Err(ContractError::ShortOfThreshold {});
             }
             let sender = info.sender.clone();
-            // H1 audit fix: route every CW20-bearing deposit through the
+            // route every CW20-bearing deposit through the
             // balance-verify variant. The pre-fix path skipped the
             // pre/post snapshot under the assumption that the pool's
             // CW20 is always a vanilla cw20-base freshly minted by the
@@ -442,7 +442,7 @@ pub fn execute(
                 return Err(ContractError::ShortOfThreshold {});
             }
             let sender = info.sender.clone();
-            // H1 audit fix: same balance-verify rationale as
+            // same balance-verify rationale as
             // DepositLiquidity above. Also closes the implicit-trust
             // gap on the add-to-position path.
             execute_add_to_position_with_verify(
@@ -464,7 +464,7 @@ pub fn execute(
         } => {
             // Permitted during EmergencyPending so an LP about to remove
             // can sweep their share of fee_reserve before the drain
-            // (HIGH-1 audit fix).
+            //.
             check_pool_writable_for_remove(deps.storage)?;
             execute_collect_fees(deps, env, info, position_id, transaction_deadline)
         }
@@ -485,7 +485,7 @@ pub fn execute(
             // already-swept reserves with arbitrary math.
             //
             // EmergencyPending is permitted so LPs can race the 24h drain
-            // (HIGH-1 audit fix). Hard / auto-pause / drained still reject.
+            //. Hard / auto-pause / drained still reject.
             check_pool_writable_for_remove(deps.storage)?;
             execute_remove_partial_liquidity(
                 deps,
@@ -559,7 +559,7 @@ pub fn execute(
             // pools never cross a threshold, so there's nothing to retry.
             execute_retry_factory_notify(deps, env, info)
         }
-        // H6 audit fix: distribution-liveness primitives.
+        // distribution-liveness primitives.
         ExecuteMsg::SkipDistributionUser { user } => {
             // Factory-only escape hatch — auth gate lives inside the
             // handler so a misrouted call surfaces with the canonical
@@ -579,13 +579,13 @@ pub fn execute(
             // route the mint to a fresh wallet.
             execute_claim_failed_distribution(deps, env, info, recipient)
         }
-        // H-NFT-4 audit fix: per-position post-emergency-drain claim
+        // per-position post-emergency-drain claim
         // escrow. Auth gate (CW721 ownership of position_id) lives in
         // the handler.
         ExecuteMsg::ClaimEmergencyShare { position_id } => {
             execute_claim_emergency_share(deps, env, info, position_id)
         }
-        // H-NFT-4 audit fix: factory-only post-1y-dormancy sweep of
+        // factory-only post-1y-dormancy sweep of
         // the unclaimed residual.
         ExecuteMsg::SweepUnclaimedEmergencyShares {} => {
             execute_sweep_unclaimed_emergency_shares(deps, env, info)
@@ -609,8 +609,8 @@ pub fn execute(
 /// at propose time, but locking the apply path too means a future
 /// migration that ever inserts a `PendingPoolConfig` directly cannot
 /// land an out-of-range value):
-///   - non-zero
-///   - <= `MAX_MIN_COMMIT_USD` ($1000, 6 decimals)
+/// - non-zero
+/// - <= `MAX_MIN_COMMIT_USD` ($1000, 6 decimals)
 fn execute_update_creator_config_from_factory(
     mut deps: DepsMut,
     env: Env,
@@ -760,12 +760,12 @@ pub fn execute_retry_factory_notify(
 /// SubMsg reply handler.
 ///
 /// Two reply IDs come through here:
-///   - REPLY_ID_FACTORY_NOTIFY_INITIAL (from the threshold-crossing commit).
-///     Fires only on error (reply_on_error). We set PENDING_FACTORY_NOTIFY
-///     and return Ok so the parent commit tx survives.
-///   - REPLY_ID_FACTORY_NOTIFY_RETRY (from execute_retry_factory_notify).
-///     Fires always (reply_always). On success we clear the pending flag;
-///     on failure we keep it so another retry can be attempted.
+/// - REPLY_ID_FACTORY_NOTIFY_INITIAL (from the threshold-crossing commit).
+/// Fires only on error (reply_on_error). We set PENDING_FACTORY_NOTIFY
+/// and return Ok so the parent commit tx survives.
+/// - REPLY_ID_FACTORY_NOTIFY_RETRY (from execute_retry_factory_notify).
+/// Fires always (reply_always). On success we clear the pending flag;
+/// on failure we keep it so another retry can be attempted.
 #[cfg_attr(not(feature = "library"), entry_point)]
 pub fn reply(deps: DepsMut, env: Env, msg: Reply) -> StdResult<Response> {
     match msg.id {
@@ -798,7 +798,7 @@ pub fn reply(deps: DepsMut, env: Env, msg: Reply) -> StdResult<Response> {
                     .add_attribute("block_time", env.block.time.seconds().to_string()))
             }
         },
-        // H1 audit fix: route the deposit balance-verify reply through
+        // route the deposit balance-verify reply through
         // the shared pool-core handler. Listed BEFORE the H6 distribution-
         // mint guard arm because `DEPOSIT_VERIFY_REPLY_ID` (0xD550_0000)
         // is numerically above `REPLY_ID_DISTRIBUTION_MINT_BASE` and the
@@ -822,24 +822,24 @@ pub fn reply(deps: DepsMut, env: Env, msg: Reply) -> StdResult<Response> {
         id if id >= REPLY_ID_DISTRIBUTION_MINT_BASE
             && PENDING_MINT_REPLIES.has(deps.storage, id) =>
         {
-            // Distribution-mint reply (H6 audit fix). The parent
+            // Distribution-mint reply. The parent
             // `process_distribution_batch` (or `ClaimFailedDistribution`)
             // dispatched a per-user CW20 mint as a `reply_always` SubMsg
             // and stashed `(user, amount)` in PENDING_MINT_REPLIES under
             // this id. Two outcomes:
             //
-            //   - Mint succeeded: clear the stash and emit an attribute.
-            //     The CW20's bank-side state (recipient balance bumped)
-            //     stands.
+            // - Mint succeeded: clear the stash and emit an attribute.
+            // The CW20's bank-side state (recipient balance bumped)
+            // stands.
             //
-            //   - Mint failed: clear the stash and accumulate the amount
-            //     under `user` in FAILED_MINTS. This is the load-bearing
-            //     liveness invariant: a single rejecting recipient no
-            //     longer reverts the entire batch tx; their amount is
-            //     held for `ClaimFailedDistribution` to retrieve later.
-            //     We always return Ok(...) from this branch — bubbling
-            //     the error would re-introduce the very stall this fix
-            //     was designed to eliminate.
+            // - Mint failed: clear the stash and accumulate the amount
+            // under `user` in FAILED_MINTS. This is the load-bearing
+            // liveness invariant: a single rejecting recipient no
+            // longer reverts the entire batch tx; their amount is
+            // held for `ClaimFailedDistribution` to retrieve later.
+            // We always return Ok(...) from this branch — bubbling
+            // the error would re-introduce the very stall this fix
+            // was designed to eliminate.
             //
             // The dispatch arm is gated on `PENDING_MINT_REPLIES.has(id)`
             // so any id ≥ BASE without a stash entry falls through to the

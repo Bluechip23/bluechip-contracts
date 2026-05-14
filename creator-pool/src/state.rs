@@ -8,26 +8,26 @@
 //! Symbols re-exported from `pool_core::state` (non-exhaustive list, kept
 //! here so a `grep` in this crate finds the definition site):
 //!
-//!   Pool registry:
-//!     POOL_INFO, POOL_STATE, POOL_FEE_STATE, POOL_SPECS, POOL_ANALYTICS,
-//!     LIQUIDITY_POSITIONS, OWNER_POSITIONS, NEXT_POSITION_ID, POOL_PAUSED,
-//!     POOL_PAUSED_AUTO, EMERGENCY_WITHDRAWAL, PENDING_EMERGENCY_WITHDRAW,
-//!     EMERGENCY_DRAINED, EXPECTED_FACTORY, REENTRANCY_LOCK, IS_THRESHOLD_HIT,
-//!     CREATOR_FEE_POT, USER_LAST_COMMIT
+//! Pool registry:
+//! POOL_INFO, POOL_STATE, POOL_FEE_STATE, POOL_SPECS, POOL_ANALYTICS,
+//! LIQUIDITY_POSITIONS, OWNER_POSITIONS, NEXT_POSITION_ID, POOL_PAUSED,
+//! POOL_PAUSED_AUTO, EMERGENCY_WITHDRAWAL, PENDING_EMERGENCY_WITHDRAW,
+//! EMERGENCY_DRAINED, EXPECTED_FACTORY, REENTRANCY_LOCK, IS_THRESHOLD_HIT,
+//! CREATOR_FEE_POT, USER_LAST_COMMIT
 //!
-//!   Threshold-cross machinery:
-//!     POST_THRESHOLD_COOLDOWN_UNTIL_BLOCK, POST_THRESHOLD_COOLDOWN_BLOCKS,
-//!     STUCK_THRESHOLD_RECOVERY_WINDOW_SECONDS,
-//!     STUCK_DISTRIBUTION_RECOVERY_WINDOW_SECONDS,
-//!     MAX_CONSECUTIVE_DISTRIBUTION_FAILURES,
-//!     THRESHOLD_PAYOUT_{CREATOR,BLUECHIP,POOL,COMMIT_RETURN,TOTAL}_BASE_UNITS,
-//!     SECONDS_PER_DAY, DEFAULT_LP_FEE, MAX_LP_FEE, MIN_LP_FEE,
-//!     DEFAULT_SWAP_RATE_LIMIT_SECS, POOL_KIND_STANDARD, POOL_KIND_COMMIT,
-//!     POOL_COMMITS_QUERY_DEFAULT_LIMIT, POOL_COMMITS_QUERY_MAX_LIMIT,
-//!     MINIMUM_LIQUIDITY, EMERGENCY_WITHDRAW_DELAY_SECONDS
+//! Threshold-cross machinery:
+//! POST_THRESHOLD_COOLDOWN_UNTIL_BLOCK, POST_THRESHOLD_COOLDOWN_BLOCKS,
+//! STUCK_THRESHOLD_RECOVERY_WINDOW_SECONDS,
+//! STUCK_DISTRIBUTION_RECOVERY_WINDOW_SECONDS,
+//! MAX_CONSECUTIVE_DISTRIBUTION_FAILURES,
+//! THRESHOLD_PAYOUT_{CREATOR,BLUECHIP,POOL,COMMIT_RETURN,TOTAL}_BASE_UNITS,
+//! SECONDS_PER_DAY, DEFAULT_LP_FEE, MAX_LP_FEE, MIN_LP_FEE,
+//! DEFAULT_SWAP_RATE_LIMIT_SECS, POOL_KIND_STANDARD, POOL_KIND_COMMIT,
+//! POOL_COMMITS_QUERY_DEFAULT_LIMIT, POOL_COMMITS_QUERY_MAX_LIMIT,
+//! MINIMUM_LIQUIDITY, EMERGENCY_WITHDRAW_DELAY_SECONDS
 //!
-//!   Deposit-verify reply chain:
-//!     DEPOSIT_VERIFY_CTX, DEPOSIT_VERIFY_REPLY_ID
+//! Deposit-verify reply chain:
+//! DEPOSIT_VERIFY_CTX, DEPOSIT_VERIFY_REPLY_ID
 //!
 //! Commit-phase-specific Items / structs / constants follow below.
 pub use pool_core::state::*;
@@ -283,13 +283,13 @@ pub struct Committing {
     /// receipt. The two perspectives diverge by the commit-fee total
     /// per commit:
     ///
-    ///   - `Committing.total_paid_bluechip` (this field): user spent X
-    ///     (matches user wallet outflow, what a frontend should show
-    ///     under "your contribution").
-    ///   - `NATIVE_RAISED_FROM_COMMIT` (pool-level): pool received
-    ///     `X * (1 - bluechip_fee - creator_fee)` (matches the bluechip
-    ///     side of the eventual AMM seed; what `trigger_threshold_payout`
-    ///     consumes).
+    /// - `Committing.total_paid_bluechip` (this field): user spent X
+    /// (matches user wallet outflow, what a frontend should show
+    /// under "your contribution").
+    /// - `NATIVE_RAISED_FROM_COMMIT` (pool-level): pool received
+    /// `X * (1 - bluechip_fee - creator_fee)` (matches the bluechip
+    /// side of the eventual AMM seed; what `trigger_threshold_payout`
+    /// consumes).
     ///
     /// Both views are correct from their own perspectives. The pool-level
     /// "raised toward threshold" total emitted in commit response

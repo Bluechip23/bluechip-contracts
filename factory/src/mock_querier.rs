@@ -38,7 +38,7 @@ pub struct WasmMockQuerier {
     // contract address; when present, the override is returned verbatim.
     // Falls back to the default 50B/10B reserves below if no override is
     // registered for the queried address. Used by integration tests that
-    // need different reserves on different pools (M-3 dedup, M-4
+    // need different reserves on different pools (dedup, M-4
     // liquidity floor) — without this, every cross-contract pool query
     // returns the same numbers regardless of which pool was asked.
     pub pool_state_overrides:

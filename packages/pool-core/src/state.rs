@@ -293,19 +293,19 @@ pub const POOL_PAUSED: Item<bool> = Item::new("pool_paused");
 /// when `POOL_PAUSED == true`.
 ///
 /// Wire-up:
-///   - Auto-set: after a swap or remove leaves reserves < MIN, the handler
-///     sets POOL_PAUSED + POOL_PAUSED_AUTO = true (only if no harder pause
-///     is already in place).
-///   - Auto-clear: after a deposit pushes reserves back >= MIN AND the
-///     pool was auto-paused, the deposit clears both flags.
-///   - Hard pauses (admin Pause, emergency_withdraw_initiate) explicitly
-///     set POOL_PAUSED_AUTO = false to override any prior auto-state.
+/// - Auto-set: after a swap or remove leaves reserves < MIN, the handler
+/// sets POOL_PAUSED + POOL_PAUSED_AUTO = true (only if no harder pause
+/// is already in place).
+/// - Auto-clear: after a deposit pushes reserves back >= MIN AND the
+/// pool was auto-paused, the deposit clears both flags.
+/// - Hard pauses (admin Pause, emergency_withdraw_initiate) explicitly
+/// set POOL_PAUSED_AUTO = false to override any prior auto-state.
 ///
 /// Gating semantics:
-///   - Auto-paused (true & true): deposits allowed (recovery path);
-///     swaps / removes / collects rejected.
-///   - Hard-paused (true & false): everything rejected, including
-///     deposits — admin must Unpause or cancel emergency to resume.
+/// - Auto-paused (true & true): deposits allowed (recovery path);
+/// swaps / removes / collects rejected.
+/// - Hard-paused (true & false): everything rejected, including
+/// deposits — admin must Unpause or cancel emergency to resume.
 ///
 /// `#[serde(default)]` keeps deployed pools that predate this flag
 /// deserializing as false; legacy paused pools therefore behave as
@@ -411,7 +411,7 @@ pub const COMMITFEEINFO: Item<CommitFeeInfo> = Item::new("fee_info");
 // which is the only oracle-query call site in the pool.
 //
 // The runtime `UpdateConfigFromFactory { oracle_address }` knob was
-// removed (audit fix): a per-pool oracle rotation was a documented
+// removed: a per-pool oracle rotation was a documented
 // admin-compromise vector — a malicious oracle can return arbitrary
 // `ConversionResponse.amount`, letting a $5 commit register as a full
 // threshold cross and capturing the entire pool seed plus

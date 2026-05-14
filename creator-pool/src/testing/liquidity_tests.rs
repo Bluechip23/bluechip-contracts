@@ -359,7 +359,7 @@ fn test_remove_all_liquidity() {
     )
     .unwrap();
     assert!(res.messages.len() >= 2);
-    // H-NFT-1 audit fix: standard exits now keep the LIQUIDITY_POSITIONS
+    // standard exits now keep the LIQUIDITY_POSITIONS
     // row alive at `liquidity == 0` so the user's CW721 NFT remains
     // rehydrate-able rather than becoming a tombstone (NFT exists on
     // CW721 but every pool-side handler errors with "not found"). Pre-fix

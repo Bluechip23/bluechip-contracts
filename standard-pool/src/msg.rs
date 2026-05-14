@@ -123,7 +123,7 @@ pub enum ExecuteMsg {
         max_ratio_deviation_bps: Option<u16>,
     },
 
-    // H-NFT-4 audit fix: per-position claim against the post-emergency-
+    // per-position claim against the post-emergency-
     // drain escrow. Caller must own the position NFT (CW721 OwnerOf
     // check). Each position can be claimed exactly once; a successful
     // claim sets `position.liquidity = 0` and bumps the snapshot's
@@ -141,7 +141,7 @@ pub enum ExecuteMsg {
         position_id: String,
     },
 
-    // H-NFT-4 audit fix: factory-only post-dormancy sweep. After 1
+    // factory-only post-dormancy sweep. After 1
     // year, factory admin sends the unclaimed residual to the
     // bluechip wallet. One-shot; `residual_swept` flag prevents
     // double-sweeps.

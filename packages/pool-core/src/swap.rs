@@ -1,14 +1,14 @@
 //! Pair-shape-agnostic swap.
 //!
 //! Two layers:
-//!   - Pure AMM math: `compute_swap`, `compute_offer_amount`,
-//!     `assert_max_spread`, `update_price_accumulator`. No storage; may
-//!     mutate a caller-provided `PoolState` ref.
-//!   - Swap orchestration: `execute_swap_cw20` (CW20 `Receive` hook),
-//!     `simple_swap` (reentrancy + rate-limit wrapper), and
-//!     `execute_simple_swap` (the actual swap handler). All
-//!     shape-agnostic — no commit-phase logic; `query_check_commit` is
-//!     the only gate and it's `true` on standard pools by default.
+//! - Pure AMM math: `compute_swap`, `compute_offer_amount`,
+//! `assert_max_spread`, `update_price_accumulator`. No storage; may
+//! mutate a caller-provided `PoolState` ref.
+//! - Swap orchestration: `execute_swap_cw20` (CW20 `Receive` hook),
+//! `simple_swap` (reentrancy + rate-limit wrapper), and
+//! `execute_simple_swap` (the actual swap handler). All
+//! shape-agnostic — no commit-phase logic; `query_check_commit` is
+//! the only gate and it's `true` on standard pools by default.
 //!
 //! Oracle-backed USD conversion helpers — which query the factory's
 //! internal oracle and are only needed by the commit flow — stay in
@@ -300,7 +300,7 @@ pub fn execute_swap_cw20(
             to,
             transaction_deadline,
         }) => {
-            // M-5.3 audit fix: enforce the transaction deadline BEFORE
+            // enforce the transaction deadline BEFORE
             // the M-7 cross-contract balance query. Previously the
             // deadline was first checked inside `simple_swap` (called
             // at the very end of this function), so an expired
@@ -324,7 +324,7 @@ pub fn execute_swap_cw20(
                     matches!(t, TokenType::CreatorToken { contract_addr } if contract_addr == &info.sender)
                 })
                 .ok_or(ContractError::Unauthorized {})?;
-            // M-7 audit fix: confirm the CW20 actually transferred the
+            // confirm the CW20 actually transferred the
             // claimed `cw20_msg.amount` before letting `simple_swap`
             // credit the offer side. Standard pools accept arbitrary
             // user-supplied CW20 contracts (no whitelist on
@@ -333,7 +333,7 @@ pub fn execute_swap_cw20(
             // amounts and drain the opposite reserve at AMM rates. We
             // verify by comparing the pool's actual CW20 balance to the
             // pre-Receive invariant
-            //   balance == reserve_X + fee_reserve_X + creator_pot.X
+            // balance == reserve_X + fee_reserve_X + creator_pot.X
             // plus the claimed `cw20_msg.amount`. A SHORTFALL means
             // either no real transfer, a fee-on-transfer skim, or a
             // negative rebase — all attacks/edges we want to reject.
@@ -415,7 +415,7 @@ pub fn simple_swap(
 ) -> Result<Response, ContractError> {
     enforce_transaction_deadline(env.block.time, transaction_deadline)?;
 
-    // M-5.2 audit fix: use the shared `with_reentrancy_guard` helper
+    // use the shared `with_reentrancy_guard` helper
     // instead of open-coding the load → check → save(true) → run →
     // save(false) pattern. Same semantics — unconditional clear on both
     // success and error paths so mock-test storage doesn't leak a
@@ -448,7 +448,7 @@ pub fn execute_simple_swap(
     allow_high_max_spread: Option<bool>,
     to: Option<Addr>,
 ) -> Result<Response, ContractError> {
-    // M-5.1 audit fix: defense-in-depth threshold gate at the shared
+    // defense-in-depth threshold gate at the shared
     // handler. All three current entry points already gate on
     // IS_THRESHOLD_HIT (creator-pool dispatcher via query_check_commit,
     // CW20 hook at the top of execute_swap_cw20, standard-pool has the

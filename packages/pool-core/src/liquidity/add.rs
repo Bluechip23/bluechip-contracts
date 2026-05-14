@@ -4,11 +4,11 @@
 //! valued against a clean baseline.
 //!
 //! Two-layer API:
-//!   - `execute_add_to_position` — public entry point, does reentrancy /
-//!     rate-limit checks and delegates.
-//!   - `add_to_position`         — core handler, exposed `pub` so
-//!     downstream crates (and future helpers) can call it without the
-//!     rate-limit layer if they've already handled rate limiting.
+//! - `execute_add_to_position` — public entry point, does reentrancy /
+//! rate-limit checks and delegates.
+//! - `add_to_position`         — core handler, exposed `pub` so
+//! downstream crates (and future helpers) can call it without the
+//! rate-limit layer if they've already handled rate limiting.
 
 use cosmwasm_std::{
     Addr, CosmosMsg, DepsMut, Env, MessageInfo, Response, Timestamp, Uint128,

@@ -37,7 +37,7 @@ pub(super) fn process_pre_threshold_commit(
     // NATIVE_RAISED after the writes. `Item::update` returns the new value.
     //
     // `NATIVE_RAISED_FROM_COMMIT` now stores the *net* bluechip that
-    // entered the contract's bank balance from this commit (audit fix).
+    // entered the contract's bank balance from this commit.
     // Previously it stored the gross `asset.amount`, and
     // `trigger_threshold_payout` recovered the net via
     // `gross * (1 - fee_rate)` floor. The two flooring directions
