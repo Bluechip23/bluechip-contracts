@@ -2874,6 +2874,119 @@ mod anchor_validation_failure_tests {
         );
     }
 
+    /// SetAnchorPool against a shape-correct Standard pool whose reserves
+    /// are both zero → rejected. A live anchor must be able to produce a
+    /// TWAP from cumulative-delta progress; an empty pool can't, and the
+    /// oracle's bootstrap branch (d) would never buffer a candidate,
+    /// making `ConfirmBootstrapPrice` permanently unreachable. Catching
+    /// this at validation time forces the operator to seed liquidity
+    /// before pointing the anchor at the pool.
+    #[test]
+    fn set_anchor_rejects_empty_reserves() {
+        let mut deps = fresh_factory_with_anchor_unset();
+        let pool_addr = make_addr("std_empty_anchor_candidate");
+        let pool_details = PoolDetails {
+            pool_id: 53,
+            pool_token_info: [
+                TokenType::Native {
+                    denom: "ubluechip".to_string(),
+                },
+                TokenType::Native {
+                    denom: "uatom".to_string(),
+                },
+            ],
+            creator_pool_addr: pool_addr.clone(),
+            pool_kind: pool_factory_interfaces::PoolKind::Standard,
+            commit_pool_ordinal: 0,
+        };
+        POOLS_BY_ID
+            .save(&mut deps.storage, 53, &pool_details)
+            .unwrap();
+
+        // Override the mock querier so GetPoolState reports (0, 0) for this
+        // pool address instead of the default 50B/10B response.
+        deps.querier.set_pool_state(
+            pool_addr.as_str(),
+            PoolStateResponseForFactory {
+                pool_contract_address: pool_addr.clone(),
+                nft_ownership_accepted: true,
+                reserve0: Uint128::zero(),
+                reserve1: Uint128::zero(),
+                total_liquidity: Uint128::zero(),
+                block_time_last: 0,
+                price0_cumulative_last: Uint128::zero(),
+                price1_cumulative_last: Uint128::zero(),
+                assets: vec![],
+            },
+        );
+
+        let err = execute(
+            deps.as_mut(),
+            mock_env(),
+            message_info(&admin_addr(), &[]),
+            ExecuteMsg::SetAnchorPool { pool_id: 53 },
+        )
+        .unwrap_err();
+        assert!(
+            err.to_string().contains("empty reserves"),
+            "got: {}",
+            err
+        );
+    }
+
+    /// SetAnchorPool against a Standard pool whose bluechip side has been
+    /// fully drained while atom side still holds reserves → also rejected.
+    /// The zero-reserves gate is symmetric across both sides.
+    #[test]
+    fn set_anchor_rejects_single_side_drained() {
+        let mut deps = fresh_factory_with_anchor_unset();
+        let pool_addr = make_addr("std_half_drained_anchor_candidate");
+        let pool_details = PoolDetails {
+            pool_id: 54,
+            pool_token_info: [
+                TokenType::Native {
+                    denom: "ubluechip".to_string(),
+                },
+                TokenType::Native {
+                    denom: "uatom".to_string(),
+                },
+            ],
+            creator_pool_addr: pool_addr.clone(),
+            pool_kind: pool_factory_interfaces::PoolKind::Standard,
+            commit_pool_ordinal: 0,
+        };
+        POOLS_BY_ID
+            .save(&mut deps.storage, 54, &pool_details)
+            .unwrap();
+        deps.querier.set_pool_state(
+            pool_addr.as_str(),
+            PoolStateResponseForFactory {
+                pool_contract_address: pool_addr.clone(),
+                nft_ownership_accepted: true,
+                reserve0: Uint128::zero(),
+                reserve1: Uint128::new(10_000_000_000),
+                total_liquidity: Uint128::zero(),
+                block_time_last: 0,
+                price0_cumulative_last: Uint128::zero(),
+                price1_cumulative_last: Uint128::zero(),
+                assets: vec![],
+            },
+        );
+
+        let err = execute(
+            deps.as_mut(),
+            mock_env(),
+            message_info(&admin_addr(), &[]),
+            ExecuteMsg::SetAnchorPool { pool_id: 54 },
+        )
+        .unwrap_err();
+        assert!(
+            err.to_string().contains("empty reserves"),
+            "got: {}",
+            err
+        );
+    }
+
     /// SetAnchorPool against an unregistered pool_id → "not found in registry".
     #[test]
     fn set_anchor_rejects_unregistered_pool_id() {
