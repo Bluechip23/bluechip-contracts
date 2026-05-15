@@ -351,6 +351,15 @@ pub const REENTRANCY_LOCK: Item<bool> = Item::new("rate_limit_guard");
 ///
 /// `cw20_side*_addr == None` for non-CW20 sides; balances on those
 /// sides are not snapshotted (native bank transfers are exact).
+///
+/// `outgoing_amount_*` track CW20 outflows that are dispatched WITHIN
+/// the same Response as the deposit/add inflow (i.e., fee payouts on
+/// `add_to_position`). The reply handler's correctness invariant is
+/// `post_balance + outgoing == pre_balance + actual_amount`. Defaults
+/// to zero on the deposit-liquidity path (no in-tx outflows; the
+/// invariant simplifies to `post - pre == actual_amount`).
+/// `#[serde(default)]` lets pre-this-field contexts deserialize as
+/// zero for backwards compatibility.
 #[cw_serde]
 pub struct DepositVerifyContext {
     pub pool_addr: Addr,
@@ -360,6 +369,16 @@ pub struct DepositVerifyContext {
     pub pre_balance1: Uint128,
     pub expected_delta0: Uint128,
     pub expected_delta1: Uint128,
+    /// CW20 amount flowing OUT of the pool on side 0 during the same
+    /// Response as the inflow (`add_to_position`'s side-0 fee payout if
+    /// side 0 is CW20; zero otherwise). Subtracted from the effective
+    /// delta math so the strict equality check accounts for the net
+    /// pool-balance change rather than the inflow alone.
+    #[serde(default)]
+    pub outgoing_amount0: Uint128,
+    /// Same as `outgoing_amount0` for side 1.
+    #[serde(default)]
+    pub outgoing_amount1: Uint128,
 }
 
 /// Storage for the transient `DepositVerifyContext` used between deposit

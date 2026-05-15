@@ -2605,6 +2605,8 @@ mod deposit_verify_tests {
                     pre_balance1: Uint128::new(1_000),
                     expected_delta0: Uint128::zero(),
                     expected_delta1: Uint128::new(250),
+                    outgoing_amount0: Uint128::zero(),
+                    outgoing_amount1: Uint128::zero(),
                 },
             )
             .unwrap();
@@ -2643,12 +2645,13 @@ mod deposit_verify_tests {
     }
 
     /// Reply dispatcher rejects on a fee-on-transfer / rebasing-down
-    /// shortfall: post-balance < pre + expected, so delta != expected
-    /// and the verify handler returns Err. Creator-pool's `reply`
-    /// returns `StdResult<Response>`, so the typed `ContractError`
-    /// from the verify handler is mapped into `StdError::generic_err`
-    /// — assert the error string contains the canonical "balance
-    /// delta does not match" phrase that off-chain monitoring keys on.
+    /// shortfall: post+outgoing < pre+expected, so the
+    /// `net-balance invariant` check fails and the verify handler
+    /// returns Err. Creator-pool's `reply` returns `StdResult<Response>`,
+    /// so the typed `ContractError` from the verify handler is mapped
+    /// into `StdError::generic_err` — assert the error string contains
+    /// the canonical "net-balance invariant violated" phrase that
+    /// off-chain monitoring keys on.
     #[test]
     fn reply_dispatcher_rejects_balance_shortfall() {
         let mut deps = mock_dependencies();
@@ -2667,6 +2670,8 @@ mod deposit_verify_tests {
                     pre_balance1: Uint128::new(1_000),
                     expected_delta0: Uint128::zero(),
                     expected_delta1: Uint128::new(250),
+                    outgoing_amount0: Uint128::zero(),
+                    outgoing_amount1: Uint128::zero(),
                 },
             )
             .unwrap();
@@ -2690,7 +2695,7 @@ mod deposit_verify_tests {
             .expect_err("shortfall must propagate as Err to revert the parent tx");
         let msg = err.to_string();
         assert!(
-            msg.contains("balance delta") && msg.contains("does not match"),
+            msg.contains("net-balance invariant violated"),
             "shortfall error must carry the canonical phrase off-chain monitoring \
              keys on; got: {}",
             msg
@@ -2720,6 +2725,8 @@ mod deposit_verify_tests {
                     pre_balance1: Uint128::new(1_000),
                     expected_delta0: Uint128::zero(),
                     expected_delta1: Uint128::new(250),
+                    outgoing_amount0: Uint128::zero(),
+                    outgoing_amount1: Uint128::zero(),
                 },
             )
             .unwrap();
@@ -2743,7 +2750,7 @@ mod deposit_verify_tests {
         let err = reply(deps.as_mut(), mock_env(), r)
             .expect_err("overage must propagate as Err");
         assert!(
-            err.to_string().contains("does not match"),
+            err.to_string().contains("net-balance invariant violated"),
             "overage rejection must surface; got: {}",
             err
         );

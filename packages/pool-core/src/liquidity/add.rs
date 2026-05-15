@@ -192,12 +192,38 @@ fn add_to_position_internal(
     let fee_msgs = build_fee_transfer_msgs(&prep.pool_info, &user, fees_owed_0, fees_owed_1)?;
     messages.extend(fee_msgs);
 
+    // CW20 outflows for the verify check. Only the CW20 fee payouts
+    // affect the CW20-side post-balance; Native fee payouts (BankMsg)
+    // don't touch CW20 balances and are excluded here. Without this
+    // accounting, the verify reply's strict `delta == actual_amount`
+    // check would falsely reject every add-to-position on a CW20-side
+    // pool whose position has any prior fee accrual (Finding 12.1) —
+    // post-balance reflects `pre + deposited - fee_out`, not
+    // `pre + deposited`.
+    let outgoing_cw20_0 = if matches!(
+        &prep.pool_info.pool_info.asset_infos[0],
+        crate::asset::TokenType::CreatorToken { .. }
+    ) {
+        fees_owed_0
+    } else {
+        Uint128::zero()
+    };
+    let outgoing_cw20_1 = if matches!(
+        &prep.pool_info.pool_info.asset_infos[1],
+        crate::asset::TokenType::CreatorToken { .. }
+    ) {
+        fees_owed_1
+    } else {
+        Uint128::zero()
+    };
+
     finalize_deposit_response(
         deps.storage,
         &prep.pool_info,
         &prep.pool_info.pool_info.asset_infos,
         prep.actual_amount0,
         prep.actual_amount1,
+        (outgoing_cw20_0, outgoing_cw20_1),
         pre_snapshot,
         messages,
         attrs,
