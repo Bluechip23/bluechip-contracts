@@ -33,8 +33,8 @@ use crate::state::{
     THRESHOLD_PROCESSING,
 };
 use cosmwasm_std::{
-    Addr, DepsMut, Env, MessageInfo, Order, Response, StdError, StdResult, Storage, SubMsg,
-    Timestamp, Uint128, Uint256,
+    Addr, DepsMut, Env, MessageInfo, Order, Response, StdResult, Storage, SubMsg,
+    Timestamp, Uint128,
 };
 
 // ---------------------------------------------------------------------------
@@ -301,121 +301,19 @@ fn recover_reentrancy_guard(
 // surgically remove a single poison row without resetting the cursor).
 // ---------------------------------------------------------------------------
 
-/// Compute a single committer's pro-rata share of `total_to_distribute`,
-/// matching `calculate_committer_reward` in distribution_batch.rs. Kept
-/// here so the skip handler can credit the same amount to FAILED_MINTS
-/// that the mint loop would have produced.
-fn compute_committer_reward(
-    usd_paid: Uint128,
-    total_to_distribute: Uint128,
-    total_committed_usd: Uint128,
-) -> StdResult<Uint128> {
-    if total_committed_usd.is_zero() {
-        return Ok(Uint128::zero());
-    }
-    let reward = Uint128::try_from(
-        Uint256::from(usd_paid)
-            .checked_mul(Uint256::from(total_to_distribute))
-            .map_err(|o| StdError::generic_err(o.to_string()))?
-            .checked_div(Uint256::from(total_committed_usd))
-            .map_err(|o| StdError::generic_err(o.to_string()))?,
-    )
-    .map_err(|o| StdError::generic_err(o.to_string()))?;
-    Ok(reward)
-}
-
-/// Factory-only: surgically remove a single committer from `COMMIT_LEDGER`
-/// when their row is blocking distribution progress in a way the per-mint
-/// reply isolation cannot handle (e.g., the row's serialization is itself
-/// corrupt and `range(..)` errors before the mint subroutine ever fires).
-///
-/// Their pro-rata reward is preserved by accumulating it into
-/// `FAILED_MINTS` under the original committer address — the user can
-/// later call `ClaimFailedDistribution` with an alternate recipient to
-/// retrieve it. This keeps the entitlement intact while unblocking the
-/// batch processor.
-///
-/// Side effects:
-/// - Resets `consecutive_failures` and re-enables `is_distributing` so
-/// the next `ContinueDistribution` call resumes work without a
-/// separate `RecoverPoolStuckStates` invocation.
-/// - Advances `last_processed_key` only if the cursor was pointing at
-/// (or past) the skipped user — never rewinds the cursor.
-pub fn execute_skip_distribution_user(
-    deps: DepsMut,
-    env: Env,
-    info: MessageInfo,
-    user: String,
-) -> Result<Response, ContractError> {
-    // Same canonical-auth-source consolidation as in
-    // `execute_recover_stuck_states` above — use `POOL_INFO.factory_addr`
-    // rather than `EXPECTED_FACTORY` so every admin gate reads from one
-    // source of truth.
-    let pool_info_for_auth = POOL_INFO.load(deps.storage)?;
-    if info.sender != pool_info_for_auth.factory_addr {
-        return Err(ContractError::Unauthorized {});
-    }
-    ensure_not_drained(deps.storage)?;
-
-    let user_addr: Addr = deps.api.addr_validate(&user)?;
-
-    // Take a snapshot of the ledger entry. `may_load` returns the USD
-    // amount the committer paid; if absent, the skip is a no-op error
-    // so the caller knows their input doesn't match a real row.
-    let usd_paid = COMMIT_LEDGER
-        .may_load(deps.storage, &user_addr)?
-        .ok_or_else(|| ContractError::LedgerEntryNotFound {
-            user: user_addr.to_string(),
-        })?;
-
-    // Compute the reward this committer would have received from the
-    // current `DistributionState`. If no distribution is in flight (the
-    // row exists but distribution hasn't started), the reward is zero
-    // and we just remove the row.
-    let credited_amount = match DISTRIBUTION_STATE.may_load(deps.storage)? {
-        Some(dist) => {
-            compute_committer_reward(usd_paid, dist.total_to_distribute, dist.total_committed_usd)?
-        }
-        None => Uint128::zero(),
-    };
-
-    if !credited_amount.is_zero() {
-        FAILED_MINTS.update::<_, StdError>(deps.storage, &user_addr, |existing| {
-            let prior = existing.unwrap_or_default();
-            prior
-                .checked_add(credited_amount)
-                .map_err(|o| StdError::generic_err(o.to_string()))
-        })?;
-    }
-    COMMIT_LEDGER.remove(deps.storage, &user_addr);
-
-    // Reset the consecutive-failures gate and re-enable distribution.
-    // `last_processed_key` is intentionally NOT touched — if it was at
-    // or past the skipped row, the batch processor's range query will
-    // simply skip past on its next call. Rewinding here would replay
-    // already-paid committers on the second pass.
-    if let Some(mut dist) = DISTRIBUTION_STATE.may_load(deps.storage)? {
-        dist.consecutive_failures = 0;
-        dist.is_distributing = true;
-        dist.last_updated = env.block.time;
-        // Decrement the informational `distributions_remaining` so the
-        // exposed counter doesn't tell keepers there's still work to
-        // do for the skipped row. Saturating-sub guards against the
-        // (anomalous) zero case.
-        dist.distributions_remaining = dist.distributions_remaining.saturating_sub(1);
-        DISTRIBUTION_STATE.save(deps.storage, &dist)?;
-    }
-
-    let pool_info = POOL_INFO.load(deps.storage)?;
-    Ok(Response::new()
-        .add_attribute("action", "skip_distribution_user")
-        .add_attribute("skipped_user", user_addr.to_string())
-        .add_attribute("usd_paid", usd_paid.to_string())
-        .add_attribute("credited_to_failed_mints", credited_amount.to_string())
-        .add_attribute("pool_contract", pool_info.pool_info.contract_addr.to_string())
-        .add_attribute("skipped_by", info.sender.to_string())
-        .add_attribute("block_time", env.block.time.seconds().to_string()))
-}
+// `SkipDistributionUser` was removed pre-launch (audit fix §6.1). The
+// handler was factory-only by auth but the factory never carried a
+// matching forward, so the recovery path was unreachable; it existed
+// for an exceptional "corrupt ledger row that range(..) cannot
+// deserialize" scenario that cw_storage_plus's static typing makes
+// practically impossible. Per-mint reply isolation
+// (FAILED_MINTS / ClaimFailedDistribution) handles every realistic
+// "one recipient can't be minted to" case automatically without admin
+// intervention. The remaining recovery levers
+// (`RecoverPoolStuckStates::StuckDistribution` after 1h,
+// `SelfRecoverDistribution` after 7d) reset the cursor for stalls that
+// aren't caused by a specific poisoned row. If the corrupt-ledger-row
+// scenario ever does manifest, recovery is via a wasm migration.
 
 /// Permissionless: restart a stalled distribution after a 7-day stall
 /// window. Mirrors `recover_distribution`'s cursor-reset semantics but

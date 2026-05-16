@@ -72,11 +72,29 @@ pub enum FactoryQueryMsg {
     /// `ProposeConfigUpdate` flow.
     #[returns(EmergencyWithdrawDelayResponse)]
     EmergencyWithdrawDelaySeconds {},
+
+    /// Returns the factory's current `bluechip_wallet_address`. Pools
+    /// query this at emergency-drain Phase 2 to route the swept funds
+    /// to the live wallet rather than a stale snapshot taken at pool
+    /// instantiate time. The address is admin-tunable through the
+    /// standard 48h `ProposeConfigUpdate` flow; a snapshot would leave
+    /// existing pools draining to whatever wallet the admin had
+    /// configured when each pool was created, which would either
+    /// scatter drain proceeds across multiple historical wallets or
+    /// (worse) route them to a wallet the admin has since rotated
+    /// away from.
+    #[returns(BluechipWalletResponse)]
+    BluechipWalletAddress {},
 }
 
 #[cw_serde]
 pub struct EmergencyWithdrawDelayResponse {
     pub delay_seconds: u64,
+}
+
+#[cw_serde]
+pub struct BluechipWalletResponse {
+    pub address: Addr,
 }
 
 #[cw_serde]

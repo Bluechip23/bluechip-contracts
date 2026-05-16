@@ -240,7 +240,30 @@ pub fn execute_emergency_withdraw_core_drain(
     sweep_1 = sweep_1.checked_add(accumulation_drain_1)?;
 
     let fee_info = COMMITFEEINFO.load(deps.storage)?;
-    let recipient = fee_info.bluechip_wallet_address.clone();
+    // Query the factory for the LIVE bluechip wallet address rather
+    // than using the snapshot pinned in `COMMITFEEINFO` at pool
+    // instantiate. The factory's `bluechip_wallet_address` is
+    // admin-tunable via the standard 48h `ProposeConfigUpdate` flow;
+    // sourcing the recipient live ensures every pool that emergency-
+    // drains after a wallet rotation routes funds to the current
+    // wallet, not the wallet that was active when the pool was
+    // created.
+    //
+    // Fail-soft: under emergency context, reverting on a factory
+    // query failure (factory paused, migrated, or unreachable) would
+    // leave the pool stuck in Phase 2 indefinitely. If the query
+    // fails for any reason, fall back to the snapshot in COMMITFEEINFO
+    // so the drain can complete; in steady-state the snapshot and
+    // live values are identical and the fallback is unobservable.
+    let recipient = match deps.querier.query_wasm_smart::<
+        pool_factory_interfaces::BluechipWalletResponse,
+    >(
+        pool_info.factory_addr.to_string(),
+        &pool_factory_interfaces::FactoryQueryMsg::BluechipWalletAddress {},
+    ) {
+        Ok(resp) => resp.address,
+        Err(_) => fee_info.bluechip_wallet_address.clone(),
+    };
 
     // Audit record reflects ONLY the funds actually swept to the
     // bluechip wallet at drain time. LP-claimable shares are recorded
@@ -572,7 +595,21 @@ pub fn execute_sweep_unclaimed_emergency_shares(
     EMERGENCY_DRAIN_SNAPSHOT.save(deps.storage, &snapshot)?;
 
     let fee_info = COMMITFEEINFO.load(deps.storage)?;
-    let recipient = fee_info.bluechip_wallet_address;
+    // Live-query the factory's `bluechip_wallet_address` for the same
+    // reason as `execute_emergency_withdraw_core_drain` (fix §3.1) —
+    // sweep proceeds should route to the current wallet, not the
+    // pool-instantiate-time snapshot. Falls back to COMMITFEEINFO if
+    // the factory is unreachable so a stale-factory configuration
+    // can't strand the residual.
+    let recipient = match deps.querier.query_wasm_smart::<
+        pool_factory_interfaces::BluechipWalletResponse,
+    >(
+        pool_info.factory_addr.to_string(),
+        &pool_factory_interfaces::FactoryQueryMsg::BluechipWalletAddress {},
+    ) {
+        Ok(resp) => resp.address,
+        Err(_) => fee_info.bluechip_wallet_address,
+    };
 
     let mut messages: Vec<CosmosMsg> = vec![];
     if !residual_0.is_zero() {

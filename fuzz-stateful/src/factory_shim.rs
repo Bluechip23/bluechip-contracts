@@ -217,6 +217,15 @@ pub fn query(deps: Deps, env: Env, msg: HarnessQueryMsg) -> StdResult<Binary> {
                     delay_seconds: 86_400,
                 })
             }
+            // Stubbed for fuzz harness. The pool's emergency-drain
+            // path queries this to resolve the live wallet — return a
+            // deterministic placeholder so the fuzzer can exercise the
+            // drain end-to-end without standing up a real factory.
+            FactoryQueryMsg::BluechipWalletAddress {} => {
+                to_json_binary(&pool_factory_interfaces::BluechipWalletResponse {
+                    address: cosmwasm_std::Addr::unchecked("fuzz_bluechip_wallet"),
+                })
+            }
         },
         HarnessQueryMsg::ThresholdMinted { pool_id } => {
             let v = MINTED.may_load(deps.storage, pool_id)?.unwrap_or(false);

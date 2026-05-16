@@ -1602,9 +1602,6 @@ fn test_m7_threshold_payout_emits_accept_ownership() {
 // - Per-mint isolation: a single failing recipient lands in
 // `FAILED_MINTS` rather than reverting the whole batch tx; the
 // other rows in the batch still mint, the cursor advances.
-// - SkipDistributionUser: factory-only escape hatch removes a row
-// from COMMIT_LEDGER, credits the user's pro-rata reward into
-// FAILED_MINTS, resets failure counters, re-enables distribution.
 // - SelfRecoverDistribution: permissionless after the 7-day
 // `PUBLIC_DISTRIBUTION_RECOVERY_WINDOW_SECONDS` window; rejected
 // before the window, accepted after.
@@ -1842,121 +1839,13 @@ mod distribution_liveness_tests {
         );
     }
 
-    // ----- SkipDistributionUser ---------------------------------------
-
-    /// SkipDistributionUser auth: only the configured factory may invoke.
-    #[test]
-    fn skip_distribution_user_unauthorized_is_rejected() {
-        let mut deps = mock_dependencies();
-        setup_pool_storage(&mut deps);
-        install_factory(&mut deps);
-
-        let info = message_info(&Addr::unchecked("not_factory"), &[]);
-        let err = execute(
-            deps.as_mut(),
-            mock_env(),
-            info,
-            ExecuteMsg::SkipDistributionUser {
-                user: "anyone".to_string(),
-            },
-        )
-        .unwrap_err();
-        assert!(matches!(err, ContractError::Unauthorized {}));
-    }
-
-    /// SkipDistributionUser on an absent ledger row returns
-    /// `LedgerEntryNotFound` so the operator's input mistake doesn't
-    /// silently no-op.
-    #[test]
-    fn skip_distribution_user_absent_row_returns_not_found() {
-        let mut deps = mock_dependencies();
-        setup_pool_storage(&mut deps);
-        install_factory(&mut deps);
-
-        let info = message_info(&factory_addr(), &[]);
-        let err = execute(
-            deps.as_mut(),
-            mock_env(),
-            info,
-            ExecuteMsg::SkipDistributionUser {
-                user: "cosmos1".to_string() + &"a".repeat(38),
-            },
-        )
-        .unwrap_err();
-        // addr_validate may reject the synthetic address shape — both
-        // outcomes are acceptable failure modes (Std vs LedgerEntryNotFound).
-        match err {
-            ContractError::LedgerEntryNotFound { .. } => {}
-            ContractError::Std(_) => {}
-            other => panic!("expected LedgerEntryNotFound or addr-validate Std, got: {:?}", other),
-        }
-    }
-
-    /// SkipDistributionUser happy path: removes COMMIT_LEDGER row,
-    /// computes pro-rata reward against the live DistributionState,
-    /// accumulates into FAILED_MINTS, resets `consecutive_failures`,
-    /// re-enables `is_distributing`, decrements `distributions_remaining`.
-    #[test]
-    fn skip_distribution_user_credits_failed_mints_and_unblocks_state() {
-        let mut deps = mock_dependencies();
-        setup_pool_storage(&mut deps);
-        install_factory(&mut deps);
-
-        // The handler validates the user string param, so use a
-        // bech32-valid address here (see `label_addr` doc).
-        let user = label_addr("poison_user");
-        // Committer paid $1000 USD; reward share = $1000 / $10000 of 1_000_000_000
-        // = 100_000_000 owed.
-        let usd_paid = Uint128::new(1_000_000_000);
-        COMMIT_LEDGER
-            .save(&mut deps.storage, &user, &usd_paid)
-            .unwrap();
-
-        let dist = DistributionState {
-            is_distributing: false, // simulate post-stall
-            total_to_distribute: Uint128::new(1_000_000_000),
-            total_committed_usd: Uint128::new(10_000_000_000),
-            last_processed_key: None,
-            distributions_remaining: 5,
-            estimated_gas_per_distribution: DEFAULT_ESTIMATED_GAS_PER_DISTRIBUTION,
-            max_gas_per_tx: DEFAULT_MAX_GAS_PER_TX,
-            last_successful_batch_size: None,
-            consecutive_failures: 5,
-            started_at: mock_env().block.time,
-            last_updated: mock_env().block.time,
-            distributed_so_far: Uint128::zero(),
-        };
-        DISTRIBUTION_STATE.save(&mut deps.storage, &dist).unwrap();
-
-        let info = message_info(&factory_addr(), &[]);
-        let res = execute(
-            deps.as_mut(),
-            mock_env(),
-            info,
-            ExecuteMsg::SkipDistributionUser {
-                user: user.to_string(),
-            },
-        )
-        .unwrap();
-
-        // Row removed.
-        assert!(COMMIT_LEDGER.may_load(&deps.storage, &user).unwrap().is_none());
-        // FAILED_MINTS credited at the pro-rata amount.
-        let credited = FAILED_MINTS.load(&deps.storage, &user).unwrap();
-        assert_eq!(credited, Uint128::new(100_000_000));
-
-        // DistributionState: counters reset, distribution re-enabled,
-        // remaining decremented.
-        let dist_after = DISTRIBUTION_STATE.load(&deps.storage).unwrap();
-        assert_eq!(dist_after.consecutive_failures, 0);
-        assert!(dist_after.is_distributing);
-        assert_eq!(dist_after.distributions_remaining, 4);
-
-        // Observability attribute exposes the credited amount.
-        assert!(res.attributes.iter().any(|a| a.key
-            == "credited_to_failed_mints"
-            && a.value == "100000000"));
-    }
+    // SkipDistributionUser tests removed pre-launch (audit fix §6.1) —
+    // the handler was unreachable (no factory-side forward) and the
+    // recovery scenario it targeted (corrupt ledger row that
+    // `range(..)` cannot deserialize) is practically unreachable with
+    // `cw_storage_plus` static typing. Per-mint reply isolation
+    // (FAILED_MINTS / ClaimFailedDistribution) handles every
+    // realistic "one recipient can't be minted to" case automatically.
 
     // ----- SelfRecoverDistribution ------------------------------------
 
@@ -2278,19 +2167,8 @@ mod distribution_liveness_tests {
         install_factory(&mut deps);
         EMERGENCY_DRAINED.save(&mut deps.storage, &true).unwrap();
 
-        // Skip
-        let info = message_info(&factory_addr(), &[]);
-        let err = execute(
-            deps.as_mut(),
-            mock_env(),
-            info,
-            ExecuteMsg::SkipDistributionUser {
-                user: "anyone".to_string(),
-            },
-        )
-        .unwrap_err();
-        assert!(format!("{:?}", err).contains("Drained")
-            || format!("{:?}", err).contains("drained"));
+        // (SkipDistributionUser was removed pre-launch — audit fix §6.1.
+        // Its drained-pool rejection is no longer applicable.)
 
         // Self-recover
         let info = message_info(&Addr::unchecked("anyone"), &[]);
