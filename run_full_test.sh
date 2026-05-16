@@ -381,7 +381,11 @@ print(json.dumps({
     }
 }))
 ")
-TXHASH=$(exe "$FACTORY_ADDR" "$CREATE_MSG")
+# must_pay on commit-pool create (audit f944e07): factory enforces exactly-one
+# bluechip Coin attached, sized by oracle-converted standard_pool_creation_fee_usd.
+# Send the pre-anchor fallback (100 BLUECHIP = 100_000_000 ubluechip); surplus
+# is refunded to alice atomically.
+TXHASH=$(exe "$FACTORY_ADDR" "$CREATE_MSG" "100000000ubluechip")
 echo "  Create Pool TX: $TXHASH"
 sleep 14
 
@@ -409,6 +413,17 @@ else
   log_fail "Pool creation failed"
   echo "  Chain log: /tmp/bluechip_chain.log"
   exit 1
+fi
+
+# Audit 54af371: factory accepts the position-NFT ownership at create-time
+# (not at threshold crossing). Verify the flag is already true on a brand-new
+# pool — any later liquidity flow depends on it.
+NFT_ACCEPTED=$(qry "$POOL_ADDR" '{"pool_state":{}}' \
+  | python3 -c "import json,sys; d=json.load(sys.stdin); print(d.get('data',{}).get('nft_ownership_accepted', False))" 2>/dev/null || echo "ERR")
+if [ "$NFT_ACCEPTED" = "True" ]; then
+  log_pass "Pool NFT ownership accepted at create"
+else
+  log_fail "Pool NFT ownership not accepted (got: $NFT_ACCEPTED)"
 fi
 
 echo ""
