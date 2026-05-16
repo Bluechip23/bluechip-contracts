@@ -6,6 +6,7 @@
 
 mod accept_nft_ownership;
 mod balance_verify;
+mod claim_emergency;
 mod collect_fees;
 mod deposit_liquidity;
 mod emergency_withdraw;
