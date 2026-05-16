@@ -91,11 +91,12 @@ pub fn give_pool_ownership_cw20_and_nft(
     nft_addr: &Addr,
     pool_addr: &Addr,
 ) -> Result<Vec<CosmosMsg>, ContractError> {
+    let pool_addr_str = pool_addr.to_string();
     Ok(vec![
         WasmMsg::Execute {
             contract_addr: token_addr.to_string(),
             msg: to_json_binary(&Cw20ExecuteMsg::UpdateMinter {
-                new_minter: Some(pool_addr.to_string()),
+                new_minter: Some(pool_addr_str.clone()),
             })?,
             funds: vec![],
         }
@@ -104,7 +105,7 @@ pub fn give_pool_ownership_cw20_and_nft(
             contract_addr: nft_addr.to_string(),
             msg: to_json_binary(&Cw721ExecuteMsg::<()>::UpdateOwnership(
                 Action::TransferOwnership {
-                    new_owner: pool_addr.to_string(),
+                    new_owner: pool_addr_str,
                     expiry: None,
                 },
             ))?,

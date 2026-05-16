@@ -58,17 +58,18 @@ pub fn set_tokens(
     POOL_CREATION_CONTEXT.save(deps.storage, pool_id, &ctx)?;
 
     let config = FACTORYINSTANTIATEINFO.load(deps.storage)?;
+    let factory_addr_str = env.contract.address.to_string();
     let nft_instantiate_msg = to_json_binary(&Cw721InstantiateMsg {
         name: LP_NFT_NAME.to_string(),
         symbol: LP_NFT_SYMBOL.to_string(),
-        minter: env.contract.address.to_string(),
+        minter: factory_addr_str.clone(),
     })?;
 
     let nft_msg = WasmMsg::Instantiate {
         code_id: config.cw721_nft_contract_id,
         msg: nft_instantiate_msg,
         funds: vec![],
-        admin: Some(env.contract.address.to_string()),
+        admin: Some(factory_addr_str),
         label: format!("{}{}", LP_NFT_LABEL_PREFIX, token_address),
     };
 
