@@ -17,8 +17,8 @@ use cosmwasm_std::{
 use crate::error::ContractError;
 use crate::generic::{check_rate_limit, enforce_transaction_deadline, with_reentrancy_guard};
 use crate::liquidity_helpers::{
-    build_fee_transfer_msgs, calc_capped_fees_with_clip, calculate_fee_size_multiplier,
-    sync_position_on_transfer, verify_position_ownership,
+    build_fee_transfer_msgs, calc_capped_fees_with_clip, effective_fee_size_multiplier,
+    enforce_standard_pool_min_position, sync_position_on_transfer, verify_position_ownership,
 };
 use crate::state::{
     PoolSpecs, CREATOR_FEE_POT, LIQUIDITY_POSITIONS, POOL_ANALYTICS, POOL_FEE_STATE, POOL_SPECS,
@@ -81,6 +81,16 @@ fn add_to_position_internal(
         min_amount1,
     )?;
 
+    // Standard-pool dust-floor on the produced LP units. Mirrors the
+    // check inside `execute_deposit_liquidity_inner`. No-op on creator
+    // pools. Applied here rather than only on initial deposit because a
+    // tiny add-to-position on a standard pool would otherwise still
+    // produce a low-fee_size_multiplier in the pre-fix world; with the
+    // multiplier now pinned at 1.0 on standard pools, the floor is the
+    // only remaining dust-griefing deterrent and must apply at every
+    // liquidity-in entry point.
+    enforce_standard_pool_min_position(deps.storage, prep.liquidity)?;
+
     // Same pre-snapshot pattern as `execute_deposit_liquidity_inner`.
     // Skipped when verify_balances=false (creator-pool path) — saves the
     // two CW20 balance queries per add-to-position call.
@@ -122,7 +132,7 @@ fn add_to_position_internal(
     liquidity_position.fee_growth_inside_1_last = pool_fee_state.fee_growth_global_1;
     liquidity_position.last_fee_collection = env.block.time.seconds();
     liquidity_position.fee_size_multiplier =
-        calculate_fee_size_multiplier(liquidity_position.liquidity);
+        effective_fee_size_multiplier(deps.storage, liquidity_position.liquidity)?;
     liquidity_position.unclaimed_fees_0 = Uint128::zero();
     liquidity_position.unclaimed_fees_1 = Uint128::zero();
 
@@ -182,12 +192,38 @@ fn add_to_position_internal(
     let fee_msgs = build_fee_transfer_msgs(&prep.pool_info, &user, fees_owed_0, fees_owed_1)?;
     messages.extend(fee_msgs);
 
+    // CW20 outflows for the verify check. Only the CW20 fee payouts
+    // affect the CW20-side post-balance; Native fee payouts (BankMsg)
+    // don't touch CW20 balances and are excluded here. Without this
+    // accounting, the verify reply's strict `delta == actual_amount`
+    // check would falsely reject every add-to-position on a CW20-side
+    // pool whose position has any prior fee accrual (Finding 12.1) —
+    // post-balance reflects `pre + deposited - fee_out`, not
+    // `pre + deposited`.
+    let outgoing_cw20_0 = if matches!(
+        &prep.pool_info.pool_info.asset_infos[0],
+        crate::asset::TokenType::CreatorToken { .. }
+    ) {
+        fees_owed_0
+    } else {
+        Uint128::zero()
+    };
+    let outgoing_cw20_1 = if matches!(
+        &prep.pool_info.pool_info.asset_infos[1],
+        crate::asset::TokenType::CreatorToken { .. }
+    ) {
+        fees_owed_1
+    } else {
+        Uint128::zero()
+    };
+
     finalize_deposit_response(
         deps.storage,
         &prep.pool_info,
         &prep.pool_info.pool_info.asset_infos,
         prep.actual_amount0,
         prep.actual_amount1,
+        (outgoing_cw20_0, outgoing_cw20_1),
         pre_snapshot,
         messages,
         attrs,

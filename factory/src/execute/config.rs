@@ -178,6 +178,7 @@ pub(crate) fn validate_factory_config(
                 )))
             })?;
             super::oracle::validate_anchor_pool_choice(
+                deps,
                 &pool_details,
                 &config.bluechip_denom,
                 &config.atom_denom,

@@ -6,7 +6,7 @@ use crate::admin::{
     ensure_not_drained, execute_cancel_emergency_withdraw, execute_claim_emergency_share,
     execute_claim_failed_distribution, execute_emergency_withdraw, execute_pause,
     execute_recover_stuck_states, execute_self_recover_distribution,
-    execute_skip_distribution_user, execute_sweep_unclaimed_emergency_shares, execute_unpause,
+    execute_sweep_unclaimed_emergency_shares, execute_unpause,
     execute_update_config_from_factory,
 };
 use crate::asset::{PoolPairType, TokenInfoPoolExt, TokenType};
@@ -197,6 +197,12 @@ pub fn instantiate(
     // gate on this until `process_threshold_crossing_with_excess` flips
     // it to `true` during the threshold-crossing commit.
     IS_THRESHOLD_HIT.save(deps.storage, &false)?;
+    // Creator pools use the legacy `fee_size_multiplier` dust-griefing
+    // deterrent — small positions accrue with a clipped multiplier whose
+    // clipped slice flows to CREATOR_FEE_POT, claimable by the creator.
+    // Standard pools instantiate with this flag set to `false`; see the
+    // doc-comment on `APPLY_DUST_MULTIPLIER` in pool-core::state.
+    pool_core::state::APPLY_DUST_MULTIPLIER.save(deps.storage, &true)?;
     NEXT_POSITION_ID.save(deps.storage, &0u64)?;
     POOL_INFO.save(deps.storage, &pool_info)?;
     POOL_FEE_STATE.save(deps.storage, &pool_fee_state)?;
@@ -560,12 +566,6 @@ pub fn execute(
             execute_retry_factory_notify(deps, env, info)
         }
         // distribution-liveness primitives.
-        ExecuteMsg::SkipDistributionUser { user } => {
-            // Factory-only escape hatch — auth gate lives inside the
-            // handler so a misrouted call surfaces with the canonical
-            // Unauthorized error rather than a dispatch-level mismatch.
-            execute_skip_distribution_user(deps, env, info, user)
-        }
         ExecuteMsg::SelfRecoverDistribution {} => {
             // Permissionless 7-day distribution-stall recovery. The
             // handler enforces the elapsed-time gate and rejects calls

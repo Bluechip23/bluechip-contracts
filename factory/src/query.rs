@@ -195,6 +195,17 @@ pub fn handle_internal_bluechip_oracle_query(
                 delay_seconds: cfg.emergency_withdraw_delay_seconds,
             })
         }
+        FactoryQueryMsg::BluechipWalletAddress {} => {
+            // Pools call this from `pool-core::execute_emergency_withdraw_core_drain`
+            // to route Phase 2 sweep funds to the live wallet rather than
+            // the snapshot taken in `COMMITFEEINFO.bluechip_wallet_address`
+            // at pool instantiate. The factory's wallet is admin-tunable
+            // through the standard 48h `ProposeConfigUpdate` flow.
+            let cfg = FACTORYINSTANTIATEINFO.load(deps.storage)?;
+            to_json_binary(&pool_factory_interfaces::BluechipWalletResponse {
+                address: cfg.bluechip_wallet_address,
+            })
+        }
     }
 }
 

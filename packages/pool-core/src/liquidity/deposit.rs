@@ -23,7 +23,8 @@ use crate::asset::TokenType;
 use crate::error::ContractError;
 use crate::generic::{check_rate_limit, enforce_transaction_deadline, with_reentrancy_guard};
 use crate::liquidity_helpers::{
-    calc_liquidity_for_deposit, calculate_fee_size_multiplier, check_slippage,
+    calc_liquidity_for_deposit, check_slippage, effective_fee_size_multiplier,
+    enforce_standard_pool_min_position,
 };
 use crate::state::{
     DepositVerifyContext, PoolInfo, PoolSpecs, Position, TokenMetadata, DEPOSIT_VERIFY_CTX,
@@ -343,6 +344,12 @@ fn execute_deposit_liquidity_inner(
         min_amount1,
     )?;
 
+    // Standard-pool dust-floor: reject deposits whose produced LP units
+    // are below `MIN_STANDARD_POOL_POSITION_LIQUIDITY`. No-op on creator
+    // pools (gated by APPLY_DUST_MULTIPLIER inside the helper). See the
+    // helper's doc-comment for rationale.
+    enforce_standard_pool_min_position(deps.storage, prep.liquidity)?;
+
     // Snapshot the pool's current CW20 balance on every CW20 side
     // BEFORE the TransferFrom messages dispatch. The reply handler will
     // diff post-balance against this snapshot and reject any shortfall
@@ -424,7 +431,7 @@ fn execute_deposit_liquidity_inner(
         funds: vec![],
     };
     messages.push(CosmosMsg::Wasm(mint_liquidity_nft));
-    let fee_size_multiplier = calculate_fee_size_multiplier(prep.liquidity);
+    let fee_size_multiplier = effective_fee_size_multiplier(deps.storage, prep.liquidity)?;
     let position = Position {
         liquidity: prep.liquidity,
         owner: user.clone(),
@@ -513,6 +520,11 @@ fn execute_deposit_liquidity_inner(
         &prep.pool_info.pool_info.asset_infos,
         prep.actual_amount0,
         prep.actual_amount1,
+        // Fresh deposit emits no in-tx CW20 outflows (no fee payout —
+        // the position has no prior fee accrual). Pass zero outgoing
+        // amounts; the verify reply's `post == pre + actual` invariant
+        // simplifies cleanly.
+        (Uint128::zero(), Uint128::zero()),
         pre_snapshot,
         messages,
         attrs,
@@ -589,6 +601,17 @@ pub(crate) fn finalize_deposit_response(
     asset_infos: &[TokenType; 2],
     actual_amount0: Uint128,
     actual_amount1: Uint128,
+    // Per-side CW20 amounts that flow OUT of the pool inside the same
+    // Response as the inflow. Used by `add_to_position` to declare the
+    // fee-payout (or other) outflows on each CW20 side; passed as
+    // `(Uint128::zero(), Uint128::zero())` from the deposit path where
+    // no in-tx outflows happen.
+    //
+    // The verify reply enforces `post + outgoing == pre + actual_amount`
+    // per CW20 side so the strict equality check accounts for the net
+    // pool-balance change rather than treating outflows as fee-on-transfer
+    // shortfalls.
+    outgoing_amounts: (Uint128, Uint128),
     pre_snapshot: Option<PreBalanceSnapshot>,
     messages: Vec<CosmosMsg>,
     attrs: Vec<(&'static str, String)>,
@@ -639,6 +662,8 @@ pub(crate) fn finalize_deposit_response(
             pre_balance1: snapshot.1.unwrap_or_default(),
             expected_delta0: actual_amount0,
             expected_delta1: actual_amount1,
+            outgoing_amount0: outgoing_amounts.0,
+            outgoing_amount1: outgoing_amounts.1,
         },
     )?;
 

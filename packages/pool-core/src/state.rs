@@ -171,6 +171,21 @@ pub struct PoolFeeState {
     pub fee_reserve_1: Uint128,
 }
 
+/// Instantiate-time self-check storage. The pool's instantiate saves
+/// the caller-declared `msg.used_factory_addr` here and verifies
+/// `info.sender == expected_factory_address` to reject direct-instantiate
+/// attempts that don't go through the factory's reply chain.
+///
+/// **NOT the canonical auth source post-instantiate.** Every admin-gated
+/// handler that runs after instantiate must check against
+/// `POOL_INFO.factory_addr` instead. Both are written from the same
+/// `msg.used_factory_addr` at instantiate, so they cannot drift unless a
+/// future migration writes one without the other — but if they ever do,
+/// auth checks split across the two storage slots would yield
+/// inconsistent results. Audit-driven consolidation: as of the
+/// pre-launch audit fix, every post-instantiate read uses
+/// `POOL_INFO.factory_addr` (see `creator-pool::admin::execute_recover_stuck_states`
+/// and `execute_skip_distribution_user`).
 #[cw_serde]
 pub struct ExpectedFactory {
     pub expected_factory_address: Addr,
@@ -351,6 +366,15 @@ pub const REENTRANCY_LOCK: Item<bool> = Item::new("rate_limit_guard");
 ///
 /// `cw20_side*_addr == None` for non-CW20 sides; balances on those
 /// sides are not snapshotted (native bank transfers are exact).
+///
+/// `outgoing_amount_*` track CW20 outflows that are dispatched WITHIN
+/// the same Response as the deposit/add inflow (i.e., fee payouts on
+/// `add_to_position`). The reply handler's correctness invariant is
+/// `post_balance + outgoing == pre_balance + actual_amount`. Defaults
+/// to zero on the deposit-liquidity path (no in-tx outflows; the
+/// invariant simplifies to `post - pre == actual_amount`).
+/// `#[serde(default)]` lets pre-this-field contexts deserialize as
+/// zero for backwards compatibility.
 #[cw_serde]
 pub struct DepositVerifyContext {
     pub pool_addr: Addr,
@@ -360,6 +384,16 @@ pub struct DepositVerifyContext {
     pub pre_balance1: Uint128,
     pub expected_delta0: Uint128,
     pub expected_delta1: Uint128,
+    /// CW20 amount flowing OUT of the pool on side 0 during the same
+    /// Response as the inflow (`add_to_position`'s side-0 fee payout if
+    /// side 0 is CW20; zero otherwise). Subtracted from the effective
+    /// delta math so the strict equality check accounts for the net
+    /// pool-balance change rather than the inflow alone.
+    #[serde(default)]
+    pub outgoing_amount0: Uint128,
+    /// Same as `outgoing_amount0` for side 1.
+    #[serde(default)]
+    pub outgoing_amount1: Uint128,
 }
 
 /// Storage for the transient `DepositVerifyContext` used between deposit
@@ -395,9 +429,39 @@ pub const USER_LAST_COMMIT: Map<&Addr, u64> = Map::new("user_last_commit");
 pub const IS_THRESHOLD_HIT: Item<bool> = Item::new("threshold_hit");
 
 /// Creator-claimable pot that receives the portion of LP fees "clipped"
-/// away from small positions by `calculate_fee_size_multiplier`. Standard
-/// pool's stays empty; emergency_withdraw sweeps it unconditionally.
+/// away from small positions by `calculate_fee_size_multiplier` on
+/// **creator pools**. On standard pools the multiplier is bypassed
+/// (every position uses `Decimal::one()`) so no clip is ever produced and
+/// this pot stays empty during normal operation — dust-griefing
+/// protection on standard pools is enforced via the
+/// `MIN_STANDARD_POOL_POSITION_LIQUIDITY` deposit/add floor instead. The
+/// `emergency_withdraw_core_drain` sweep still reads this Item
+/// unconditionally as defense-in-depth (handles pre-fix records / future
+/// drift); on a healthy standard pool the swept amount is zero.
 pub const CREATOR_FEE_POT: Item<CreatorFeePot> = Item::new("creator_fee_pot");
+
+/// When `true` (default-on-load via `.unwrap_or(true)` for backwards
+/// compatibility with pre-flag fixtures), the deposit / add / remove
+/// paths route each position's `fee_size_multiplier` through
+/// `calculate_fee_size_multiplier(liquidity)` — the dust-griefing
+/// penalty originally designed for creator pools, whose clipped slice
+/// flows to `CREATOR_FEE_POT` for the creator wallet to claim.
+///
+/// When `false` (set explicitly at standard-pool instantiate), every
+/// position is created with `fee_size_multiplier = Decimal::one()` and
+/// neither add nor remove recomputes it. Standard pools have no creator
+/// wallet, so the multiplier's clipped slice would accumulate in
+/// `CREATOR_FEE_POT` with no normal-operation claim path; bypassing
+/// the multiplier eliminates that value-drain.
+///
+/// Dust-griefing protection on standard pools is preserved by the
+/// `MIN_STANDARD_POOL_POSITION_LIQUIDITY` floor enforced inside the
+/// deposit / add handlers when this flag is `false`.
+///
+/// Always read via `effective_fee_size_multiplier` (in
+/// `liquidity_helpers.rs`) — never `calculate_fee_size_multiplier`
+/// directly — so the flag is honored uniformly.
+pub const APPLY_DUST_MULTIPLIER: Item<bool> = Item::new("apply_dust_multiplier");
 
 /// emergency_withdraw reads `bluechip_wallet_address` for the drain
 /// recipient; standard pool instantiate saves a zero-valued placeholder.

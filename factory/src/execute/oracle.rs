@@ -290,6 +290,7 @@ pub fn execute_set_anchor_pool(
 
     // Run the strict anchor checks against the chosen pool.
     validate_anchor_pool_choice(
+        deps.as_ref(),
         &pool_details,
         &factory_config.bluechip_denom,
         &factory_config.atom_denom,
@@ -326,10 +327,21 @@ pub fn execute_set_anchor_pool(
 /// anchor at a pool whose price has no relation to the Pyth ATOM/USD
 /// feed the rest of the oracle math depends on.
 ///
+/// Additionally cross-contract queries the pool's `GetPoolState` and
+/// requires both reserves to be non-zero. A pool with `(0, 0)` reserves
+/// passes the shape checks but is dead from the oracle's perspective —
+/// the cumulative-price accumulator never advances, branch (d) of
+/// `update_internal_oracle_price` never buffers a candidate, and
+/// `ConfirmBootstrapPrice` becomes permanently unreachable until LP is
+/// added. Rejecting empty pools at validation time forces the operator
+/// to seed liquidity before pointing the anchor at the pool, instead of
+/// landing a silently-broken oracle.
+///
 /// Shared between `execute_set_anchor_pool` and the
 /// `ProposeConfigUpdate -> UpdateConfig` path so the same invariants
 /// apply on both routes.
 pub(crate) fn validate_anchor_pool_choice(
+    deps: Deps,
     pool_details: &crate::pool_struct::PoolDetails,
     bluechip_denom: &str,
     atom_denom: &str,
@@ -368,6 +380,32 @@ pub(crate) fn validate_anchor_pool_choice(
             "Anchor pool must be a Native/Native pair of exactly (bluechip \"{}\", \
              atom \"{}\") in either order; got pool with assets {:?}",
             bluechip_denom, atom_denom, pool_details.pool_token_info
+        ))));
+    }
+
+    // Liquidity floor: query the candidate pool's current reserves and
+    // refuse to set an anchor on an empty pool. A live anchor must be
+    // able to produce a TWAP from cumulative-delta progress; a pool with
+    // zero reserves on either side cannot.
+    let pool_state: pool_factory_interfaces::PoolStateResponseForFactory = deps
+        .querier
+        .query_wasm_smart(
+            pool_details.creator_pool_addr.to_string(),
+            &pool_factory_interfaces::PoolQueryMsg::GetPoolState {},
+        )
+        .map_err(|e| {
+            ContractError::Std(StdError::generic_err(format!(
+                "Anchor pool {} did not respond to GetPoolState: {}. Verify the \
+                 pool contract is healthy before configuring it as the anchor.",
+                pool_details.creator_pool_addr, e
+            )))
+        })?;
+    if pool_state.reserve0.is_zero() || pool_state.reserve1.is_zero() {
+        return Err(ContractError::Std(StdError::generic_err(format!(
+            "Anchor pool {} has empty reserves (reserve0={}, reserve1={}); \
+             seed liquidity before configuring it as the anchor so the oracle \
+             can produce a TWAP.",
+            pool_details.creator_pool_addr, pool_state.reserve0, pool_state.reserve1,
         ))));
     }
     Ok(())

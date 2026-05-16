@@ -94,6 +94,18 @@ pub enum ContractError {
     #[error("Insufficient liquidity minted")]
     InsufficientLiquidityMinted {},
 
+    #[error(
+        "Standard pool position below dust floor: produced {liquidity} LP units, \
+         minimum is {minimum}. Standard pools require a minimum deposit/add size \
+         to discourage storage-bloat griefing (the creator-pool multiplier-based \
+         dust deterrent is bypassed on standard pools because the clipped slice \
+         would accumulate in CREATOR_FEE_POT with no normal-operation claim path)."
+    )]
+    DustStandardPoolDeposit {
+        liquidity: cosmwasm_std::Uint128,
+        minimum: cosmwasm_std::Uint128,
+    },
+
     #[error("Operation exceeds max spread limit")]
     MaxSpreadAssertion {},
 

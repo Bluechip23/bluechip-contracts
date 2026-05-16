@@ -18,8 +18,8 @@ use crate::asset::TokenInfo;
 use crate::error::ContractError;
 use crate::generic_helpers::{update_commit_info, update_pool_fee_growth};
 use crate::state::{
-    PoolAnalytics, PoolFeeState, PoolInfo, PoolSpecs, PoolState, POOL_FEE_STATE, POOL_PAUSED,
-    POOL_STATE, POST_THRESHOLD_COOLDOWN_UNTIL_BLOCK,
+    PoolAnalytics, PoolFeeState, PoolInfo, PoolSpecs, PoolState, MINIMUM_LIQUIDITY,
+    POOL_FEE_STATE, POOL_PAUSED, POOL_STATE, POST_THRESHOLD_COOLDOWN_UNTIL_BLOCK,
 };
 use crate::swap_helper::{assert_max_spread, compute_swap, update_price_accumulator};
 
@@ -64,6 +64,19 @@ pub(super) fn process_post_threshold_commit(
     let offer_pool = pool_state.reserve0;
     let ask_pool = pool_state.reserve1;
 
+    // Pre-state drain guard. Mirrors `pool_core::swap::execute_simple_swap`
+    // so the post-threshold commit path enforces the same MINIMUM_LIQUIDITY
+    // floor as a plain swap. Without this, an already-drained pool (either
+    // reserve below MIN) would accept commits whose `compute_swap`
+    // arithmetic operates on near-zero reserves and produces tiny outputs.
+    // The matching docstring on `pool_core::state::maybe_auto_pause_on_low_liquidity`
+    // assumes "swap and commit paths reject trades that would leave
+    // reserves below the floor" — this gate restores that invariant on
+    // the commit side.
+    if pool_state.reserve0 < MINIMUM_LIQUIDITY || pool_state.reserve1 < MINIMUM_LIQUIDITY {
+        return Err(ContractError::InsufficientReserves {});
+    }
+
     let (return_amt, spread_amt, commission_amt) =
         compute_swap(offer_pool, ask_pool, swap_amount, pool_specs.lp_fee)?;
 
@@ -92,8 +105,23 @@ pub(super) fn process_post_threshold_commit(
 
     update_price_accumulator(pool_state, env.block.time.seconds())?;
 
-    pool_state.reserve0 = offer_pool.checked_add(swap_amount)?;
-    pool_state.reserve1 = ask_pool.checked_sub(return_amt.checked_add(commission_amt)?)?;
+    let new_reserve0 = offer_pool.checked_add(swap_amount)?;
+    let new_reserve1 = ask_pool.checked_sub(return_amt.checked_add(commission_amt)?)?;
+
+    // Post-state drain guard. Reject when the post-swap ask reserve
+    // drops below MINIMUM_LIQUIDITY. Without this, a large enough commit
+    // could leave reserve1 at single-base-unit levels while the pool
+    // stays operational (POOL_PAUSED_AUTO is only armed by remove paths);
+    // subsequent swaps would reject at simple_swap's reserve check but
+    // commits would continue draining until `compute_swap` floored the
+    // return to zero. Matches `pool_core::swap::execute_simple_swap`'s
+    // post-state check.
+    if new_reserve1 < MINIMUM_LIQUIDITY {
+        return Err(ContractError::InsufficientReserves {});
+    }
+
+    pool_state.reserve0 = new_reserve0;
+    pool_state.reserve1 = new_reserve1;
 
     update_pool_fee_growth(pool_fee_state, pool_state, 0, commission_amt)?;
     POOL_FEE_STATE.save(deps.storage, &*pool_fee_state)?;

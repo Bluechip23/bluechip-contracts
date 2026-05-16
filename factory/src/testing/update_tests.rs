@@ -778,3 +778,85 @@ fn default_factory_instantiate_msg() -> FactoryInstantiate {
         emergency_withdraw_delay_seconds: 86_400,
     }
 }
+
+/// Regression for audit-followup §2.2: when the retry batch (first 10
+/// entries of `pending_retry`) all remain paused, the queue rotates so
+/// later entries get their turn on subsequent retry calls. Pre-fix the
+/// head 10 stayed at positions 0-9 forever and tail entries never got
+/// processed without an admin Cancel + re-Propose.
+#[test]
+fn test_upgrade_retry_queue_rotates_when_head_stays_paused() {
+    let mut deps = mock_dependencies_2(&[]);
+    setup_factory_custom(&mut deps);
+
+    // 11 pools — one more than `batch_size = 10` so the head/tail
+    // distinction is meaningful. All start paused.
+    for i in 1..=11u64 {
+        register_test_pool_addr(&mut deps.storage, i, &Addr::unchecked(format!("pool_{}", i)));
+        deps.querier.paused_pools.insert(format!("pool_{}", i));
+    }
+
+    let env = mock_env();
+    let admin_info = message_info(&admin_addr(), &[]);
+
+    execute(
+        deps.as_mut(),
+        env.clone(),
+        admin_info.clone(),
+        ExecuteMsg::UpgradePools {
+            new_code_id: 700,
+            pool_ids: None,
+            migrate_msg: to_json_binary(&Empty {}).unwrap(),
+        },
+    )
+    .unwrap();
+    let pending = PENDING_POOL_UPGRADE.load(&deps.storage).unwrap();
+    let mut later_env = env;
+    later_env.block.time = pending.effective_after.plus_seconds(1);
+
+    // First pass: processes pools 1-10 (all paused), they go into pending_retry.
+    execute(
+        deps.as_mut(),
+        later_env.clone(),
+        admin_info.clone(),
+        ExecuteMsg::ExecutePoolUpgrade {},
+    )
+    .unwrap();
+
+    // Continue first pass: processes pool 11, also paused.
+    execute(
+        deps.as_mut(),
+        later_env.clone(),
+        admin_info.clone(),
+        ExecuteMsg::ContinuePoolUpgrade {},
+    )
+    .unwrap();
+
+    let pre_retry = PENDING_POOL_UPGRADE.load(&deps.storage).unwrap();
+    assert_eq!(
+        pre_retry.pending_retry,
+        (1u64..=11u64).collect::<Vec<u64>>(),
+        "all 11 paused pools should be in pending_retry in original order"
+    );
+
+    // Retry call: batch = [1..10], all still paused, no migrations.
+    // Pre-fix: pending_retry unchanged → [1..11].
+    // Post-fix: rotation moves the 10 skipped entries to the back,
+    //           giving [11, 1, 2, ..., 10].
+    execute(
+        deps.as_mut(),
+        later_env,
+        admin_info,
+        ExecuteMsg::ContinuePoolUpgrade {},
+    )
+    .unwrap();
+
+    let post_retry = PENDING_POOL_UPGRADE.load(&deps.storage).unwrap();
+    let expected_rotated: Vec<u64> = std::iter::once(11u64)
+        .chain(1u64..=10u64)
+        .collect();
+    assert_eq!(
+        post_retry.pending_retry, expected_rotated,
+        "after retry with all head pools still paused, queue must rotate so pool 11 (previously at the back) moves to the front"
+    );
+}

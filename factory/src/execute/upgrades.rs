@@ -439,13 +439,40 @@ pub fn execute_continue_pool_upgrade(
             }
         }
     } else {
-        // Retry pass. Drop the ones we just migrated from pending_retry;
-        // any in `skipped_pool_ids` are still-paused/unreachable and
-        // remain in pending_retry (their position is preserved via the
-        // `retain` below).
+        // Retry pass. Two-step queue update:
+        //
+        // 1. Drop the entries we just migrated.
+        // 2. Rotate the still-paused entries from the front (those we
+        //    just attempted but skipped) to the BACK of the queue so
+        //    later retry calls don't burn gas re-attempting the same
+        //    head pools while later entries never get a turn.
+        //
+        // Pre-fix: skipped entries stayed in their original head
+        // positions, so `pending_retry.take(batch_size)` repeatedly
+        // returned the same head set. If the head pools never unpaused,
+        // tail entries (potentially already unpaused) waited indefinitely
+        // unless the admin canceled + re-proposed.
+        //
+        // Post-fix: the queue rotates one batch_size per retry call.
+        // After ≤ ceil(N / batch_size) calls every entry has been
+        // attempted at least once even on the pathological all-paused-head
+        // case; persistently-paused pools cycle through the queue rather
+        // than wedging it.
         let migrated_set: std::collections::HashSet<u64> =
             outcome.migrated_pool_ids.iter().copied().collect();
         upgrade.pending_retry.retain(|id| !migrated_set.contains(id));
+
+        let rotated: Vec<u64> = batch
+            .iter()
+            .copied()
+            .filter(|id| !migrated_set.contains(id))
+            .collect();
+        if !rotated.is_empty() {
+            let rotated_set: std::collections::HashSet<u64> =
+                rotated.iter().copied().collect();
+            upgrade.pending_retry.retain(|id| !rotated_set.contains(id));
+            upgrade.pending_retry.extend(rotated);
+        }
     }
 
     let more_first_pass = upgrade.upgraded_count < total;

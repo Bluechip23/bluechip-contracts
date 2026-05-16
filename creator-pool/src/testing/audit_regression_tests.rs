@@ -1602,9 +1602,6 @@ fn test_m7_threshold_payout_emits_accept_ownership() {
 // - Per-mint isolation: a single failing recipient lands in
 // `FAILED_MINTS` rather than reverting the whole batch tx; the
 // other rows in the batch still mint, the cursor advances.
-// - SkipDistributionUser: factory-only escape hatch removes a row
-// from COMMIT_LEDGER, credits the user's pro-rata reward into
-// FAILED_MINTS, resets failure counters, re-enables distribution.
 // - SelfRecoverDistribution: permissionless after the 7-day
 // `PUBLIC_DISTRIBUTION_RECOVERY_WINDOW_SECONDS` window; rejected
 // before the window, accepted after.
@@ -1652,6 +1649,17 @@ mod distribution_liveness_tests {
                 },
             )
             .unwrap();
+        // POST-audit consolidation: every post-instantiate admin gate
+        // now reads from POOL_INFO.factory_addr rather than EXPECTED_FACTORY
+        // (one source of truth — see the doc-comment on
+        // `pool_core::state::ExpectedFactory`). Test fixtures that
+        // previously overrode only EXPECTED_FACTORY must update
+        // POOL_INFO too so the new auth path sees the test's chosen
+        // factory address.
+        use pool_core::state::POOL_INFO;
+        let mut pool_info = POOL_INFO.load(&deps.storage).unwrap();
+        pool_info.factory_addr = factory_addr();
+        POOL_INFO.save(&mut deps.storage, &pool_info).unwrap();
     }
 
     fn synthetic_reply(id: u64, ok: bool, err_msg: Option<&str>) -> Reply {
@@ -1831,121 +1839,13 @@ mod distribution_liveness_tests {
         );
     }
 
-    // ----- SkipDistributionUser ---------------------------------------
-
-    /// SkipDistributionUser auth: only the configured factory may invoke.
-    #[test]
-    fn skip_distribution_user_unauthorized_is_rejected() {
-        let mut deps = mock_dependencies();
-        setup_pool_storage(&mut deps);
-        install_factory(&mut deps);
-
-        let info = message_info(&Addr::unchecked("not_factory"), &[]);
-        let err = execute(
-            deps.as_mut(),
-            mock_env(),
-            info,
-            ExecuteMsg::SkipDistributionUser {
-                user: "anyone".to_string(),
-            },
-        )
-        .unwrap_err();
-        assert!(matches!(err, ContractError::Unauthorized {}));
-    }
-
-    /// SkipDistributionUser on an absent ledger row returns
-    /// `LedgerEntryNotFound` so the operator's input mistake doesn't
-    /// silently no-op.
-    #[test]
-    fn skip_distribution_user_absent_row_returns_not_found() {
-        let mut deps = mock_dependencies();
-        setup_pool_storage(&mut deps);
-        install_factory(&mut deps);
-
-        let info = message_info(&factory_addr(), &[]);
-        let err = execute(
-            deps.as_mut(),
-            mock_env(),
-            info,
-            ExecuteMsg::SkipDistributionUser {
-                user: "cosmos1".to_string() + &"a".repeat(38),
-            },
-        )
-        .unwrap_err();
-        // addr_validate may reject the synthetic address shape — both
-        // outcomes are acceptable failure modes (Std vs LedgerEntryNotFound).
-        match err {
-            ContractError::LedgerEntryNotFound { .. } => {}
-            ContractError::Std(_) => {}
-            other => panic!("expected LedgerEntryNotFound or addr-validate Std, got: {:?}", other),
-        }
-    }
-
-    /// SkipDistributionUser happy path: removes COMMIT_LEDGER row,
-    /// computes pro-rata reward against the live DistributionState,
-    /// accumulates into FAILED_MINTS, resets `consecutive_failures`,
-    /// re-enables `is_distributing`, decrements `distributions_remaining`.
-    #[test]
-    fn skip_distribution_user_credits_failed_mints_and_unblocks_state() {
-        let mut deps = mock_dependencies();
-        setup_pool_storage(&mut deps);
-        install_factory(&mut deps);
-
-        // The handler validates the user string param, so use a
-        // bech32-valid address here (see `label_addr` doc).
-        let user = label_addr("poison_user");
-        // Committer paid $1000 USD; reward share = $1000 / $10000 of 1_000_000_000
-        // = 100_000_000 owed.
-        let usd_paid = Uint128::new(1_000_000_000);
-        COMMIT_LEDGER
-            .save(&mut deps.storage, &user, &usd_paid)
-            .unwrap();
-
-        let dist = DistributionState {
-            is_distributing: false, // simulate post-stall
-            total_to_distribute: Uint128::new(1_000_000_000),
-            total_committed_usd: Uint128::new(10_000_000_000),
-            last_processed_key: None,
-            distributions_remaining: 5,
-            estimated_gas_per_distribution: DEFAULT_ESTIMATED_GAS_PER_DISTRIBUTION,
-            max_gas_per_tx: DEFAULT_MAX_GAS_PER_TX,
-            last_successful_batch_size: None,
-            consecutive_failures: 5,
-            started_at: mock_env().block.time,
-            last_updated: mock_env().block.time,
-            distributed_so_far: Uint128::zero(),
-        };
-        DISTRIBUTION_STATE.save(&mut deps.storage, &dist).unwrap();
-
-        let info = message_info(&factory_addr(), &[]);
-        let res = execute(
-            deps.as_mut(),
-            mock_env(),
-            info,
-            ExecuteMsg::SkipDistributionUser {
-                user: user.to_string(),
-            },
-        )
-        .unwrap();
-
-        // Row removed.
-        assert!(COMMIT_LEDGER.may_load(&deps.storage, &user).unwrap().is_none());
-        // FAILED_MINTS credited at the pro-rata amount.
-        let credited = FAILED_MINTS.load(&deps.storage, &user).unwrap();
-        assert_eq!(credited, Uint128::new(100_000_000));
-
-        // DistributionState: counters reset, distribution re-enabled,
-        // remaining decremented.
-        let dist_after = DISTRIBUTION_STATE.load(&deps.storage).unwrap();
-        assert_eq!(dist_after.consecutive_failures, 0);
-        assert!(dist_after.is_distributing);
-        assert_eq!(dist_after.distributions_remaining, 4);
-
-        // Observability attribute exposes the credited amount.
-        assert!(res.attributes.iter().any(|a| a.key
-            == "credited_to_failed_mints"
-            && a.value == "100000000"));
-    }
+    // SkipDistributionUser tests removed pre-launch (audit fix §6.1) —
+    // the handler was unreachable (no factory-side forward) and the
+    // recovery scenario it targeted (corrupt ledger row that
+    // `range(..)` cannot deserialize) is practically unreachable with
+    // `cw_storage_plus` static typing. Per-mint reply isolation
+    // (FAILED_MINTS / ClaimFailedDistribution) handles every
+    // realistic "one recipient can't be minted to" case automatically.
 
     // ----- SelfRecoverDistribution ------------------------------------
 
@@ -2267,19 +2167,8 @@ mod distribution_liveness_tests {
         install_factory(&mut deps);
         EMERGENCY_DRAINED.save(&mut deps.storage, &true).unwrap();
 
-        // Skip
-        let info = message_info(&factory_addr(), &[]);
-        let err = execute(
-            deps.as_mut(),
-            mock_env(),
-            info,
-            ExecuteMsg::SkipDistributionUser {
-                user: "anyone".to_string(),
-            },
-        )
-        .unwrap_err();
-        assert!(format!("{:?}", err).contains("Drained")
-            || format!("{:?}", err).contains("drained"));
+        // (SkipDistributionUser was removed pre-launch — audit fix §6.1.
+        // Its drained-pool rejection is no longer applicable.)
 
         // Self-recover
         let info = message_info(&Addr::unchecked("anyone"), &[]);
@@ -2605,6 +2494,8 @@ mod deposit_verify_tests {
                     pre_balance1: Uint128::new(1_000),
                     expected_delta0: Uint128::zero(),
                     expected_delta1: Uint128::new(250),
+                    outgoing_amount0: Uint128::zero(),
+                    outgoing_amount1: Uint128::zero(),
                 },
             )
             .unwrap();
@@ -2643,12 +2534,13 @@ mod deposit_verify_tests {
     }
 
     /// Reply dispatcher rejects on a fee-on-transfer / rebasing-down
-    /// shortfall: post-balance < pre + expected, so delta != expected
-    /// and the verify handler returns Err. Creator-pool's `reply`
-    /// returns `StdResult<Response>`, so the typed `ContractError`
-    /// from the verify handler is mapped into `StdError::generic_err`
-    /// — assert the error string contains the canonical "balance
-    /// delta does not match" phrase that off-chain monitoring keys on.
+    /// shortfall: post+outgoing < pre+expected, so the
+    /// `net-balance invariant` check fails and the verify handler
+    /// returns Err. Creator-pool's `reply` returns `StdResult<Response>`,
+    /// so the typed `ContractError` from the verify handler is mapped
+    /// into `StdError::generic_err` — assert the error string contains
+    /// the canonical "net-balance invariant violated" phrase that
+    /// off-chain monitoring keys on.
     #[test]
     fn reply_dispatcher_rejects_balance_shortfall() {
         let mut deps = mock_dependencies();
@@ -2667,6 +2559,8 @@ mod deposit_verify_tests {
                     pre_balance1: Uint128::new(1_000),
                     expected_delta0: Uint128::zero(),
                     expected_delta1: Uint128::new(250),
+                    outgoing_amount0: Uint128::zero(),
+                    outgoing_amount1: Uint128::zero(),
                 },
             )
             .unwrap();
@@ -2690,7 +2584,7 @@ mod deposit_verify_tests {
             .expect_err("shortfall must propagate as Err to revert the parent tx");
         let msg = err.to_string();
         assert!(
-            msg.contains("balance delta") && msg.contains("does not match"),
+            msg.contains("net-balance invariant violated"),
             "shortfall error must carry the canonical phrase off-chain monitoring \
              keys on; got: {}",
             msg
@@ -2720,6 +2614,8 @@ mod deposit_verify_tests {
                     pre_balance1: Uint128::new(1_000),
                     expected_delta0: Uint128::zero(),
                     expected_delta1: Uint128::new(250),
+                    outgoing_amount0: Uint128::zero(),
+                    outgoing_amount1: Uint128::zero(),
                 },
             )
             .unwrap();
@@ -2743,7 +2639,7 @@ mod deposit_verify_tests {
         let err = reply(deps.as_mut(), mock_env(), r)
             .expect_err("overage must propagate as Err");
         assert!(
-            err.to_string().contains("does not match"),
+            err.to_string().contains("net-balance invariant violated"),
             "overage rejection must surface; got: {}",
             err
         );

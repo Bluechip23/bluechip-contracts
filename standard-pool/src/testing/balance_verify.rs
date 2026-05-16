@@ -233,8 +233,8 @@ fn reply_rejects_fee_on_transfer_shortfall() {
     let err = reply(deps.as_mut(), mock_env(), ok_reply()).unwrap_err();
     let msg = err.to_string();
     assert!(
-        msg.contains("balance delta") && msg.contains("does not match"),
-        "shortfall must surface a clear balance-delta-mismatch error, got: {}",
+        msg.contains("net-balance invariant violated"),
+        "shortfall must surface a clear net-balance-invariant error, got: {}",
         msg
     );
 
@@ -259,8 +259,8 @@ fn reply_rejects_inflation_overage() {
 
     let err = reply(deps.as_mut(), mock_env(), ok_reply()).unwrap_err();
     assert!(
-        err.to_string().contains("balance delta"),
-        "overage must surface the same balance-delta mismatch error: {}",
+        err.to_string().contains("net-balance invariant violated"),
+        "overage must surface the same net-balance-invariant error: {}",
         err
     );
 }
@@ -354,6 +354,8 @@ fn reply_propagates_query_failure_on_missing_cw20() {
                 pre_balance1: Uint128::zero(),
                 expected_delta0: Uint128::zero(),
                 expected_delta1: Uint128::new(1),
+                outgoing_amount0: Uint128::zero(),
+                outgoing_amount1: Uint128::zero(),
             },
         )
         .unwrap();
@@ -361,4 +363,99 @@ fn reply_propagates_query_failure_on_missing_cw20() {
     // Either the strict query bubbles up, OR the delta check fires —
     // both keep the invariant. We just assert it's an error.
     assert!(!err.to_string().is_empty());
+}
+
+/// Regression for Finding 12.1 — `AddToPosition` with prior CW20-side
+/// fee accrual must NOT trip the balance-verify reply.
+///
+/// Pre-fix, the verify reply enforced `delta == actual_amount`. On
+/// `add_to_position` with non-zero `fees_owed_1`, the LAST message in
+/// the Response was the CW20 fee transfer OUT (after the TransferFrom
+/// in). Post-balance reflected `pre + deposited - fee_out`, so
+/// `delta = deposited - fee_out != deposited`, and the reply rejected
+/// every add-to-position whose position had any prior CW20-side fee
+/// accrual.
+///
+/// Post-fix: the reply enforces
+/// `post + outgoing == pre + actual_amount`. With `outgoing = fee_out`,
+/// the invariant holds exactly when the CW20 behaves honestly. This
+/// test exercises the reply directly against a context that mirrors
+/// what `add_to_position_internal` would save when `fees_owed_1 > 0`.
+#[test]
+fn add_to_position_verify_accepts_when_post_balance_reflects_fee_outflow() {
+    let (mut deps, addrs, _res) = run_first_deposit();
+    DEPOSIT_VERIFY_CTX.remove(&mut deps.storage);
+
+    // Simulate `add_to_position` with:
+    //   pre_balance1 = 500_000 (existing CW20 reserve from prior deposit)
+    //   expected_delta1 = 200_000 (CW20 amount being added in this add)
+    //   outgoing_amount1 = 5_000 (CW20-side fee being paid out as part of the same tx)
+    // Honest CW20 → post = pre + 200_000 - 5_000 = 695_000.
+    // Invariant: post + outgoing == pre + actual_in
+    //            695_000 + 5_000 == 500_000 + 200_000 → 700_000 == 700_000. ✓
+    DEPOSIT_VERIFY_CTX
+        .save(
+            &mut deps.storage,
+            &DepositVerifyContext {
+                pool_addr: addrs.factory.clone(),
+                cw20_side0_addr: None,
+                cw20_side1_addr: Some(addrs.creator_token.clone()),
+                pre_balance0: Uint128::zero(),
+                pre_balance1: Uint128::new(500_000),
+                expected_delta0: Uint128::zero(),
+                expected_delta1: Uint128::new(200_000),
+                outgoing_amount0: Uint128::zero(),
+                outgoing_amount1: Uint128::new(5_000),
+            },
+        )
+        .unwrap();
+    install_cw20_balance_querier(
+        &mut deps,
+        addrs.position_nft.clone(),
+        addrs.pool_owner.clone(),
+        Uint128::new(695_000),
+    );
+
+    let res = reply(deps.as_mut(), mock_env(), ok_reply())
+        .expect("verify must accept the honest add-with-fee-outflow scenario");
+    assert!(
+        res.attributes
+            .iter()
+            .any(|a| a.key == "action" && a.value == "deposit_balance_verified"),
+        "must hit success path; got: {:?}",
+        res.attributes
+    );
+
+    // Verify the invariant catches a fee-on-transfer SHORTFALL even with
+    // outgoing accounted for: if the CW20 ALSO took a 1% tax on the
+    // TransferFrom inflow, post would be 695_000 - 2_000 = 693_000,
+    // and the invariant 693_000 + 5_000 == 500_000 + 200_000 fails.
+    DEPOSIT_VERIFY_CTX
+        .save(
+            &mut deps.storage,
+            &DepositVerifyContext {
+                pool_addr: addrs.factory.clone(),
+                cw20_side0_addr: None,
+                cw20_side1_addr: Some(addrs.creator_token.clone()),
+                pre_balance0: Uint128::zero(),
+                pre_balance1: Uint128::new(500_000),
+                expected_delta0: Uint128::zero(),
+                expected_delta1: Uint128::new(200_000),
+                outgoing_amount0: Uint128::zero(),
+                outgoing_amount1: Uint128::new(5_000),
+            },
+        )
+        .unwrap();
+    install_cw20_balance_querier(
+        &mut deps,
+        addrs.position_nft.clone(),
+        addrs.pool_owner.clone(),
+        Uint128::new(693_000),
+    );
+    let err = reply(deps.as_mut(), mock_env(), ok_reply()).unwrap_err();
+    assert!(
+        err.to_string().contains("net-balance invariant violated"),
+        "fee-on-transfer shortfall must still be caught even with outgoing accounted for; got: {}",
+        err
+    );
 }

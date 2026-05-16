@@ -116,6 +116,27 @@ pub fn execute_recover_pool_stuck_states(
     pool_id: u64,
     recovery_type: crate::pool_struct::RecoveryType,
 ) -> Result<Response, ContractError> {
+    // Commit-pool-only escape hatch — the pool-side handler lives in
+    // `creator-pool::admin::execute_recover_stuck_states` and is not
+    // mirrored on standard-pool (`RecoverStuckStates` is absent from
+    // `standard-pool::msg::ExecuteMsg`). Reject standard pools at the
+    // factory dispatch so the admin gets a clean typed error instead
+    // of a confusing message-deserialization failure deep in the
+    // forwarded `WasmMsg::Execute`.
+    let pool_details = POOLS_BY_ID.load(deps.storage, pool_id).map_err(|_| {
+        ContractError::Std(StdError::generic_err(format!(
+            "Pool {} not found in registry",
+            pool_id
+        )))
+    })?;
+    if pool_details.pool_kind == pool_factory_interfaces::PoolKind::Standard {
+        return Err(ContractError::Std(StdError::generic_err(format!(
+            "Pool {} is a standard pool; stuck-state recovery (threshold / \
+             distribution / reentrancy-guard) is creator-pool-only. \
+             Standard pools have no commit phase and no distribution queue.",
+            pool_id
+        ))));
+    }
     forward_pool_admin(
         deps.as_ref(),
         info,

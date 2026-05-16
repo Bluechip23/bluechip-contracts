@@ -133,22 +133,6 @@ pub enum ExecuteMsg {
     RetryFactoryNotify {},
     CancelEmergencyWithdraw {},
 
-    // Factory-only escape hatch for distribution liveness. Removes a single
-    // committer's COMMIT_LEDGER row, computes their pro-rata reward, and
-    // moves the amount into FAILED_MINTS so the user can claim it later via
-    // ClaimFailedDistribution against an alternate recipient. Use when a
-    // committer's address is genuinely un-mintable (e.g., a contract
-    // recipient that rejects CW20 mint hooks, a CW20 with a future
-    // blacklist) and the per-mint reply isolation isn't enough — for
-    // example, when iteration over the ledger itself fails on a corrupt
-    // row.
-    //
-    // Resets `consecutive_failures` and re-enables `is_distributing` so
-    // distribution resumes without an additional admin call.
-    SkipDistributionUser {
-        user: String,
-    },
-
     // Permissionless distribution restart for the catastrophic case where
     // the admin path is unavailable for an extended period. Available
     // only after PUBLIC_DISTRIBUTION_RECOVERY_WINDOW_SECONDS (7 days)
