@@ -159,13 +159,22 @@ CREATE=$(cat <<EOF
 }
 EOF
 )
-H=$(send wasm execute $FACTORY "$CREATE" --from alice --gas 5000000)
+# must_pay on commit-pool create: pay the configured fee in bluechip.
+# Oracle conversion routes to ~100 ubluechip at the test rate; if the conversion
+# is unavailable the factory falls back to STANDARD_POOL_CREATION_FEE_FALLBACK_BLUECHIP
+# (100 BLUECHIP = 100_000_000 ubluechip). Send the fallback amount — surplus
+# is refunded to alice in the same tx.
+H=$(send wasm execute $FACTORY "$CREATE" --amount "100000000${DENOM}" --from alice --gas 5000000)
 C=$(chk $H)
 [ "$C" = "0" ] && pass "Pool creation TX OK" || { fail "Pool creation failed ($C)"; rawlog $H; exit 1; }
 
 POOL=$(wa "$H" "pool_address")
 [ -z "$POOL" ] && POOL=$(wa "$H" "pool_contract_address")
 [ -n "$POOL" ] && pass "Pool: $POOL" || { fail "No pool address"; exit 1; }
+
+# Factory now accepts position-NFT ownership at create (commit 54af371).
+NFT_ACCEPTED=$(q $POOL '{"pool_state":{}}' | jq -r '.data.nft_ownership_accepted // false')
+[ "$NFT_ACCEPTED" = "true" ] && pass "Pool NFT ownership accepted at create" || fail "Pool NFT ownership not accepted (got: $NFT_ACCEPTED)"
 
 CW20=$(q $POOL '{"pair":{}}' | jq -r '.data.pool_token_info[1].creator_token.contract_addr // empty')
 info "CW20: $CW20"

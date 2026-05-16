@@ -222,11 +222,17 @@ CREATE=$(cat <<EOF
 }
 EOF
 )
-H=$(send wasm execute $FACTORY "$CREATE" --from alice --gas 5000000)
+# must_pay on commit-pool create (audit f944e07): factory enforces exactly-one
+# bluechip Coin sized by oracle-converted standard_pool_creation_fee_usd. Send
+# the pre-anchor fallback (100 BLUECHIP); surplus refunds in-tx.
+H=$(send wasm execute $FACTORY "$CREATE" --amount "100000000${DENOM}" --from alice --gas 5000000)
 C=$(chk $H)
 [ "$C" = "0" ] && pass "Pool created" || { fail "Pool create ($C)"; rawlog $H; exit 1; }
 POOL=$(wa "$H" "pool_address")
 [ -z "$POOL" ] && POOL=$(wa "$H" "pool_contract_address")
+# Audit 54af371: factory accepts position-NFT ownership at create-time.
+NFT_ACCEPTED=$(q $POOL '{"pool_state":{}}' | jq -r '.data.nft_ownership_accepted // false')
+[ "$NFT_ACCEPTED" = "true" ] && pass "Pool NFT ownership accepted at create" || fail "Pool NFT ownership not accepted (got: $NFT_ACCEPTED)"
 info "Pool: $POOL"
 CW20=$(q $POOL '{"pair":{}}' | jq -r '.data.pool_token_info[1].creator_token.contract_addr // empty')
 info "CW20: $CW20"
@@ -354,7 +360,7 @@ CREATE2=$(cat <<EOF
 EOF
 )
 info "Creating second pool for 3% guard test..."
-H=$(send wasm execute $FACTORY "$CREATE2" --from alice --gas 5000000)
+H=$(send wasm execute $FACTORY "$CREATE2" --amount "100000000${DENOM}" --from alice --gas 5000000)
 C=$(chk $H)
 [ "$C" = "0" ] && pass "Pool2 created" || { fail "Pool2 create ($C)"; }
 POOL2=$(wa "$H" "pool_address")
@@ -744,13 +750,14 @@ done
 # #####################################################################
 hdr "===== PHASE 15: POOL CONFIG TIMELOCKED UPDATE ====="
 # #####################################################################
-# Factory admin can propose pool config changes with 48-hour timelock
-# Changes: lp_fee, min_commit_interval, usd_payment_tolerance_bps, oracle_address
+# Factory admin can propose pool config changes with 48-hour timelock.
+# Current PoolConfigUpdate schema (audit b8b0bcb — per-pool tunable commit floors):
+#   lp_fee?, min_commit_interval?, min_commit_usd_pre_threshold?, min_commit_usd_post_threshold?
 
 # First we need the pool_id. Pools are assigned sequential IDs by the factory.
 # Pool1 was the first created, so pool_id=1.
-info "Proposing pool config update (pool_id=1, lp_fee -> 1%)..."
-H=$(send wasm execute $FACTORY '{"propose_pool_config_update":{"pool_id":1,"pool_config":{"lp_fee":"0.01","min_commit_interval":null,"usd_payment_tolerance_bps":null,"oracle_address":null}}}' --from alice)
+info "Proposing pool config update (pool_id=1, lp_fee -> 1%, commit floors tuned)..."
+H=$(send wasm execute $FACTORY '{"propose_pool_config_update":{"pool_id":1,"pool_config":{"lp_fee":"0.01","min_commit_interval":null,"min_commit_usd_pre_threshold":"100000000","min_commit_usd_post_threshold":"50000000"}}}' --from alice)
 C=$(chk $H)
 [ "$C" = "0" ] && pass "ProposePoolConfigUpdate OK" || fail "ProposePoolConfigUpdate ($C)"
 
@@ -793,7 +800,7 @@ CREATE3=$(cat <<EOF
 EOF
 )
 info "Creating pool3 for multipool test..."
-H=$(send wasm execute $FACTORY "$CREATE3" --from alice --gas 5000000)
+H=$(send wasm execute $FACTORY "$CREATE3" --amount "100000000${DENOM}" --from alice --gas 5000000)
 C=$(chk $H)
 [ "$C" = "0" ] && pass "Pool3 created" || { fail "Pool3 create ($C)"; }
 POOL3=$(wa "$H" "pool_address")
@@ -969,7 +976,7 @@ CREATE4=$(cat <<EOF
 EOF
 )
 info "Creating Pool4 on Factory2..."
-H=$(send wasm execute $FACTORY2 "$CREATE4" --from alice --gas 5000000)
+H=$(send wasm execute $FACTORY2 "$CREATE4" --amount "100000000${DENOM}" --from alice --gas 5000000)
 C=$(chk $H)
 [ "$C" = "0" ] && pass "Pool4 created" || { fail "Pool4 create ($C)"; rawlog $H; }
 POOL4=$(wa "$H" "pool_address")
