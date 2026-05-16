@@ -1191,6 +1191,108 @@ fn test_unpaused_pool_accepts_commit_after_previously_paused() {
 }
 
 // ===========================================================================
+// Audit b8b0bcb: per-pool min commit floors — CommitTooSmall coverage
+// ===========================================================================
+//
+// `commit::execute_commit_logic` rejects any commit whose oracle-priced USD
+// value lands below the active floor — pre-threshold floor when
+// `IS_THRESHOLD_HIT == false`, post-threshold floor otherwise. The two tests
+// below pin both branches with the default floors set in `setup_pool_storage`
+// (pre = $5 / post = $1, both in 6-decimal USD).
+//
+// `with_factory_oracle(rate = 1_000_000)` makes the mock oracle treat ubluechip
+// 1:1 with 6-decimal USD micros, so the commit amount in ubluechip is also the
+// resulting `usd_value` in micros — easy to pin to one micro below the floor.
+
+#[test]
+fn test_commit_rejects_below_pre_threshold_floor() {
+    let mut deps = mock_dependencies_with_balance(&[Coin {
+        denom: "ubluechip".to_string(),
+        amount: Uint128::new(100_000_000),
+    }]);
+    setup_pool_storage(&mut deps);
+    with_factory_oracle(&mut deps, Uint128::new(1_000_000));
+
+    // One micro under the default pre-threshold floor ($5.000000).
+    let pre_floor = crate::state::DEFAULT_MIN_COMMIT_USD_PRE_THRESHOLD;
+    let just_below = pre_floor.checked_sub(Uint128::one()).unwrap();
+
+    let info = message_info(
+        &Addr::unchecked("alice"),
+        &[Coin {
+            denom: "ubluechip".to_string(),
+            amount: just_below,
+        }],
+    );
+    let msg = ExecuteMsg::Commit {
+        asset: TokenInfo {
+            info: TokenType::Native {
+                denom: "ubluechip".to_string(),
+            },
+            amount: just_below,
+        },
+        transaction_deadline: None,
+        belief_price: None,
+        max_spread: None,
+    };
+
+    let err = execute(deps.as_mut(), mock_env(), info, msg).unwrap_err();
+    match err {
+        ContractError::CommitTooSmall { got, min, phase } => {
+            assert_eq!(got, just_below);
+            assert_eq!(min, pre_floor);
+            assert_eq!(phase, "pre-threshold");
+        }
+        other => panic!("expected CommitTooSmall(pre-threshold), got {:?}", other),
+    }
+}
+
+#[test]
+fn test_commit_rejects_below_post_threshold_floor() {
+    let mut deps = mock_dependencies_with_balance(&[Coin {
+        denom: "ubluechip".to_string(),
+        amount: Uint128::new(100_000_000),
+    }]);
+    setup_pool_storage(&mut deps);
+    // Flip into post-threshold mode. Floor check fires before swap-path
+    // setup so pre-existing reserves aren't required.
+    IS_THRESHOLD_HIT.save(&mut deps.storage, &true).unwrap();
+    with_factory_oracle(&mut deps, Uint128::new(1_000_000));
+
+    let post_floor = crate::state::DEFAULT_MIN_COMMIT_USD_POST_THRESHOLD;
+    let just_below = post_floor.checked_sub(Uint128::one()).unwrap();
+
+    let info = message_info(
+        &Addr::unchecked("alice"),
+        &[Coin {
+            denom: "ubluechip".to_string(),
+            amount: just_below,
+        }],
+    );
+    let msg = ExecuteMsg::Commit {
+        asset: TokenInfo {
+            info: TokenType::Native {
+                denom: "ubluechip".to_string(),
+            },
+            amount: just_below,
+        },
+        transaction_deadline: None,
+        belief_price: None,
+        max_spread: None,
+    };
+
+    let err = execute(deps.as_mut(), mock_env(), info, msg).unwrap_err();
+    match err {
+        ContractError::CommitTooSmall { got, min, phase } => {
+            assert_eq!(got, just_below);
+            assert_eq!(min, post_floor);
+            assert_eq!(phase, "post-threshold");
+        }
+        other => panic!("expected CommitTooSmall(post-threshold), got {:?}", other),
+    }
+}
+
+// ===========================================================================
 // Fix 6: NATIVE_RAISED_FROM_COMMIT stores net-of-fees, not gross
 // ===========================================================================
 //
