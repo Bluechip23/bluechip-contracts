@@ -72,7 +72,7 @@ fn add_to_position_internal(
 ) -> Result<Response, ContractError> {
     enforce_transaction_deadline(env.block.time, transaction_deadline)?;
 
-    let prep = prepare_deposit(
+    let mut prep = prepare_deposit(
         deps.as_ref(),
         &info,
         amount0,
@@ -125,7 +125,13 @@ fn add_to_position_internal(
     let ((fees_owed_0, fees_owed_1), _, (clipped_0, clipped_1)) =
         calc_capped_fees_with_clip(&liquidity_position, &pool_fee_state)?;
 
-    let mut messages: Vec<CosmosMsg> = prep.collect_msgs.clone();
+    // Move (not clone) prep.collect_msgs. The remaining `prep` fields used
+    // below are all `Copy` (Uint128) or borrowed (`&prep.pool_info`), so
+    // the partial move is sound. Sized at 4 to absorb the up-to-2 collect
+    // msgs plus the up-to-2 fee-transfer msgs appended later (CW20 or
+    // BankMsg per non-zero fee side).
+    let mut messages: Vec<CosmosMsg> = Vec::with_capacity(4);
+    messages.append(&mut prep.collect_msgs);
 
     liquidity_position.liquidity = liquidity_position.liquidity.checked_add(prep.liquidity)?;
     liquidity_position.fee_growth_inside_0_last = pool_fee_state.fee_growth_global_0;

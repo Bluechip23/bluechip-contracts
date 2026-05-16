@@ -186,7 +186,7 @@ pub(crate) fn prepare_deposit(
     check_slippage(actual_amount0, min_amount0, "asset0")?;
     check_slippage(actual_amount1, min_amount1, "asset1")?;
 
-    let mut collect_msgs: Vec<CosmosMsg> = Vec::new();
+    let mut collect_msgs: Vec<CosmosMsg> = Vec::with_capacity(2);
     let refund_amount0 = collect_deposit_side(
         &pool_info.pool_info.asset_infos[0],
         actual_amount0,
@@ -335,7 +335,7 @@ fn execute_deposit_liquidity_inner(
     min_amount1: Option<Uint128>,
     verify_balances: bool,
 ) -> Result<Response, ContractError> {
-    let prep = prepare_deposit(
+    let mut prep = prepare_deposit(
         deps.as_ref(),
         &info,
         amount0,
@@ -391,7 +391,11 @@ fn execute_deposit_liquidity_inner(
         Uint128::zero()
     };
 
-    let mut messages = vec![];
+    // Max 4 outgoing messages on this path: optional NFT-accept (1) +
+    // at-most-two collect msgs from prepare_deposit (2) + position-mint
+    // NFT (1). Sizing once here avoids the 1-2 reallocations a default
+    // Vec::new() would take as we push past its initial capacity.
+    let mut messages: Vec<CosmosMsg> = Vec::with_capacity(4);
     if !pool_state.nft_ownership_accepted {
         let accept_msg = WasmMsg::Execute {
             contract_addr: prep.pool_info.position_nft_address.to_string(),
@@ -406,8 +410,9 @@ fn execute_deposit_liquidity_inner(
 
     // prepare_deposit already dispatched per-asset and built the collection
     // messages (TransferFrom for CW20 sides, BankMsg refunds for over-paid
-    // native sides). Splice them into the response list.
-    messages.extend(prep.collect_msgs.clone());
+    // native sides). Moved (not cloned) into the response list — `prep`'s
+    // remaining fields are all `Copy` so the partial move is fine.
+    messages.append(&mut prep.collect_msgs);
 
     let mut pos_id = NEXT_POSITION_ID.load(deps.storage)?;
     pos_id = pos_id
