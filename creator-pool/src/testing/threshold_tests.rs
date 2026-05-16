@@ -345,6 +345,14 @@ fn check_correct_factory(deps: &mut OwnedDeps<MockStorage, MockApi, MockQuerier>
             },
         )
         .unwrap();
+    // POST-audit consolidation: post-instantiate admin gates read
+    // from POOL_INFO.factory_addr now (one source of truth — see
+    // `pool_core::state::ExpectedFactory` doc). Mirror the override
+    // here so tests using `factory_address` as info.sender still pass.
+    use pool_core::state::POOL_INFO;
+    let mut pool_info = POOL_INFO.load(&deps.storage).unwrap();
+    pool_info.factory_addr = Addr::unchecked("factory_address");
+    POOL_INFO.save(&mut deps.storage, &pool_info).unwrap();
 }
 #[test]
 fn test_commit_threshold_overshoot_split() {

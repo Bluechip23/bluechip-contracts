@@ -2727,6 +2727,60 @@ mod pool_admin_forwarder_tests {
         .unwrap_err();
         assert!(matches!(err, ContractError::Unauthorized {}));
     }
+
+    /// `RecoverPoolStuckStates` against a Standard pool is rejected at
+    /// the factory dispatch with a typed error rather than being forwarded
+    /// to the standard pool's `ExecuteMsg` (which has no `RecoverStuckStates`
+    /// variant — the inner `WasmMsg::Execute` would otherwise fail with
+    /// a confusing deserialization error). The handler is commit-only:
+    /// standard pools have no commit-phase, no distribution queue, and
+    /// no threshold-processing state to recover.
+    #[test]
+    fn recover_stuck_states_rejects_standard_pool_with_typed_error() {
+        let mut deps = mock_deps_with_querier(&[]);
+        setup_factory(&mut deps);
+
+        // Register a STANDARD pool at pool_id = 50.
+        let pool_addr = make_addr("standard_pool_under_test");
+        let pool_details = crate::pool_struct::PoolDetails {
+            pool_id: 50,
+            pool_token_info: [
+                TokenType::Native {
+                    denom: "ubluechip".to_string(),
+                },
+                TokenType::Native {
+                    denom: "uatom".to_string(),
+                },
+            ],
+            creator_pool_addr: pool_addr,
+            pool_kind: pool_factory_interfaces::PoolKind::Standard,
+            commit_pool_ordinal: 0,
+        };
+        POOLS_BY_ID
+            .save(&mut deps.storage, 50, &pool_details)
+            .unwrap();
+
+        let err = execute(
+            deps.as_mut(),
+            mock_env(),
+            message_info(&admin_addr(), &[]),
+            ExecuteMsg::RecoverPoolStuckStates {
+                pool_id: 50,
+                recovery_type: crate::pool_struct::RecoveryType::StuckThreshold,
+            },
+        )
+        .unwrap_err();
+        assert!(
+            err.to_string().contains("standard pool"),
+            "standard-pool rejection must surface in the error string, got: {}",
+            err
+        );
+        assert!(
+            err.to_string().contains("creator-pool-only"),
+            "error must explain creator-pool-only constraint, got: {}",
+            err
+        );
+    }
 }
 
 // ---------------------------------------------------------------------------

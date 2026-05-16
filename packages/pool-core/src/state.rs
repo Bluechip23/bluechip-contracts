@@ -171,6 +171,21 @@ pub struct PoolFeeState {
     pub fee_reserve_1: Uint128,
 }
 
+/// Instantiate-time self-check storage. The pool's instantiate saves
+/// the caller-declared `msg.used_factory_addr` here and verifies
+/// `info.sender == expected_factory_address` to reject direct-instantiate
+/// attempts that don't go through the factory's reply chain.
+///
+/// **NOT the canonical auth source post-instantiate.** Every admin-gated
+/// handler that runs after instantiate must check against
+/// `POOL_INFO.factory_addr` instead. Both are written from the same
+/// `msg.used_factory_addr` at instantiate, so they cannot drift unless a
+/// future migration writes one without the other — but if they ever do,
+/// auth checks split across the two storage slots would yield
+/// inconsistent results. Audit-driven consolidation: as of the
+/// pre-launch audit fix, every post-instantiate read uses
+/// `POOL_INFO.factory_addr` (see `creator-pool::admin::execute_recover_stuck_states`
+/// and `execute_skip_distribution_user`).
 #[cw_serde]
 pub struct ExpectedFactory {
     pub expected_factory_address: Addr,

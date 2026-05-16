@@ -1652,6 +1652,17 @@ mod distribution_liveness_tests {
                 },
             )
             .unwrap();
+        // POST-audit consolidation: every post-instantiate admin gate
+        // now reads from POOL_INFO.factory_addr rather than EXPECTED_FACTORY
+        // (one source of truth — see the doc-comment on
+        // `pool_core::state::ExpectedFactory`). Test fixtures that
+        // previously overrode only EXPECTED_FACTORY must update
+        // POOL_INFO too so the new auth path sees the test's chosen
+        // factory address.
+        use pool_core::state::POOL_INFO;
+        let mut pool_info = POOL_INFO.load(&deps.storage).unwrap();
+        pool_info.factory_addr = factory_addr();
+        POOL_INFO.save(&mut deps.storage, &pool_info).unwrap();
     }
 
     fn synthetic_reply(id: u64, ok: bool, err_msg: Option<&str>) -> Reply {

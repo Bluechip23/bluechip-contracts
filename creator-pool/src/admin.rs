@@ -26,7 +26,7 @@ use crate::error::ContractError;
 use crate::state::{
     DistributionState, RecoveryType, COMMITFEEINFO, COMMIT_LEDGER, CREATOR_EXCESS_POSITION,
     DEFAULT_ESTIMATED_GAS_PER_DISTRIBUTION, DEFAULT_MAX_GAS_PER_TX, DISTRIBUTION_STATE,
-    EXPECTED_FACTORY, FAILED_MINTS, IS_THRESHOLD_HIT, LAST_THRESHOLD_ATTEMPT,
+    FAILED_MINTS, IS_THRESHOLD_HIT, LAST_THRESHOLD_ATTEMPT,
     MAX_CONSECUTIVE_DISTRIBUTION_FAILURES, PENDING_EMERGENCY_WITHDRAW, POOL_INFO,
     PUBLIC_DISTRIBUTION_RECOVERY_WINDOW_SECONDS, REENTRANCY_LOCK,
     STUCK_DISTRIBUTION_RECOVERY_WINDOW_SECONDS, STUCK_THRESHOLD_RECOVERY_WINDOW_SECONDS,
@@ -135,8 +135,15 @@ pub fn execute_recover_stuck_states(
     info: MessageInfo,
     recovery_type: RecoveryType,
 ) -> Result<Response, ContractError> {
-    let real_factory = EXPECTED_FACTORY.load(deps.storage)?;
-    if info.sender != real_factory.expected_factory_address {
+    // Canonical auth source post-instantiate is `POOL_INFO.factory_addr`
+    // (matches every other admin-gated handler in pool-core and the
+    // creator-pool wrappers — see `creator-pool::admin::execute_emergency_withdraw`
+    // and `pool-core::admin::*`). Earlier revisions of this handler
+    // read `EXPECTED_FACTORY` which is set at instantiate from the same
+    // source; consolidating eliminates the two-source-of-truth drift
+    // vector flagged in the launch audit.
+    let pool_info = POOL_INFO.load(deps.storage)?;
+    if info.sender != pool_info.factory_addr {
         return Err(ContractError::Unauthorized {});
     }
 
@@ -340,8 +347,12 @@ pub fn execute_skip_distribution_user(
     info: MessageInfo,
     user: String,
 ) -> Result<Response, ContractError> {
-    let real_factory = EXPECTED_FACTORY.load(deps.storage)?;
-    if info.sender != real_factory.expected_factory_address {
+    // Same canonical-auth-source consolidation as in
+    // `execute_recover_stuck_states` above — use `POOL_INFO.factory_addr`
+    // rather than `EXPECTED_FACTORY` so every admin gate reads from one
+    // source of truth.
+    let pool_info_for_auth = POOL_INFO.load(deps.storage)?;
+    if info.sender != pool_info_for_auth.factory_addr {
         return Err(ContractError::Unauthorized {});
     }
     ensure_not_drained(deps.storage)?;

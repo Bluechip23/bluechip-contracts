@@ -3173,3 +3173,52 @@ fn test_commit_and_swap_with_price_change() {
         .unwrap();
     assert_eq!(user3_commit, Uint128::new(1_000_000_000)); // $1000 USD
 }
+
+/// Regression: `process_post_threshold_commit` must reject when reserves
+/// are already below `MINIMUM_LIQUIDITY`. Pre-fix, the post-threshold
+/// commit path lacked the MIN check that `simple_swap` enforces, so a
+/// commit on a drained pool would execute against near-zero reserves
+/// and continue draining. Fix mirrors the swap path's pre-state check.
+#[test]
+fn post_threshold_commit_rejects_when_pre_state_reserve_below_min() {
+    use pool_core::state::MINIMUM_LIQUIDITY;
+    let mut deps = mock_dependencies_with_balance(&[Coin {
+        denom: "ubluechip".to_string(),
+        amount: Uint128::new(1_000_000_000),
+    }]);
+    setup_pool_post_threshold(&mut deps);
+    with_factory_oracle(&mut deps, Uint128::new(1_000_000));
+
+    // Manually drop reserve1 below MIN (simulating a drained pool that
+    // somehow stayed un-paused; the test setup doesn't auto-pause).
+    let mut state = POOL_STATE.load(&deps.storage).unwrap();
+    state.reserve1 = MINIMUM_LIQUIDITY.checked_sub(Uint128::one()).unwrap();
+    POOL_STATE.save(&mut deps.storage, &state).unwrap();
+
+    let commit_amount = Uint128::new(100_000_000);
+    let info = message_info(
+        &Addr::unchecked("commiter"),
+        &[Coin {
+            denom: "ubluechip".to_string(),
+            amount: commit_amount,
+        }],
+    );
+    let msg = ExecuteMsg::Commit {
+        asset: TokenInfo {
+            info: TokenType::Native {
+                denom: "ubluechip".to_string(),
+            },
+            amount: commit_amount,
+        },
+        transaction_deadline: None,
+        belief_price: None,
+        max_spread: None,
+    };
+
+    let err = execute(deps.as_mut(), mock_env(), info, msg).unwrap_err();
+    assert!(
+        matches!(err, ContractError::InsufficientReserves {}),
+        "expected InsufficientReserves on pre-state check, got: {:?}",
+        err
+    );
+}

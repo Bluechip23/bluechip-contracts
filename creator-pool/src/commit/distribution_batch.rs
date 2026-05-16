@@ -258,23 +258,28 @@ pub fn process_distribution_batch(
                 DISTRIBUTION_STATE.save(storage, &updated_state)?;
             } else {
                 // Ledger has more entries but our `take(N)` returned zero.
-                // That's anomalous — bump the failure counter and bail at
-                // MAX_CONSECUTIVE_DISTRIBUTION_FAILURES.
+                // Anomalous — accumulate the failure counter so an
+                // operator monitoring `DistributionState` sees the count
+                // rise across retries. We CANNOT both save the "give up"
+                // state AND return Err: CosmWasm reverts every storage
+                // write in a handler that returns Err, so the previous
+                // `save(is_distributing = false) + return Err(...)`
+                // pattern never actually persisted the give-up state
+                // (the parallel `Err(e)` branch below was already cleaned
+                // up for the same reason). Surface the failure as a typed
+                // error after each anomalous round and let the recovery
+                // paths (`RecoverPoolStuckStates::StuckDistribution` after
+                // 1h, `SelfRecoverDistribution` after 7d) reset the cursor.
                 dist_state.consecutive_failures += 1;
-
                 if dist_state.consecutive_failures >= MAX_CONSECUTIVE_DISTRIBUTION_FAILURES {
-                    dist_state.is_distributing = false;
-                    DISTRIBUTION_STATE.save(storage, &dist_state)?;
-
                     return Err(ContractError::DistributionFailedTooManyTimes {
                         attempts: dist_state.consecutive_failures,
                         cap: MAX_CONSECUTIVE_DISTRIBUTION_FAILURES,
                         reason: "ledger has entries but range yielded zero rows".to_string(),
                     });
-                } else {
-                    dist_state.last_updated = env.block.time;
-                    DISTRIBUTION_STATE.save(storage, &dist_state)?;
                 }
+                dist_state.last_updated = env.block.time;
+                DISTRIBUTION_STATE.save(storage, &dist_state)?;
             }
         }
         Err(e) => {
