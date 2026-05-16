@@ -65,6 +65,17 @@ pub enum HarnessQueryMsg {
     /// wraps every oracle query under this variant — so we accept
     /// it here and dispatch to the inner FactoryQueryMsg.
     InternalBlueChipOracleQuery(FactoryQueryMsg),
+    /// Top-level mirrors of the `FactoryQueryMsg` variants that
+    /// `pool-core::admin` sends UNWRAPPED to the factory address
+    /// (no `Factory` / `InternalBlueChipOracleQuery` wrapper).
+    /// `execute_emergency_withdraw_initiate` and
+    /// `execute_emergency_withdraw_core_drain` use these shapes —
+    /// the fuzz harness must accept the same wire format to exercise
+    /// the emergency-withdraw lifecycle end-to-end. Each is dispatched
+    /// into the same inner-`Factory` handler so a single match arm
+    /// keeps the logic in one place.
+    EmergencyWithdrawDelaySeconds {},
+    BluechipWalletAddress {},
     /// Has pool_id ever notified threshold crossed? Used by invariants.
     ThresholdMinted { pool_id: u64 },
     /// Total mint notifications received (for monotonicity invariants).
@@ -171,6 +182,16 @@ pub fn query(deps: Deps, env: Env, msg: HarnessQueryMsg) -> StdResult<Binary> {
         HarnessQueryMsg::InternalBlueChipOracleQuery(q) => {
             query(deps, env, HarnessQueryMsg::Factory(q))
         }
+        HarnessQueryMsg::EmergencyWithdrawDelaySeconds {} => query(
+            deps,
+            env,
+            HarnessQueryMsg::Factory(FactoryQueryMsg::EmergencyWithdrawDelaySeconds {}),
+        ),
+        HarnessQueryMsg::BluechipWalletAddress {} => query(
+            deps,
+            env,
+            HarnessQueryMsg::Factory(FactoryQueryMsg::BluechipWalletAddress {}),
+        ),
         HarnessQueryMsg::Factory(q) => match q {
             FactoryQueryMsg::ConvertBluechipToUsd { amount } => {
                 let r = RATE.load(deps.storage)?;
@@ -218,12 +239,16 @@ pub fn query(deps: Deps, env: Env, msg: HarnessQueryMsg) -> StdResult<Binary> {
                 })
             }
             // Stubbed for fuzz harness. The pool's emergency-drain
-            // path queries this to resolve the live wallet — return a
-            // deterministic placeholder so the fuzzer can exercise the
-            // drain end-to-end without standing up a real factory.
+            // path queries this to resolve the live wallet. Returns
+            // the harness's `admin` address — generated via
+            // `MockApi::default().addr_make("admin")` in
+            // `world.rs::setup` so the bech32 shape matches the chain
+            // address derivation used by every other actor in the
+            // fuzz scenarios.
             FactoryQueryMsg::BluechipWalletAddress {} => {
+                let admin = cosmwasm_std::testing::MockApi::default().addr_make("admin");
                 to_json_binary(&pool_factory_interfaces::BluechipWalletResponse {
-                    address: cosmwasm_std::Addr::unchecked("fuzz_bluechip_wallet"),
+                    address: admin,
                 })
             }
         },
