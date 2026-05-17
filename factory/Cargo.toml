@@ -22,15 +22,35 @@ crate-type = ["cdylib", "rlib"]
 
 [features]
 default = []        # Default features (no mock — keeps prod-path unit tests working)
-mock = [] # Optional feature for mock code; pass via --features mock or via [package.metadata.optimizer]
+# `mock` keeps unit-test semantics: mockoracle queries, BLUECHIP_USD
+# short-circuit, testing/mod.rs gating. Compatible with the existing
+# 247-test factory suite — does NOT alter timing constants or behavior
+# gates.
+mock = []
+# `integration_short_timing` is the integration-test-only feature that
+# shortens timelocks, rate limits, liquidity floors, warmup, and the
+# UpdateTooSoon cooldown. Used by the docker-built wasm for shell-script
+# integration tests. NEVER ship to production. Unit tests do NOT enable
+# this — that would break tests written against prod constants.
+integration_short_timing = []
 library = []
 
-# Passed to the cosmwasm/optimizer:0.16+ image's `bob` cargo wrapper so
-# the docker-built artifact embeds the mock branch needed by the local
-# integration shell scripts (see Makefile optimize-factory).
-# `bob` requires `name`; the Makefile renames factory-mock.wasm → factory.wasm.
+# Docker-built wasm for shell-script integration tests. Enables BOTH
+# `mock` (so mockoracle queries work) AND `integration_short_timing`
+# (so timelocks/rate-limits are short enough for an interactive test).
 [[package.metadata.optimizer.builds]]
 name = "mock"
+features = ["mock", "integration_short_timing"]
+
+# Production-timing build for end-to-end verification of the oracle
+# gates that `integration_short_timing` deliberately bypasses (warmup,
+# UpdateTooSoon cooldown, liquidity floors). Used by
+# `verify_oracle_gates.sh` to confirm the real-chain semantics agree
+# with what the unit suite asserts. NOT for production deployment —
+# the `mock` feature still wires the mockoracle short-circuit; this
+# variant just keeps the timing constants at their prod values.
+[[package.metadata.optimizer.builds]]
+name = "mock_only"
 features = ["mock"]
 
 [package.metadata.scripts]

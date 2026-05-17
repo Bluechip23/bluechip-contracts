@@ -121,12 +121,12 @@ pub fn calculate_and_mint_bluechip(
         }
     };
 
-    #[cfg(feature = "mock")]
-    {
-        return Ok(Vec::new());
-    }
-
-    #[cfg(not(feature = "mock"))]
+    // (Historical `#[cfg(feature = "mock")]` early-return removed: it
+    // returned `Vec::new()` unconditionally, which silently broke
+    // `test_bluechip_minting_on_threshold_crossing` and similar mint-path
+    // tests that pre-seed the oracle via `prime_oracle_for_first_update`
+    // and assert a BankMsg::Send or ExpandEconomy::Execute is produced.
+    // The prod path below now runs in mock builds too.)
     {
     let first_threshold_time = _first_threshold_time;
     let mut msgs: Vec<CosmosMsg> = Vec::new();

@@ -101,15 +101,15 @@ pub struct PendingWithdrawal {
 
 /// Timelock between `ProposeWithdrawal` and `ExecuteWithdrawal` (48 hours
 /// in production; 120s under `--features mock` for local integration tests).
-#[cfg(not(feature = "mock"))]
+#[cfg(not(feature = "integration_short_timing"))]
 pub const WITHDRAW_TIMELOCK_SECONDS: u64 = 172_800;
-#[cfg(feature = "mock")]
+#[cfg(feature = "integration_short_timing")]
 pub const WITHDRAW_TIMELOCK_SECONDS: u64 = 120;
 /// Timelock between `ProposeConfigUpdate` and `ExecuteConfigUpdate` (48 hours
 /// in production; 120s under `--features mock` for local integration tests).
-#[cfg(not(feature = "mock"))]
+#[cfg(not(feature = "integration_short_timing"))]
 pub const CONFIG_TIMELOCK_SECONDS: u64 = 172_800;
-#[cfg(feature = "mock")]
+#[cfg(feature = "integration_short_timing")]
 pub const CONFIG_TIMELOCK_SECONDS: u64 = 120;
 /// Pending withdrawal awaiting timelock expiry.
 pub const PENDING_WITHDRAWAL: Item<PendingWithdrawal> = Item::new("pending_withdrawal");

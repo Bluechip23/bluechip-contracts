@@ -65,9 +65,9 @@ pub const ORACLE_POOL_COUNT: usize = 75;
 /// Until those three are wired, every non-anchor pool added to the
 /// allowlist would drag `last_price` away from the correct value, so
 /// the anchor pool is the sole price source.
-#[cfg(not(feature = "mock"))]
+#[cfg(not(feature = "integration_short_timing"))]
 pub const ORACLE_BASKET_ENABLED: bool = false;
-#[cfg(feature = "mock")]
+#[cfg(feature = "integration_short_timing")]
 pub const ORACLE_BASKET_ENABLED: bool = true;
 
 /// Hardcoded fallback bluechip-side floor used by `pool_meets_liquidity_floor`
@@ -81,10 +81,10 @@ pub const ORACLE_BASKET_ENABLED: bool = true;
 /// Mirrors the `STANDARD_POOL_CREATION_FEE_FALLBACK_BLUECHIP` pattern: a
 /// known-conservative bluechip-denominated value used when the
 /// USD-denominated source of truth can't be resolved.
-#[cfg(not(feature = "mock"))]
+#[cfg(not(feature = "integration_short_timing"))]
 pub const MIN_POOL_LIQUIDITY_FALLBACK_BLUECHIP_PER_SIDE: Uint128 =
     Uint128::new(5_000_000_000);
-#[cfg(feature = "mock")]
+#[cfg(feature = "integration_short_timing")]
 pub const MIN_POOL_LIQUIDITY_FALLBACK_BLUECHIP_PER_SIDE: Uint128 =
     Uint128::new(1_000);
 /// Legacy constant retained for one cycle of git-grep continuity. Callers
@@ -112,16 +112,16 @@ pub(crate) const MIN_POOL_LIQUIDITY: Uint128 = Uint128::new(10_000_000_000);
 /// minimum where a single-block reserve manipulation costs more than
 /// the would-be attacker can recover even from a 30% TWAP move
 /// (capped by `MAX_TWAP_DRIFT_BPS`).
-#[cfg(not(feature = "mock"))]
+#[cfg(not(feature = "integration_short_timing"))]
 pub const MIN_POOL_LIQUIDITY_USD: Uint128 = Uint128::new(5_000_000_000);
-#[cfg(feature = "mock")]
+#[cfg(feature = "integration_short_timing")]
 pub const MIN_POOL_LIQUIDITY_USD: Uint128 = Uint128::new(1_000);
 
 pub const TWAP_WINDOW: u64 = 3600;
 pub const UPDATE_INTERVAL: u64 = 300;
-#[cfg(not(feature = "mock"))]
+#[cfg(not(feature = "integration_short_timing"))]
 pub const ROTATION_INTERVAL: u64 = 3600;
-#[cfg(feature = "mock")]
+#[cfg(feature = "integration_short_timing")]
 pub const ROTATION_INTERVAL: u64 = 60;
 
 /// Liquidity-floor gate used by every eligible-pool path
@@ -1033,24 +1033,24 @@ pub fn update_internal_oracle_price(
         .bluechip_price_cache
         .last_update
         .saturating_add(oracle.update_interval);
-    // Mock builds skip the 300s keeper cooldown so integration tests
-    // can drive multiple UpdateOraclePrice rounds back-to-back. Production
+    // The `integration_short_timing` build skips the 300s keeper cooldown
+    // so shell-script integration tests can drive multiple UpdateOraclePrice
+    // rounds back-to-back. Production AND unit-test (--features mock)
     // builds still enforce the cooldown.
-    #[cfg(not(feature = "mock"))]
+    #[cfg(not(feature = "integration_short_timing"))]
     if current_time < next_update {
         return Err(ContractError::UpdateTooSoon { next_update });
     }
-    #[cfg(feature = "mock")]
+    #[cfg(feature = "integration_short_timing")]
     let _ = next_update;
 
-    // Mock-feature unconditional warmup clear. The audit H-2/H-3 warm-up
-    // gate exists to prevent single-block manipulation of a fresh anchor.
-    // In mock builds (--features mock) the security model assumes a
-    // trusted test environment, so the gate adds friction (25+ min to
-    // drain naturally on testnet) without protective value. Clear it on
-    // every UpdateOraclePrice call so commits aren't frozen waiting on
-    // TWAP cycling. Must NEVER be set in production builds.
-    #[cfg(feature = "mock")]
+    // Integration-test-only: unconditional warmup clear. The audit H-2/H-3
+    // warm-up gate exists to prevent single-block manipulation of a fresh
+    // anchor. The integration-test build assumes a trusted environment, so
+    // the gate adds friction (25+ min to drain naturally on testnet)
+    // without protective value. Production AND unit-test builds still
+    // enforce the gate as designed.
+    #[cfg(feature = "integration_short_timing")]
     {
         oracle.warmup_remaining = 0;
     }
@@ -1077,7 +1077,13 @@ pub fn update_internal_oracle_price(
         // an on-chain anchor that could be single-block-manipulated; the
         // warm-up gate (audit H-2/H-3) serves no purpose here, so clear
         // it so commits aren't frozen for ~25 min on every fresh deploy.
-        oracle.warmup_remaining = 0;
+        // Gated behind `integration_short_timing` (not bare `mock`) so
+        // unit tests built with just `--features mock` still observe the
+        // designed gate behavior.
+        #[cfg(feature = "integration_short_timing")]
+        {
+            oracle.warmup_remaining = 0;
+        }
         INTERNAL_ORACLE.save(deps.storage, &oracle)?;
 
         let bounty_usd = ORACLE_UPDATE_BOUNTY_USD
@@ -2203,34 +2209,34 @@ fn get_bluechip_usd_price_with_meta(
                     cache.cached_pyth_price
                 }
             };
-            #[cfg(feature = "mock")]
-            {
-                return Ok((atom_usd_price, env.block.time.seconds()));
+            // Same mock-short-circuit fix as the steady-state path below:
+            // the outer `if allow_warmup_fallback && !pre_reset_last_price.is_zero()`
+            // guarantees `bluechip_per_atom > 0`, so the divide is safe.
+            // The historical `#[cfg(feature = "mock")]` early-return here
+            // skipped the divide and served raw ATOM/USD as bluechip/USD,
+            // which broke best-effort warmup unit tests (asserting the
+            // derived bluechip/USD value).
+            let bluechip_usd_price = atom_usd_price
+                .checked_mul(Uint128::from(PRICE_PRECISION))
+                .map_err(|e| {
+                    StdError::generic_err(format!(
+                        "Overflow calculating best-effort warm-up price: {}",
+                        e
+                    ))
+                })?
+                .checked_div(bluechip_per_atom)
+                .map_err(|e| {
+                    StdError::generic_err(format!(
+                        "Division error calculating best-effort warm-up price: {}",
+                        e
+                    ))
+                })?;
+            if bluechip_usd_price.is_zero() {
+                return Err(StdError::generic_err(
+                    "best-effort warm-up: calculated price is zero",
+                ));
             }
-            #[cfg(not(feature = "mock"))]
-            {
-                let bluechip_usd_price = atom_usd_price
-                    .checked_mul(Uint128::from(PRICE_PRECISION))
-                    .map_err(|e| {
-                        StdError::generic_err(format!(
-                            "Overflow calculating best-effort warm-up price: {}",
-                            e
-                        ))
-                    })?
-                    .checked_div(bluechip_per_atom)
-                    .map_err(|e| {
-                        StdError::generic_err(format!(
-                            "Division error calculating best-effort warm-up price: {}",
-                            e
-                        ))
-                    })?;
-                if bluechip_usd_price.is_zero() {
-                    return Err(StdError::generic_err(
-                        "best-effort warm-up: calculated price is zero",
-                    ));
-                }
-                return Ok((bluechip_usd_price, env.block.time.seconds()));
-            }
+            return Ok((bluechip_usd_price, env.block.time.seconds()));
         }
         return Err(StdError::generic_err(format!(
             "Oracle warm-up in progress after anchor reset: {} more successful TWAP \
@@ -2279,10 +2285,19 @@ fn get_bluechip_usd_price_with_meta(
         }
     };
 
-    #[cfg(feature = "mock")]
-    {
-        return Ok((atom_usd_price, last_update));
-    }
+    // (Historical `#[cfg(feature = "mock")]` early-return removed: it
+    // skipped the TWAP divide below and served raw ATOM/USD as the
+    // bluechip/USD price, which (a) broke 11 unit tests that pre-seed
+    // a non-zero `last_price` and assert the derived value, and (b)
+    // defeated `test_distribution_bounty_skips_when_oracle_unavailable`,
+    // which deliberately sets `last_price = 0` to exercise the
+    // "TWAP price is zero" error path. The mock-build paths that
+    // actually need a placeholder price before any UpdateOraclePrice
+    // has published — the BLUECHIP_USD short-circuit in
+    // `update_internal_oracle_price` and the shell-test
+    // `ConfirmBootstrapPrice` flow — both write `last_price` directly,
+    // so the divide below succeeds in mock builds as soon as either of
+    // those has fired.)
 
     // Bootstrap note: when fewer than MIN_ELIGIBLE_POOLS_FOR_TWAP creator
     // pools have crossed threshold, `oracle.bluechip_price_cache.last_price`
@@ -2309,38 +2324,35 @@ fn get_bluechip_usd_price_with_meta(
     // price is older than MAX_ORACLE_STALENESS_SECONDS. And the zero
     // guard below catches the pre-first-update case where UpdateOraclePrice
     // has never been called.
-    #[cfg(not(feature = "mock"))]
-    {
-        let bluechip_per_atom_twap = cache.last_price;
+    let bluechip_per_atom_twap = cache.last_price;
 
-        if bluechip_per_atom_twap.is_zero() {
-            return Err(StdError::generic_err(
-                "TWAP price is zero - oracle may need update",
-            ));
-        }
-
-        // Calculate USD price using TWAP
-        // bluechip_usd_price = atom_usd_price / bluechip_per_atom_twap
-        // Units: (USD/ATOM) / (Bluechip/ATOM) = USD/Bluechip
-        let bluechip_usd_price = atom_usd_price
-            .checked_mul(Uint128::from(PRICE_PRECISION))
-            .map_err(|e| {
-                StdError::generic_err(format!("Overflow calculating bluechip USD price: {}", e))
-            })?
-            .checked_div(bluechip_per_atom_twap)
-            .map_err(|e| {
-                StdError::generic_err(format!(
-                    "Division error calculating bluechip USD price: {}",
-                    e
-                ))
-            })?;
-
-        if bluechip_usd_price.is_zero() {
-            return Err(StdError::generic_err("Calculated bluechip price is zero"));
-        }
-
-        Ok((bluechip_usd_price, last_update))
+    if bluechip_per_atom_twap.is_zero() {
+        return Err(StdError::generic_err(
+            "TWAP price is zero - oracle may need update",
+        ));
     }
+
+    // Calculate USD price using TWAP
+    // bluechip_usd_price = atom_usd_price / bluechip_per_atom_twap
+    // Units: (USD/ATOM) / (Bluechip/ATOM) = USD/Bluechip
+    let bluechip_usd_price = atom_usd_price
+        .checked_mul(Uint128::from(PRICE_PRECISION))
+        .map_err(|e| {
+            StdError::generic_err(format!("Overflow calculating bluechip USD price: {}", e))
+        })?
+        .checked_div(bluechip_per_atom_twap)
+        .map_err(|e| {
+            StdError::generic_err(format!(
+                "Division error calculating bluechip USD price: {}",
+                e
+            ))
+        })?;
+
+    if bluechip_usd_price.is_zero() {
+        return Err(StdError::generic_err("Calculated bluechip price is zero"));
+    }
+
+    Ok((bluechip_usd_price, last_update))
 }
 
 pub fn get_bluechip_usd_price(deps: Deps, env: &Env) -> StdResult<Uint128> {

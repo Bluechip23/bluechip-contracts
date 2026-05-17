@@ -59,9 +59,13 @@ optimize-factory:
 	  --mount type=volume,source=factory_cache,target=/target \
 	  --mount type=volume,source=registry_cache,target=/usr/local/cargo/registry \
 	  cosmwasm/optimizer:0.16.0 ./factory
-	@# factory's [[package.metadata.optimizer.builds]] has name="mock";
-	@# the optimizer emits factory-mock.wasm — rename it for the rest
-	@# of the toolchain that expects artifacts/factory.wasm.
+	@# factory has two optimizer build variants:
+	@# - name="mock"      → factory-mock.wasm      (mock + integration_short_timing)
+	@# - name="mock_only" → factory-mock_only.wasm (mock only, prod timing constants)
+	@# The shell-test toolchain expects artifacts/factory.wasm to be the
+	@# mock+integration_short_timing variant (fast shell tests). The
+	@# mock_only variant gets renamed to factory-mock_only.wasm and is
+	@# consumed by verify_oracle_gates.sh.
 	@if [ -f $(ARTIFACTS)/factory-mock.wasm ]; then \
 	  mv $(ARTIFACTS)/factory-mock.wasm $(ARTIFACTS)/factory.wasm; \
 	fi
@@ -83,6 +87,12 @@ optimize-expand-economy:
 	  cp $(ARTIFACTS)/expand_economy-mock.wasm $(ARTIFACTS)/expand_economy.wasm; \
 	  cp $(ARTIFACTS)/expand_economy-mock.wasm $(ARTIFACTS)/expand-economy.wasm; \
 	  rm $(ARTIFACTS)/expand_economy-mock.wasm; \
+	fi
+	@# mock_only variant (prod timing). Kept under a distinct filename so
+	@# verify_oracle_gates.sh can find it without clobbering the fast
+	@# shell-test artifact above.
+	@if [ -f $(ARTIFACTS)/expand_economy-mock_only.wasm ]; then \
+	  : ; \
 	fi
 
 optimize-mockoracle:

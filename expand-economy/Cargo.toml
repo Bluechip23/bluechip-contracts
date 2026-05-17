@@ -11,13 +11,23 @@ crate-type = ["cdylib", "rlib"]
 
 [features]
 default = []
+# Reserved for future mock-test infrastructure (currently a no-op).
+# Kept symmetric with the factory/mockoracle feature so the docker
+# optimizer can pass it uniformly.
+mock = []
 # Shortens config/withdrawal timelocks (172_800s → 120s) so integration
 # shell tests can exercise the propose→execute path without waiting 48h.
-# Must NEVER be set in production builds.
-mock = []
+# NEVER ship to production. Unit tests do NOT enable this.
+integration_short_timing = []
 
 [[package.metadata.optimizer.builds]]
 name = "mock"
+features = ["mock", "integration_short_timing"]
+
+# Prod-timing variant used by verify_oracle_gates.sh — see the
+# factory's matching [[package.metadata.optimizer.builds]] block.
+[[package.metadata.optimizer.builds]]
+name = "mock_only"
 features = ["mock"]
 
 [dependencies]

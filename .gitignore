@@ -10,10 +10,12 @@
 /osmo_testnet.state
 /commit_pools.txt
 
-# Local-only script for toggling the osmo-test-5 testing constants
-# (5min timelocks, 1% breaker, etc). Intentionally kept out of the repo
-# so the testing values can't accidentally ship to mainnet.
-/testing-knobs.sh
+# Shell scripts — deploy / test / verify helpers are kept out of the
+# repo. They reference per-deployment state (osmo_testnet.state,
+# commit_pools.txt) and call optimizer/docker tooling that not every
+# checkout has installed. The previously-listed `/testing-knobs.sh`
+# is now covered by this broader pattern.
+*.sh
 
 # Text file backups
 **/*.rs.bk

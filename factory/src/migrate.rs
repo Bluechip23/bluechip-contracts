@@ -91,10 +91,10 @@ pub fn migrate(deps: DepsMut, _env: Env, _msg: Empty) -> Result<Response, Contra
         }
     }
 
-    // Mock-feature: rotation_interval and update_interval on the oracle
-    // state are baked in at init time. Refresh them on migrate so a
-    // mock-feature rebuild can shrink them without re-instantiating.
-    #[cfg(feature = "mock")]
+    // Integration-test-only: rotation_interval and update_interval on the
+    // oracle state are baked in at init time. Refresh them on migrate so a
+    // newly-built integration wasm can shrink them without re-instantiating.
+    #[cfg(feature = "integration_short_timing")]
     {
         use crate::internal_bluechip_price_oracle::{
             INTERNAL_ORACLE, ROTATION_INTERVAL, UPDATE_INTERVAL,
