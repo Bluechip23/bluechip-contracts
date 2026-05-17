@@ -12,6 +12,37 @@ to any of them requires both a `FactoryInstantiate` field AND a bounded
 validator in the timelock-proposal path; see "Adding tunability" at the
 end.
 
+## Integration-test overrides (`--features integration_short_timing`)
+
+Most of the constants below are cfg-gated so that the docker-built
+`-mock.wasm` artifact (which enables both `mock` and
+`integration_short_timing`) compiles them down to test-friendly values.
+This lets the shell-script integration suite drive the full deploy →
+bootstrap → threshold-cross → rotation flow in minutes instead of
+days. Production builds (default features, no `integration_short_timing`)
+use the values shown in the Quick Reference below; nothing about the
+production behaviour is altered.
+
+| Constant | Prod value | `integration_short_timing` value |
+|---|---|---|
+| `ADMIN_TIMELOCK_SECONDS` | 172_800 s (48 h) | 120 s |
+| `CONFIG_TIMELOCK_SECONDS` (expand-economy) | 172_800 s | 120 s |
+| `WITHDRAW_TIMELOCK_SECONDS` (expand-economy) | 172_800 s | 120 s |
+| `BOOTSTRAP_OBSERVATION_SECONDS` | 3600 s (1 h) | 30 s |
+| `MIN_BOOTSTRAP_OBSERVATIONS` | 6 | 2 |
+| `COMMIT_POOL_CREATE_RATE_LIMIT_SECONDS` | 3600 s | 30 s |
+| `STANDARD_POOL_CREATE_RATE_LIMIT_SECONDS` | 3600 s | 30 s |
+| `ROTATION_INTERVAL` | 3600 s | 60 s |
+| `ORACLE_REFRESH_RATE_LIMIT_BLOCKS` | 7200 (~12 h) | 1 block |
+| `MIN_POOL_LIQUIDITY_USD` | 5_000_000_000 (~$5 k) | 1_000 |
+| `MIN_POOL_LIQUIDITY_FALLBACK_BLUECHIP_PER_SIDE` | 5_000_000_000 | 1_000 |
+| `ORACLE_BASKET_ENABLED` | `false` | `true` |
+| `update_internal_oracle_price` UpdateTooSoon check | enforced | bypassed |
+| `update_internal_oracle_price` warmup_remaining | natural drain | cleared every call |
+
+NEVER ship a wasm built with `integration_short_timing` to production —
+every gate listed above is deliberately weakened.
+
 ## Quick reference
 
 | Constant | Value | Location |

@@ -703,10 +703,13 @@ async function handleAddLiquidity() {
 
         var tokenAddress   = null;
         var bluechipDenom  = BLUECHIP_CONFIG.nativeDenom;
-        // Pair queries return the asset list under `pool_token_info` on
-        // current builds; older serialised state still surfaces it as
-        // `asset_infos`. Read either, falling back to an empty list.
-        var assets = pairInfo.pool_token_info || pairInfo.asset_infos || [];
+        // Pair query returns the asset list under `asset_infos` (the
+        // serialised field on `PoolDetails` in pool-core/src/state.rs).
+        // `pool_token_info` is the *input* field name on the `CreatePool`
+        // instantiate message — not the query response — but legacy
+        // builds emitted it here too, so read either to stay forward/
+        // backward compatible.
+        var assets = pairInfo.asset_infos || pairInfo.pool_token_info || [];
         for (var i = 0; i < assets.length; i++) {
             if (assets[i].creator_token) {
                 tokenAddress = assets[i].creator_token.contract_addr;
@@ -1491,9 +1494,10 @@ async function getCreatorTokenAddress(poolAddress) {
 
     var pairInfo = await client.queryContractSmart(poolAddress, { pair: {} });
 
-    // `pool_token_info` is the current field name; `asset_infos` remains
-    // as a fallback for legacy serialised state.
-    var assets = pairInfo.pool_token_info || pairInfo.asset_infos || [];
+    // `asset_infos` is the field on `PoolDetails` that `Pair {}` returns.
+    // Some legacy builds emitted `pool_token_info` here too (it's the
+    // input field name on `CreatePool`); read either for compatibility.
+    var assets = pairInfo.asset_infos || pairInfo.pool_token_info || [];
     for (var i = 0; i < assets.length; i++) {
         if (assets[i].creator_token) {
             return assets[i].creator_token.contract_addr;
@@ -1686,8 +1690,9 @@ After your pool is created, you can find the creator token address by querying:
 
 ```javascript
 var pairInfo = await client.queryContractSmart("YOUR_POOL_ADDRESS", { pair: {} });
-// Look for the creator_token entry in pairInfo.pool_token_info
-// (older serialised state still surfaces it as pairInfo.asset_infos)
+// Look for the creator_token entry in pairInfo.asset_infos
+// (legacy builds also surfaced it as pairInfo.pool_token_info, which is
+// the input field name on CreatePool — read either for compatibility)
 ```
 
 Or check the pool creation transaction on your block explorer — the token contract address appears in the instantiation events.

@@ -841,6 +841,12 @@ Every contract (factory, creator-pool, standard-pool, expand-economy) exports a 
 
 ## Key Constants & Limits
 
+All values below are the **production** defaults. Constants marked with
+**🧪** are cfg-gated and shortened under `--features integration_short_timing`
+for shell-script integration tests (the docker `mock` build variant); see
+the **Cargo features** section under Development for the full list of
+overrides. Constants without 🧪 are pinned regardless of build flavour.
+
 | Parameter | Value | Description |
 |-----------|-------|-------------|
 | Commit threshold (USD) | 25,000 | USD value required to activate creator pool |
@@ -856,22 +862,27 @@ Every contract (factory, creator-pool, standard-pool, expand-economy) exports a 
 | First-depositor lock | 1000 LP | `MINIMUM_LIQUIDITY` locked into first deposit |
 | Distribution batch size | 40 | Max committers per distribution tx |
 | Distribution keeper cooldown | 5 seconds | Per-address, prevents bounty monopoly |
-| Commit-pool create rate limit | 3600 seconds | Per-address, per `Create` call |
+| Commit-pool create rate limit 🧪 | 3600 seconds | Per-address, per `Create` call |
+| Standard-pool create rate limit 🧪 | 3600 seconds | Per-address, per `CreateStandardPool` call |
 | Default slippage | 0.5% | Default max slippage for swaps |
 | Max slippage | 50% | Hard cap on swap slippage |
 | Post-threshold swap cooldown | 2 blocks | Delays first swap after threshold |
 | Emergency withdraw timelock | 86,400 s (24h) | Phase 1 → Phase 2 delay |
-| Admin timelock (factory) | 172,800 s (48h) | Config / upgrade / force-rotate |
-| Admin timelock (expand-economy) | 172,800 s (48h) | Config update + withdrawal |
+| Admin timelock (factory) 🧪 | 172,800 s (48h) | Config / upgrade / force-rotate |
+| Admin timelock (expand-economy) 🧪 | 172,800 s (48h) | Config update + withdrawal |
 | Oracle TWAP window | 3600 seconds | Time-weighted price window |
-| Oracle update interval | 300 seconds | Min between price updates |
+| Oracle update interval 🧪 | 300 seconds | Min between price updates |
 | Oracle stale-price max age (Pyth) | 300 seconds | Live Pyth + cached-Pyth max age |
 | Oracle stale-price max age (pool-side) | 360 seconds | Pool-side acceptance window for `ConversionResponse` |
-| Oracle rotation interval | 3600 seconds | Sample re-selection cadence (basket disabled in v1) |
-| Oracle warm-up observations | 5 | Required after anchor change / rotate |
+| Oracle rotation interval 🧪 | 3600 seconds | Sample re-selection cadence (basket disabled in v1) |
+| Oracle warm-up observations 🧪 | 5 | Required after anchor change / rotate (force-cleared per call under integration_short_timing) |
 | Oracle TWAP drift cap | 30% (3000 bps) | Per-update circuit breaker |
 | Min eligible pools for TWAP | 3 | Below this the oracle falls back to anchor-only |
-| Min pool liquidity (oracle eligibility) | $5,000 USD | Per-side bluechip-denominated floor (USD-converted) |
+| Min pool liquidity (oracle eligibility) 🧪 | $5,000 USD | Per-side bluechip-denominated floor (USD-converted) |
+| Min bootstrap observations 🧪 | 6 | Required before `ConfirmBootstrapPrice` |
+| Bootstrap observation window 🧪 | 3600 s (1h) | Min wait before `ConfirmBootstrapPrice` |
+| Oracle snapshot refresh rate limit 🧪 | 7200 blocks (~12h) | Min between `RefreshOraclePoolSnapshot` calls |
+| `ORACLE_BASKET_ENABLED` 🧪 | `false` | When `true` the oracle samples eligible pools; when `false` it stays anchor-only |
 | Eligible-pool refresh window | 72,000 blocks (~5d) | Snapshot rebuild cadence |
 | Oracle update bounty cap | $0.10 USD (6 dec) | Per successful update |
 | Distribution batch bounty cap | $0.10 USD (6 dec) | Per successful batch |
@@ -896,16 +907,52 @@ docker run --rm -v "$(pwd)":/code \
   cosmwasm/optimizer:0.16.0
 ```
 
+The optimizer is driven by each crate's `[[package.metadata.optimizer.builds]]`
+entries (see `factory/Cargo.toml` and `expand-economy/Cargo.toml`) and emits
+three variants per build:
+
+| Artifact suffix | Cargo features | Use |
+|---|---|---|
+| `<crate>.wasm` | none (default) | **Production.** Real 48h timelocks, full warmup gate, $5k liquidity floor, 300s keeper cooldown, anchor-only oracle. |
+| `<crate>-mock.wasm` | `mock, integration_short_timing` | Shell-script integration tests. 120s timelocks, warmup cleared per call, UpdateTooSoon bypassed, lowered floors, basket oracle on. Mockoracle queries enabled. NEVER ship. |
+| `<crate>-mock_only.wasm` | `mock` only | Mockoracle queries enabled but every timing constant pinned to production values. Used for end-to-end verification that prod-timing gates fire correctly on a real chain. |
+
+The Makefile's `optimize-factory`/`optimize-expand-economy` targets rename the
+`-mock` artifact onto `<crate>.wasm` so the test-deploy toolchain finds it
+unchanged; the `-mock_only` artifact keeps its suffix.
+
+### Cargo features (factory and expand-economy)
+
+- **`mock`** — enables the test-infrastructure surface only: the mockoracle's
+  `BLUECHIP_USD` price short-circuit inside `update_internal_oracle_price`, the
+  `testing/` test module gate, and a few helper functions consumed by unit tests.
+  Production behaviour (timelocks, warmup, liquidity floors, cooldowns,
+  breaker thresholds, basket mode) is **unchanged** — the test suite verifies
+  the production paths under this feature.
+- **`integration_short_timing`** — shortens every timing constant (admin
+  timelock 48h → 120s, bootstrap observation 1h → 30s, rotation interval 1h
+  → 60s, etc.), lowers the per-side liquidity floor to a few microbluechip,
+  bypasses the 300s `UpdateOraclePrice` cooldown, clears `warmup_remaining` on
+  every keeper call, and flips `ORACLE_BASKET_ENABLED` to `true`. Layered on
+  top of `mock` so the shell-script integration suite can drive a full
+  end-to-end deploy in minutes instead of days. **MUST NEVER ship to
+  production** — these constants are deliberately weakened.
+
 ### Testing
 
 ```bash
-cargo test --workspace --lib
+# Unit tests — production-equivalent semantics (mock feature only)
+cargo test -p factory --features mock --lib --release
+cargo test -p creator-pool --release --lib
+cargo test -p standard-pool --release --lib
+cargo test -p expand-economy --release --lib
+cargo test -p pool-core --release --lib
 ```
 
-The workspace ships with extensive coverage:
-- factory: 226 tests
-- creator-pool: 217 tests
-- standard-pool: 65 tests
+The workspace ships with extensive coverage (current PASS counts):
+- factory: 247 tests
+- creator-pool: 222 tests
+- standard-pool: 76 tests
 - expand-economy: 39 tests
 - pool-core: 25 tests
 
@@ -945,13 +992,42 @@ See `FUZZING.md` for the fuzz harness layout and `FUZZ_REVIEW.md` for the latest
 
 ### Local / Mock-Oracle Deployment
 
-The repo ships `deploy_full_stack_mock_oracle.sh`, which uploads every wasm in this workspace plus the bundled `cw20_base.wasm` / `cw721_base.wasm` and the mock oracle, instantiates them in the correct order, and bootstraps the ATOM/bluechip anchor pool. Edit the configurable section at the top of the script (chain, gas prices, wallet keys) before running:
+Shell scripts that wrap the deployment sequence (`deploy_full_stack_mock_oracle.sh`,
+`deploy_osmo_testnet.sh`, `deploy_osmo_testnet_anchor.sh`, and the various
+`test_*.sh` / `verify_*.sh` scenario drivers) are intentionally **not
+checked in** — they reference per-deployment state files
+(`osmo_testnet.state`, `commit_pools.txt`) and operator-specific config
+(chain endpoint, wallet keyring, gas prices) that don't belong in the
+repo. Maintain them in a separate ops/runbook or a private fork.
 
-```bash
-./deploy_full_stack_mock_oracle.sh
-```
+The on-chain deployment sequence those scripts encode is the **Deployment
+Order** above, plus three operator-side prerequisites:
 
-Mainnet deployment runs the same sequence but against a real Pyth oracle address — there is no checked-in `deploy_mainnet.sh`; clone the mock-oracle script, swap the oracle/feed IDs, and remove the mock-oracle upload step.
+1. **Mockoracle (testnet only)** — instantiate `mockoracle/` against a
+   `cw20_base` / `cw721_base` already on chain. Pre-seed `ATOM_USD` and
+   `BLUECHIP_USD` price feeds before instantiating the factory; the
+   factory's `--features mock` BLUECHIP_USD short-circuit only fires
+   if the feed is present.
+2. **Pyth keeper (mainnet / testnet against real Pyth)** — a loop that
+   pulls fresh VAAs from a Hermes endpoint and submits them to the
+   `pyth_contract_addr_for_conversions` every ~30 s. Without a fresh
+   Pyth price the factory falls back to its cached value within
+   `MAX_PRICE_AGE_SECONDS_BEFORE_STALE = 300s`, then errors. The
+   reference implementation queries
+   `${HERMES_ENDPOINT}/api/latest_vaas?ids[]=${PYTH_OSMO_USD_FEED_ID}`,
+   computes the per-VAA fee via the Pyth contract's `get_update_fee`
+   query, and submits `update_price_feeds` with the VAA payload.
+3. **Oracle bootstrap** — after `SetAnchorPool` lands, drive
+   `UpdateOraclePrice` plus a few swaps on the anchor pool so the
+   internal oracle accumulates TWAP observations. On production builds
+   this takes ≥ `MIN_BOOTSTRAP_OBSERVATIONS = 6` rounds spaced by
+   `UPDATE_INTERVAL = 300s` (~30 min), plus the
+   `BOOTSTRAP_OBSERVATION_SECONDS = 3600s` (1 h) window before
+   `ConfirmBootstrapPrice` can publish the candidate.
+
+Mainnet deployment runs the same sequence but against a real Pyth
+contract address — drop the mockoracle upload + price-seed steps,
+keep the Pyth keeper running before any commit pool is created.
 
 ---
 
