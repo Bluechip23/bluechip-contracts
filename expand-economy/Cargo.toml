@@ -9,6 +9,17 @@ license = "Apache-2.0"
 [lib]
 crate-type = ["cdylib", "rlib"]
 
+[features]
+default = []
+# Shortens config/withdrawal timelocks (172_800s → 120s) so integration
+# shell tests can exercise the propose→execute path without waiting 48h.
+# Must NEVER be set in production builds.
+mock = []
+
+[[package.metadata.optimizer.builds]]
+name = "mock"
+features = ["mock"]
+
 [dependencies]
 pool-factory-interfaces = { path = "../packages/pool-factory-interfaces" }
 cosmwasm-schema = { workspace = true }

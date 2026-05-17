@@ -1,5 +1,5 @@
 use cosmwasm_schema::{cw_serde, QueryResponses};
-use cosmwasm_std::Uint128;
+use cosmwasm_std::{Int64, Uint128, Uint64};
 
 #[cw_serde]
 pub enum ExecuteMsg {
@@ -12,7 +12,7 @@ pub enum PythQueryMsg {
     #[returns(PriceResponse)]
     GetPrice { price_id: String },
     #[returns(PriceFeedResponse)]
-    PythConversionPriceFeed { id: String },
+    PriceFeed { id: String },
 }
 
 #[cw_serde]
@@ -27,8 +27,8 @@ pub struct PriceResponse {
 }
 #[cw_serde]
 pub struct PythPriceRetrievalResponse {
-    pub price: i64,
-    pub conf: u64,
+    pub price: Int64,
+    pub conf: Uint64,
     pub expo: i32,
     pub publish_time: i64,
 }

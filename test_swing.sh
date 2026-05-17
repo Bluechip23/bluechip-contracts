@@ -158,7 +158,7 @@ case "$MODE" in
                     amount:$amt
                 },
                 belief_price:null,
-                max_spread:"0.99",
+                max_spread:"0.10",
                 allow_high_max_spread:true,
                 to:null,
                 transaction_deadline:null

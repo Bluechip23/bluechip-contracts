@@ -170,7 +170,11 @@ pub fn ensure_cached_pyth_conf_acceptable(
 // community a full two days to observe a pending change and respond.
 // Single source of truth — every propose/execute pair below MUST use this
 // constant rather than spelling out `86400 * 2`.
+#[cfg(not(feature = "mock"))]
 pub const ADMIN_TIMELOCK_SECONDS: u64 = 86_400 * 2;
+// `--features mock` shortens to 120s for local integration tests.
+#[cfg(feature = "mock")]
+pub const ADMIN_TIMELOCK_SECONDS: u64 = 120;
 pub const PENDING_POOL_UPGRADE: Item<PoolUpgrade> = Item::new("pending_upgrade");
 // Timestamp of the *first pool that crossed its commit threshold*.
 // Despite the old name `FIRST_POOL_TIMESTAMP`, this is NOT set on first
@@ -213,7 +217,10 @@ pub const COMMIT_POOL_CREATE_TS_INDEX: Map<(u64, Addr), ()> =
 /// flows (you launch one token at a time) and asymmetric enough against
 /// spam that even a fully-funded attacker would need to rotate through
 /// thousands of addresses to materially inflate `commit_pool_ordinal`.
+#[cfg(not(feature = "mock"))]
 pub const COMMIT_POOL_CREATE_RATE_LIMIT_SECONDS: u64 = 3600;
+#[cfg(feature = "mock")]
+pub const COMMIT_POOL_CREATE_RATE_LIMIT_SECONDS: u64 = 30;
 
 // Per-address rate limit on standard-pool creation. Mirror of the
 // commit-pool rate limit; defends against the same registry-bloat
@@ -236,7 +243,10 @@ pub const LAST_STANDARD_POOL_CREATE_AT: Map<Addr, Timestamp> =
 pub const STANDARD_POOL_CREATE_TS_INDEX: Map<(u64, Addr), ()> =
     Map::new("std_pool_create_ts_idx");
 
+#[cfg(not(feature = "mock"))]
 pub const STANDARD_POOL_CREATE_RATE_LIMIT_SECONDS: u64 = 3600;
+#[cfg(feature = "mock")]
+pub const STANDARD_POOL_CREATE_RATE_LIMIT_SECONDS: u64 = 30;
 
 // Keeper bounty paid to whoever successfully calls UpdateOraclePrice.
 // Stored as a USD value (6 decimals: 1_000_000 = $1.00). At payout time
@@ -328,7 +338,10 @@ pub const PENDING_BOOTSTRAP_PRICE: Item<PendingBootstrapPrice> =
 /// one or two `update_internal_oracle_price` rounds actually producing
 /// a TWAP — cannot satisfy the time gate alone and lock in a
 /// single-observation candidate.
+#[cfg(not(feature = "mock"))]
 pub const BOOTSTRAP_OBSERVATION_SECONDS: u64 = 3600;
+#[cfg(feature = "mock")]
+pub const BOOTSTRAP_OBSERVATION_SECONDS: u64 = 30;
 
 /// Minimum number of real (TWAP-producing) update rounds that must have
 /// accumulated on the bootstrap candidate before the admin can call
@@ -342,7 +355,10 @@ pub const BOOTSTRAP_OBSERVATION_SECONDS: u64 = 3600;
 ///
 /// 6 mirrors `ANCHOR_CHANGE_WARMUP_OBSERVATIONS` so the launch-day
 /// evidence requirement is symmetric with every later anchor reset.
+#[cfg(not(feature = "mock"))]
 pub const MIN_BOOTSTRAP_OBSERVATIONS: u32 = 6;
+#[cfg(feature = "mock")]
+pub const MIN_BOOTSTRAP_OBSERVATIONS: u32 = 2;
 
 // One-shot bootstrap flag for the anchor pool. False until the admin
 // invokes `ExecuteMsg::SetAnchorPool { pool_id }` exactly once; flipped
@@ -684,7 +700,10 @@ pub const PENDING_COMMIT_POOLS_AUTO_ELIGIBLE: Item<PendingCommitPoolsAutoEligibl
 /// in-line refresh inside `select_random_pools_with_atom`, but can't
 /// be spammed to burn keeper / public gas. ≈12h between forced
 /// refreshes at 6s blocks.
+#[cfg(not(feature = "mock"))]
 pub const ORACLE_REFRESH_RATE_LIMIT_BLOCKS: u64 = 7_200;
+#[cfg(feature = "mock")]
+pub const ORACLE_REFRESH_RATE_LIMIT_BLOCKS: u64 = 1;
 pub const LAST_ORACLE_REFRESH_BLOCK: Item<u64> = Item::new("last_oracle_refresh_block");
 
 

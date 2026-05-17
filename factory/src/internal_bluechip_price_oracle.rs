@@ -65,7 +65,10 @@ pub const ORACLE_POOL_COUNT: usize = 75;
 /// Until those three are wired, every non-anchor pool added to the
 /// allowlist would drag `last_price` away from the correct value, so
 /// the anchor pool is the sole price source.
+#[cfg(not(feature = "mock"))]
 pub const ORACLE_BASKET_ENABLED: bool = false;
+#[cfg(feature = "mock")]
+pub const ORACLE_BASKET_ENABLED: bool = true;
 
 /// Hardcoded fallback bluechip-side floor used by `pool_meets_liquidity_floor`
 /// when the oracle has no usable price (bootstrap window, breaker tripped,
@@ -78,8 +81,12 @@ pub const ORACLE_BASKET_ENABLED: bool = false;
 /// Mirrors the `STANDARD_POOL_CREATION_FEE_FALLBACK_BLUECHIP` pattern: a
 /// known-conservative bluechip-denominated value used when the
 /// USD-denominated source of truth can't be resolved.
+#[cfg(not(feature = "mock"))]
 pub const MIN_POOL_LIQUIDITY_FALLBACK_BLUECHIP_PER_SIDE: Uint128 =
     Uint128::new(5_000_000_000);
+#[cfg(feature = "mock")]
+pub const MIN_POOL_LIQUIDITY_FALLBACK_BLUECHIP_PER_SIDE: Uint128 =
+    Uint128::new(1_000);
 /// Legacy constant retained for one cycle of git-grep continuity. Callers
 /// MUST use `pool_meets_liquidity_floor` instead — this constant is
 /// intentionally inaccessible at runtime.
@@ -105,11 +112,17 @@ pub(crate) const MIN_POOL_LIQUIDITY: Uint128 = Uint128::new(10_000_000_000);
 /// minimum where a single-block reserve manipulation costs more than
 /// the would-be attacker can recover even from a 30% TWAP move
 /// (capped by `MAX_TWAP_DRIFT_BPS`).
+#[cfg(not(feature = "mock"))]
 pub const MIN_POOL_LIQUIDITY_USD: Uint128 = Uint128::new(5_000_000_000);
+#[cfg(feature = "mock")]
+pub const MIN_POOL_LIQUIDITY_USD: Uint128 = Uint128::new(1_000);
 
 pub const TWAP_WINDOW: u64 = 3600;
 pub const UPDATE_INTERVAL: u64 = 300;
+#[cfg(not(feature = "mock"))]
 pub const ROTATION_INTERVAL: u64 = 3600;
+#[cfg(feature = "mock")]
+pub const ROTATION_INTERVAL: u64 = 60;
 
 /// Liquidity-floor gate used by every eligible-pool path
 /// (`get_eligible_creator_pools` for both sources, plus the per-sample
@@ -519,7 +532,13 @@ pub fn select_random_pools_with_atom(
     let atom_pool_addr =
         factory_config.atom_bluechip_anchor_pool_address.to_string();
 
-    #[cfg(feature = "mock")]
+    // Unit-test short-circuit (`cfg(test)` only — NOT the `mock`
+    // cargo feature). Test deps can't query real pool contracts, so
+    // returning just the anchor keeps unit tests deterministic. The
+    // integration-mock build (`--features mock` minus `cfg(test)`)
+    // runs the full eligible-pool walk so on-chain rotation can be
+    // exercised end-to-end.
+    #[cfg(test)]
     {
         return Ok(vec![atom_pool_addr]);
     }
@@ -1014,8 +1033,26 @@ pub fn update_internal_oracle_price(
         .bluechip_price_cache
         .last_update
         .saturating_add(oracle.update_interval);
+    // Mock builds skip the 300s keeper cooldown so integration tests
+    // can drive multiple UpdateOraclePrice rounds back-to-back. Production
+    // builds still enforce the cooldown.
+    #[cfg(not(feature = "mock"))]
     if current_time < next_update {
         return Err(ContractError::UpdateTooSoon { next_update });
+    }
+    #[cfg(feature = "mock")]
+    let _ = next_update;
+
+    // Mock-feature unconditional warmup clear. The audit H-2/H-3 warm-up
+    // gate exists to prevent single-block manipulation of a fresh anchor.
+    // In mock builds (--features mock) the security model assumes a
+    // trusted test environment, so the gate adds friction (25+ min to
+    // drain naturally on testnet) without protective value. Clear it on
+    // every UpdateOraclePrice call so commits aren't frozen waiting on
+    // TWAP cycling. Must NEVER be set in production builds.
+    #[cfg(feature = "mock")]
+    {
+        oracle.warmup_remaining = 0;
     }
 
     // MOCK-ONLY short-circuit. If a mock oracle is configured with a
@@ -1036,6 +1073,11 @@ pub fn update_internal_oracle_price(
                 price,
                 atom_pool_price: price,
             });
+        // Mock mode reads prices from a trusted mock contract, not from
+        // an on-chain anchor that could be single-block-manipulated; the
+        // warm-up gate (audit H-2/H-3) serves no purpose here, so clear
+        // it so commits aren't frozen for ~25 min on every fresh deploy.
+        oracle.warmup_remaining = 0;
         INTERNAL_ORACLE.save(deps.storage, &oracle)?;
 
         let bounty_usd = ORACLE_UPDATE_BOUNTY_USD

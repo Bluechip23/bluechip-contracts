@@ -9,7 +9,7 @@
 //   cargo build -p oracle --features testing
 //
 // IMPORTANT — staleness checks against this mock are dead code:
-//   Both `GetPrice` and `PythConversionPriceFeed` overwrite `publish_time` to
+//   Both `GetPrice` and `PriceFeed` overwrite `publish_time` to
 //   the current block time on every query. This means the factory's
 //   `MAX_PRICE_AGE_SECONDS_BEFORE_STALE` gate
 //   (factory/src/internal_bluechip_price_oracle.rs::query_pyth_atom_usd_price)
@@ -26,8 +26,8 @@ use crate::msg::{
 };
 #[cfg(feature = "testing")]
 use cosmwasm_std::{
-    entry_point, to_json_binary, Binary, Deps, DepsMut, Env, MessageInfo, Response, StdError,
-    StdResult, Uint128,
+    entry_point, to_json_binary, Binary, Deps, DepsMut, Env, Int64, MessageInfo, Response,
+    StdError, StdResult, Uint128, Uint64,
 };
 
 use cw_storage_plus::Map;
@@ -86,7 +86,7 @@ pub fn query(deps: Deps, env: Env, msg: PythQueryMsg) -> StdResult<Binary> {
             stored_price.publish_time = env.block.time.seconds();
             to_json_binary(&stored_price)
         }
-        PythQueryMsg::PythConversionPriceFeed { id } => {
+        PythQueryMsg::PriceFeed { id } => {
             let stored_price = PRICES
                 .may_load(deps.storage, &id)?
                 .ok_or_else(|| StdError::generic_err("Price feed not found"))?;
@@ -117,14 +117,14 @@ pub fn query(deps: Deps, env: Env, msg: PythQueryMsg) -> StdResult<Binary> {
                 price_feed: Some(PriceFeed {
                     id,
                     price: PythPriceRetrievalResponse {
-                        price: price_i64,
-                        conf: conf_u64,
+                        price: Int64::new(price_i64),
+                        conf: Uint64::new(conf_u64),
                         expo: stored_price.expo,
                         publish_time: current_time,
                     },
                     ema_price: PythPriceRetrievalResponse {
-                        price: price_i64,
-                        conf: conf_u64,
+                        price: Int64::new(price_i64),
+                        conf: Uint64::new(conf_u64),
                         expo: stored_price.expo,
                         publish_time: current_time,
                     },

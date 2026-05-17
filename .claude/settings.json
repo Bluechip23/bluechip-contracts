@@ -36,7 +36,14 @@
       "Bash(chmod +x testing-knobs.sh)",
       "Bash(bash testing-knobs.sh status)",
       "Bash(bash testing-knobs.sh revert)",
-      "Bash(git rm *)"
+      "Bash(git rm *)",
+      "Bash(grep -E \"^\\(run_|test_|cross_|deploy_|apply_|propose_|create_|upload_|pyth_\\).*\\\\.sh$\")",
+      "Bash(docker version *)",
+      "Bash(tee /tmp/optimize_all.log)",
+      "Bash(/tmp/bluechipChaind_new status *)",
+      "Bash(/tmp/bluechipChaind_new keys *)",
+      "Read(//home/jeremy/.bluechipTest/config/**)",
+      "Bash(python3 -c \"import sys,json;d=json.load\\(sys.stdin\\);print\\('chain_id:',d.get\\('chain_id'\\)\\);print\\('app_state.bank.denom_metadata:', [m.get\\('base'\\) for m in d.get\\('app_state',{}\\).get\\('bank',{}\\).get\\('denom_metadata',[]\\)]\\)\")"
     ],
     "additionalDirectories": [
       "/tmp"

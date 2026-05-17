@@ -20,7 +20,7 @@ pub const MAX_HOPS: usize = 3;
 /// rotation before it lands. The router holds no funds, so the practical
 /// blast radius of a hostile admin rotation is "lock the legitimate
 /// operator out of further config changes" — bounded but worth the
-/// timelock so a key compromise doesn't take effect instantly.
+/// timelock so a key compromise doesn't take effect instantly.1
 pub const ROUTER_TIMELOCK_SECONDS: u64 = 86_400 * 2;
 
 /// Router configuration. Both fields are mutable, but only via the

@@ -71,6 +71,19 @@ optimize-expand-economy:
 	  --mount type=volume,source=expand_economy_cache,target=/target \
 	  --mount type=volume,source=registry_cache,target=/usr/local/cargo/registry \
 	  cosmwasm/optimizer:0.16.0 ./expand-economy
+	@# expand-economy now has [[package.metadata.optimizer.builds]] name="mock"
+	@# (timelock shortening). The optimizer emits expand-economy-mock.wasm;
+	@# rename to the canonical expand_economy.wasm/expand-economy.wasm names
+	@# the deploy + test scripts load.
+	@# cosmwasm/optimizer produces `<crate-snake>-mock.wasm` (the
+	@# crate's `name = "expand-economy"` gets normalized to underscores
+	@# in the output filename). Sync both legacy filenames the test
+	@# scripts look for.
+	@if [ -f $(ARTIFACTS)/expand_economy-mock.wasm ]; then \
+	  cp $(ARTIFACTS)/expand_economy-mock.wasm $(ARTIFACTS)/expand_economy.wasm; \
+	  cp $(ARTIFACTS)/expand_economy-mock.wasm $(ARTIFACTS)/expand-economy.wasm; \
+	  rm $(ARTIFACTS)/expand_economy-mock.wasm; \
+	fi
 
 optimize-mockoracle:
 	docker run --rm -v ${CURDIR}:/code \

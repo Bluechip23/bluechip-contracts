@@ -91,6 +91,21 @@ pub fn migrate(deps: DepsMut, _env: Env, _msg: Empty) -> Result<Response, Contra
         }
     }
 
+    // Mock-feature: rotation_interval and update_interval on the oracle
+    // state are baked in at init time. Refresh them on migrate so a
+    // mock-feature rebuild can shrink them without re-instantiating.
+    #[cfg(feature = "mock")]
+    {
+        use crate::internal_bluechip_price_oracle::{
+            INTERNAL_ORACLE, ROTATION_INTERVAL, UPDATE_INTERVAL,
+        };
+        if let Ok(mut o) = INTERNAL_ORACLE.load(deps.storage) {
+            o.rotation_interval = ROTATION_INTERVAL;
+            o.update_interval = UPDATE_INTERVAL;
+            INTERNAL_ORACLE.save(deps.storage, &o)?;
+        }
+    }
+
     set_contract_version(deps.storage, CONTRACT_NAME, CONTRACT_VERSION)?;
 
     Ok(Response::new()

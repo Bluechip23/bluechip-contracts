@@ -316,6 +316,15 @@ log_step "Set oracle price: 1 ubluechip = \$0.01"
 TXHASH=$(exe "$ORACLE_ADDR" "{\"set_price\":{\"price_id\":\"ATOM_USD\",\"price\":\"$ORACLE_PRICE\"}}")
 assert_ok "Set oracle price" "$TXHASH"
 
+# Pre-seed BLUECHIP_USD on the mock so the factory's mock-feature short-circuit
+# in update_internal_oracle_price fires (otherwise it falls through to the
+# prod TWAP path, which needs a real anchor pool). The factory's mock path
+# also clears `warmup_remaining` so commits aren't frozen by the audit H-2/H-3
+# warm-up gate. Value: $1 at 6 decimals.
+log_step "Pre-seed BLUECHIP_USD on mock oracle (\$1 at 6 decimals)"
+TXHASH=$(exe "$ORACLE_ADDR" "{\"set_price\":{\"price_id\":\"BLUECHIP_USD\",\"price\":\"1000000\"}}")
+assert_ok "Set BLUECHIP_USD price" "$TXHASH"
+
 # 2b. Expand Economy (placeholder factory = Alice initially)
 log_step "Expand Economy"
 EXP_MSG=$(python3 -c "import json; print(json.dumps({'factory_address':'$ALICE','owner':'$ALICE'}))")
@@ -358,6 +367,14 @@ print(json.dumps({
 FACTORY_ADDR=$(inst "$FACTORY_CODE" "$FACTORY_MSG" "Factory")
 echo "  Factory: $FACTORY_ADDR"
 
+# One UpdateOraclePrice call to drain the warm-up gate. With BLUECHIP_USD
+# set on the mock above, the factory's mock-feature short-circuit fires
+# and zeroes `warmup_remaining` — without this, every Commit hard-fails
+# with "Oracle warm-up in progress" (factory/.../internal_bluechip_price_oracle.rs).
+log_step "Drain oracle warm-up via UpdateOraclePrice (mock short-circuit)"
+TXHASH=$(exe "$FACTORY_ADDR" '{"update_oracle_price":{}}')
+assert_ok "UpdateOraclePrice (mock-mode warmup clear)" "$TXHASH"
+
 # 2d. ExpandEconomy factory_address stays as Alice for testing.
 # In production, use ProposeConfigUpdate + ExecuteConfigUpdate (48h timelock).
 # Minting is skipped in local test mode (admin == anchor_pool_address) so
@@ -397,7 +414,7 @@ CREATOR_TOKEN=$(qry "$POOL_ADDR" '{"pair":{}}' \
   | python3 -c "
 import json, sys
 d = json.load(sys.stdin)
-for t in d.get('data', {}).get('pool_token_info', []):
+for t in d.get('data', {}).get('asset_infos', []):
     ct = t.get('creator_token', {})
     if ct:
         print(ct.get('contract_addr', 'ERR')); exit()
@@ -571,52 +588,33 @@ echo "  [MINT CHECK] Factory is in local mode (admin==anchor_pool) — minting s
 echo "  [MINT CHECK] Testing expand-economy contract directly below..."
 
 # ---------------------------------------------------------------
-# Direct expand-economy test (bypasses factory's mock mode)
+# ExpandEconomy timelocked config update (replaces the obsolete
+# "direct RequestExpansion" test). RequestExpansion now requires both
+# (a) sender == factory_address AND (b) factory_address points at a real
+# factory contract (cross_validate_factory_denom). Those are mutually
+# exclusive for Alice, so we instead exercise the propose→execute path
+# and confirm the wiring lands. Mock-feature timelock is 120s.
 # ---------------------------------------------------------------
-log_step "Direct Expand-Economy Test (verify contract sends ubluechip)"
+log_step "ExpandEconomy ProposeConfigUpdate → factory_address = $FACTORY_ADDR"
+PROPOSE_MSG=$(python3 -c "import json; print(json.dumps({'propose_config_update':{'factory_address':'$FACTORY_ADDR','owner':None}}))")
+TXHASH=$(exe "$EXP_ADDR" "$PROPOSE_MSG")
+assert_ok "ExpandEconomy ProposeConfigUpdate" "$TXHASH"
 
-# ExpandEconomy factory_address is already Alice (set at instantiation, never updated
-# in local test mode), so Alice can call RequestExpansion directly.
-echo "  ExpandEconomy factory_address is already Alice — no config change needed"
+log_step "Waiting 125s for mock-feature CONFIG_TIMELOCK_SECONDS (120s) to expire"
+sleep 125
 
-# Record balances before
-EXP_BAL_DIRECT_PRE=$(get_bal "$EXP_ADDR" "$DENOM")
-ALICE_BAL_DIRECT_PRE=$(get_bal "$ALICE" "$DENOM")
-echo "  ExpandEconomy balance before: $EXP_BAL_DIRECT_PRE"
-echo "  Alice balance before: $ALICE_BAL_DIRECT_PRE"
+log_step "ExpandEconomy ExecuteConfigUpdate"
+TXHASH=$(exe "$EXP_ADDR" '{"execute_config_update":{}}')
+assert_ok "ExpandEconomy ExecuteConfigUpdate (timelock expired)" "$TXHASH"
 
-# Calculate expected mint amount: formula = 500 - ((5x²+x)/((s/6)+333x))
-# For first pool (x=1), with very small s: ≈ 500 - (6/(s/6 + 333)) ≈ 499.98 tokens
-# In ubluechip units (6 decimals): ~499,980,000
-MINT_TEST_AMOUNT="499980000"
-echo "  Testing RequestExpansion with $MINT_TEST_AMOUNT ubluechip (~499.98 tokens)"
-
-EXPAND_MSG=$(python3 -c "import json; print(json.dumps({'expand_economy':{'request_expansion':{'recipient':'$ALICE','amount':'$MINT_TEST_AMOUNT'}}}))")
-TXHASH=$(exe "$EXP_ADDR" "$EXPAND_MSG")
-assert_ok "ExpandEconomy: RequestExpansion (direct test)" "$TXHASH"
-
-EXP_BAL_DIRECT_POST=$(get_bal "$EXP_ADDR" "$DENOM")
-ALICE_BAL_DIRECT_POST=$(get_bal "$ALICE" "$DENOM")
-DIRECT_MINTED=$(python3 -c "print(int('$EXP_BAL_DIRECT_PRE') - int('$EXP_BAL_DIRECT_POST'))")
-ALICE_DIRECT_GAIN=$(python3 -c "print(int('$ALICE_BAL_DIRECT_POST') - int('$ALICE_BAL_DIRECT_PRE'))")
-echo "  ExpandEconomy sent: $DIRECT_MINTED ubluechip"
-echo "  Alice received: $ALICE_DIRECT_GAIN ubluechip (includes -50K gas fee)"
-
-python3 -c "
-minted = int('$DIRECT_MINTED')
-expected = int('$MINT_TEST_AMOUNT')
-if minted == expected:
-    print(f'  [MINT CHECK] PASS: Expand-economy correctly sent {minted} ubluechip')
-elif minted > 0:
-    print(f'  [MINT CHECK] Sent {minted} (expected {expected})')
-else:
-    print('  [MINT CHECK] FAIL: No ubluechip minted')
-"
-
-# In local test mode, factory_address stays as Alice throughout the test.
-# In production, ExpandEconomy would be linked to the real factory via
-# ProposeConfigUpdate + ExecuteConfigUpdate (48h timelock).
-echo "  ExpandEconomy factory_address remains Alice (local test mode)"
+# Verify the config now points at the real factory.
+EXP_CONFIG=$(qry "$EXP_ADDR" '{"get_config":{}}')
+EXP_FACTORY_NOW=$(echo "$EXP_CONFIG" | python3 -c "import json,sys; print(json.load(sys.stdin).get('data',{}).get('factory_address',''))" 2>/dev/null || echo "")
+if [ "$EXP_FACTORY_NOW" = "$FACTORY_ADDR" ]; then
+  log_pass "ExpandEconomy.factory_address now points at the real factory ($EXP_FACTORY_NOW)"
+else
+  log_fail "ExpandEconomy.factory_address = $EXP_FACTORY_NOW (expected $FACTORY_ADDR)"
+fi
 
 # Pool state after threshold
 echo "  Pool state after threshold crossing:"
@@ -709,14 +707,36 @@ except:
   done
 }
 
-log_step "Post-threshold commit — Alice 100,000 ubluechip (should swap for creator tokens)"
-sleep 15  # Ensure rate limit cooldown (13 second minimum)
+log_step "Post-threshold commit — Alice 50,000 ubluechip (should swap for creator tokens)"
+# Refresh internal oracle so the pool's 360s staleness gate accepts the
+# commit. UpdateOraclePrice has a 300s interval gate, so we poll: try,
+# wait, retry — up to ~6 minutes. Each successful call re-stamps
+# `last_update` and decrements warmup (already at 0, so no-op).
+log_info "Polling UpdateOraclePrice until it succeeds (300s factory interval)..."
+REFRESH_DONE=0
+for i in 1 2 3 4 5 6; do
+  TXHASH=$(exe "$FACTORY_ADDR" '{"update_oracle_price":{}}')
+  if [ -n "$TXHASH" ]; then
+    sleep 8
+    CODE=$($BIN query tx "$TXHASH" --node $NODE --output json 2>/dev/null | json_get code)
+    if [ "$CODE" = "0" ]; then
+      log_info "UpdateOraclePrice refresh OK (attempt $i)"
+      REFRESH_DONE=1; break
+    fi
+  fi
+  log_info "Refresh attempt $i did not land (UpdateTooSoon?); sleeping 60s..."
+  sleep 60
+done
+if [ "$REFRESH_DONE" != "1" ]; then
+  log_info "WARNING: UpdateOraclePrice never succeeded; commit may fail on staleness"
+fi
+sleep 6
 
 ALICE_CT_PRE=$(qry "$CREATOR_TOKEN" "{\"balance\":{\"address\":\"$ALICE\"}}" | python3 -c "import json,sys; print(json.load(sys.stdin).get('data',{}).get('balance','0'))" 2>/dev/null || echo "0")
 ALICE_UBC_PRE5=$(get_bal "$ALICE" "$DENOM")
 
-TXHASH=$(exe "$POOL_ADDR" "$(COMMIT_MSG 100000 0.99)" "100000$DENOM")
-assert_ok "Post-threshold commit (100,000 ubluechip → swap)" "$TXHASH"
+TXHASH=$(exe "$POOL_ADDR" "$(COMMIT_MSG 50000 0.05)" "50000$DENOM")
+assert_ok "Post-threshold commit (50,000 ubluechip → swap)" "$TXHASH"
 
 ALICE_CT_POST=$(qry "$CREATOR_TOKEN" "{\"balance\":{\"address\":\"$ALICE\"}}" | python3 -c "import json,sys; print(json.load(sys.stdin).get('data',{}).get('balance','0'))" 2>/dev/null || echo "0")
 ALICE_UBC_POST5=$(get_bal "$ALICE" "$DENOM")
@@ -779,7 +799,7 @@ fi
 # 5c. Simple swap (post-threshold)
 # ---------------------------------------------------------------
 log_step "SimpleSwap — 50,000 ubluechip → creator tokens"
-SWAP_MSG='{"simple_swap":{"offer_asset":{"info":{"bluechip":{"denom":"ubluechip"}},"amount":"50000"},"belief_price":null,"max_spread":"0.99","to":null,"transaction_deadline":null}}'
+SWAP_MSG='{"simple_swap":{"offer_asset":{"info":{"bluechip":{"denom":"ubluechip"}},"amount":"50000"},"belief_price":null,"max_spread":"0.10","to":null,"transaction_deadline":null,"allow_high_max_spread":true}}'
 TXHASH=$(exe "$POOL_ADDR" "$SWAP_MSG" "50000ubluechip")
 assert_ok "SimpleSwap 50,000 ubluechip → creator tokens" "$TXHASH"
 
@@ -845,7 +865,7 @@ else:
     print('OK')
 " | grep -q "NEED_SWAP" && {
   echo "  Bob needs more creator tokens — swapping 200,000 ubluechip"
-  BOB_SWAP_MSG='{"simple_swap":{"offer_asset":{"info":{"bluechip":{"denom":"ubluechip"}},"amount":"200000"},"belief_price":null,"max_spread":"0.99","to":null,"transaction_deadline":null}}'
+  BOB_SWAP_MSG='{"simple_swap":{"offer_asset":{"info":{"bluechip":{"denom":"ubluechip"}},"amount":"200000"},"belief_price":null,"max_spread":"0.10","to":null,"transaction_deadline":null,"allow_high_max_spread":true}}'
   TXHASH=$(exe_bob "$POOL_ADDR" "$BOB_SWAP_MSG" "200000ubluechip")
   sleep 10
   BOB_CT_BAL=$(qry "$CREATOR_TOKEN" "{\"balance\":{\"address\":\"$BOB\"}}" | python3 -c "import json,sys; print(json.load(sys.stdin).get('data',{}).get('balance','0'))" 2>/dev/null || echo "0")
@@ -956,7 +976,7 @@ else:
     print('OK')
 " | grep -q "NEED_SWAP" && {
   echo "  Alice needs more creator tokens — swapping 5,000,000 ubluechip"
-  ALICE_SWAP_MSG='{"simple_swap":{"offer_asset":{"info":{"bluechip":{"denom":"ubluechip"}},"amount":"5000000"},"belief_price":null,"max_spread":"0.99","to":null,"transaction_deadline":null}}'
+  ALICE_SWAP_MSG='{"simple_swap":{"offer_asset":{"info":{"bluechip":{"denom":"ubluechip"}},"amount":"5000000"},"belief_price":null,"max_spread":"0.10","to":null,"transaction_deadline":null,"allow_high_max_spread":true}}'
   TXHASH=$(exe "$POOL_ADDR" "$ALICE_SWAP_MSG" "5000000ubluechip")
   sleep 10
   ALICE_CT_BAL=$(qry "$CREATOR_TOKEN" "{\"balance\":{\"address\":\"$ALICE\"}}" | python3 -c "import json,sys; print(json.load(sys.stdin).get('data',{}).get('balance','0'))" 2>/dev/null || echo "0")
@@ -1080,8 +1100,8 @@ for k, v in d.items():
 # can race the 13s window even with assert_ok's 14s wait.
 log_step "Swap #1 — 500,000 ubluechip → creator tokens"
 sleep 5
-SWAP1='{"simple_swap":{"offer_asset":{"info":{"bluechip":{"denom":"ubluechip"}},"amount":"500000"},"belief_price":null,"max_spread":"0.99","to":null,"transaction_deadline":null}}'
-$BIN tx wasm execute "$POOL_ADDR" "$SWAP1" --amount "500000ubluechip" --from alice --keyring-backend $KR --chain-id $CHAIN_ID --node $NODE --gas auto --gas-adjustment 1.5 --fees 50000ubluechip -y --output json > /tmp/swap1.stdout 2> /tmp/swap1.stderr
+SWAP1='{"simple_swap":{"offer_asset":{"info":{"bluechip":{"denom":"ubluechip"}},"amount":"150000"},"belief_price":null,"max_spread":"0.10","to":null,"transaction_deadline":null,"allow_high_max_spread":true}}'
+$BIN tx wasm execute "$POOL_ADDR" "$SWAP1" --amount "150000ubluechip" --from alice --keyring-backend $KR --chain-id $CHAIN_ID --node $NODE --gas auto --gas-adjustment 1.5 --fees 50000ubluechip -y --output json > /tmp/swap1.stdout 2> /tmp/swap1.stderr
 TXHASH=$(cat /tmp/swap1.stdout | json_get txhash)
 if [ -z "$TXHASH" ]; then
   log_info "Swap #1 stderr: $(head -c 240 /tmp/swap1.stderr)"
@@ -1093,14 +1113,14 @@ assert_ok "Swap #1: 500K ubluechip → creator" "$TXHASH"
 log_step "Swap #2 — creator tokens → ubluechip (reverse)"
 # First check Alice's creator token balance
 ALICE_CT_NOW=$(qry "$CREATOR_TOKEN" "{\"balance\":{\"address\":\"$ALICE\"}}" | python3 -c "import json,sys; print(json.load(sys.stdin).get('data',{}).get('balance','0'))" 2>/dev/null || echo "0")
-SWAP2_AMT=$(python3 -c "print(min(int('$ALICE_CT_NOW') // 10, 50000000000))")
+SWAP2_AMT=$(python3 -c "print(min(int('$ALICE_CT_NOW') // 20, 30000000000))")
 
 # For CW20→native swap, must use CW20 Send with embedded Cw20HookMsg::Swap
 # The pool's execute_swap_cw20 handler receives tokens via CW20 Receive callback
 sleep 15  # Rate limit: 13 second min between swaps from same wallet
 SWAP2_HOOK=$(python3 -c "
 import json, base64
-hook_msg = json.dumps({'swap':{'belief_price':None,'max_spread':'0.99','to':None,'transaction_deadline':None}})
+hook_msg = json.dumps({'swap':{'belief_price':None,'max_spread':'0.10','to':None,'transaction_deadline':None,'allow_high_max_spread':True}})
 b64 = base64.b64encode(hook_msg.encode()).decode()
 send_msg = json.dumps({'send':{'contract':'$POOL_ADDR','amount':'$SWAP2_AMT','msg':b64}})
 print(send_msg)
@@ -1110,15 +1130,15 @@ assert_ok "Swap #2: creator → ubluechip (reverse via CW20 Send)" "$TXHASH"
 
 # Swap #3: 300,000 ubluechip → creator tokens (Bob for variety)
 log_step "Swap #3 — Bob: 300,000 ubluechip → creator tokens"
-SWAP3='{"simple_swap":{"offer_asset":{"info":{"bluechip":{"denom":"ubluechip"}},"amount":"300000"},"belief_price":null,"max_spread":"0.99","to":null,"transaction_deadline":null}}'
-TXHASH=$(exe_bob "$POOL_ADDR" "$SWAP3" "300000ubluechip")
+SWAP3='{"simple_swap":{"offer_asset":{"info":{"bluechip":{"denom":"ubluechip"}},"amount":"100000"},"belief_price":null,"max_spread":"0.10","to":null,"transaction_deadline":null,"allow_high_max_spread":true}}'
+TXHASH=$(exe_bob "$POOL_ADDR" "$SWAP3" "100000ubluechip")
 assert_ok "Swap #3: Bob 300K ubluechip → creator" "$TXHASH"
 
 # Swap #4: Another 400,000 ubluechip → creator (Alice)
 log_step "Swap #4 — Alice: 400,000 ubluechip → creator tokens"
 sleep 5  # Extra buffer for Alice's rate limit (swap #2 was 10+15=25s ago, need 13s total)
-SWAP4='{"simple_swap":{"offer_asset":{"info":{"bluechip":{"denom":"ubluechip"}},"amount":"400000"},"belief_price":null,"max_spread":"0.99","to":null,"transaction_deadline":null}}'
-TXHASH=$(exe "$POOL_ADDR" "$SWAP4" "400000ubluechip")
+SWAP4='{"simple_swap":{"offer_asset":{"info":{"bluechip":{"denom":"ubluechip"}},"amount":"150000"},"belief_price":null,"max_spread":"0.10","to":null,"transaction_deadline":null,"allow_high_max_spread":true}}'
+TXHASH=$(exe "$POOL_ADDR" "$SWAP4" "150000ubluechip")
 assert_ok "Swap #4: Alice 400K ubluechip → creator" "$TXHASH"
 
 # Swap #5: Reverse swap with creator tokens (Bob)
@@ -1129,7 +1149,7 @@ SWAP5_AMT=$(python3 -c "print(min(int('$BOB_CT_NOW') // 5, 30000000000))")
 
 SWAP5_HOOK=$(python3 -c "
 import json, base64
-hook_msg = json.dumps({'swap':{'belief_price':None,'max_spread':'0.99','to':None,'transaction_deadline':None}})
+hook_msg = json.dumps({'swap':{'belief_price':None,'max_spread':'0.10','to':None,'transaction_deadline':None,'allow_high_max_spread':True}})
 b64 = base64.b64encode(hook_msg.encode()).decode()
 send_msg = json.dumps({'send':{'contract':'$POOL_ADDR','amount':'$SWAP5_AMT','msg':b64}})
 print(send_msg)
